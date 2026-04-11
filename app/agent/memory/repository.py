@@ -16,6 +16,12 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from pypinyin import pinyin, Style
+    HAS_PINYIN = True
+except ImportError:
+    HAS_PINYIN = False
+
 from .chinese_tokenizer import get_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -841,17 +847,35 @@ class MemoryRepository:
 
         vector = [0.0] * self.EMBEDDING_DIMENSIONS
         tokens = []
+
         try:
-            tokens.extend(self.tokenizer.tokenize(text))
+            word_tokens = self.tokenizer.tokenize(text)
+            tokens.extend(word_tokens)
             tokens.extend(self.tokenizer.extract_keywords(text, top_k=5))
         except Exception:
             tokens.extend([item for item in re.split(r"\W+", text) if item])
 
-        compact = re.sub(r"\s+", "", text)
-        if len(compact) >= 3:
-            tokens.extend(compact[i:i + 3] for i in range(len(compact) - 2))
-        elif compact:
-            tokens.append(compact)
+        is_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
+
+        if is_chinese:
+            if len(word_tokens) >= 2:
+                for i in range(len(word_tokens) - 1):
+                    tokens.append(word_tokens[i] + word_tokens[i + 1])
+
+            if HAS_PINYIN:
+                try:
+                    py_tokens = [p[0] for p in pinyin(text, style=Style.NORMAL) if p and p[0]]
+                    tokens.extend(py_tokens)
+                    for i in range(len(py_tokens) - 1):
+                        tokens.append(py_tokens[i] + py_tokens[i + 1])
+                except Exception:
+                    pass
+        else:
+            compact = re.sub(r"\s+", "", text)
+            if len(compact) >= 3:
+                tokens.extend(compact[i:i + 3] for i in range(len(compact) - 2))
+            elif compact:
+                tokens.append(compact)
 
         for index, token in enumerate(tokens):
             if not token:

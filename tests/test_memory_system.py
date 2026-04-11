@@ -430,5 +430,88 @@ class TestMemoryManager(unittest.TestCase):
         self.assertLessEqual(len(messages), 3)
 
 
+class TestVectorEmbedding(unittest.TestCase):
+    """测试 96 维向量嵌入模型"""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.test_dir, "archive"), exist_ok=True)
+        with open(os.path.join(self.test_dir, "personality.md"), "w", encoding="utf-8") as f:
+            f.write("# AI Assistant\n\nHelpful assistant")
+        self.memory = ThreeLayerMemory(self.test_dir)
+
+    def tearDown(self):
+        self.memory.close()
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_embed_text_returns_96_dimensions(self):
+        vec = self.memory.repository._embed_text("Python 编程语言")
+        self.assertEqual(len(vec), 96)
+
+    def test_embed_text_normalized(self):
+        vec = self.memory.repository._embed_text("测试文本")
+        norm = sum(v * v for v in vec) ** 0.5
+        self.assertAlmostEqual(norm, 1.0, places=5)
+
+    def test_cosine_similarity_identical_texts(self):
+        vec1 = self.memory.repository._embed_text("Python 教程")
+        vec2 = self.memory.repository._embed_text("Python 教程")
+        sim = self.memory.repository._cosine_similarity(vec1, vec2)
+        self.assertGreater(sim, 0.99)
+
+    def test_cosine_similarity_similar_texts_higher_than_dissimilar(self):
+        vec_python = self.memory.repository._embed_text("Python 编程")
+        vec_java = self.memory.repository._embed_text("Java 编程")
+        vec_unrelated = self.memory.repository._embed_text("天气很好")
+
+        sim_similar = self.memory.repository._cosine_similarity(vec_python, vec_java)
+        sim_unrelated = self.memory.repository._cosine_similarity(vec_python, vec_unrelated)
+
+        self.assertGreater(sim_similar, sim_unrelated)
+
+    def test_embedding_search_returns_results_with_score(self):
+        self.memory.upsert_memory(
+            title="进程管理",
+            content="使用 Get-Process 查看进程信息",
+            category="command",
+            schema_type="general",
+        )
+
+        results = self.memory.repository._embedding_search(
+            query="如何查看进程",
+            top_k=3,
+            category=None,
+            schema_type=None,
+            include_sensitive=False,
+        )
+
+        self.assertTrue(len(results) > 0)
+        self.assertIn("embedding_score", results[0])
+
+    def test_hybrid_search_combines_fts5_and_vector(self):
+        self.memory.upsert_memory(
+            title="Python 教程",
+            content="Python 是一种高级编程语言，适合初学者",
+            category="programming",
+            schema_type="general",
+        )
+
+        results = self.memory.search_memories("Python 编程", top_k=5)
+
+        self.assertTrue(len(results) > 0)
+        fts5_rank = None
+        vector_score = None
+        for i, r in enumerate(results):
+            if "Python" in r.get("content", ""):
+                if fts5_rank is None:
+                    fts5_rank = i
+                if "score" in r:
+                    vector_score = r.get("score")
+                break
+
+        self.assertIsNotNone(fts5_rank)
+        self.assertIsNotNone(vector_score)
+
+
 if __name__ == "__main__":
     unittest.main()
