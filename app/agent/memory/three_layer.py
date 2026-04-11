@@ -202,13 +202,16 @@ class ThreeLayerMemory:
         include_deleted: bool = False,
         include_sensitive: bool = False,
         limit: int = 20,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """列表查询记忆，返回 {"items": [...], "total": N}"""
         return self.repository.list_memories(
             category=category,
             schema_type=schema_type,
             include_deleted=include_deleted,
             include_sensitive=include_sensitive,
             limit=limit,
+            offset=offset,
         )
 
     def upsert_memory(self, **kwargs) -> Dict[str, Any]:

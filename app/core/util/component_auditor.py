@@ -125,16 +125,22 @@ class AuditResult:
 # ============================================================
 # 危险导入黑名单（安全审计）
 # ============================================================
+# 分级安全策略：
+# - BANNED_IMPORTS：完全禁止（动态代码执行，无法安全使用）
+# - PROTECTED_IMPORTS：允许导入但方法受限（运行时拦截）
 
-DANGEROUS_IMPORTS: Set[str] = {
-    "os", "sys", "subprocess", "shutil", "socket", "ftplib", "telnetlib",
-    "smtplib", "poplib", "imaplib", "nntplib", "popen2", "commands",
-    "eval", "exec", "compile", "__import__", "importlib",
-}
+from app.core.util.protected_modules import (
+    BANNED_IMPORTS,
+    PROTECTED_IMPORTS,
+    is_banned_module,
+    is_protected_module,
+)
+
+# 合并所有危险导入（用于兼容旧逻辑）
+DANGEROUS_IMPORTS: Set[str] = BANNED_IMPORTS | PROTECTED_IMPORTS
 
 DANGEROUS_FROM_IMPORTS: Set[str] = {
-    "os.path", "os.system", "os.popen", "subprocess.run", "subprocess.Popen",
-    "subprocess.call", "shutil.rmtree", "shutil.move",
+    "builtins.exec", "builtins.eval",
 }
 
 
@@ -452,9 +458,15 @@ def cell_name(self) -> str:
         return issues, warnings
 
     def _check_security(self, cell: BaseCell) -> List[Dict]:
-        """源码级安全审查：检测危险导入"""
+        """源码级安全审查：检测危险导入
+
+        分级策略：
+        - BANNED_IMPORTS（eval/exec 等）：完全禁止，critical 错误
+        - PROTECTED_IMPORTS（os/subprocess 等）：允许导入，warning 提示
+          （运行时会被 ProtectedModuleProxy 拦截危险方法）
+        """
         issues = []
-        
+
         try:
             source_file = getattr(cell, '_source_file', None)
             if source_file is None:
@@ -463,7 +475,7 @@ def cell_name(self) -> str:
                     source_file = inspect.getfile(type(cell))
                 except TypeError:
                     return issues
-            
+
             with open(source_file, "r", encoding="utf-8") as f:
                 source_code = f.read()
 
@@ -474,28 +486,50 @@ def cell_name(self) -> str:
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         module_name = alias.name.split(".")[0]
-                        if module_name in DANGEROUS_IMPORTS:
+
+                        # 完全禁止的模块（动态代码执行）
+                        if module_name in BANNED_IMPORTS:
                             issues.append({
                                 "rule": "no_dangerous_imports",
                                 "severity": "critical",
-                                "message": f"检测到危险导入: `import {alias.name}`。组件不应直接操作系统层接口。",
-                                "fix": "移除危险导入。如果需要系统操作，请通过 shell 工具间接完成。",
+                                "message": f"检测到禁止导入: `import {alias.name}`。动态代码执行模块不允许使用。",
+                                "fix": "移除该导入。如果需要动态执行，请通过 shell 工具间接完成。",
+                            })
+
+                        # 受保护模块（运行时拦截）—— 仅警告
+                        elif module_name in PROTECTED_IMPORTS:
+                            issues.append({
+                                "rule": "protected_import",
+                                "severity": "warning",
+                                "message": f"检测到受保护导入: `import {alias.name}`。危险方法（如 os.system）将被运行时拦截。",
+                                "fix": "如需执行系统命令，请使用 shell 工具。当前导入的安全方法可正常使用。",
                             })
 
                 # from xxx import yyy
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
                         full_path = f"{node.module}"
+                        module_name = full_path.split(".")[0]
+
                         for alias in node.names:
                             combined = f"{full_path}.{alias.name}"
-                            if (alias.name in DANGEROUS_IMPORTS or 
-                                full_path in DANGEROUS_IMPORTS or
-                                any(combined.startswith(d) for d in DANGEROUS_FROM_IMPORTS)):
+
+                            # 检查导入的是否是禁止函数
+                            if alias.name in BANNED_IMPORTS or any(combined.startswith(d) for d in DANGEROUS_FROM_IMPORTS):
                                 issues.append({
                                     "rule": "no_dangerous_imports",
                                     "severity": "critical",
-                                    "message": f"检测到危险导入: `from {node.module} import {alias.name}`。",
-                                    "fix": "移除危险导入。组件应专注于业务逻辑，系统操作交给 shell 工具。",
+                                    "message": f"检测到禁止导入: `from {node.module} import {alias.name}`。",
+                                    "fix": "移除该导入。动态代码执行不允许使用。",
+                                })
+
+                            # 受保护模块的导入 —— 仅警告
+                            elif module_name in PROTECTED_IMPORTS:
+                                issues.append({
+                                    "rule": "protected_import",
+                                    "severity": "warning",
+                                    "message": f"检测到受保护导入: `from {node.module} import {alias.name}`。危险方法将被运行时拦截。",
+                                    "fix": "如需执行系统命令，请使用 shell 工具。",
                                 })
 
         except Exception as e:

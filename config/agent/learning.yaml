@@ -11,6 +11,11 @@ learning:
   # 是否启用学习
   enabled: true
 
+  # 强制指定策略（覆盖自动学习）
+  # - null 或空字符串：自动学习（Bandit 根据历史选择）
+  # - "default" / "efficient" / "aggressive"：强制使用指定策略
+  override_policy: null
+
   # 统计文件路径
   memory_path: "data/learning/policy_bandit_stats.json"
 
@@ -42,11 +47,11 @@ learning:
       confirm_stop_threshold: 0.9
 
     efficient:
-      # 高效策略：更快终止，适合简单任务
-      stuck_iterations: 2
-      repetition_threshold: 2
-      progress_trend_threshold: -0.2
-      confirm_stop_threshold: 0.8
+      # 高效策略：更宽容，适合复杂任务
+      stuck_iterations: 5
+      repetition_threshold: 5
+      progress_trend_threshold: -0.5
+      confirm_stop_threshold: 0.95
 
     aggressive:
       # 激进策略：更宽容，适合复杂任务

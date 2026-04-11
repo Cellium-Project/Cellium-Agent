@@ -87,7 +87,11 @@ class LoopState:
 
     # ===== 资源状态 =====
     tokens_used: int = 0
-    token_budget: int = 200000
+    token_budget: int = 10000000
+    token_budget_warn_ratio: float = 0.7
+    token_budget_compress_ratio: float = 0.5
+    token_budget_redirect_ratio: float = 0.85
+    token_budget_stop_ratio: float = 0.95
     elapsed_ms: int = 0
 
     # ===== 特征状态（来自 HeuristicEngine） =====

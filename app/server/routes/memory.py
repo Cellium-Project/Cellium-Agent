@@ -70,32 +70,38 @@ async def list_or_search_memories(
     include_sensitive: bool = Query(default=False),
     include_deleted: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
     memory = _get_memory_service()
     normalized_query = (query or "").strip()
     if normalized_query:
-        items = memory.search_memories(
+        all_results = memory.search_memories(
             normalized_query,
-            top_k=limit,
+            top_k=limit + offset,
             category=category,
             schema_type=schema_type,
             include_sensitive=include_sensitive,
         )
         mode = "search"
+        total = len(all_results)
+        items = all_results[offset : offset + limit]
     else:
-        items = memory.list_memories(
+        result = memory.list_memories(
             category=category,
             schema_type=schema_type,
             include_deleted=include_deleted,
             include_sensitive=include_sensitive,
             limit=limit,
+            offset=offset,
         )
         mode = "list"
+        items = result.get("items", [])
+        total = result.get("total", 0)
 
     return {
         "mode": mode,
         "query": normalized_query,
-        "total": len(items),
+        "total": total,
         "items": items,
         "filters": {
             "category": category,
@@ -103,6 +109,7 @@ async def list_or_search_memories(
             "include_sensitive": include_sensitive,
             "include_deleted": include_deleted,
             "limit": limit,
+            "offset": offset,
         },
     }
 

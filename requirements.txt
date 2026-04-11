@@ -14,6 +14,9 @@ jieba>=0.42.1
 # 无头浏览器（用于网页搜索和抓取）
 DrissionPage>=4.1.0
 
+# OpenAI 兼容客户端（LLM 引擎依赖）
+openai>=1.0.0
+
 # 注意：其他功能使用 Python 标准库，无需额外依赖
 # - sqlite3: FTS5 全文检索（Python 标准库）
 # - subprocess: 命令执行（Python 标准库）

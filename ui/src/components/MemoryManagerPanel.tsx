@@ -77,6 +77,8 @@ export const MemoryManagerPanel: React.FC = () => {
   const [includeSensitive, setIncludeSensitive] = useState(false);
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [limit, setLimit] = useState(50);
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [actionKey, setActionKey] = useState('');
@@ -122,16 +124,22 @@ export const MemoryManagerPanel: React.FC = () => {
       if (includeSensitive) params.set('include_sensitive', 'true');
       if (!trimmed && includeDeleted) params.set('include_deleted', 'true');
       params.set('limit', String(limit));
+      params.set('offset', String(offset));
       const url = `${API.memories}?${params.toString()}`;
       const data = await fetchJSON<MemoryQueryResponse>(url);
       setItems(data.items || []);
+      setTotal(data.total || 0);
     } catch (err: any) {
       setError(err.message || '加载记忆列表失败');
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [category, includeDeleted, includeSensitive, limit, query, schemaType]);
+  }, [category, includeDeleted, includeSensitive, limit, offset, query, schemaType]);
+
+  useEffect(() => {
+    setOffset(0);
+  }, [query, schemaType, category, includeSensitive, includeDeleted]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([loadSummary(), loadItems()]);
@@ -401,7 +409,7 @@ export const MemoryManagerPanel: React.FC = () => {
 
       <div className="memory-results-header">
         <h4>{query.trim() ? '搜索结果' : '最近记忆'}</h4>
-        <span>{loading ? '加载中...' : `${items.length} 条`}</span>
+        <span>{loading ? '加载中...' : `${items.length} 条 / 共 ${total} 条`}</span>
       </div>
 
       {items.length === 0 && !loading ? (
@@ -462,6 +470,33 @@ export const MemoryManagerPanel: React.FC = () => {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {total > limit && (
+        <div className="memory-pagination">
+          <span className="memory-pagination-info">
+            第 {offset + 1}-{Math.min(offset + items.length, total)} 条 / 共 {total} 条
+          </span>
+          <div className="memory-pagination-controls">
+            <button
+              className="btn-secondary btn-sm"
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+              disabled={offset === 0 || loading}
+            >
+              上一页
+            </button>
+            <span className="memory-pagination-page">
+              {Math.floor(offset / limit) + 1} / {Math.ceil(total / limit)}
+            </span>
+            <button
+              className="btn-secondary btn-sm"
+              onClick={() => setOffset(offset + limit)}
+              disabled={offset + limit >= total || loading}
+            >
+              下一页
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -6,7 +6,7 @@ agent:
 
   # 迭代控制
   max_iterations: 10              # 最大迭代次数上限（仅当 enforce_iteration_limit=true 时生效）
-  enforce_iteration_limit: false  # 是否强制限制迭代次数（默认不限制）
+  enforce_iteration_limit: false  # 是否强制限制迭代次数（false=不限制，true=启用 max_iterations）
 
   # 会话控制
   request_timeout: 300

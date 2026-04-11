@@ -1,53 +1,34 @@
-# 启发式模块配置
-#
-# 配置层级说明：
-#   此文件定义 HeuristicEngine 的初始阈值。
-#   当 Learning 模块启用时，learning.yaml 中的 Policy 参数会动态注入覆盖这些阈值。
-#   因此 stuck_iterations 和 repetition_threshold 的有效值取决于当前选择的 Policy。
-
 heuristics:
   enabled: true
   log_level: info
   trace_enabled: false
-
-  # 全局阈值（Learning 模块可动态覆盖带 ★ 的项）
   thresholds:
-    max_iterations_ratio: 0.8    # 迭代上限警告比例
-    token_budget_ratio: 0.9      # Token 预算警告比例
-    stuck_iterations: 3          # ★ 无进展迭代阈值（可被 Policy 覆盖）
-    repetition_threshold: 3      # ★ 重复调用阈值（可被 Policy 覆盖）
-    ema_alpha: 0.3               # EMA 平滑因子
-    plateau_stuck_limit: 5       # 高原期最大停滞次数
-
-  # 规则配置
+    max_iterations_ratio: 0.85
+    token_budget_ratio: 0.9
+    stuck_iterations: 5
+    repetition_threshold: 4
+    ema_alpha: 0.3
+    plateau_stuck_limit: 8
   rules:
-    # 迭代终止规则 - 由 agent.enforce_iteration_limit 控制
     term-001:
-      enabled: false   # 旧配置，已废弃，请使用 agent.enforce_iteration_limit
-
+      enabled: false
     term-002:
       enabled: true
       threshold: 0.9
-
     term-003:
       enabled: true
       params:
-        threshold: 3
-
-    term-004:  # NoProgressRule
+        threshold: 4
+    term-004:
       enabled: true
       params:
-        stuck_threshold: 3
-        trend_threshold: -0.1
-
-    # 循环检测规则
+        stuck_threshold: 5
+        trend_threshold: -0.3
     loop-001:
       enabled: true
       params:
-        threshold: 3
-
+        threshold: 4
     loop-002:
       enabled: true
-
     loop-003:
-      enabled: false  # 禁用参数相似度检测
+      enabled: false

@@ -300,8 +300,14 @@ def discover_components() -> List[Dict[str, Any]]:
                 continue
 
             try:
-                classes = _extract_cell_classes(py_file)
-                
+                result = _extract_cell_classes(py_file)
+                if isinstance(result, tuple):
+                    classes, error_info = result
+                    if error_info:
+                        logger.warning(f"[Component] 文件有错误 {py_file.name}: {error_info['error_type']} - {error_info['error']}")
+                else:
+                    classes = result
+
                 for cls_info in classes:
                     is_new = str(py_file) not in _loaded_files
                     results.append({
@@ -318,14 +324,14 @@ def discover_components() -> List[Dict[str, Any]]:
     return results
 
 
-def _extract_cell_classes(file_path: pathlib.Path) -> List[Dict[str, Any]]:
+def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
     """
     从单个 .py 文件中提取所有合法的组件类
-    
-    合法条件：
-      - 是 BaseCell 或 ICell 的子类
-      - 不是抽象基类本身
-      - 定义在当前文件中（非导入的）
+
+    Returns:
+        (classes, error_info) 元组
+        - classes: 找到的组件类列表
+        - error_info: 如果有错误则包含错误详情，否则为 None
     """
     # 构造模块路径
     rel_path = file_path.relative_to(get_components_dir())
@@ -342,8 +348,16 @@ def _extract_cell_classes(file_path: pathlib.Path) -> List[Dict[str, Any]]:
     try:
         spec.loader.exec_module(module)
     except Exception as e:
-        logger.error(f"[Component] 导入模块失败 {module_name}: {e}")
-        return []
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"[Component] 导入模块失败 {module_name}: {e}\n{tb}")
+        return [], {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": tb,
+            "module": module_name,
+            "file": str(file_path),
+        }
     
     # 提取类
     found = []
@@ -363,8 +377,8 @@ def _extract_cell_classes(file_path: pathlib.Path) -> List[Dict[str, Any]]:
                     "module_path": f"{module_name}.{name}",
                     "cls": obj,
                 })
-    
-    return found
+
+    return found, None
 
 
 # ============================================================

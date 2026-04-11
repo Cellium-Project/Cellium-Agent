@@ -79,7 +79,7 @@ class AgentLoopIntegration:
             tool_call_history=all_calls,
             available_tools=available_tools or [],
             total_tokens_used=token_usage.get("total", 0) if token_usage else 0,
-            token_budget=200000,
+            token_budget=10000000,
             elapsed_ms=elapsed_ms,
             user_input=user_input,
             last_tool_result=last_result,

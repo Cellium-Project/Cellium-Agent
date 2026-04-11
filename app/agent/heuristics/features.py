@@ -78,7 +78,19 @@ class FeatureExtractor:
 
         # ===== 上下文特征 =====
         if context.token_budget > 0:
-            features.context_saturation = context.total_tokens_used / context.token_budget
+            saturation = context.total_tokens_used / context.token_budget
+            features.context_saturation = saturation
+
+            if saturation >= 0.95:
+                features.context_saturation_level = "stop"
+            elif saturation >= 0.85:
+                features.context_saturation_level = "redirect"
+            elif saturation >= 0.70:
+                features.context_saturation_level = "warn"
+            elif saturation >= 0.50:
+                features.context_saturation_level = "normal"
+            else:
+                features.context_saturation_level = "idle"
 
         if context.iteration > 0:
             features.message_turn_ratio = len(calls) / context.iteration

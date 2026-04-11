@@ -90,6 +90,11 @@ class AgentLoop:
             self.learning = LearningIntegration(
                 heuristic_engine=self.heuristics.engine,
             )
+            # 读取 override_policy 配置
+            learning_cfg = self._get_learning_config()
+            override = learning_cfg.get("override_policy")
+            if override:
+                self.learning.set_override_policy(override)
 
         # Control Loop Harness（flash_mode=False 时启用完整控制环）
         self.control_loop: Optional[ControlLoop] = None
@@ -194,6 +199,16 @@ class AgentLoop:
                 logger.debug("[AgentLoop] 从 AgentConfig 加载记忆配置成功")
         except Exception as e:
             logger.debug("[AgentLoop] 加载记忆配置失败，使用默认值: %s", e)
+
+    def _get_learning_config(self) -> Dict[str, Any]:
+        """获取学习模块配置"""
+        try:
+            from app.core.util.agent_config import get_config
+            config = get_config()
+            return config.get_section("learning") or {}
+        except Exception as e:
+            logger.debug("[AgentLoop] 加载学习配置失败: %s", e)
+            return {}
 
     def stop(self):
         """请求停止当前推理"""
@@ -485,28 +500,6 @@ class AgentLoop:
                     logger.info("[AgentLoop] 达到最大迭代硬上限 | iter=%d", self._loop_controller.iteration)
                     async for event in self._emit_stop_and_finalize(
                         stop_event={"type": "stopped", "reason": "max_iterations_exceeded", "iteration": self._loop_controller.iteration},
-                        user_input=user_input,
-                        effective_session=effective_session,
-                        effective_memory=effective_memory,
-                        tool_traces=tool_traces,
-                        iteration=self._loop_controller.iteration,
-                        start_time=start_time,
-                    ):
-                        yield event
-                    return
-
-                if self._loop_state and self._loop_state.tokens_used >= self._loop_state.token_budget:
-                    logger.info(
-                        "[AgentLoop] 达到 Token 硬预算上限 | used=%d | budget=%d",
-                        self._loop_state.tokens_used,
-                        self._loop_state.token_budget,
-                    )
-                    async for event in self._emit_stop_and_finalize(
-                        stop_event={
-                            "type": "stopped",
-                            "reason": "token_budget_exceeded",
-                            "iteration": self._loop_controller.iteration,
-                        },
                         user_input=user_input,
                         effective_session=effective_session,
                         effective_memory=effective_memory,

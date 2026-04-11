@@ -84,10 +84,17 @@ class ComponentBuilder(BaseCell):
             try:
                 parsed = json.loads(commands)
                 if isinstance(parsed, list):
-                    cmd_list = parsed
+                    # 支持两种格式：
+                    # 1. 完整对象数组: [{"name": "xxx", "desc": "..."}, ...]
+                    # 2. 简单字符串数组: ["run_all", "cleanup"]
+                    for item in parsed:
+                        if isinstance(item, str):
+                            cmd_list.append({"name": item, "desc": f"执行 {item} 操作"})
+                        elif isinstance(item, dict):
+                            cmd_list.append(item)
             except json.JSONDecodeError:
                 return {"error": f"commands 参数不是有效的 JSON: {commands[:100]}"}
-        
+
         if not cmd_list:
             cmd_list = [{"name": "execute", "desc": f"执行{description or cell_name}的主要功能"}]
 
@@ -107,20 +114,20 @@ class ComponentBuilder(BaseCell):
         for cmd in cmd_list:
             cn = cmd.get("name", "execute")
             cd = cmd.get("desc", f"执行 {cn} 操作")
-            methods_parts.append(f'''
-    def _cmd_{cn}(self, input_data: str) -> Dict[str, Any]:
+            method = f'''    def _cmd_{cn}(self, input_data: str) -> Dict[str, Any]:
         """
         {cd}
-        
+
         Args:
             input_data: 输入数据
-            
+
         Returns:
             {{"result": 处理结果}}
         """
         # TODO: 实现 {cn} 的具体逻辑
         return {{"status": "ok", "message": "{cn} 功能待实现"}}
-''')
+'''
+            methods_parts.append(method)
 
         methods_code = "\n".join(methods_parts)
 
@@ -131,28 +138,29 @@ class ComponentBuilder(BaseCell):
             cd = cmd.get("desc", "")
             comma = "," if i < len(cmd_list) - 1 else ""
             examples_parts.append(
-                f'        {{"command": "{cn}", "args": {{"input_data": "<{cn}的输入>"}}, '
+                f'                {{"command": "{cn}", "args": {{"input_data": "<{cn}的输入>"}}, '
                 f'"description": "{cd}"}}{comma}'
             )
-        
-        help_method = '''
-    def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
+
+        examples_code = "\n".join(examples_parts)
+
+        help_method = f'''    def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         """查询组件使用帮助（LLM 可通过此命令了解如何正确调用组件）
-        
+
         Args:
             topic: 具体主题/命令名（留空返回完整总览）
-            
+
         Returns:
             组件的详细使用说明、参数格式、示例、注意事项
         """
         commands = self.get_commands()
-        base_info = {
+        base_info = {{
             "name": self.cell_name,
-            "description": """''' + (description or cell_name) + '''""",
+            "description": """{description or cell_name}""",
             "available_commands": commands,
             "command_count": len(commands),
             "usage_examples": [
-''' + "\n".join(examples_parts) + '''
+                {examples_code}
             ],
             "_notes": [
                 "此组件由 LLM 通过 component.generate() 创建",
@@ -161,18 +169,18 @@ class ComponentBuilder(BaseCell):
                 "调用时必须带 command 字段指定子命令名",
                 "如果不确定如何调用，可先调 help 查看用法",
             ],
-            "_call_format": {
+            "_call_format": {{
                 "note": "这是多命令模式工具，每次调用必须带 command 字段",
                 "example": {{"command": "<子命令名>", "input_data": "<参数>"}},
-                "or_query_help": '{self.cell_name}.help(topic="<命令名>") 可查看某命令详情',
-            },
-        }
-        
+                "or_query_help": f'{{self.cell_name}}.help(topic="<命令名>") 可查看某命令详情',
+            }},
+        }}
+
         if topic and topic in commands:
-            return {**base_info,
+            return {{**base_info,
                      "focused_command": topic,
                      "command_description": commands[topic],
-                     "hint": f'调用示例: 调用 {self.cell_name} 工具时使用 command="{topic}"'}
+                     "hint": f'调用示例: 调用 {{self.cell_name}} 工具时使用 command="{{topic}}"'}}
         return base_info
 '''
 
@@ -211,13 +219,16 @@ class ComponentBuilder(BaseCell):
         lines.append('    def cell_name(self) -> str:')
         lines.append('        """\u7ec4\u4ef6\u6807\u8bc6\uff08\u5c0f\u5199\uff09\u2014 \u7528\u4e8e\u5168\u5c40\u552f\u4e00\u8bc6\u522b\u548c\u547d\u4ee4\u8def\u7531"""')
         lines.append(f'        return "{cell_name}"')
-        
-        # 追加方法
-        for mp in [m.strip() for m in methods_code.split('\n') if m.strip()]:
-            lines.append(mp)
-        
-        for hm in [h.strip() for h in help_method.split('\n') if h.strip()]:
-            lines.append(hm)
+        lines.append('')
+
+        # 追加方法（保持原有缩进，不要 strip）
+        for line in methods_code.split('\n'):
+            lines.append(line)
+
+        lines.append('')
+
+        for line in help_method.split('\n'):
+            lines.append(line)
 
         lines.append('')
         lines.append('    def on_load(self):')

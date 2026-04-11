@@ -19,10 +19,11 @@ const SETTINGS_TABS = [
 ] as const;
 
 // ── 通用组件：字段标签 ─────────────────────────────────────
-const FieldLabel: React.FC<{ label: string; tooltip?: string }> = ({ label, tooltip }) => (
-  <span className="settings-field-label" title={tooltip || ''}>
-    {label}
-  </span>
+const FieldLabel: React.FC<{ label: string; desc?: string }> = ({ label, desc }) => (
+  <div className="field-label-wrapper">
+    <span className="settings-field-label">{label}</span>
+    {desc && <span className="field-desc">{desc}</span>}
+  </div>
 );
 
 // 通用组件：保存按钮反馈
@@ -289,7 +290,7 @@ const AgentSettings: React.FC = () => {
         </div>
         <div className="settings-card-grid">
           <div className="form-group">
-            <FieldLabel label="限制迭代次数" tooltip="开启后将强制限制 Agent 的最大迭代次数，达到上限后自动终止" />
+            <FieldLabel label="限制迭代次数" desc="开启后将强制限制 Agent 的最大迭代次数" />
             <label className="toggle-switch">
               <input type="checkbox" checked={!!config.enforce_iteration_limit} onChange={e => updateField('enforce_iteration_limit', e.target.checked)} />
               <span className="toggle-slider"></span>
@@ -298,7 +299,7 @@ const AgentSettings: React.FC = () => {
           </div>
           {config.enforce_iteration_limit && (
             <div className="form-group">
-              <FieldLabel label="最大迭代次数" tooltip="Agent 执行的最大迭代次数上限" />
+              <FieldLabel label="最大迭代次数" desc="Agent 执行的最大迭代次数上限" />
               <input type="number" value={Number(config.max_iterations) || 10} min={1} max={100}
                 onChange={e => updateField('max_iterations', parseInt(e.target.value))} />
             </div>
@@ -309,7 +310,7 @@ const AgentSettings: React.FC = () => {
               onChange={e => updateField('request_timeout', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="Flash 模式" tooltip="开启后跳过窗口上下文注入，减少 token 消耗" />
+            <FieldLabel label="Flash 模式" desc="开启后跳过窗口上下文注入，减少 token 消耗" />
             <label className="toggle-switch">
               <input type="checkbox" checked={!!config.flash_mode} onChange={e => updateField('flash_mode', e.target.checked)} />
               <span className="toggle-slider"></span>
@@ -662,22 +663,22 @@ const MemorySettings: React.FC = () => {
         </div>
         <div className="settings-card-grid">
           <div className="form-group">
-            <FieldLabel label="最大消息数" tooltip="保留的最大对话消息数量" />
+            <FieldLabel label="最大消息数" desc="保留的最大对话消息数量" />
             <input type="number" value={Number(shortTerm.max_history) || 50} min={10} max={200}
               onChange={e => updateField('short_term.max_history', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="自动压缩阈值 (bytes)" tooltip="超过此阈值自动压缩工具结果" />
+            <FieldLabel label="自动压缩阈值 (bytes)" desc="超过此阈值自动压缩工具结果" />
             <input type="number" value={Number(shortTerm.auto_compact_threshold) || 10000} min={1000} max={100000}
               onChange={e => updateField('short_term.auto_compact_threshold', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="保留工具结果数" tooltip="保留最近 N 次完整工具结果" />
+            <FieldLabel label="保留工具结果数" desc="保留最近 N 次完整工具结果" />
             <input type="number" value={Number(shortTerm.max_tool_results) || 10} min={1} max={50}
               onChange={e => updateField('short_term.max_tool_results', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="结果截断长度" tooltip="过期结果截断后的字符长度" />
+            <FieldLabel label="结果截断长度" desc="过期结果截断后的字符长度" />
             <input type="number" value={Number(shortTerm.max_tool_result_length) || 500} min={100} max={5000}
               onChange={e => updateField('short_term.max_tool_result_length', parseInt(e.target.value))} />
           </div>
@@ -695,22 +696,22 @@ const MemorySettings: React.FC = () => {
         </div>
         <div className="settings-card-grid">
           <div className="form-group">
-            <FieldLabel label="Token 阈值" tooltip="超过此 Token 数触发压缩" />
+            <FieldLabel label="Token 阈值" desc="超过此 Token 数触发压缩" />
             <input type="number" value={Number(sessionCompact.token_threshold) || 2000} min={500} max={10000}
               onChange={e => updateField('session_compact.token_threshold', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="工具调用阈值" tooltip="达到此次数触发压缩" />
+            <FieldLabel label="工具调用阈值" desc="达到此次数触发压缩" />
             <input type="number" value={Number(sessionCompact.tool_call_threshold) || 3} min={1} max={20}
               onChange={e => updateField('session_compact.tool_call_threshold', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="保留最近消息数" tooltip="保留最近 N 条原文消息" />
+            <FieldLabel label="保留最近消息数" desc="保留最近 N 条原文消息" />
             <input type="number" value={Number(sessionCompact.keep_recent_messages) || 10} min={3} max={50}
               onChange={e => updateField('session_compact.keep_recent_messages', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="笔记最大长度" tooltip="生成笔记的最大字符长度" />
+            <FieldLabel label="笔记最大长度" desc="生成笔记的最大字符长度" />
             <input type="number" value={Number(sessionCompact.max_notes_length) || 2000} min={500} max={10000}
               onChange={e => updateField('session_compact.max_notes_length', parseInt(e.target.value))} />
           </div>
@@ -733,7 +734,7 @@ const MemorySettings: React.FC = () => {
               onChange={e => updateField('memory_dir', e.target.value)} />
           </div>
           <div className="form-group">
-            <FieldLabel label="Hybrid Recall" tooltip="开启 FTS5 + embedding 混合召回" />
+            <FieldLabel label="Hybrid Recall" desc="开启 FTS5 + embedding 混合召回" />
             <label className="toggle-switch">
               <input type="checkbox" checked={!!longTerm.hybrid_enabled} onChange={e => updateField('long_term.hybrid_enabled', e.target.checked)} />
               <span className="toggle-slider"></span>
@@ -759,7 +760,7 @@ const MemorySettings: React.FC = () => {
             />
           </div>
           <div className="form-group">
-            <FieldLabel label="允许存储敏感信息" tooltip="默认建议关闭，仅在明确需要时开启" />
+            <FieldLabel label="允许存储敏感信息" desc="默认建议关闭，仅在明确需要时开启" />
             <label className="toggle-switch">
               <input type="checkbox" checked={!!longTerm.allow_sensitive_store} onChange={e => updateField('long_term.allow_sensitive_store', e.target.checked)} />
               <span className="toggle-slider"></span>
@@ -816,6 +817,8 @@ const LearningSettings: React.FC = () => {
 
   const decay = config.decay || {};
   const prior = config.prior || {};
+  const policies = config.policies || {};
+  const overridePolicy = config.override_policy || '';
 
   return (
     <div className="settings-panel">
@@ -832,7 +835,20 @@ const LearningSettings: React.FC = () => {
         </div>
         <div className="settings-card-grid">
           <div className="form-group">
-            <FieldLabel label="统计数据路径" tooltip="学习统计数据的存储位置" />
+            <FieldLabel label="策略选择" desc="自动学习由 Bandit 算法选择最优策略" />
+            <CustomDropdown
+              value={overridePolicy}
+              items={[
+                { value: '', label: '自动学习（推荐）' },
+                { value: 'default', label: 'Default - 平衡策略' },
+                { value: 'efficient', label: 'Efficient - 高效快速' },
+                { value: 'aggressive', label: 'Aggressive - 激进宽容' },
+              ]}
+              onChange={val => updateField('override_policy', val || null)}
+            />
+          </div>
+          <div className="form-group">
+            <FieldLabel label="统计数据路径" desc="学习统计数据的存储位置" />
             <input type="text" value={config.memory_path || 'data/learning/policy_bandit_stats.json'}
               onChange={e => updateField('memory_path', e.target.value)} />
           </div>
@@ -841,16 +857,18 @@ const LearningSettings: React.FC = () => {
 
       <div className="settings-card">
         <div className="settings-card-header">
-          <div className="settings-card-title">衰减配置</div>
+          <div className="settings-card-title">
+            衰减配置
+          </div>
         </div>
         <div className="settings-card-grid">
           <div className="form-group">
-            <FieldLabel label="衰减间隔 (会话数)" tooltip="每 N 个会话执行一次衰减" />
+            <FieldLabel label="衰减间隔" desc="每 N 个会话执行一次衰减" />
             <input type="number" value={Number(decay.interval) || 50} min={10} max={500}
               onChange={e => updateField('decay.interval', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="衰减因子" tooltip="衰减系数，越小衰减越快" />
+            <FieldLabel label="衰减因子" desc="衰减系数，越小衰减越快" />
             <input type="number" value={Number(decay.factor) || 0.99} min={0.9} max={1} step={0.01}
               onChange={e => updateField('decay.factor', parseFloat(e.target.value))} />
           </div>
@@ -859,25 +877,64 @@ const LearningSettings: React.FC = () => {
 
       <div className="settings-card">
         <div className="settings-card-header">
-          <div className="settings-card-title">冷启动参数（Beta 分布先验）</div>
+          <div className="settings-card-title">
+            冷启动参数（Beta 分布先验）
+          </div>
         </div>
         <div className="settings-card-grid">
           <div className="form-group">
-            <FieldLabel label="Alpha" tooltip="Beta 分布先验 alpha 参数" />
+            <FieldLabel label="Alpha" />
             <input type="number" value={Number(prior.alpha) || 2.0} min={0.1} max={10} step={0.1}
               onChange={e => updateField('prior.alpha', parseFloat(e.target.value))} />
           </div>
           <div className="form-group">
-            <FieldLabel label="Beta" tooltip="Beta 分布先验 beta 参数" />
+            <FieldLabel label="Beta" />
             <input type="number" value={Number(prior.beta) || 2.0} min={0.1} max={10} step={0.1}
               onChange={e => updateField('prior.beta', parseFloat(e.target.value))} />
           </div>
         </div>
       </div>
 
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <div className="settings-card-title">
+            Policy 策略模板
+          </div>
+        </div>
+        <div className="settings-card-grid">
+          {Object.entries(policies).map(([name, params]: [string, any]) => (
+            <div key={name} className="policy-group">
+              <div className="policy-header">{name}</div>
+              <div className="policy-params">
+                <div className="form-group">
+                  <FieldLabel label="无进展迭代阈值" />
+                  <input type="number" value={Number(params.stuck_iterations) || 3} min={1} max={20}
+                    onChange={e => updateField(`policies.${name}.stuck_iterations`, parseInt(e.target.value))} />
+                </div>
+                <div className="form-group">
+                  <FieldLabel label="重复调用阈值" />
+                  <input type="number" value={Number(params.repetition_threshold) || 3} min={1} max={20}
+                    onChange={e => updateField(`policies.${name}.repetition_threshold`, parseInt(e.target.value))} />
+                </div>
+                <div className="form-group">
+                  <FieldLabel label="趋势恶化阈值" />
+                  <input type="number" value={Number(params.progress_trend_threshold) || -0.3} min={-1} max={0} step={0.1}
+                    onChange={e => updateField(`policies.${name}.progress_trend_threshold`, parseFloat(e.target.value))} />
+                </div>
+                <div className="form-group">
+                  <FieldLabel label="终止确认置信度" />
+                  <input type="number" value={Number(params.confirm_stop_threshold) || 0.9} min={0.5} max={1} step={0.05}
+                    onChange={e => updateField(`policies.${name}.confirm_stop_threshold`, parseFloat(e.target.value))} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="form-actions">
         <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
-          {saving ? '保存中...' : saved ? '✓ 已保存' : '保存学习配置'}
+          {saving ? '保存中...' : saved ? '已保存' : '保存学习配置'}
         </button>
       </div>
     </div>
@@ -885,20 +942,203 @@ const LearningSettings: React.FC = () => {
 };
 
 // ═════════════════════════════════════════════════════════════
+// ★ 启发式引擎预设配置
+const HEURISTICS_PRESETS = {
+  'minimal': {
+    label: 'Minimal',
+    description: '仅在极端情况下终止，适合长时间运行的任务',
+    config: {
+      enabled: true,
+      log_level: 'warning',
+      trace_enabled: false,
+      thresholds: {
+        max_iterations_ratio: 0.95,
+        token_budget_ratio: 0.98,
+        stuck_iterations: 10,
+        repetition_threshold: 8,
+        ema_alpha: 0.2,
+        plateau_stuck_limit: 15,
+      },
+      rules: {
+        'term-001': { enabled: false },
+        'term-002': { enabled: true, threshold: 0.95 },
+        'term-003': { enabled: true, params: { threshold: 8 } },
+        'term-004': { enabled: true, params: { stuck_threshold: 10, trend_threshold: -0.5 } },
+        'loop-001': { enabled: true, params: { threshold: 8 } },
+        'loop-002': { enabled: true },
+        'loop-003': { enabled: false },
+      },
+    },
+  },
+  'balanced': {
+    label: 'Balanced',
+    description: '在效率和安全之间取得平衡，适合大多数任务',
+    config: {
+      enabled: true,
+      log_level: 'info',
+      trace_enabled: false,
+      thresholds: {
+        max_iterations_ratio: 0.85,
+        token_budget_ratio: 0.9,
+        stuck_iterations: 5,
+        repetition_threshold: 4,
+        ema_alpha: 0.3,
+        plateau_stuck_limit: 8,
+      },
+      rules: {
+        'term-001': { enabled: false },
+        'term-002': { enabled: true, threshold: 0.9 },
+        'term-003': { enabled: true, params: { threshold: 4 } },
+        'term-004': { enabled: true, params: { stuck_threshold: 5, trend_threshold: -0.3 } },
+        'loop-001': { enabled: true, params: { threshold: 4 } },
+        'loop-002': { enabled: true },
+        'loop-003': { enabled: false },
+      },
+    },
+  },
+  'efficient': {
+    label: 'Efficient',
+    description: '快速检测问题并终止，节省 Token，适合简单任务',
+    config: {
+      enabled: true,
+      log_level: 'info',
+      trace_enabled: false,
+      thresholds: {
+        max_iterations_ratio: 0.8,
+        token_budget_ratio: 0.85,
+        stuck_iterations: 3,
+        repetition_threshold: 2,
+        ema_alpha: 0.4,
+        plateau_stuck_limit: 5,
+      },
+      rules: {
+        'term-001': { enabled: false },
+        'term-002': { enabled: true, threshold: 0.85 },
+        'term-003': { enabled: true, params: { threshold: 3 } },
+        'term-004': { enabled: true, params: { stuck_threshold: 3, trend_threshold: -0.2 } },
+        'loop-001': { enabled: true, params: { threshold: 3 } },
+        'loop-002': { enabled: true },
+        'loop-003': { enabled: false },
+      },
+    },
+  },
+  'cautious': {
+    label: 'Cautious',
+    description: '更严格检测无进展和循环，给 Agent 更多尝试机会',
+    config: {
+      enabled: true,
+      log_level: 'info',
+      trace_enabled: true,
+      thresholds: {
+        max_iterations_ratio: 0.9,
+        token_budget_ratio: 0.92,
+        stuck_iterations: 4,
+        repetition_threshold: 3,
+        ema_alpha: 0.25,
+        plateau_stuck_limit: 6,
+      },
+      rules: {
+        'term-001': { enabled: false },
+        'term-002': { enabled: true, threshold: 0.92 },
+        'term-003': { enabled: true, params: { threshold: 3 } },
+        'term-004': { enabled: true, params: { stuck_threshold: 4, trend_threshold: -0.25 } },
+        'loop-001': { enabled: true, params: { threshold: 3 } },
+        'loop-002': { enabled: true },
+        'loop-003': { enabled: false },
+      },
+    },
+  },
+  'disabled': {
+    label: 'Disabled',
+    description: '完全禁用启发式引擎，仅通过迭代次数限制终止',
+    config: {
+      enabled: false,
+      log_level: 'info',
+      trace_enabled: false,
+      thresholds: {
+        max_iterations_ratio: 0.8,
+        token_budget_ratio: 0.9,
+        stuck_iterations: 3,
+        repetition_threshold: 3,
+        ema_alpha: 0.3,
+        plateau_stuck_limit: 5,
+      },
+      rules: {
+        'term-001': { enabled: false },
+        'term-002': { enabled: false },
+        'term-003': { enabled: false },
+        'term-004': { enabled: false },
+        'loop-001': { enabled: false },
+        'loop-002': { enabled: false },
+        'loop-003': { enabled: false },
+      },
+    },
+  },
+};
+
+type PresetKey = Exclude<keyof typeof HEURISTICS_PRESETS, number>;
+
 // ★ 启发式引擎 Tab
 // ═════════════════════════════════════════════════════════════
 const HeuristicsSettings: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
+  const [selectedPreset, setSelectedPreset] = useState<PresetKey | 'custom'>('balanced');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const { saving, saved, doSave } = useSavingState();
 
   useEffect(() => {
     fetchJSON<Record<string, any>>(API.configSection('heuristics')).then(data => {
-      setConfig(data); setLoading(false);
+      setConfig(data);
+      setLoading(false);
+      const matched = findMatchingPreset(data);
+      setSelectedPreset(matched);
     }).catch(() => setLoading(false));
   }, []);
 
+  const findMatchingPreset = (cfg: Record<string, any>): PresetKey | 'custom' => {
+    const cfgPreset = extractPresetFields(cfg);
+    for (const [key, preset] of Object.entries(HEURISTICS_PRESETS) as [PresetKey, typeof HEURISTICS_PRESETS[PresetKey]][]) {
+      const presetFields = extractPresetFields(preset.config);
+      if (deepEqual(cfgPreset, presetFields)) {
+        return key;
+      }
+    }
+    return 'custom';
+  };
+
+  const extractPresetFields = (cfg: Record<string, any>) => ({
+    enabled: cfg.enabled,
+    log_level: cfg.log_level,
+    trace_enabled: cfg.trace_enabled,
+    thresholds: cfg.thresholds ? {
+      max_iterations_ratio: cfg.thresholds.max_iterations_ratio,
+      token_budget_ratio: cfg.thresholds.token_budget_ratio,
+      stuck_iterations: cfg.thresholds.stuck_iterations,
+      repetition_threshold: cfg.thresholds.repetition_threshold,
+      ema_alpha: cfg.thresholds.ema_alpha,
+      plateau_stuck_limit: cfg.thresholds.plateau_stuck_limit,
+    } : undefined,
+    rules: cfg.rules,
+  });
+
+  const deepEqual = (a: any, b: any): boolean => {
+    if (a === b) return true;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== 'object' || a === null || b === null) return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    if (Array.isArray(a)) {
+      if (a.length !== b.length) return false;
+      return a.every((item, i) => deepEqual(item, b[i]));
+    }
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    return keysA.every(key => deepEqual(a[key], b[key]));
+  };
+
   const updateField = (path: string, value: any) => {
+    setSelectedPreset('custom');
     setConfig(prev => {
       const keys = path.split('.');
       const next = { ...prev };
@@ -913,87 +1153,163 @@ const HeuristicsSettings: React.FC = () => {
     });
   };
 
+  const applyPreset = (presetKey: PresetKey) => {
+    const preset = HEURISTICS_PRESETS[presetKey];
+    setConfig(preset.config);
+    setSelectedPreset(presetKey);
+  };
+
   const handleSave = () => doSave(async () => {
     await putJSON(API.configUpdate('heuristics'), { value: config, persist: true });
   });
 
   const thresholds = config.thresholds || {};
 
+  if (loading) {
+    return <div className="settings-panel"><div className="loading">加载中...</div></div>;
+  }
+
   return (
     <div className="settings-panel">
       <div className="settings-card">
         <div className="settings-card-header">
           <div className="settings-card-title">
-            <Icons.Lightbulb size={16} /> 启发式引擎
+            快速预览
           </div>
-          <label className="toggle-switch">
-            <input type="checkbox" checked={!!config.enabled} onChange={e => updateField('enabled', e.target.checked)} />
-            <span className="toggle-slider"></span>
-            <span className="toggle-label">{config.enabled ? '已开启' : '已关闭'}</span>
-          </label>
+          <button
+            className={`btn-link ${showAdvanced ? 'active' : ''}`}
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            style={{ fontSize: '12px', marginLeft: 'auto' }}
+          >
+            {showAdvanced ? '▲ 收起高级配置' : '▼ 高级配置'}
+          </button>
         </div>
-        <div className="settings-card-grid">
-          <div className="form-group">
-            <FieldLabel label="日志级别" />
-            <CustomDropdown
-              value={(config.log_level || 'info').toUpperCase()}
-              items={[
-                { value: 'DEBUG', label: 'DEBUG — 调试' },
-                { value: 'INFO', label: 'INFO — 信息' },
-                { value: 'WARNING', label: 'WARNING — 警告' },
-                { value: 'ERROR', label: 'ERROR — 错误' },
-              ]}
-              onChange={val => updateField('log_level', val.toLowerCase())}
-            />
-          </div>
-          <div className="form-group">
-            <FieldLabel label="决策追踪" tooltip="记录每次决策的详细过程" />
-            <label className="toggle-switch">
-              <input type="checkbox" checked={!!config.trace_enabled} onChange={e => updateField('trace_enabled', e.target.checked)} />
-              <span className="toggle-slider"></span>
-              <span className="toggle-label">{config.trace_enabled ? '已开启' : '已关闭'}</span>
-            </label>
-          </div>
+        <div className="preset-grid">
+          {(Object.entries(HEURISTICS_PRESETS) as [PresetKey, typeof HEURISTICS_PRESETS[PresetKey]][]).map(([key, preset]) => (
+            <div
+              key={key}
+              className={`preset-card ${selectedPreset === key ? 'selected' : ''}`}
+              onClick={() => applyPreset(key)}
+            >
+              <div className="preset-label">{preset.label}</div>
+              <div className="preset-desc">{preset.description}</div>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div className="settings-card">
-        <div className="settings-card-header">
-          <div className="settings-card-title">全局阈值</div>
-        </div>
-        <div className="settings-card-grid">
-          <div className="form-group">
-            <FieldLabel label="迭代上限警告比例" tooltip="迭代次数达到上限的此比例时发出警告" />
-            <input type="number" value={Number(thresholds.max_iterations_ratio) || 0.8} min={0.5} max={1} step={0.05}
-              onChange={e => updateField('thresholds.max_iterations_ratio', parseFloat(e.target.value))} />
+      {showAdvanced && (
+        <>
+          <div className="settings-card">
+            <div className="settings-card-header">
+              <div className="settings-card-title">日志与追踪</div>
+            </div>
+            <div className="settings-card-grid">
+              <div className="form-group">
+                <FieldLabel label="日志级别" />
+                <CustomDropdown
+                  value={(config.log_level || 'info').toUpperCase()}
+                  items={[
+                    { value: 'DEBUG', label: 'DEBUG' },
+                    { value: 'INFO', label: 'INFO' },
+                    { value: 'WARNING', label: 'WARNING' },
+                    { value: 'ERROR', label: 'ERROR' },
+                  ]}
+                  onChange={val => updateField('log_level', val.toLowerCase())}
+                />
+              </div>
+              <div className="form-group">
+                <FieldLabel label="决策追踪" />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!config.trace_enabled} onChange={e => updateField('trace_enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
-          <div className="form-group">
-            <FieldLabel label="Token 预算警告比例" tooltip="Token 使用达到预算的此比例时发出警告" />
-            <input type="number" value={Number(thresholds.token_budget_ratio) || 0.9} min={0.5} max={1} step={0.05}
-              onChange={e => updateField('thresholds.token_budget_ratio', parseFloat(e.target.value))} />
+
+          <div className="settings-card">
+            <div className="settings-card-header">
+              <div className="settings-card-title">全局阈值</div>
+            </div>
+            <div className="settings-card-grid">
+              <div className="form-group">
+                <FieldLabel label="迭代上限警告比例" desc="迭代次数达到上限的此比例时发出警告" />
+                <input type="number" value={Number(thresholds.max_iterations_ratio) || 0.8} min={0.5} max={1} step={0.05}
+                  onChange={e => updateField('thresholds.max_iterations_ratio', parseFloat(e.target.value))} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label="Token 预算警告比例" desc="Token 使用达到预算的此比例时发出警告" />
+                <input type="number" value={Number(thresholds.token_budget_ratio) || 0.9} min={0.5} max={1} step={0.05}
+                  onChange={e => updateField('thresholds.token_budget_ratio', parseFloat(e.target.value))} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label="无进展迭代阈值" desc="连续 N 次迭代无进展则判定为停滞" />
+                <input type="number" value={Number(thresholds.stuck_iterations) || 3} min={1} max={20}
+                  onChange={e => updateField('thresholds.stuck_iterations', parseInt(e.target.value))} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label="重复调用阈值" desc="同一工具连续调用的最大次数" />
+                <input type="number" value={Number(thresholds.repetition_threshold) || 3} min={1} max={20}
+                  onChange={e => updateField('thresholds.repetition_threshold', parseInt(e.target.value))} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label="EMA 平滑因子" desc="指数移动平均的平滑系数" />
+                <input type="number" value={Number(thresholds.ema_alpha) || 0.3} min={0.1} max={1} step={0.05}
+                  onChange={e => updateField('thresholds.ema_alpha', parseFloat(e.target.value))} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label="高原期停滞上限" desc="高原期最大停滞次数" />
+                <input type="number" value={Number(thresholds.plateau_stuck_limit) || 5} min={1} max={30}
+                  onChange={e => updateField('thresholds.plateau_stuck_limit', parseInt(e.target.value))} />
+              </div>
+            </div>
           </div>
-          <div className="form-group">
-            <FieldLabel label="无进展迭代阈值" tooltip="连续 N 次迭代无进展则判定为停滞" />
-            <input type="number" value={Number(thresholds.stuck_iterations) || 3} min={1} max={10}
-              onChange={e => updateField('thresholds.stuck_iterations', parseInt(e.target.value))} />
+
+          <div className="settings-card">
+            <div className="settings-card-header">
+              <div className="settings-card-title">规则开关</div>
+            </div>
+            <div className="settings-card-grid">
+              <div className="form-group">
+                <FieldLabel label="Token 预算保护 (term-002)" />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!(config.rules?.['term-002']?.enabled)} onChange={e => updateField('rules.term-002.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+              <div className="form-group">
+                <FieldLabel label="空结果链检测 (term-003)" />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!(config.rules?.['term-003']?.enabled)} onChange={e => updateField('rules.term-003.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+              <div className="form-group">
+                <FieldLabel label="无进展检测 (term-004)" />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!(config.rules?.['term-004']?.enabled)} onChange={e => updateField('rules.term-004.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+              <div className="form-group">
+                <FieldLabel label="重复工具调用 (loop-001)" />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!(config.rules?.['loop-001']?.enabled)} onChange={e => updateField('rules.loop-001.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+              <div className="form-group">
+                <FieldLabel label="模式循环检测 (loop-002)" />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!(config.rules?.['loop-002']?.enabled)} onChange={e => updateField('rules.loop-002.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
-          <div className="form-group">
-            <FieldLabel label="重复调用阈值" tooltip="同一工具连续调用的最大次数" />
-            <input type="number" value={Number(thresholds.repetition_threshold) || 3} min={1} max={10}
-              onChange={e => updateField('thresholds.repetition_threshold', parseInt(e.target.value))} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label="EMA 平滑因子" tooltip="指数移动平均的平滑系数" />
-            <input type="number" value={Number(thresholds.ema_alpha) || 0.3} min={0.1} max={1} step={0.1}
-              onChange={e => updateField('thresholds.ema_alpha', parseFloat(e.target.value))} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label="高原期停滞上限" tooltip="高原期最大停滞次数" />
-            <input type="number" value={Number(thresholds.plateau_stuck_limit) || 5} min={1} max={20}
-              onChange={e => updateField('thresholds.plateau_stuck_limit', parseInt(e.target.value))} />
-          </div>
-        </div>
-      </div>
+        </>
+      )}
 
       <div className="form-actions">
         <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>

@@ -37,19 +37,22 @@ class MaxIterationRule(BaseRule):
     priority = RulePriority.CRITICAL
     decision_point = DecisionPoint.ITERATION_TERMINATION
 
-    # 阈值配置
-    warn_threshold: float = 0.8    # 警告阈值（比例）
-    stop_threshold: float = 0.95   # 停止阈值（比例）
+    warn_threshold: float = 0.8
+    stop_threshold: float = 0.95
 
     def evaluate(
         self,
         context: EvaluationContext,
         features: DerivedFeatures,
     ) -> RuleEvaluationResult:
+        from app.agent.heuristics.engine import get_heuristic_engine
+        engine = get_heuristic_engine()
+        stop_threshold = engine.config.get_threshold("max_iterations_ratio", self.stop_threshold)
+        warn_threshold = stop_threshold * 0.85
+
         ratio = context.iteration / max(context.max_iterations, 1)
 
-        # 达到停止阈值
-        if ratio >= self.stop_threshold:
+        if ratio >= stop_threshold:
             return RuleEvaluationResult(
                 matched=True,
                 action=DecisionAction.STOP,
@@ -59,7 +62,7 @@ class MaxIterationRule(BaseRule):
             )
 
         # 达到警告阈值
-        if ratio >= self.warn_threshold:
+        if ratio >= warn_threshold:
             return RuleEvaluationResult(
                 matched=True,
                 action=DecisionAction.WARN,
@@ -73,17 +76,29 @@ class MaxIterationRule(BaseRule):
 
 class TokenBudgetRule(BaseRule):
     """
-    Token 预算限制规则
+    Token 预算限制规则 - 多段判断
 
-    当 Token 使用量接近预算时触发
+    分段阈值（基于 ratio = tokens_used / token_budget）：
+      - >= stop_ratio: STOP（强制终止）
+      - >= redirect_ratio: REDIRECT（引导换方向）
+      - >= warn_ratio: WARN（警告）
+      - >= compress_ratio: COMPRESS（建议压缩上下文）
+
+    默认阈值（可配置）：
+      - compress_ratio: 0.50
+      - warn_ratio: 0.70
+      - redirect_ratio: 0.85
+      - stop_ratio: 0.95
     """
     id = "term-002"
     name = "Token Budget Protection"
-    description = "Token 使用量接近预算时警告或终止"
+    description = "Token 使用量分段判断：压缩 → 警告 → 换方向 → 终止"
     priority = RulePriority.CRITICAL
     decision_point = DecisionPoint.ITERATION_TERMINATION
 
-    warn_threshold: float = 0.8
+    compress_threshold: float = 0.50
+    warn_threshold: float = 0.70
+    redirect_threshold: float = 0.85
     stop_threshold: float = 0.95
 
     def evaluate(
@@ -91,29 +106,52 @@ class TokenBudgetRule(BaseRule):
         context: EvaluationContext,
         features: DerivedFeatures,
     ) -> RuleEvaluationResult:
+        from app.agent.heuristics.engine import get_heuristic_engine
+        engine = get_heuristic_engine()
+        stop_threshold = engine.config.get_threshold("token_budget_stop_ratio", self.stop_threshold)
+        redirect_threshold = engine.config.get_threshold("token_budget_redirect_ratio", self.redirect_threshold)
+        warn_threshold = engine.config.get_threshold("token_budget_warn_ratio", self.warn_threshold)
+        compress_threshold = engine.config.get_threshold("token_budget_compress_ratio", self.compress_threshold)
+
         if context.token_budget <= 0:
             return RuleEvaluationResult.not_matched()
 
         ratio = context.total_tokens_used / context.token_budget
 
-        # 达到停止阈值
-        if ratio >= self.stop_threshold:
+        if ratio >= stop_threshold:
             return RuleEvaluationResult(
                 matched=True,
                 action=DecisionAction.STOP,
                 score=0.95,
                 reason=f"Token 预算即将耗尽 ({context.total_tokens_used}/{context.token_budget})",
-                metadata={"ratio": ratio, "tokens_used": context.total_tokens_used},
+                metadata={"ratio": ratio, "tokens_used": context.total_tokens_used, "stage": "stop"},
             )
 
-        # 达到警告阈值
-        if ratio >= self.warn_threshold:
+        elif ratio >= redirect_threshold:
+            return RuleEvaluationResult(
+                matched=True,
+                action=DecisionAction.REDIRECT,
+                score=0.80,
+                reason=f"Token 使用量过高 ({ratio:.0%})，建议换方向",
+                metadata={"ratio": ratio, "tokens_used": context.total_tokens_used, "stage": "redirect"},
+            )
+
+        elif ratio >= warn_threshold:
             return RuleEvaluationResult(
                 matched=True,
                 action=DecisionAction.WARN,
-                score=0.7,
+                score=0.60,
                 reason=f"Token 使用量较高 ({ratio:.0%})",
-                metadata={"ratio": ratio, "tokens_used": context.total_tokens_used},
+                metadata={"ratio": ratio, "tokens_used": context.total_tokens_used, "stage": "warn"},
+            )
+
+        elif ratio >= compress_threshold:
+            return RuleEvaluationResult(
+                matched=True,
+                action=DecisionAction.RECOMMEND,
+                score=0.50,
+                reason=f"Token 使用量过半 ({ratio:.0%})，建议压缩上下文",
+                metadata={"ratio": ratio, "tokens_used": context.total_tokens_used, "stage": "compress"},
             )
 
         return RuleEvaluationResult.not_matched()
@@ -134,17 +172,22 @@ class EmptyResultChainRule(BaseRule):
     priority = RulePriority.HIGH
     decision_point = DecisionPoint.ITERATION_TERMINATION
 
-    threshold: int = 3           # 连续空结果阈值（触发 REDIRECT）
-    stop_threshold: int = 6      # 累积空结果阈值（触发 STOP）
+    threshold: int = 3
+    stop_threshold: int = 6
 
     def evaluate(
         self,
         context: EvaluationContext,
         features: DerivedFeatures,
     ) -> RuleEvaluationResult:
-        calls = context.recent_tool_calls[-self.stop_threshold * 2:]  # 多看一些
+        from app.agent.heuristics.engine import get_heuristic_engine
+        engine = get_heuristic_engine()
+        threshold = engine.config.get_threshold("repetition_threshold", self.threshold)
+        stop_threshold = threshold * 2
 
-        if len(calls) < self.threshold:
+        calls = context.recent_tool_calls[-stop_threshold * 2:]  # 多看一些
+
+        if len(calls) < threshold:
             return RuleEvaluationResult.not_matched()
 
         # 检查最近的调用
@@ -159,7 +202,7 @@ class EmptyResultChainRule(BaseRule):
             else:
                 break
 
-        if consecutive_empty >= self.stop_threshold:
+        if consecutive_empty >= stop_threshold:
             # ★ 多次尝试无效 → STOP（但带建议）
             return RuleEvaluationResult(
                 matched=True,
@@ -173,7 +216,7 @@ class EmptyResultChainRule(BaseRule):
                 },
             )
 
-        if consecutive_empty >= self.threshold:
+        if consecutive_empty >= threshold:
             # ★ 初次检测到问题 → REDIRECT（引导换方向）
             return RuleEvaluationResult(
                 matched=True,

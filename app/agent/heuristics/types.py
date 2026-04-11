@@ -80,7 +80,7 @@ class EvaluationContext:
     tool_call_history: List[Dict] = field(default_factory=list)
     available_tools: List[str] = field(default_factory=list)
     total_tokens_used: int = 0
-    token_budget: int = 200000
+    token_budget: int = 10000000
     elapsed_ms: int = 0
     user_input: str = ""
     last_tool_result: Optional[Dict] = None
@@ -124,6 +124,7 @@ class DerivedFeatures:
 
     # ===== 上下文特征 =====
     context_saturation: float = 0.0       # 上下文饱和度 (已用/budget)
+    context_saturation_level: str = "idle"  # 饱和阶段: idle/normal/warn/redirect/stop
     message_turn_ratio: float = 0.0       # 消息数/迭代数
 
     # ===== 时序特征 =====

@@ -106,9 +106,15 @@ class LearningIntegration:
 
         self._current_policy: str = "default"
         self._session_active = False
+        self._override_policy: Optional[str] = None
 
         # ★ ControlLoop 引用（用于传递 Policy 阈值）
         self._control_loop = None
+
+    def set_override_policy(self, policy_name: Optional[str]):
+        """设置强制策略（None 表示使用自动学习）"""
+        self._override_policy = policy_name
+        logger.info("[LearningIntegration] override_policy 设置为: %s", policy_name or "auto")
 
     def start_session(self) -> str:
         """
@@ -120,7 +126,12 @@ class LearningIntegration:
         if not self.enabled:
             return "default"
 
-        self._current_policy = self.bandit.select_policy()
+        # 优先使用 override 策略
+        if self._override_policy:
+            self._current_policy = self._override_policy
+        else:
+            self._current_policy = self.bandit.select_policy()
+
         self._apply_policy(self._current_policy)
         self._session_active = True
 

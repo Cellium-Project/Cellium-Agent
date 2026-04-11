@@ -89,10 +89,19 @@ class MemoryManager:
 
     def add_tool_result(self, tool_call_id: str, result: dict):
         """插入工具执行结果到提示词"""
+        content = json.dumps(result, ensure_ascii=False)
+        if result.get("status") == "error" and result.get("traceback"):
+            content = json.dumps({
+                "error": result.get("error", ""),
+                "error_type": result.get("error_type", ""),
+                "traceback": result.get("traceback", ""),
+                "_source": result.get("_source", ""),
+                "status": "error",
+            }, ensure_ascii=False)
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": json.dumps(result, ensure_ascii=False)
+            "content": content
         })
 
     def get_messages(self) -> List[Dict]:

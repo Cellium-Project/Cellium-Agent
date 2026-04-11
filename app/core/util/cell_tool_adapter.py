@@ -6,8 +6,8 @@ CellToolAdapter — 组件→工具适配器
 关键能力：
   1. 把 cell_name 映射为 tool_name（LLM function calling 格式）
   2. 自动生成 definition（LLM 可理解的 JSON Schema）
-  3. execute() 直接委托给组件的 execute() 方法
-  4. 线程安全：所有操作通过 ComponentToolRegistry 统一管理
+  3. execute() 委托给组件的 execute() 方法
+  4. 安全隔离：非白名单组件在子进程沙箱中执行
 
 架构：
     BaseCell (components/xxx.py)
@@ -25,33 +25,51 @@ CellToolAdapter — 组件→工具适配器
 
 import inspect
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from app.agent.tools.base_tool import BaseTool
 from app.core.interface.icell import ICell
 
 logger = logging.getLogger(__name__)
 
+# 白名单组件豁免沙箱隔离（系统核心组件，需要高权限）
+EXEMPTED_NAMES: Set[str] = {
+    "component",        # ComponentBuilder — 需要创建文件
+    "skill_installer",  # SkillInstaller — 需要安装包
+    "web_query",        # WebQuery — 需要网络请求
+}
+
+# 是否启用沙箱模式（可通过配置关闭）
+SANDBOX_ENABLED = True
+
 
 class CellToolAdapter(BaseTool):
     """
     BaseCell → BaseTool 适配器
-    
+
     将任意 BaseCell/ICell 实例包装为 AgentLoop 可识别的 Tool 对象。
     LLM 调用工具时，自动路由到对应组件的 _cmd_ 方法。
+
+    ★ 安全机制：
+    - 非白名单组件在子进程沙箱中执行
+    - 组件崩溃不影响主进程
+    - 组件无法直接访问主进程内存
     """
 
-    def __init__(self, cell: ICell):
+    def __init__(self, cell: ICell, use_sandbox: Optional[bool] = None):
         """
         Args:
             cell: 已实例化的 BaseCell 子类对象
+            use_sandbox: 是否使用沙箱（None=自动判断）
         """
         self._cell = cell
-        
+        self._sandbox = None
+        self._sandbox_initialized = False
+
         # ★ 关键：设置 name 和 description（BaseTool 需要）
         # tool_name 格式: "cell_name" （纯小写，与组件标识一致）
         self.name = getattr(cell, 'cell_name', type(cell).__name__.lower())
-        
+
         # 从类 docstring 或第一个命令描述提取工具描述
         doc = (type(cell).__doc__ or "").strip()
         if doc:
@@ -64,8 +82,23 @@ class CellToolAdapter(BaseTool):
                 self.description = f"组件 [{self.name}] — {first_cmd_desc}"
             else:
                 self.description = f"组件 [{self.name}]"
-        
+
+        # ★ 决定是否使用沙箱
+        self._use_sandbox = self._determine_sandbox_mode(use_sandbox)
+
         super().__init__()
+
+    def _determine_sandbox_mode(self, use_sandbox: Optional[bool]) -> bool:
+        """决定是否使用沙箱模式"""
+        if not SANDBOX_ENABLED:
+            return False
+
+        # 显式指定
+        if use_sandbox is not None:
+            return use_sandbox
+
+        # 自动判断：白名单组件不使用沙箱
+        return self.name not in EXEMPTED_NAMES
 
     @property
     def cell(self) -> ICell:
@@ -82,6 +115,13 @@ class CellToolAdapter(BaseTool):
         """组件类型名（用于日志和调试）"""
         return type(self._cell).__name__
 
+    def _get_component_source(self) -> Optional[str]:
+        """获取组件源文件路径"""
+        try:
+            return inspect.getsourcefile(type(self._cell))
+        except (TypeError, OSError):
+            return None
+
     def execute(self, command="", *args, **kwargs) -> Dict[str, Any]:
         """
         执行命令 — 委托给底层组件的 execute()
@@ -93,7 +133,74 @@ class CellToolAdapter(BaseTool):
         ★ 关键：dict 模式不委托 BaseTool.execute()，
            因为 _cmd_ 方法定义在底层 cell 上而非本适配器上。
            自行提取 command、清洗参数后直接调用 self._cell.execute()
+
+        ★ 安全：非白名单组件在子进程沙箱中执行，
+           组件崩溃不影响主进程。
         """
+        if self._use_sandbox:
+            return self._execute_in_sandbox(command, *args, **kwargs)
+        else:
+            return self._execute_direct(command, *args, **kwargs)
+
+    def _execute_in_sandbox(self, command, *args, **kwargs) -> Dict[str, Any]:
+        """在沙箱中执行组件命令"""
+        try:
+            from app.core.util.component_sandbox import ComponentSandbox, SandboxProcess
+
+            # 获取或创建沙箱
+            sandbox = ComponentSandbox.get_sandbox(self.name)
+
+            # 初始化沙箱（仅首次）
+            if not sandbox._initialized:
+                source_file = self._get_component_source()
+                class_name = type(self._cell).__name__
+
+                if source_file:
+                    sandbox.init_component(source_file, class_name)
+                else:
+                    # 无法获取源文件，回退到直接执行
+                    logger.warning(
+                        "[CellToolAdapter] %s 无法获取源文件，回退到直接执行",
+                        self.name,
+                    )
+                    return self._execute_direct(command, *args, **kwargs)
+
+            # 执行命令
+            if isinstance(command, dict):
+                all_args = dict(command)
+                cmd_name = (all_args.pop("command") or "").strip()
+                if not cmd_name:
+                    cmd_name = self._infer_command(all_args)
+
+                # 过滤有效参数
+                target_method = getattr(self._cell, f"{self.COMMAND_PREFIX}{cmd_name}", None)
+                if target_method:
+                    sig = inspect.signature(target_method)
+                    valid_params = {p for p in sig.parameters if p != "self"}
+                    all_args = {k: v for k, v in all_args.items() if k in valid_params}
+
+                result = sandbox.execute(cmd_name, kwargs=all_args)
+            else:
+                result = sandbox.execute(command, args=list(args), kwargs=kwargs)
+
+            # 确保返回值格式正确
+            if not isinstance(result, dict):
+                result = {"result": result}
+            result.setdefault("_source", f"component:{self.name}")
+            result.setdefault("_sandboxed", True)
+
+            return result
+
+        except Exception as e:
+            logger.error(
+                "[CellToolAdapter] %s 沙箱执行失败，回退到直接执行: %s",
+                self.name, e,
+            )
+            # 沙箱失败时回退到直接执行（带运行时保护）
+            return self._execute_direct(command, *args, **kwargs)
+
+    def _execute_direct(self, command, *args, **kwargs) -> Dict[str, Any]:
+        """直接执行组件命令（无沙箱）"""
         try:
             if isinstance(command, dict):
                 # ── LLM 模式：自行处理（不走 super）──
@@ -139,7 +246,7 @@ class CellToolAdapter(BaseTool):
 
             # ★ 标记来源组件
             result.setdefault("_source", f"component:{self.name}")
-            
+
             logger.info(
                 "[CellToolAdapter] %s.%s OK | 返回 keys=%s",
                 self.name,
@@ -149,12 +256,16 @@ class CellToolAdapter(BaseTool):
             return result
 
         except Exception as e:
+            import traceback
+            tb_str = traceback.format_exc()
             logger.error(
-                "[CellToolAdapter] %s.execute 失败: %s",
-                self.name, e, exc_info=True,
+                "[CellToolAdapter] %s.execute 失败: %s\n%s",
+                self.name, e, tb_str,
             )
             return {
                 "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": tb_str,
                 "_source": f"component:{self.name}",
                 "status": "error",
             }
@@ -255,7 +366,7 @@ class CellToolAdapter(BaseTool):
     def definition(self) -> Dict:
         """
         生成 LLM function calling 格式的工具定义
-        
+
         结构与 BaseTool.definition 一致，确保 AgentLoop 能正确处理。
         """
         commands_info = []
@@ -357,4 +468,5 @@ class CellToolAdapter(BaseTool):
 
     def __repr__(self):
         cmds = list(self.get_commands().keys())
-        return f"<CellToolAdapter name={self.name} component={self.component_type} commands={cmds}>"
+        sandbox_flag = " [sandbox]" if self._use_sandbox else ""
+        return f"<CellToolAdapter name={self.name} component={self.component_type} commands={cmds}{sandbox_flag}>"

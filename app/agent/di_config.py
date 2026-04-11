@@ -56,13 +56,66 @@ def setup_agent_di(
     if container is None:
         container = get_container()
 
-    # ★ 从配置读取默认参数
     _cfg = get_config()
+
+    _enforce_limit = _cfg.get("agent.enforce_iteration_limit", False)
     if max_iterations is None:
-        max_iterations = int(_cfg.get("agent.max_iterations", 10))
-    flash_mode = _cfg.get("agent.flash_mode", False)  # Flash 模式
+        _default = _cfg.get("agent.max_iterations", 10)
+        max_iterations = _default if _enforce_limit else float('inf')
+    flash_mode = _cfg.get("agent.flash_mode", False)
     if memory_dir is None:
         memory_dir = _cfg.get("memory.memory_dir", "memory")
+
+    # ★ Agent 配置热重载支持：使用可变容器存储最新配置
+    _agent_config_holder = {
+        "max_iterations": max_iterations,
+        "flash_mode": flash_mode,
+        "enable_heuristics": True,
+        "enable_learning": True,
+    }
+
+    def _on_agent_config_change(section, old_val, new_val):
+        """agent 配置变更时更新 _agent_config_holder"""
+        if section != "agent":
+            return
+        try:
+            enforce = new_val.get("enforce_iteration_limit", False) if new_val else False
+            default_iter = new_val.get("max_iterations", 10) if new_val else 10
+            _agent_config_holder["max_iterations"] = default_iter if enforce else float('inf')
+            _agent_config_holder["flash_mode"] = new_val.get("flash_mode", False) if new_val else False
+            logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
+                       _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
+        except Exception as e:
+            logger.error("[AgentDI] Agent 配置热更新失败: %s", e, exc_info=True)
+
+    _cfg.on_change("agent", _on_agent_config_change)
+
+    def _on_heuristics_config_change(section, old_val, new_val):
+        """heuristics 配置变更时重新加载 HeuristicEngine"""
+        if section != "heuristics":
+            return
+        try:
+            from app.agent.heuristics.engine import get_heuristic_engine
+            engine = get_heuristic_engine()
+            engine.reload_config()
+            logger.info("[AgentDI] Heuristics 配置已热更新")
+        except Exception as e:
+            logger.error("[AgentDI] Heuristics 配置热更新失败: %s", e, exc_info=True)
+
+    _cfg.on_change("heuristics", _on_heuristics_config_change)
+
+    def _on_learning_config_change(section, old_val, new_val):
+        """learning 配置变更时重新加载 Policy 模板"""
+        if section != "learning":
+            return
+        try:
+            from app.agent.learning.policy import reload_templates
+            reload_templates()
+            logger.info("[AgentDI] Learning 配置已热更新")
+        except Exception as e:
+            logger.error("[AgentDI] Learning 配置热更新失败: %s", e, exc_info=True)
+
+    _cfg.on_change("learning", _on_learning_config_change)
 
     # --- 1. 注册 EventBus ---
     if not container.has(EventBus):
@@ -165,11 +218,11 @@ def setup_agent_di(
                 "memory": _mem_tool,   # 记忆工具
                 "file": _file_tool,     # 文件工具
             },
-            max_iterations=max_iterations,
+            max_iterations=_agent_config_holder["max_iterations"],
             three_layer_memory=_memory,   # 注入三层记忆
-            flash_mode=flash_mode,        # Flash 模式配置
-            enable_heuristics=True,       # 启用启发式引擎
-            enable_learning=True,         # 启用学习模块
+            flash_mode=_agent_config_holder["flash_mode"],        # Flash 模式配置（支持热重载）
+            enable_heuristics=_agent_config_holder["enable_heuristics"],
+            enable_learning=_agent_config_holder["enable_learning"],
         )
         return loop
 

@@ -313,7 +313,9 @@ class MemoryRepository:
         include_deleted: bool = False,
         include_sensitive: bool = False,
         limit: int = 20,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """列表查询记忆，返回 {"items": [...], "total": N}"""
         self._backfill_from_index()
         items = []
         for record_id, record in self._catalog.get("records", {}).items():
@@ -328,7 +330,8 @@ class MemoryRepository:
             items.append(self._public_record(record_id))
 
         items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
-        return items[:limit]
+        total = len(items)
+        return {"items": items[offset : offset + limit], "total": total}
 
     def update_memory(
         self,

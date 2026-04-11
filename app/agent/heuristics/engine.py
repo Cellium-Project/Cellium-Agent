@@ -86,6 +86,15 @@ class HeuristicEngine:
             cls._instance = cls()
         return cls._instance
 
+    def reload_config(self):
+        """重新加载配置（支持热重载）"""
+        from app.agent.heuristics.config import HeuristicConfig
+        self.config = HeuristicConfig.load()
+        self.feature_extractor = FeatureExtractor(
+            ema_alpha=self.config.get_threshold("ema_alpha", 0.3)
+        )
+        logger.info("[HeuristicEngine] 配置已热重载 | enabled=%s", self.config.enabled)
+
     def _register_builtin_rules(self):
         builtin_rules = [
             MaxIterationRule(),
