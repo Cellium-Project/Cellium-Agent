@@ -1,0 +1,21 @@
+# Python Cellium Agent - 依赖包
+
+# Web 框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# 配置文件解析
+pyyaml>=6.0
+
+# 中文分词（用于记忆检索增强）
+jieba>=0.42.1
+
+# 无头浏览器（用于网页搜索和抓取）
+DrissionPage>=4.1.0
+
+# 注意：其他功能使用 Python 标准库，无需额外依赖
+# - sqlite3: FTS5 全文检索（Python 标准库）
+# - subprocess: 命令执行（Python 标准库）
+# - json: JSON 序列化（Python 标准库）
+# - re/difflib: 文本处理（Python 标准库）

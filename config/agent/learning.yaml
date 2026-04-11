@@ -1,0 +1,56 @@
+# Learning 模块配置
+#
+# Policy 配置源说明：
+#   此文件是 Policy 参数的唯一配置源。
+#   app/agent/learning/policy.py 中的 _DEFAULT_TEMPLATES 仅作为后备默认值，
+#   当此配置缺失时才会使用。
+#
+#   支持热重载：修改此文件后，调用 reload_templates() 即可生效。
+
+learning:
+  # 是否启用学习
+  enabled: true
+
+  # 统计文件路径
+  memory_path: "data/learning/policy_bandit_stats.json"
+
+  # 衰减配置
+  decay:
+    interval: 50      # 每 N 个会话衰减一次
+    factor: 0.99      # 衰减因子
+
+  # 冷启动参数
+  prior:
+    alpha: 2.0        # Beta 分布先验 alpha
+    beta: 2.0         # Beta 分布先验 beta
+
+  # ============================================================
+  # Policy 定义（此为唯一配置源）
+  # ============================================================
+  # 参数说明：
+  #   stuck_iterations       - 无进展迭代阈值，超过则考虑终止
+  #   repetition_threshold   - 重复工具调用阈值
+  #   progress_trend_threshold - 进展趋势恶化阈值（负值）
+  #   confirm_stop_threshold - 终止确认置信度阈值
+  # ------------------------------------------------------------
+  policies:
+    default:
+      # 默认策略：平衡效率与宽容度
+      stuck_iterations: 3
+      repetition_threshold: 3
+      progress_trend_threshold: -0.3
+      confirm_stop_threshold: 0.9
+
+    efficient:
+      # 高效策略：更快终止，适合简单任务
+      stuck_iterations: 2
+      repetition_threshold: 2
+      progress_trend_threshold: -0.2
+      confirm_stop_threshold: 0.8
+
+    aggressive:
+      # 激进策略：更宽容，适合复杂任务
+      stuck_iterations: 5
+      repetition_threshold: 5
+      progress_trend_threshold: -0.4
+      confirm_stop_threshold: 0.95

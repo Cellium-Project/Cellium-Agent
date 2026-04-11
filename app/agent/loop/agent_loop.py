@@ -1,0 +1,1026 @@
+# -*- coding: utf-8 -*-
+"""
+Agent 主循环
+
+重构说明：
+  - LoopController: 迭代计数和循环检测
+  - PromptContextBuilder: 提示词上下文构建
+  - LoopEventPublisher: 事件发布封装
+"""
+
+import json
+import logging
+import time
+from typing import List, Dict, Any, Optional
+
+from app.core.bus.event_bus import event_bus
+from app.agent.loop.memory import MemoryManager
+from app.core.util.component_tool_registry import get_component_tool_registry
+from app.agent.heuristics import AgentLoopIntegration
+from app.agent.learning import LearningIntegration
+from app.agent.prompt import PromptBuilder
+from app.agent.prompt.pieces import create_default_builder
+from app.agent.memory.session_notes import SessionNotes
+from app.agent.memory.session_compact import SessionCompactor
+from app.agent.control import ControlLoop, LoopState, HardConstraintRenderer
+
+from .tool_executor import (
+    ToolExecutor,
+    ToolDescriptionGenerator,
+    TOOL_CALL_GUIDE,
+)
+from .command_handler import CommandHandler
+from .auto_hints import AutoHintManager
+from .loop_controller import LoopController
+from .prompt_context_builder import PromptContextBuilder
+from .loop_event_publisher import LoopEventPublisher
+
+logger = logging.getLogger(__name__)
+
+
+class AgentLoop:
+    """Agent 主循环"""
+
+    def __init__(
+        self,
+        llm_engine,
+        shell=None,
+        memory: MemoryManager = None,
+        three_layer_memory=None,
+        tools: Dict[str, Any] = None,
+        max_iterations: int = 10,
+        session_id: str = "default",
+        event_bus_instance=None,
+        loop_detection_threshold: int = 3,
+        enable_heuristics: bool = True,
+        flash_mode: bool = False,
+        enable_learning: bool = True,
+    ):
+        self.llm = llm_engine
+        self.shell = shell
+        self.three_layer_memory = three_layer_memory
+        self.max_iterations = max_iterations
+        self.session_id = session_id
+        self.flash_mode = flash_mode
+        self._did_persist_before_compact = False  # 标记压缩前是否已持久化
+
+        # 事件总线
+        self._bus = event_bus_instance or event_bus
+        self._event_publisher = LoopEventPublisher(self._bus)
+
+        # 加载记忆配置（必须在创建 MemoryManager 之前）
+        memory_dir = getattr(three_layer_memory, 'memory_dir', 'memory') if three_layer_memory else 'memory'
+        self._load_memory_config(memory_dir)
+
+        # 创建 MemoryManager（使用配置参数）
+        short_term_config = self._mem_config.get("short_term", {})
+        self.memory = memory or MemoryManager(
+            max_history=short_term_config.get("max_history", 50),
+            max_tool_results=short_term_config.get("max_tool_results", 10),
+            max_tool_result_length=short_term_config.get("max_tool_result_length", 500),
+            auto_compact_threshold=short_term_config.get("auto_compact_threshold", 10000),
+        )
+
+        # 启发式模块
+        self.heuristics = AgentLoopIntegration() if enable_heuristics else None
+
+        # Learning 模块（依赖 heuristics）
+        self.learning = None
+        if enable_learning and self.heuristics:
+            self.learning = LearningIntegration(
+                heuristic_engine=self.heuristics.engine,
+            )
+
+        # Control Loop Harness（flash_mode=False 时启用完整控制环）
+        self.control_loop: Optional[ControlLoop] = None
+        self._constraint_renderer: Optional[HardConstraintRenderer] = None
+        self._loop_state: Optional[LoopState] = None
+        if not flash_mode and self.heuristics:
+            # flash_mode=False → ControlLoop + Heuristics（完整能力）
+            from app.agent.control import create_control_loop
+            bandit_memory_path = "data/control/bandit_stats.json"
+            self.control_loop = create_control_loop(memory_path=bandit_memory_path)
+            self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100)
+            logger.info("[AgentLoop] 控制环已启用（强约束模式）")
+        elif flash_mode:
+            # flash_mode=True → 只用 Heuristics（轻量模式）
+            logger.info("[AgentLoop] 控制环已禁用")
+
+        # ★ 分层协作：Learning → ControlLoop
+        if self.control_loop and self.learning:
+            self.learning.set_control_loop(self.control_loop)
+            logger.info("[AgentLoop] Learning 与 ControlLoop 已建立协作")
+
+        # Prompt 构建器
+        self._prompt_builder = create_default_builder(memory_dir)
+        self._prompt_context_builder = PromptContextBuilder(
+            prompt_builder=self._prompt_builder,
+            three_layer_memory=three_layer_memory,
+            flash_mode=flash_mode,
+        )
+
+        # 会话笔记压缩
+        session_config = self._mem_config.get("session_compact", {})
+        self._notes_dir = session_config.get("notes_dir", f"{memory_dir}/notes")
+        self._session_notes_cache: Dict[str, SessionNotes] = {}  # session_id -> SessionNotes
+        self._session_compactor = SessionCompactor(
+            llm_engine=self.llm,
+            token_threshold=session_config.get("token_threshold", 100000),
+            tool_call_threshold=session_config.get("tool_call_threshold", 10),
+            keep_recent_messages=session_config.get("keep_recent_messages", 10),
+            max_notes_length=session_config.get("max_notes_length", 2000),
+        )
+
+        # 循环控制器
+        self._loop_controller = LoopController(
+            max_iterations=max_iterations,
+            loop_detection_threshold=loop_detection_threshold,
+        )
+
+        # 工具注册表
+        self._builtin_tools: Dict[str, Any] = tools or {}
+        self.tools = dict(self._builtin_tools)
+
+        self._tool_executor = ToolExecutor(self.tools, self._builtin_tools)
+        self._cmd_handler = CommandHandler()
+        self._auto_hints = AutoHintManager()
+
+        self._tool_call_count_in_round = 0
+
+    def _get_session_notes(self, session_id: str) -> SessionNotes:
+        """获取或创建指定 session 的笔记管理器"""
+        if session_id not in self._session_notes_cache:
+            self._session_notes_cache[session_id] = SessionNotes(session_id, notes_dir=self._notes_dir)
+        return self._session_notes_cache[session_id]
+
+    def _load_memory_config(self, memory_dir: str):
+        """
+        加载记忆配置
+
+        修复：使用 AgentConfig 单例，而非独立读取文件
+        """
+        # 默认配置
+        self._mem_config = {
+            "short_term": {
+                "max_history": 50,
+                "max_tool_results": 10,
+                "max_tool_result_length": 500,
+                "auto_compact_threshold": 10000,
+            },
+            "session_compact": {
+                "token_threshold": 100000,
+                "keep_recent_messages": 10,
+                "max_notes_length": 2000,
+                "notes_dir": f"{memory_dir}/notes",
+            },
+        }
+
+        try:
+            # 使用 AgentConfig 单例获取配置
+            from app.core.util.agent_config import get_config
+            config = get_config()
+            mem_config = config.get_section("memory")
+
+            if mem_config:
+                # 深度合并配置
+                for key in ["short_term", "session_compact", "long_term"]:
+                    if key in mem_config:
+                        if key not in self._mem_config:
+                            self._mem_config[key] = {}
+                        if isinstance(mem_config[key], dict):
+                            self._mem_config[key].update(mem_config[key])
+                        else:
+                            self._mem_config[key] = mem_config[key]
+                logger.debug("[AgentLoop] 从 AgentConfig 加载记忆配置成功")
+        except Exception as e:
+            logger.debug("[AgentLoop] 加载记忆配置失败，使用默认值: %s", e)
+
+    def stop(self):
+        """请求停止当前推理"""
+        self._loop_controller.request_stop()
+
+    def _should_update_goal(self, new_input: str, current_goal: str) -> bool:
+        """
+        判断是否应该更新用户目标
+
+        Args:
+            new_input: 新的用户输入
+            current_goal: 当前的目标
+
+        Returns:
+            是否应该更新目标
+        """
+        # 没有当前目标，需要设置
+        if not current_goal:
+            return True
+
+        # 检测明确的"新任务"信号词
+        new_task_keywords = [
+            "新任务", "新的任务", "换一个", "接下来", "现在请",
+            "帮我", "请帮我", "我想要", "我想让", "现在需要",
+            "重新开始", "从新开始", "开始新的", "另一个问题",
+            "换个话题", "换个主题", "不再", "不用了", "算了",
+        ]
+        
+        new_input_lower = new_input.lower()
+        for kw in new_task_keywords:
+            if kw in new_input_lower:
+                # 进一步检查：输入是否与当前目标明显不同
+                if not self._is_similar_goal(new_input, current_goal):
+                    return True
+
+        # 检测明确的取消/否定当前任务
+        cancel_keywords = ["不对", "不是这个", "弄错了", "取消", "停止", "不要了"]
+        for kw in cancel_keywords:
+            if kw in new_input_lower:
+                return True
+
+        return False
+
+    def _is_similar_goal(self, new_input: str, current_goal: str) -> bool:
+        """
+        判断新输入是否与当前目标相似（可能是延续同一任务）
+        """
+        # 简单的关键词重叠检查
+        new_words = set(new_input.lower().split())
+        goal_words = set(current_goal.lower().split())
+        
+        # 移除常见停用词
+        stop_words = {"的", "了", "是", "在", "有", "和", "与", "或", "我", "你", "他", "她", "它"}
+        new_words -= stop_words
+        goal_words -= stop_words
+        
+        if not new_words or not goal_words:
+            return False
+        
+        # 计算重叠率
+        overlap = len(new_words & goal_words)
+        similarity = overlap / min(len(new_words), len(goal_words))
+        
+        return similarity > 0.3  # 30% 以上重叠认为是相似目标
+
+    @property
+    def has_long_term_memory(self) -> bool:
+        return self.three_layer_memory is not None
+
+    def register_tool(self, name: str, tool_instance):
+        """注册工具"""
+        self.tools[name] = tool_instance
+        self._builtin_tools[name] = tool_instance
+        self._tool_executor.refresh_tools(self.tools)
+
+    def _refresh_tools(self):
+        """刷新工具表"""
+        try:
+            registry = get_component_tool_registry()
+            component_tools = registry.get_component_tools()
+            self.tools = {**component_tools, **self._builtin_tools}
+            self._tool_executor.refresh_tools(self.tools)
+            if component_tools:
+                logger.info(
+                    "[AgentLoop] 工具刷新 | 内置=%d | 组件工具=%d | 总计=%d",
+                    len(self._builtin_tools), len(component_tools), len(self.tools),
+                )
+        except Exception as e:
+            logger.warning("[AgentLoop] 工具刷新失败，使用内置工具: %s", e)
+            self.tools = dict(self._builtin_tools)
+
+    async def run(self, user_input: str, memory: MemoryManager = None, session_id: str = None) -> Dict[str, Any]:
+        result = {"type": "error", "content": "", "iterations": 0, "tool_traces": []}
+        async for event in self.run_stream(user_input, memory=memory, session_id=session_id):
+            if event["type"] == "done":
+                result = event
+            elif event["type"] in {"stopped", "control_loop_stop", "heuristic_stop"}:
+                result = {
+                    **result,
+                    **event,
+                    "content": event.get("content", result.get("content", "")),
+                    "iterations": event.get("iteration", result.get("iterations", 0)),
+                    "tool_traces": event.get("tool_traces", result.get("tool_traces", [])),
+                }
+            elif event["type"] == "error":
+                raise Exception(event.get("error", "AgentLoop stream error"))
+        return result
+
+    def _get_last_assistant_message(self, memory: MemoryManager) -> str:
+        """获取最近一条 assistant 文本消息"""
+        for msg in reversed(memory.get_messages()):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return msg.get("content", "")
+        return ""
+
+    def _persist_snapshot_before_compact(
+        self,
+        user_input: str,
+        effective_session: str,
+        effective_memory: MemoryManager,
+    ) -> None:
+        """在强制压缩前持久化当前对话快照"""
+        if self.has_long_term_memory and effective_memory.get_messages():
+            last_response = self._get_last_assistant_message(effective_memory)
+            self._persist_conversation(user_input, last_response, effective_session, memory=effective_memory)
+            self._did_persist_before_compact = True
+
+    def _resolve_runtime_max_tokens(self, constraint: Any) -> Optional[int]:
+        """将控制约束映射为真正的 LLM 输出限制"""
+        if not constraint:
+            return None
+        trigger_reason = getattr(constraint, "trigger_reason", "") or ""
+        max_tokens = int(getattr(constraint, "max_tokens", 0) or 0)
+        if trigger_reason.startswith("compress") and max_tokens > 0:
+            return max_tokens
+        return None
+
+    def _get_forbidden_tool_names(self, constraint: Any) -> set:
+        """提取本轮真正需要在运行时阻止的工具名"""
+        if not constraint:
+            return set()
+        return {
+            item for item in getattr(constraint, "forbidden", [])
+            if isinstance(item, str) and item in self.tools
+        }
+
+    async def _emit_stop_and_finalize(
+        self,
+        *,
+        stop_event: Dict[str, Any],
+        user_input: str,
+        effective_session: str,
+        effective_memory: MemoryManager,
+        tool_traces: List[Dict[str, Any]],
+        iteration: int,
+        start_time: float,
+        final_response_content: Optional[str] = None,
+    ):
+        """统一处理 stop 场景的收尾逻辑"""
+        yield stop_event
+
+        total_time = (time.time() - start_time) * 1000
+        self._event_publisher.publish_loop_end(
+            session_id=effective_session,
+            total_iterations=iteration,
+            reason=stop_event.get("reason") or stop_event.get("type", "stopped"),
+            result=stop_event,
+        )
+
+        if not self._did_persist_before_compact:
+            self._cleanup_incomplete_tool_calls(effective_memory)
+            content_to_persist = final_response_content or self._get_last_assistant_message(effective_memory)
+            self._persist_conversation(user_input, content_to_persist, effective_session, memory=effective_memory)
+        else:
+            self._did_persist_before_compact = False
+
+        if self.control_loop and self._loop_state:
+            self.control_loop.end_session(self._loop_state)
+
+        if self.learning:
+            stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state and self._loop_state.features else 0
+            self.learning.end_session(
+                error=stop_event.get("reason") != "user_cancelled",
+                iteration=max(iteration, 1),
+                max_iterations=self.max_iterations,
+                tool_call_count=len([t for t in tool_traces if t.get("tool")]),
+                stuck_iterations=stuck_iters,
+            )
+
+        yield {
+            "type": "done",
+            "content": final_response_content or "",
+            "iterations": iteration,
+            "tool_traces": tool_traces,
+            "stop_reason": stop_event.get("reason"),
+            "stop_type": stop_event.get("type"),
+            "action": stop_event.get("action"),
+            "completed": False,
+            "total_time_ms": total_time,
+        }
+
+
+    async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None):
+
+        """流式执行 Agent 循环"""
+        effective_memory = memory or self.memory
+        effective_session = session_id or self.session_id
+        start_time = time.time()
+
+        try:
+            # === 1. 消息接收事件 ===
+            self._event_publisher.publish_message_received(
+                session_id=effective_session,
+                message=user_input,
+            )
+            if not self.flash_mode:
+                effective_memory.add_user_message(user_input)
+
+                session_notes = self._get_session_notes(effective_session)
+                session_notes.load()
+                current_goal = session_notes.get_goal()
+                if self._should_update_goal(user_input, current_goal):
+                    logger.info("[AgentLoop] 检测到新目标，更新 | session=%s | 旧目标: %s | 新目标: %s", 
+                               effective_session, current_goal[:50] if current_goal else "(无)", user_input[:50])
+                    session_notes.set_goal(user_input, force=True)
+                    session_notes.save()
+
+            # === 2. 拦截系统命令 ===
+            if self._cmd_handler.is_slash_command(user_input):
+                async for evt in self._cmd_handler.process(user_input):
+                    yield evt
+                return
+
+            # === 3. 循环 ===
+            final_response_content = None
+            tool_traces = []
+            # 重置循环控制器
+            self._loop_controller.start()
+            self._session_compactor._pending_compact = False  # 重置压缩标记
+
+            if self.heuristics:
+                self.heuristics.start_session(effective_session)
+
+            # Learning: 会话开始，选择 Policy
+            if self.learning:
+                policy_name = self.learning.start_session()
+                logger.info("[Learning] 选择 Policy: %s", policy_name)
+
+            # Control Loop: 会话开始
+            if self.control_loop:
+                self._loop_state = LoopState(
+                    session_id=effective_session,
+                    max_iterations=self.max_iterations,
+                    user_input=user_input,
+                    available_tools=list(self.tools.keys()),
+                )
+                self.control_loop.start_session(self._loop_state)
+                logger.info("[ControlLoop] 会话开始 | session=%s", effective_session)
+
+            yield {"type": "thinking", "content": "正在思考..."}
+
+            self._tool_call_count_in_round = 0  # 重置轮次工具调用计数
+
+            while True:
+                # === 在迭代开始前执行待处理的压缩 ===
+                if not self.flash_mode and self._session_compactor.has_pending_compact():
+                    logger.info("[AgentLoop] 执行待处理的会话压缩...")
+                    yield {"type": "thinking", "content": "正在压缩会话记忆..."}
+                    self._persist_snapshot_before_compact(user_input, effective_session, effective_memory)
+                    session_notes = self._get_session_notes(effective_session)
+                    await self._session_compactor.compact_now(effective_memory, session_notes)
+
+                if self._loop_controller.is_stop_requested:
+                    logger.info("[AgentLoop] 检测到停止请求，中断推理")
+                    async for event in self._emit_stop_and_finalize(
+                        stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": self._loop_controller.iteration},
+                        user_input=user_input,
+                        effective_session=effective_session,
+                        effective_memory=effective_memory,
+                        tool_traces=tool_traces,
+                        iteration=self._loop_controller.iteration,
+                        start_time=start_time,
+                        final_response_content=self._get_last_assistant_message(effective_memory),
+                    ):
+                        yield event
+                    return
+
+                if self._loop_controller.iteration >= self.max_iterations:
+                    logger.info("[AgentLoop] 达到最大迭代硬上限 | iter=%d", self._loop_controller.iteration)
+                    async for event in self._emit_stop_and_finalize(
+                        stop_event={"type": "stopped", "reason": "max_iterations_exceeded", "iteration": self._loop_controller.iteration},
+                        user_input=user_input,
+                        effective_session=effective_session,
+                        effective_memory=effective_memory,
+                        tool_traces=tool_traces,
+                        iteration=self._loop_controller.iteration,
+                        start_time=start_time,
+                    ):
+                        yield event
+                    return
+
+                if self._loop_state and self._loop_state.tokens_used >= self._loop_state.token_budget:
+                    logger.info(
+                        "[AgentLoop] 达到 Token 硬预算上限 | used=%d | budget=%d",
+                        self._loop_state.tokens_used,
+                        self._loop_state.token_budget,
+                    )
+                    async for event in self._emit_stop_and_finalize(
+                        stop_event={
+                            "type": "stopped",
+                            "reason": "token_budget_exceeded",
+                            "iteration": self._loop_controller.iteration,
+                        },
+                        user_input=user_input,
+                        effective_session=effective_session,
+                        effective_memory=effective_memory,
+                        tool_traces=tool_traces,
+                        iteration=self._loop_controller.iteration,
+                        start_time=start_time,
+                    ):
+                        yield event
+                    return
+
+                self._loop_controller.advance()
+                iteration = self._loop_controller.iteration
+
+
+                _pending_guidance_msg = None
+                _pending_system_injection = None
+                _force_stop = False
+                _active_constraint = None
+
+                # Control Loop: 每轮决策
+                if self.control_loop and self._loop_state:
+                    # 更新状态
+                    self._loop_state.iteration = iteration
+                    self._loop_state.tool_traces = tool_traces
+                    self._loop_state.last_tool_result = tool_traces[-1].get("result") if tool_traces else None
+                    self._loop_state.elapsed_ms = int((time.time() - start_time) * 1000)
+
+                    # 获取决策
+                    decision = self.control_loop.step(self._loop_state)
+
+                    # 渲染决策为强约束（三段结构）
+                    constraint = self._constraint_renderer.render(
+                        decision,
+                        features=self._loop_state.features,
+                        state=self._loop_state,
+                    )
+                    _active_constraint = constraint
+                    _pending_system_injection = self._constraint_renderer.render_combined(constraint)
+                    _force_stop = constraint.force_stop
+
+                    if decision.force_memory_compact and not self.flash_mode:
+                        logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
+                        yield {"type": "thinking", "content": "正在根据控制决策压缩上下文..."}
+                        self._persist_snapshot_before_compact(user_input, effective_session, effective_memory)
+                        if effective_memory.should_compact():
+                            effective_memory.compact_tool_results()
+                        session_notes = self._get_session_notes(effective_session)
+                        await self._session_compactor.compact_now(effective_memory, session_notes)
+
+                    if decision.should_stop or _force_stop:
+                        logger.info("[ControlLoop] 终止迭代 | action=%s | trigger=%s", decision.action_type, constraint.trigger_reason)
+                        async for event in self._emit_stop_and_finalize(
+                            stop_event={
+                                "type": "control_loop_stop",
+                                "reason": constraint.trigger_reason,
+                                "iteration": iteration,
+                                "action": decision.action_type,
+                            },
+                            user_input=user_input,
+                            effective_session=effective_session,
+                            effective_memory=effective_memory,
+                            tool_traces=tool_traces,
+                            iteration=iteration,
+                            start_time=start_time,
+                        ):
+                            yield event
+                        return
+
+
+                # Heuristics: 旧系统（兼容保留，但不覆盖 ControlLoop 的决策）
+                if self.heuristics:
+                    context = self.heuristics.build_context(
+                        session_id=effective_session,
+                        iteration=iteration,
+                        max_iterations=self.max_iterations,
+                        tool_traces=tool_traces,
+                        user_input=user_input,
+                        elapsed_ms=int((time.time() - start_time) * 1000),
+                    )
+
+                    # ControlLoop 已启用时，复用其提取的 features 避免重复计算
+                    features_from_control = self._loop_state.features if self.control_loop else None
+
+                    # 只有在 ControlLoop 未决策时才用 Heuristics 判断终止
+                    if not self.control_loop:
+                        should_stop, stop_reason = self.heuristics.should_stop(context)
+                        if should_stop:
+                            logger.info("[Heuristics] 终止迭代 | reason=%s", stop_reason)
+                            async for event in self._emit_stop_and_finalize(
+                                stop_event={
+                                    "type": "heuristic_stop",
+                                    "reason": stop_reason,
+                                    "iteration": iteration,
+                                },
+                                user_input=user_input,
+                                effective_session=effective_session,
+                                effective_memory=effective_memory,
+                                tool_traces=tool_traces,
+                                iteration=iteration,
+                                start_time=start_time,
+                            ):
+                                yield event
+                            return
+
+
+                    # 只有在 ControlLoop 未产生 guidance 时才用 Heuristics 的
+                    if not _pending_guidance_msg:
+                        redirect_guidance = self.heuristics.get_redirect_guidance(context, features_from_control)
+                        if redirect_guidance:
+                            suggestions = redirect_guidance.get("suggestions", [])
+                            reasons = redirect_guidance.get("reasons", [])
+                            tool_recommendations = self.heuristics.get_tool_recommendations(
+                                context, available_tools=list(self.tools.keys()), top_k=3,
+                                features=features_from_control,
+                            )
+                            _pending_guidance_msg = AutoHintManager.build_redirect_message(
+                                reasons, suggestions, tool_recommendations
+                            )
+                            yield {
+                                "type": "heuristic_redirect",
+                                "reasons": reasons,
+                                "suggestions": suggestions,
+                                "iteration": iteration,
+                            }
+
+                    warnings = self.heuristics.get_warnings(context, features_from_control)
+                    if warnings:
+                        logger.warning("[Heuristics] %s", "; ".join(warnings))
+
+                # === 构建提示词 ===
+                session_messages = effective_memory.get_messages() if not self.flash_mode else []
+
+                if iteration == 1:
+                    llm_messages = self._prompt_context_builder.build_first_round(
+                        user_input=user_input,
+                        session_messages=session_messages,
+                        guidance_message=_pending_guidance_msg,
+                        system_injection=_pending_system_injection,
+                    )
+                else:
+                    auto_hints = self._auto_hints.get_auto_tool_hints(self.tools)
+                    llm_messages = self._prompt_context_builder.build_subsequent_round(
+                        session_messages=session_messages,
+                        auto_hints=auto_hints,
+                        guidance_message=_pending_guidance_msg,
+                        system_injection=_pending_system_injection,
+                    )
+
+                if iteration > 1:
+                    yield {"type": "thinking", "content": "分析结果中..."}
+
+                # 获取工具定义（只调用一次，避免重复刷新）
+                tool_defs = self._get_tools_definition()
+                logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
+                           iteration, len(llm_messages), len(tool_defs))
+                response = await self.llm.chat(
+                    messages=llm_messages,
+                    tools=tool_defs,
+                    max_tokens=self._resolve_runtime_max_tokens(_active_constraint),
+                )
+
+                logger.info("[AgentLoop] 迭代 %d: LLM 返回 (tool_calls=%d, content长度=%d)",
+                           iteration, len(response.tool_calls) if response.tool_calls else 0, len(response.content or ""))
+
+                # ★ 记录 LLM 输出内容（用于检测重复循环）
+                if self._loop_state and response.content:
+                    self._loop_state.recent_llm_outputs.append(response.content)
+                    # 保留最近 10 条
+                    if len(self._loop_state.recent_llm_outputs) > 10:
+                        self._loop_state.recent_llm_outputs.pop(0)
+
+                # 更新 token 统计（从 LLM 响应中获取实际值）
+                if response.usage and self._loop_state:
+                    prompt_tokens = response.usage.get("prompt_tokens", 0)
+                    completion_tokens = response.usage.get("completion_tokens", 0)
+                    self._loop_state.tokens_used += prompt_tokens + completion_tokens
+                    logger.debug(
+                        "[AgentLoop] Token 统计 | prompt=%d | completion=%d | 累计=%d",
+                        prompt_tokens, completion_tokens, self._loop_state.tokens_used
+                    )
+
+                self._event_publisher.publish_loop_iteration(
+                    session_id=effective_session,
+                    iteration=iteration,
+                    max_iterations=self.max_iterations,
+                    has_tool_calls=bool(response.tool_calls),
+                )
+
+                # === 5. 处理工具调用 ===
+                if response.tool_calls:
+                    self._tool_call_count_in_round += len(response.tool_calls)  # 计数
+                    self._session_compactor.track_tool_call()  # 追踪压缩条件
+
+                    interim_content = (response.content or "").strip()
+                    if interim_content:
+                        if not self.flash_mode:
+                            effective_memory.add_assistant_message(interim_content)
+                        yield {"type": "content_chunk", "content": interim_content}
+
+                    for tool_call in response.tool_calls:
+                        tool_name = tool_call.name
+                        arguments = tool_call.arguments
+                        forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
+                        blocked_by_constraint = tool_name in forbidden_tools
+
+                        if not self.flash_mode:
+                            tool_call_id = effective_memory.add_tool_call(tool_name, arguments)
+                        else:
+                            tool_call_id = None
+
+
+                        description = ToolDescriptionGenerator.generate(tool_name, arguments)
+                        desc_str = description if isinstance(description, str) else str(description)
+                        logger.debug("[AgentLoop] 工具描述（兜底）: %s", desc_str[:60] if desc_str else "")
+
+                        yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description}
+
+                        self._event_publisher.publish_tool_call_start(
+                            session_id=effective_session,
+                            iteration=iteration,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            call_id=tool_call_id,
+                        )
+
+                        t0 = time.time()
+                        if blocked_by_constraint:
+                            duration_ms = 0
+                            result = {
+                                "error": f"Tool '{tool_name}' is blocked by current control decision",
+                                "blocked": True,
+                                "reason": getattr(_active_constraint, "trigger_reason", "redirect"),
+                                "forbidden_tools": sorted(forbidden_tools),
+                            }
+                            logger.warning(
+                                "[AgentLoop] 阻止重复工具调用 | tool=%s | forbidden=%s",
+                                tool_name,
+                                sorted(forbidden_tools),
+                            )
+                            self._event_publisher.publish_tool_call_error(
+                                session_id=effective_session,
+                                iteration=iteration,
+                                tool_name=tool_name,
+                                call_id=tool_call_id,
+                                error=result["error"],
+                            )
+                        else:
+                            try:
+                                result = await self._tool_executor.execute(tool_call)
+                                duration_ms = (time.time() - t0) * 1000
+                                self._event_publisher.publish_tool_call_end(
+                                    session_id=effective_session,
+                                    iteration=iteration,
+                                    tool_name=tool_name,
+                                    call_id=tool_call_id,
+                                    result=result,
+                                    duration_ms=duration_ms,
+                                )
+                            except Exception as e:
+                                duration_ms = (time.time() - t0) * 1000
+                                result = {"error": str(e)}
+                                self._event_publisher.publish_tool_call_error(
+                                    session_id=effective_session,
+                                    iteration=iteration,
+                                    tool_name=tool_name,
+                                    call_id=tool_call_id,
+                                    error=str(e),
+                                )
+
+
+                        if isinstance(result, dict):
+                            result["elapsed_ms"] = round(duration_ms)
+                        if not self.flash_mode:
+                            effective_memory.add_tool_result(tool_call_id, result)
+                        self._tool_executor.track_result(tool_name, result)
+
+                        tool_traces.append({
+                            "tool": tool_name,
+                            "arguments": arguments,
+                            "result": result if isinstance(result, dict) else {"output": str(result)},
+                            "duration_ms": round(duration_ms),
+                        })
+
+                        yield {"type": "tool_result", "tool": tool_name,
+                               "arguments": arguments, "result": result, "duration_ms": round(duration_ms)}
+
+                    # Control Loop: 每轮结束，更新 Bandit
+                    if self.control_loop and self._loop_state:
+                        self._loop_state.last_tool_result = tool_traces[-1].get("result") if tool_traces else None
+                        reward = self.control_loop.end_round(self._loop_state)
+                        logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
+
+                    # 两级压缩（在所有工具调用结束后，按顺序执行）
+                    if not self.flash_mode:
+                        # 第一级：快速压缩 tool_result
+                        if effective_memory.should_compact():
+                            saved = effective_memory.compact_tool_results()
+                            if saved > 0:
+                                logger.info("[AgentLoop] 压缩工具结果 | saved=%d bytes", saved)
+
+                        # 第二级：标记会话笔记压缩（在下一次迭代开始时执行）
+                        if self._session_compactor.should_compact(effective_memory):
+                            self._session_compactor.request_compact()
+
+                    continue
+
+                # === 5.6 输出截断检测 ===
+                if hasattr(response, 'finish_reason') and response.finish_reason == "length":
+                    logger.info("[AgentLoop] 输出被截断 (finish_reason=length)，继续迭代补充...")
+                    if not self.flash_mode:
+                        effective_memory.add_assistant_message(response.content or "")
+                    yield {"type": "thinking", "content": "输出被截断，正在补充..."}
+                    continue
+
+                # === 5.7 工具帮助检测 ===
+                _help_keywords = ["工具帮助", "工具定义", "参数格式", "tool_help", "tool help",
+                                  "怎么调用", "如何使用", "查看工具", "工具的参数", "不确定参数"]
+                content_preview = (response.content or "").strip()[:200]
+                if not response.tool_calls and any(kw in content_preview.lower() for kw in _help_keywords):
+                    tool_defs = self._get_tools_definition()
+                    help_text = AutoHintManager.format_tool_help(tool_defs)
+                    logger.info("[AgentLoop] 检测到工具帮助请求，注入工具定义")
+                    if not self.flash_mode:
+                        effective_memory.add_assistant_message(response.content or "")
+                        effective_memory.add_user_message(
+                            f"[系统] 以下是可用工具的完整定义，请参考后重新执行操作：\n\n{help_text}"
+                        )
+                    yield {"type": "thinking", "content": "正在分析工具定义..."}
+                    continue
+
+                # === 6. 最终回复（无工具调用）===
+                content = response.content or ""
+
+                # 循环检测
+                is_looping, repeated_output = self._loop_controller.check_output_loop(content)
+                if is_looping:
+                    logger.warning("[AgentLoop] 检测到循环重复输出")
+                    async for event in self._emit_stop_and_finalize(
+                        stop_event={
+                            "type": "stopped",
+                            "reason": "loop_detected",
+                            "repeated_output": repeated_output,
+                            "iteration": iteration,
+                        },
+                        user_input=user_input,
+                        effective_session=effective_session,
+                        effective_memory=effective_memory,
+                        tool_traces=tool_traces,
+                        iteration=iteration,
+                        start_time=start_time,
+                    ):
+                        yield event
+                    return
+
+
+                content = response.content or ""
+                final_response_content = content
+
+                # Control Loop: 每轮结束（无工具调用时也要更新 Bandit）
+                if self.control_loop and self._loop_state:
+                    self._loop_state.last_tool_result = None  # 无工具调用
+                    reward = self.control_loop.end_round(self._loop_state)
+                    logger.debug("[ControlLoop] 本轮结束（无工具调用）| reward=%.2f", reward)
+
+                if not self.flash_mode:
+                    effective_memory.add_assistant_message(content)
+                yield {"type": "content_chunk", "content": content}
+
+                total_time = (time.time() - start_time) * 1000
+
+                self._event_publisher.publish_response_complete(
+                    session_id=effective_session,
+                    iteration=iteration,
+                    content=content,
+                    total_time_ms=total_time,
+                )
+                self._event_publisher.publish_loop_end(
+                    session_id=effective_session,
+                    total_iterations=iteration,
+                    reason="complete",
+                    result={"type": "response", "content": content, "iterations": iteration},
+                )
+
+                # 如果压缩前已持久化，跳过对话结束时的重复持久化
+                if not self._did_persist_before_compact:
+                    self._persist_conversation(user_input, final_response_content, effective_session, memory=effective_memory)
+                else:
+                    self._did_persist_before_compact = False
+
+                # Control Loop: 会话结束（end_session 内部已记录日志）
+                if self.control_loop and self._loop_state:
+                    self.control_loop.end_session(self._loop_state)
+
+                # Learning: 会话结束
+                if self.learning:
+                    # 获取额外的统计信息
+                    tool_call_count = len([t for t in tool_traces if t.get("tool")])
+                    stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state and self._loop_state.features else 0
+                    self.learning.end_session(
+                        error=False,
+                        iteration=iteration,
+                        max_iterations=self.max_iterations,
+                        tool_call_count=tool_call_count,
+                        stuck_iterations=stuck_iters,
+                    )
+
+                yield {"type": "done", "content": content, "iterations": iteration, "tool_traces": tool_traces}
+                return
+
+        except Exception as e:
+            # Control Loop: 会话结束（异常）
+            if self.control_loop and self._loop_state:
+                self.control_loop.end_session(self._loop_state)
+
+            # Learning: 会话结束（异常）
+            if self.learning:
+                current_iteration = iteration if 'iteration' in dir() else 1
+                stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state and self._loop_state.features else 0
+                self.learning.end_session(
+                    error=True,
+                    iteration=current_iteration,
+                    max_iterations=self.max_iterations,
+                    stuck_iterations=stuck_iters,
+                )
+
+            import traceback as tb_module
+            self._event_publisher.publish_error(
+                session_id=effective_session if 'effective_session' in dir() else "",
+                error_type=type(e).__name__,
+                error_message=str(e),
+                traceback=tb_module.format_exc(),
+            )
+            yield {"type": "error", "error": f"{type(e).__name__}: {str(e)}"}
+
+    def _get_tools_definition(self) -> List[Dict]:
+        """获取所有工具的 LLM 定义"""
+        self._refresh_tools()
+        definitions = []
+        for tname, tool in self.tools.items():
+            if hasattr(tool, "definition"):
+                definitions.append(tool.definition)
+            elif hasattr(tool, "__dict__") and "definition" in tool.__dict__:
+                definitions.append(tool.definition)
+
+        builtin_count = len(self._builtin_tools)
+        comp_count = len(definitions) - builtin_count
+        logger.info(
+            "[AgentLoop] 发送工具定义 | 内置=%d | 组件=%d | 总计=%d",
+            builtin_count, max(comp_count, 0), len(definitions),
+        )
+        return definitions
+
+    def _cleanup_incomplete_tool_calls(self, memory):
+        """移除不完整的 tool_call（没有对应 tool_result 的），保留其他内容"""
+        messages = memory.messages
+        tool_call_ids = set()
+        tool_result_ids = set()
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls", []):
+                    tool_call_ids.add(tc.get("id"))
+            elif msg.get("role") == "tool":
+                tool_result_ids.add(msg.get("tool_call_id"))
+        incomplete_ids = tool_call_ids - tool_result_ids
+        if not incomplete_ids:
+            return
+        logger.info("[AgentLoop] 清理 %d 个不完整 tool_call", len(incomplete_ids))
+        cleaned = []
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                remaining_tcs = [tc for tc in msg.get("tool_calls", []) if tc.get("id") not in incomplete_ids]
+                if remaining_tcs:
+                    msg = {**msg, "tool_calls": remaining_tcs}
+                    cleaned.append(msg)
+                elif msg.get("content"):
+                    cleaned.append({**msg, "tool_calls": None})
+            else:
+                cleaned.append(msg)
+        memory.messages = cleaned
+
+    def _persist_conversation(self, user_input, response_content=None, session_id=None, memory=None):
+        """对话结束后持久化到三层记忆系统"""
+        sid = session_id or self.session_id
+        if not self.has_long_term_memory:
+            return
+        # 即使 response_content 为空也尝试保存（快速停止时可能还没内容）
+        # 但如果有 messages，可以从 messages 构建完整归档
+        try:
+            all_messages = memory.get_messages() if memory else None
+            # 如果没有 response_content 但有 messages，使用最后一条 user 消息作为 response
+            actual_response = response_content
+            if not actual_response and all_messages:
+                for msg in reversed(all_messages):
+                    if msg.get("role") == "assistant" and msg.get("content"):
+                        actual_response = msg.get("content", "")
+                        break
+            if not actual_response:
+                actual_response = "[无回复内容]" if user_input else ""
+            if not actual_response and not all_messages:
+                logger.debug("[AgentLoop] 无内容可持久化，跳过")
+                return
+            source_id = self.three_layer_memory.persist_session(
+                user_input, actual_response, session_id=sid, messages=all_messages,
+            )
+
+            logger.info("[AgentLoop] 对话已持久化 | session=%s | archive_id=%s", sid, source_id[:12] if source_id else "N/A")
+        except Exception as mem_e:
+            logger.error("[AgentLoop] 对话持久化失败: %s", mem_e)
+            try:
+                self._event_publisher.publish_error(
+                    session_id=sid,
+                    error_type="MemoryPersistError",
+                    error_message=str(mem_e),
+                    traceback="",
+                )
+            except Exception as bus_e:
+                logger.warning("[AgentLoop] 发布持久化错误事件失败: %s", bus_e)

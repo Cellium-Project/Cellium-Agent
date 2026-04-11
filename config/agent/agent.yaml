@@ -1,0 +1,15 @@
+# -*- coding: utf-8 -*-
+# Agent 行为配置
+
+agent:
+  section: agent
+
+  # 迭代控制
+  max_iterations: 10              # 最大迭代次数上限（仅当 enforce_iteration_limit=true 时生效）
+  enforce_iteration_limit: false  # 是否强制限制迭代次数（默认不限制）
+
+  # 会话控制
+  request_timeout: 300
+  max_sessions: 100
+  default_session_id: default
+  flash_mode: false

@@ -1,0 +1,28 @@
+# 提示词配置
+
+# 分隔符
+separator: "\n\n---\n\n"
+
+# 基础层配置
+base:
+  identity:
+    enabled: true
+    # 从文件加载，不指定则使用默认
+    file: "memory/personality.md"
+  constraints:
+    enabled: true
+
+# 动态层配置
+dynamic:
+  tools_guide:
+    enabled: true
+    priority: 100
+  session_context:
+    enabled: false  # 有历史时启用
+    priority: 110
+  long_memory:
+    enabled: false  # 检索到时启用
+    priority: 120
+  user_input:
+    enabled: true
+    priority: 200

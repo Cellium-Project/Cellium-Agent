@@ -1,0 +1,27 @@
+# -*- coding: utf-8 -*-
+# 安全策略配置（支持热重载！紧急封禁危险命令无需重启）
+
+security:
+  command_blacklist:
+    - "remove-item -recurse -force"
+    - "format "
+    - "diskpart"
+    - "mkfs"
+    - "dd if="
+    - "shutdown"
+    - "reboot"
+    - "rm -rf /"
+    - "chmod 777 /"
+    - ":(){ :|:& };:"
+
+  permission_level: "standard"
+
+  # Shell 执行限制
+  command_timeout: 30           # 默认命令超时（秒）
+  shell_hard_timeout: 60        # 硬超时上限（秒），任何命令不得超过此值
+  max_output_bytes: 8192        # 输出截断阈值（字节）
+
+  api_key:
+    enabled: false
+    key: ""
+    header_name: "X-API-Key"

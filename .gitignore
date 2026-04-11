@@ -1,0 +1,71 @@
+# 保留目录结构，但过滤文件内容
+# 在目录后加 / 表示只忽略目录中的文件，不忽略目录本身
+font/*.woff2
+!font/.gitkeep
+
+dll/*.dll
+!dll/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env*
+!.env.example
+
+# 打包文件
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/
+
+# 用户数据（个性化数据，每个用户独立）
+data/
+
+# Node.js
+ui/node_modules/
+reactAgentUi/node_modules/
+reactAgentUi/.npm/
+*.log
+
+# Docs
+docs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+memory/**/
+memory/*.db
+memory/*.json
+!memory/personality.md
+
+# Cookie 数据
+dll/cookies.dat
+
+# 其他
+*.tmp
+*.temp

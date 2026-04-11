@@ -1,0 +1,22 @@
+memory:
+  section: memory
+  memory_dir: memory
+  short_term:
+    max_history: 50
+    max_tool_results: 10
+    max_tool_result_length: 500
+    auto_compact_threshold: 20000
+  session_compact:
+    enabled: true
+    token_threshold: 100000
+    tool_call_threshold: 20
+    keep_recent_messages: 20
+    max_notes_length: 2000
+    notes_dir: memory/notes
+  long_term:
+    db_file: memory/memory_index.db
+    hybrid_enabled: true
+    embedding_dimensions: 96
+    allow_sensitive_store: false
+    default_schema: general
+

@@ -1,0 +1,18 @@
+# -*- coding: utf-8 -*-
+# 服务端配置（启动时加载，修改后需要重启服务）
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+  # CORS 配置（支持逗号分隔字符串或列表）
+  cors_origins: ["*"]
+  cors_methods: ["*"]
+  cors_headers: ["*"]
+
+  docs_enabled: true
+  static_dir: ""          # 留空则自动使用项目 html/ 目录
+
+# 兼容旧版格式
+cors:
+  enabled: true

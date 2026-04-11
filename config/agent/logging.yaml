@@ -1,0 +1,10 @@
+# -*- coding: utf-8 -*-
+# 日志配置（支持热重载，动态调整日志级别）
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+  console: true
+  file: ""
+  max_size: 5000                # 日志缓冲区大小（条目数）
+  backup_count: 5

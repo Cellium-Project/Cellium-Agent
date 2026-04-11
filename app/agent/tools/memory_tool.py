@@ -1,0 +1,288 @@
+# -*- coding: utf-8 -*-
+"""
+MemoryTool — LLM 可直接调用的长期记忆工具
+"""
+
+import logging
+from typing import Any, Dict, Optional
+
+from app.agent.tools.base_tool import BaseTool
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryTool(BaseTool):
+    """长期记忆工具 — 统一走 ThreeLayerMemory 仓库接口。"""
+
+    name = "memory"
+    description = (
+        "长期记忆管理工具。支持搜索、写入、更新、删除、遗忘、冲突合并和概览。"
+        "当用户告诉你重要偏好、项目约定、已解决问题等，应使用 store/update 维护长期记忆。"
+    )
+
+    def __init__(self, three_layer_memory=None):
+        super().__init__()
+        self.memory = three_layer_memory
+
+    @property
+    def tool_name(self) -> str:
+        return "memory"
+
+    @property
+    def definition(self) -> Dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.tool_name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "要执行的命令",
+                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge"],
+                        },
+                        "query": {"type": "string", "description": "[search/forget] 搜索关键词或问题"},
+                        "title": {"type": "string", "description": "[store/update] 记忆标题"},
+                        "content": {"type": "string", "description": "[store/update] 记忆内容"},
+                        "category": {
+                            "type": "string",
+                            "description": "记忆分类",
+                            "enum": ["preference", "code", "troubleshooting", "command", "general", "user_info", "project"],
+                        },
+                        "schema_type": {
+                            "type": "string",
+                            "description": "结构化 schema 类型",
+                            "enum": ["general", "profile", "project", "issue"],
+                        },
+                        "tags": {"type": "string", "description": "逗号分隔标签"},
+                        "source": {"type": "string", "description": "[update/delete] 记忆来源 ID"},
+                        "memory_key": {"type": "string", "description": "[store/update/delete/merge] 结构化记忆键"},
+                        "metadata": {"type": "object", "description": "结构化附加信息，如 field/project_id/problem/resolution"},
+                        "allow_sensitive": {"type": "boolean", "description": "是否允许存储敏感信息（默认 false）"},
+                        "all_matches": {"type": "boolean", "description": "[forget] 是否遗忘所有命中结果"},
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+
+    def execute(self, command="", *args, **kwargs) -> Dict[str, Any]:
+        if isinstance(command, dict):
+            return super().execute(command)
+        if isinstance(command, str) and command.strip():
+            return super().execute({"command": command, **kwargs})
+        return {"error": "未提供有效的 command 参数"}
+
+    # ================================================================
+    # 子命令实现
+    # ================================================================
+
+    def _cmd_search(
+        self,
+        query: str,
+        schema_type: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+        if not query or not query.strip():
+            return {"error": "搜索关键词不能为空"}
+
+        try:
+            results = self.memory.search_memories(
+                query.strip(),
+                top_k=5,
+                category=category,
+                schema_type=schema_type,
+            )
+            if not results:
+                return {"found": 0, "message": f"未找到与「{query}」相关的记忆", "results": []}
+
+            items = []
+            for item in results:
+                items.append(
+                    {
+                        "id": item.get("id"),
+                        "title": item.get("title", ""),
+                        "score": round(float(item.get("score", 0)), 4),
+                        "category": item.get("category", "?"),
+                        "schema_type": item.get("schema_type", "general"),
+                        "memory_key": item.get("memory_key", ""),
+                        "tags": item.get("tags", ""),
+                        "content": item.get("content", "")[:500],
+                        "source": item.get("source_file", ""),
+                    }
+                )
+            logger.info("[MemoryTool] search | query=%s | found=%d", query[:50], len(items))
+            return {"found": len(items), "query": query, "results": items}
+        except Exception as e:
+            logger.error("[MemoryTool] search 失败 | error=%s", e)
+            return {"error": f"搜索失败: {e}"}
+
+    def _cmd_store(
+        self,
+        title: str,
+        content: str,
+        category: str = "general",
+        tags: str = "",
+        schema_type: str = "general",
+        memory_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_sensitive: bool = False,
+    ) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+        if not title or not title.strip():
+            return {"error": "标题不能为空"}
+        if not content or not content.strip():
+            return {"error": "内容不能为空"}
+
+        try:
+            result = self.memory.upsert_memory(
+                title=title.strip(),
+                content=content.strip(),
+                category=category or "general",
+                tags=tags or "",
+                schema_type=schema_type or "general",
+                memory_key=memory_key or "",
+                metadata=metadata or {},
+                allow_sensitive=allow_sensitive,
+                merge_strategy="merge",
+            )
+            if not result.get("success"):
+                return {"error": result.get("error", "写入失败")}
+            logger.info("[MemoryTool] store | title=%s | action=%s", title[:40], result.get("action"))
+            return {
+                "success": True,
+                "action": result.get("action"),
+                "id": result.get("id"),
+                "source": result.get("source"),
+                "message": f"已记住: {title}",
+                "sensitive": result.get("sensitive", False),
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] store 失败 | error=%s", e)
+            return {"error": f"写入失败: {e}"}
+
+    def _cmd_update(
+        self,
+        source: Optional[str] = None,
+        memory_key: Optional[str] = None,
+        title: Optional[str] = None,
+        content: Optional[str] = None,
+        category: Optional[str] = None,
+        tags: Optional[str] = None,
+        schema_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_sensitive: bool = False,
+    ) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+        if not source and not memory_key:
+            return {"error": "update 需要 source 或 memory_key"}
+
+        try:
+            result = self.memory.update_memory(
+                source=source,
+                memory_key=memory_key,
+                title=title,
+                content=content,
+                category=category,
+                tags=tags,
+                schema_type=schema_type,
+                metadata=metadata or {},
+                allow_sensitive=allow_sensitive,
+            )
+            if not result.get("success"):
+                return {"error": result.get("error", "更新失败")}
+            return {"success": True, "id": result.get("id"), "source": result.get("source"), "message": "记忆已更新"}
+        except Exception as e:
+            logger.error("[MemoryTool] update 失败 | error=%s", e)
+            return {"error": f"更新失败: {e}"}
+
+    def _cmd_delete(self, source: Optional[str] = None, memory_key: Optional[str] = None) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+        if not source and not memory_key:
+            return {"error": "delete 需要 source 或 memory_key"}
+
+        try:
+            result = self.memory.delete_memory(source=source, memory_key=memory_key)
+            if not result.get("success"):
+                return {"error": result.get("error", "删除失败")}
+            return {"success": True, "id": result.get("id"), "message": "记忆已删除"}
+        except Exception as e:
+            logger.error("[MemoryTool] delete 失败 | error=%s", e)
+            return {"error": f"删除失败: {e}"}
+
+    def _cmd_forget(self, query: Optional[str] = None, source: Optional[str] = None, all_matches: bool = False) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+        if not query and not source:
+            return {"error": "forget 需要 query 或 source"}
+
+        try:
+            result = self.memory.forget_memories(query=query, source=source, all_matches=all_matches)
+            if not result.get("success"):
+                return {"error": result.get("error", "遗忘失败")}
+            return {"success": True, "forgotten": result.get("forgotten", []), "message": "记忆已遗忘"}
+        except Exception as e:
+            logger.error("[MemoryTool] forget 失败 | error=%s", e)
+            return {"error": f"遗忘失败: {e}"}
+
+    def _cmd_merge(self, memory_key: Optional[str] = None, schema_type: Optional[str] = None) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+        if not memory_key and not schema_type:
+            return {"error": "merge 需要至少提供 memory_key 或 schema_type"}
+
+        try:
+            result = self.memory.merge_conflicts(memory_key=memory_key, schema_type=schema_type)
+            return {"success": True, **result, "message": "冲突合并完成"}
+        except Exception as e:
+            logger.error("[MemoryTool] merge 失败 | error=%s", e)
+            return {"error": f"合并失败: {e}"}
+
+    def _cmd_list(self, schema_type: Optional[str] = None, category: Optional[str] = None) -> dict:
+        if not self._check_memory():
+            return {"error": "长期记忆系统未初始化"}
+
+        try:
+            items = self.memory.list_memories(schema_type=schema_type, category=category, limit=50)
+            categories = {}
+            schemas = {}
+            for item in items:
+                categories[item.get("category", "general")] = categories.get(item.get("category", "general"), 0) + 1
+                schemas[item.get("schema_type", "general")] = schemas.get(item.get("schema_type", "general"), 0) + 1
+            return {
+                "total_memories": len(items),
+                "categories": [{"category": key, "count": value} for key, value in sorted(categories.items())],
+                "schemas": [{"schema_type": key, "count": value} for key, value in sorted(schemas.items())],
+                "items": [
+                    {
+                        "id": item.get("id"),
+                        "title": item.get("title"),
+                        "category": item.get("category"),
+                        "schema_type": item.get("schema_type"),
+                        "memory_key": item.get("memory_key"),
+                        "source": item.get("source_file"),
+                    }
+                    for item in items[:20]
+                ],
+                "message": f"共 {len(items)} 条活跃记忆",
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] list 失败 | error=%s", e)
+            return {"error": f"查询失败: {e}"}
+
+    # ================================================================
+    # 内部方法
+    # ================================================================
+
+    def _check_memory(self) -> bool:
+        if self.memory is None:
+            logger.warning("[MemoryTool] three_layer_memory 未注入")
+            return False
+        return True

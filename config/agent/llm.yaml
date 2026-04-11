@@ -1,0 +1,7 @@
+llm:
+  section: llm
+  provider: openai
+  streaming:
+    enabled: true
+  models: []
+  current_model: ''

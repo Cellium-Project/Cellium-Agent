@@ -1,0 +1,26 @@
+# -*- coding: utf-8 -*-
+# API 路由配置（启动时加载，修改路由通常需要重启）
+
+routes:
+  chat:
+    enabled: true
+    path: "/api/chat"
+    method: "POST"
+    auth_required: false
+    rate_limit: 60
+
+  health:
+    enabled: true
+    path: "/api/health"
+    method: "GET"
+    auth_required: false
+
+  session:
+    enabled: true
+    path_base: "/api/sessions"
+    expiry: 3600
+
+  config:
+    enabled: true
+    path_base: "/api/config"
+    auth_required: false
