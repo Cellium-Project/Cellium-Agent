@@ -1,5 +1,6 @@
 # Cellium Agent
 
+<div align="center">
 
 <img src="logo.png" width="200" style="background:#1e90ff;padding:20px;border-radius:10px;">
 
@@ -10,6 +11,8 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 
 **轻量级、模型无关的 AI Agent 框架**
+
+</div>
 
 基于微内核架构（EventBus + DI + BaseTool），支持任意 OpenAI 兼容 API
 
