@@ -7,6 +7,54 @@ from app.agent.heuristics.types import EvaluationContext, DerivedFeatures
 logger = logging.getLogger(__name__)
 
 
+def get_call_signature(call: Dict) -> str:
+    """
+    生成工具调用的唯一签名（工具+命令）
+
+    用于区分同一工具的不同操作，例如：
+      - memory:store ≠ memory:search ≠ memory:update
+      - component:generate ≠ component:list
+      - file:/path/a.txt ≠ file:/path/b.txt
+      - shell:ls ≠ shell:pwd
+
+    自动检测：如果 arguments 中包含 command 参数，则使用它作为签名的一部分
+
+    Args:
+        call: 工具调用记录，包含 tool/tool_name 和 arguments/args
+
+    Returns:
+        签名字符串，格式为 "tool_name:command" 或仅 "tool_name"
+    """
+    # 防御性检查：处理 None 或非字典类型
+    if not call or not isinstance(call, dict):
+        return "unknown"
+
+    tool_name = call.get("tool_name", call.get("tool", "unknown"))
+    args = call.get("arguments", call.get("args", {}))
+
+    if not isinstance(args, dict):
+        args = {}
+
+    # 通用检测：如果参数中有 command 字段，则使用它区分不同操作
+    # 这适用于所有使用 command 参数的工具（组件工具 + 内置工具如 memory）
+    if "command" in args:
+        command = args.get("command", "default")
+        return f"{tool_name}:{command}"
+
+    # 特殊处理：file 工具使用路径区分
+    if tool_name == "file":
+        path = args.get("path", args.get("file", ""))
+        return f"{tool_name}:{path}"
+
+    # 特殊处理：shell 工具使用命令内容区分
+    if tool_name == "shell":
+        cmd = args.get("command", args.get("cmd", ""))[:80]
+        return f"{tool_name}:{cmd}"
+
+    # 其他工具：仅返回工具名（保持当前行为）
+    return tool_name
+
+
 class FeatureExtractor:
 
     EMA_ALPHA = 0.3
@@ -128,16 +176,16 @@ class FeatureExtractor:
 
         consecutive_same = 1
         max_consecutive = 1
-        last_tool = None
+        last_signature = None
 
         for call in recent:
-            tool_name = call.get("tool_name", call.get("tool", "unknown"))
-            if tool_name == last_tool:
+            signature = get_call_signature(call)  # 使用签名代替工具名
+            if signature == last_signature:
                 consecutive_same += 1
                 max_consecutive = max(max_consecutive, consecutive_same)
             else:
                 consecutive_same = 1
-            last_tool = tool_name
+            last_signature = signature
 
         return min(max_consecutive / len(recent), 1.0)
 
@@ -152,21 +200,21 @@ class FeatureExtractor:
         if len(calls) < 4:
             return "", 0
 
-        tool_names = [c.get("tool_name", c.get("tool", "unknown")) for c in calls[-12:]]
+        signatures = [get_call_signature(c) for c in calls[-12:]]  # 使用签名代替工具名
 
-        if len(tool_names) >= 4:
-            if tool_names[-1] == tool_names[-3] and tool_names[-2] == tool_names[-4]:
-                if tool_names[-1] != tool_names[-2]:
+        if len(signatures) >= 4:
+            if signatures[-1] == signatures[-3] and signatures[-2] == signatures[-4]:
+                if signatures[-1] != signatures[-2]:
                     return "cycle", 2
 
-        if len(tool_names) >= 6:
-            if (tool_names[-1] == tool_names[-4] and
-                tool_names[-2] == tool_names[-5] and
-                tool_names[-3] == tool_names[-6]):
+        if len(signatures) >= 6:
+            if (signatures[-1] == signatures[-4] and
+                signatures[-2] == signatures[-5] and
+                signatures[-3] == signatures[-6]):
                 return "cycle", 3
 
-        if len(tool_names) >= 3:
-            if tool_names[-1] == tool_names[-2] == tool_names[-3]:
+        if len(signatures) >= 3:
+            if signatures[-1] == signatures[-2] == signatures[-3]:
                 return "repetition", 1
 
         return "", 0
@@ -268,18 +316,7 @@ class FeatureExtractor:
         if len(calls) < 2:
             return False
 
-        signatures = []
-        for call in calls:
-            tool_name = call.get("tool_name", call.get("tool", ""))
-            args = call.get("arguments", call.get("args", {}))
-            if tool_name == "file":
-                signature = args.get("path", args.get("file", ""))
-            elif tool_name == "shell":
-                signature = args.get("command", "")[:80]
-            else:
-                signature = str(sorted(args.items()))
-            signatures.append(f"{tool_name}:{signature}")
-
+        signatures = [get_call_signature(c) for c in calls]
         return len(set(signatures)) <= 1
 
     # ============================================================

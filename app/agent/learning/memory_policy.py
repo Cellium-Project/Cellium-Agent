@@ -113,13 +113,14 @@ class PolicyBanditMemory:
     def get_all_stats(self) -> Dict[str, PolicyStats]:
         return self._stats.copy()
 
-    def update(self, policy_name: str, reward: float):
+    def update(self, policy_name: str, reward: float, persist: bool = True):
         """
         更新 Policy 统计
 
         Args:
             policy_name: Policy 名称
             reward: 奖励值 ∈ [0, 1]
+            persist: 是否立即持久化（False 用于轮次内轻量更新）
         """
         if policy_name not in self._stats:
             logger.warning("[PolicyBanditMemory] 未知 Policy: %s", policy_name)
@@ -135,12 +136,12 @@ class PolicyBanditMemory:
         stat.beta += (1.0 - reward)
 
         self._dirty = True
-        self._save()
-
-        logger.info(
-            "[PolicyBanditMemory] 更新 | policy=%s | reward=%.2f | alpha=%.1f | beta=%.1f | mean=%.3f",
-            policy_name, reward, stat.alpha, stat.beta, stat.mean
-        )
+        if persist:
+            self._save()
+            logger.info(
+                "[PolicyBanditMemory] 更新 | policy=%s | reward=%.2f | alpha=%.1f | beta=%.1f | mean=%.3f",
+                policy_name, reward, stat.alpha, stat.beta, stat.mean
+            )
 
     def decay(self, factor: float = None):
         factor = factor or self.DECAY_FACTOR

@@ -23,6 +23,7 @@ from app.agent.prompt.pieces import create_default_builder
 from app.agent.memory.session_notes import SessionNotes
 from app.agent.memory.session_compact import SessionCompactor
 from app.agent.control import ControlLoop, LoopState, HardConstraintRenderer
+from app.core.util.logger import set_runtime_status, get_runtime_status
 
 from .tool_executor import (
     ToolExecutor,
@@ -530,6 +531,9 @@ class AgentLoop:
                     # 获取决策
                     decision = self.control_loop.step(self._loop_state)
 
+                    # 更新运行时状态（供 Agent 自我感知）
+                    set_runtime_status(self._loop_state)
+
                     # 渲染决策为强约束（三段结构）
                     constraint = self._constraint_renderer.render(
                         decision,
@@ -632,12 +636,18 @@ class AgentLoop:
                 # === 构建提示词 ===
                 session_messages = effective_memory.get_messages() if not self.flash_mode else []
 
+                runtime_status_str = None
+                rs = get_runtime_status()
+                if rs:
+                    runtime_status_str = rs.to_summary()
+
                 if iteration == 1:
                     llm_messages = self._prompt_context_builder.build_first_round(
                         user_input=user_input,
                         session_messages=session_messages,
                         guidance_message=_pending_guidance_msg,
                         system_injection=_pending_system_injection,
+                        runtime_status=runtime_status_str,
                     )
                 else:
                     auto_hints = self._auto_hints.get_auto_tool_hints(self.tools)
@@ -646,6 +656,7 @@ class AgentLoop:
                         auto_hints=auto_hints,
                         guidance_message=_pending_guidance_msg,
                         system_injection=_pending_system_injection,
+                        runtime_status=runtime_status_str,
                     )
 
                 if iteration > 1:
@@ -680,6 +691,8 @@ class AgentLoop:
                         "[AgentLoop] Token 统计 | prompt=%d | completion=%d | 累计=%d",
                         prompt_tokens, completion_tokens, self._loop_state.tokens_used
                     )
+
+                set_runtime_status(self._loop_state)
 
                 self._event_publisher.publish_loop_iteration(
                     session_id=effective_session,
@@ -781,16 +794,32 @@ class AgentLoop:
                             "arguments": arguments,
                             "result": result if isinstance(result, dict) else {"output": str(result)},
                             "duration_ms": round(duration_ms),
+                            "success": not isinstance(result, dict) or (
+                                result.get("success") is not False and result.get("error") is None
+                            ),
                         })
 
                         yield {"type": "tool_result", "tool": tool_name,
                                "arguments": arguments, "result": result, "duration_ms": round(duration_ms)}
+
+                        set_runtime_status(self._loop_state)
 
                     # Control Loop: 每轮结束，更新 Bandit
                     if self.control_loop and self._loop_state:
                         self._loop_state.last_tool_result = tool_traces[-1].get("result") if tool_traces else None
                         reward = self.control_loop.end_round(self._loop_state)
                         logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
+
+                    # Learning: 迭代级别反馈更新
+                    if self.learning and self._loop_state:
+                        stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state.features else 0
+                        tool_count = len([t for t in tool_traces if t.get("tool")])
+                        self.learning.update_round(
+                            iteration=self._loop_state.iteration,
+                            max_iterations=self._loop_state.max_iterations,
+                            tool_call_count=tool_count,
+                            stuck_iterations=stuck_iters,
+                        )
 
                     # 两级压缩（在所有工具调用结束后，按顺序执行）
                     if not self.flash_mode:
@@ -863,6 +892,16 @@ class AgentLoop:
                     self._loop_state.last_tool_result = None  # 无工具调用
                     reward = self.control_loop.end_round(self._loop_state)
                     logger.debug("[ControlLoop] 本轮结束（无工具调用）| reward=%.2f", reward)
+
+                # Learning: 迭代级别反馈更新
+                if self.learning and self._loop_state:
+                    stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state.features else 0
+                    self.learning.update_round(
+                        iteration=self._loop_state.iteration,
+                        max_iterations=self._loop_state.max_iterations,
+                        tool_call_count=0,
+                        stuck_iterations=stuck_iters,
+                    )
 
                 if not self.flash_mode:
                     effective_memory.add_assistant_message(content)

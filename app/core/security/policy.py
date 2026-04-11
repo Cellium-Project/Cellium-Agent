@@ -183,10 +183,28 @@ class SecurityPolicy:
     ]
 
     def __init__(self, max_timeout: int = 30, max_iterations: int = 10,
-                 forbidden_dirs: list = None):
+                 forbidden_dirs: list = None, command_blacklist: list = None):
         self.max_timeout = max_timeout
         self.max_iterations = max_iterations
         self.forbidden_dirs: List[str] = forbidden_dirs or []
+        # 用户自定义黑名单（从配置文件读取）
+        self._user_blacklist: List[str] = command_blacklist or []
+        self._load_user_blacklist_from_config()
+
+    def _load_user_blacklist_from_config(self):
+        """从配置文件加载用户自定义黑名单"""
+        try:
+            from app.core.util.agent_config import get_config
+            config = get_config()
+            blacklist = config.get("security.command_blacklist", [])
+            if isinstance(blacklist, list):
+                self._user_blacklist = [str(item).lower() for item in blacklist if item]
+        except Exception:
+            pass
+
+    def reload_blacklist(self):
+        """热重载用户自定义黑名单"""
+        self._load_user_blacklist_from_config()
 
     def check_command(self, cmd: str) -> Dict:
         """检查命令安全性"""
@@ -195,12 +213,22 @@ class SecurityPolicy:
             if path_result:
                 return path_result
 
-        # 先检查危险模式（优先级高于白名单）
+        # 优先检查用户自定义黑名单
+        cmd_lower = cmd.lower()
+        for pattern in self._user_blacklist:
+            if pattern and pattern in cmd_lower:
+                return {
+                    "allowed": False,
+                    "risk_level": RiskLevel.HIGH.value,
+                    "message": f"用户自定义黑名单拦截: {pattern}"
+                }
+
+        # 再检查硬编码危险模式（保底检测）
         for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
             if re.search(pattern, cmd, re.IGNORECASE):
                 return {"allowed": False, "risk_level": risk_level.value, "message": message}
 
-        # 再检查白名单
+        # 最后检查白名单
         if self._is_safe_command(cmd):
             return {"allowed": True, "risk_level": RiskLevel.SAFE.value, "message": "安全命令"}
 

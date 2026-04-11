@@ -85,6 +85,27 @@ async def log_stats():
     return stats
 
 
+@router.get("/status")
+async def runtime_status():
+    """运行时状态摘要（供 Agent 自我感知）"""
+    from app.core.util.logger import get_runtime_status
+    rs = get_runtime_status()
+    if not rs:
+        return {"available": False, "message": "Agent 未在运行"}
+    return {
+        "available": True,
+        "summary": rs.to_summary(),
+        "detail": rs.to_dict(),
+    }
+
+
+@router.get("/status/history")
+async def runtime_status_history():
+    """运行时状态历史快照"""
+    from app.core.util.logger import get_status_history
+    return {"history": get_status_history()}
+
+
 @router.get("/errors")
 async def error_logs(
     limit: int = Query(50, ge=1, le=500, description="返回条数"),

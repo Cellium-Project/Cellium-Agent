@@ -1,11 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-日志模块 v2 — 可查询的统一日志系统
+日志模块 v3 — 可查询的统一日志系统
 
 【一体化设计】
-  写: setup_logger() / get_logger() / LogMixin → 控制台输出
+  写: setup_logger() / get_logger() / LogMixin → 控制台/文件输出
   读: query_logs() / get_recent_logs() / get_error_logs() → Agent 查询
   管: install_buffer() / buffer_stats() / clear_logs() → 运行时管理
+
+支持的配置项（logging.yaml）:
+  - level: 日志级别
+  - format: 日志格式
+  - console: 是否输出到控制台
+  - file: 日志文件路径（留空则不写文件）
+  - max_size: 缓冲区大小（条目数）
+  - backup_count: 日志轮转备份数量
 
 Agent 使用方式:
     from app.core.util.logger import query_logs, get_error_logs, get_recent_logs
@@ -20,12 +28,15 @@ Agent 使用方式:
 """
 
 import logging
+import logging.handlers
+import os
 import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 LOG_LEVELS = {
@@ -37,6 +48,167 @@ LOG_LEVELS = {
 }
 
 _loggers: dict = {}
+_file_handler: Optional[logging.Handler] = None
+_console_handler: Optional[logging.Handler] = None
+
+_runtime_status: Optional["RuntimeStatus"] = None
+_status_history: List["RuntimeStatus"] = []
+MAX_STATUS_HISTORY: int = 50
+_logger = logging.getLogger(__name__)
+
+
+class RuntimeStatus:
+    """Agent 运行时状态摘要（精简版，供 Agent 自我感知）"""
+
+    def __init__(self):
+        self.iteration: int = 0
+        self.max_iterations: int = 10
+        self.tokens_used: int = 0
+        self.token_budget: int = 10000000
+        self.elapsed_ms: int = 0
+        self.tool_traces: List[Dict] = []
+        self.last_error: Optional[str] = None
+        self.decision_action: Optional[str] = None
+        self.decision_guidance: Optional[str] = None
+        self.should_stop: bool = False
+        self.stop_reason: Optional[str] = None
+        self.stuck_iterations: int = 0
+        self.recent_llm_outputs_count: int = 0
+
+    @property
+    def token_pct(self) -> float:
+        if self.token_budget <= 0:
+            return 0.0
+        pct = self.tokens_used / self.token_budget * 100
+        return 0.0 if pct == float('inf') else round(pct, 1)
+
+    @property
+    def progress(self) -> str:
+        return f"{self.iteration}/{self.max_iterations}"
+
+    @property
+    def recent_tools_summary(self) -> str:
+        if not self.tool_traces:
+            return "无"
+        parts = []
+        for t in self.tool_traces[-3:]:
+            name = t.get("tool", "?")
+            ok = "✓" if t.get("success") else "✗"
+            parts.append(f"{ok}{name}")
+        return ", ".join(parts)
+
+    def to_summary(self) -> str:
+        elapsed_s = "∞" if self.elapsed_ms == float('inf') else f"{self.elapsed_ms}ms"
+        lines = [
+            f"[运行状态] 迭代:{self.progress} | Token:{self.tokens_used:,}/{self.token_budget:,} ({self.token_pct}%) | 耗时:{elapsed_s}",
+        ]
+        if self.recent_tools_summary != "无":
+            lines.append(f"[工具] 最近:{self.recent_tools_summary}")
+        if self.last_error:
+            lines.append(f"[错误] {self.last_error}")
+        if self.stuck_iterations > 0:
+            lines.append(f"[警告] 卡住{self.stuck_iterations}轮")
+        if self.decision_action and self.decision_action != "continue":
+            lines.append(f"[决策] {self.decision_action} | {self.decision_guidance or ''}")
+        if self.should_stop:
+            lines.append(f"[停止] {self.stop_reason or '强制终止'}")
+        return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        elapsed_ms = None if self.elapsed_ms == float('inf') else self.elapsed_ms
+        return {
+            "iteration": self.iteration,
+            "max_iterations": None if self.max_iterations == float('inf') else self.max_iterations,
+            "progress": self.progress,
+            "tokens_used": self.tokens_used,
+            "token_budget": self.token_budget,
+            "token_pct": self.token_pct,
+            "elapsed_ms": elapsed_ms,
+            "recent_tools_summary": self.recent_tools_summary,
+            "tool_traces_count": len(self.tool_traces),
+            "last_error": self.last_error,
+            "decision_action": self.decision_action,
+            "decision_guidance": self.decision_guidance,
+            "should_stop": self.should_stop,
+            "stop_reason": self.stop_reason,
+            "stuck_iterations": self.stuck_iterations,
+            "recent_llm_outputs_count": self.recent_llm_outputs_count,
+        }
+
+
+def set_runtime_status(state: "LoopState") -> None:
+    """从 LoopState 更新运行时状态，每次调用前先快照当前状态（按 iteration 去重）"""
+    global _runtime_status, _status_history
+
+    if _runtime_status is None:
+        _runtime_status = RuntimeStatus()
+
+    current_iter = _runtime_status.iteration
+    if current_iter > 0:
+        snapshot = RuntimeStatus()
+        snapshot.iteration = _runtime_status.iteration
+        snapshot.max_iterations = _runtime_status.max_iterations
+        snapshot.tokens_used = _runtime_status.tokens_used
+        snapshot.token_budget = _runtime_status.token_budget
+        snapshot.elapsed_ms = _runtime_status.elapsed_ms
+        snapshot.tool_traces = list(_runtime_status.tool_traces)
+        snapshot.last_error = _runtime_status.last_error
+        snapshot.decision_action = _runtime_status.decision_action
+        snapshot.decision_guidance = _runtime_status.decision_guidance
+        snapshot.should_stop = _runtime_status.should_stop
+        snapshot.stop_reason = _runtime_status.stop_reason
+        snapshot.stuck_iterations = _runtime_status.stuck_iterations
+        if _status_history and _status_history[-1].iteration == current_iter:
+            _status_history[-1] = snapshot
+        else:
+            _status_history.append(snapshot)
+            if len(_status_history) > MAX_STATUS_HISTORY:
+                _status_history.pop(0)
+
+    rs = _runtime_status
+    rs.iteration = state.iteration
+    rs.max_iterations = state.max_iterations
+    rs.tokens_used = state.tokens_used
+    rs.token_budget = state.token_budget
+    rs.elapsed_ms = state.elapsed_ms
+    rs.tool_traces = state.tool_traces[-3:] if state.tool_traces else []
+    rs.last_error = state.last_error
+    rs.recent_llm_outputs_count = len(state.recent_llm_outputs)
+
+    decision = state.get_last_decision()
+    if decision:
+        rs.decision_action = decision.action_type
+        rs.decision_guidance = decision.guidance_message
+        rs.should_stop = decision.should_stop
+        rs.stop_reason = decision.stop_reason
+
+    features = state.features
+    if features:
+        rs.stuck_iterations = getattr(features, "stuck_iterations", 0)
+
+
+def get_runtime_status() -> Optional[RuntimeStatus]:
+    """获取当前运行时状态"""
+    return _runtime_status
+
+
+def get_status_history() -> List[Dict]:
+    """获取历史快照列表"""
+    return [s.to_dict() for s in _status_history]
+
+
+def clear_status_history() -> None:
+    """清空历史快照（每次新任务开始时调用）"""
+    global _status_history
+    _status_history.clear()
+    _logger.info("[StatusHistory] 历史快照已清空")
+
+
+def clear_runtime_status() -> None:
+    """清空当前运行时状态（每次新任务开始时调用）"""
+    global _runtime_status
+    _runtime_status = None
+    _logger.info("[RuntimeStatus] 运行时状态已重置")
 
 
 # ============================================================

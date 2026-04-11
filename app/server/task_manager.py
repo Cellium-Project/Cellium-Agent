@@ -114,6 +114,11 @@ class BackgroundTaskManager:
         # 创建事件历史列表
         self._event_history[session_id] = []
 
+        # 清空上次运行的历史记录（每次新任务独立）
+        from app.core.util.logger import clear_status_history, clear_runtime_status
+        clear_status_history()
+        clear_runtime_status()
+
         # 创建任务信息
         info = TaskInfo(
             session_id=session_id,

@@ -43,12 +43,26 @@ class PromptContextBuilder:
         self._three_layer_memory = three_layer_memory
         self._flash_mode = flash_mode
 
+    def _inject_runtime_status(self, runtime_status: Optional[Any]) -> None:
+        """注入运行时状态到 PromptBuilder（供 Agent 自我感知）"""
+        if not self._flash_mode and runtime_status:
+            self._prompt_builder.enable("self_awareness", True)
+            self._prompt_builder.inject(
+                runtime_status,
+                name="_runtime_status",
+                priority=100,
+                is_base=False,
+            )
+        else:
+            self._prompt_builder.enable("self_awareness", False)
+
     def build_first_round(
         self,
         user_input: str,
         session_messages: List[Dict],
         guidance_message: Optional[str] = None,
         system_injection: Optional[str] = None,
+        runtime_status: Optional[str] = None,
     ) -> List[Dict]:
         """
         构建第一轮对话的消息
@@ -58,6 +72,7 @@ class PromptContextBuilder:
             session_messages: 当前会话消息列表
             guidance_message: 引导消息（来自启发式模块）
             system_injection: 系统提示词注入（来自控制环）
+            runtime_status: 运行时状态摘要（来自 LoopState）
 
         Returns:
             LLM 消息列表
@@ -73,11 +88,10 @@ class PromptContextBuilder:
             self._prompt_builder.inject(
                 system_injection,
                 name="_control_constraint",
-                priority=50,  # 高优先级
+                priority=50,
             )
 
-
-        system_prompt = self._prompt_builder.build()
+        system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
         messages.append({"role": "system", "content": system_prompt})
 
         # 2. 注入长期记忆（非闪电模式）
@@ -93,10 +107,13 @@ class PromptContextBuilder:
                     "content": "好的，我已参考长期记忆中的相关信息。",
                 })
 
-        # 3. 会话历史
+        # 3. 运行时状态通过 PromptBuilder 注入（统一管理）
+        self._inject_runtime_status(runtime_status)
+
+        # 4. 会话历史
         messages.extend(session_messages)
 
-        # 4. 引导消息（如果有）
+        # 5. 引导消息（如果有）
         if guidance_message:
             messages.append({
                 "role": "user",
@@ -121,6 +138,7 @@ class PromptContextBuilder:
         auto_hints: Optional[str] = None,
         guidance_message: Optional[str] = None,
         system_injection: Optional[str] = None,
+        runtime_status: Optional[str] = None,
     ) -> List[Dict]:
         """
         构建后续轮次的消息
@@ -130,6 +148,7 @@ class PromptContextBuilder:
             auto_hints: 自动生成的工具提示
             guidance_message: 引导消息
             system_injection: 系统提示词注入（来自控制环）
+            runtime_status: 运行时状态摘要（来自 LoopState）
 
         Returns:
             LLM 消息列表
@@ -148,13 +167,16 @@ class PromptContextBuilder:
                 priority=50,
             )
 
-        system_prompt = self._prompt_builder.build()
+        system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
         messages.append({"role": "system", "content": system_prompt})
 
-        # 2. 会话历史（后续轮次不需要重复注入长期记忆）
+        # 2. 运行时状态通过 PromptBuilder 注入（统一管理）
+        self._inject_runtime_status(runtime_status)
+
+        # 3. 会话历史（后续轮次不需要重复注入长期记忆）
         messages.extend(session_messages)
 
-        # 3. 自动提示（如果有）
+        # 4. 自动提示（如果有）
         if auto_hints:
             messages.append({
                 "role": "user",

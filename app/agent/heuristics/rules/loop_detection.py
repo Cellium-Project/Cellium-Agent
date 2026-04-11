@@ -20,22 +20,24 @@ from app.agent.heuristics.types import (
     EvaluationContext,
     DerivedFeatures,
 )
+from app.agent.heuristics.features import get_call_signature
 
 logger = logging.getLogger(__name__)
 
 
 class SameToolRepetitionRule(BaseRule):
     """
-    相同工具重复检测规则（★ 必改：重复 + 进展判断）
+    相同签名重复检测规则（★ 已改进：工具+命令级别检测）
 
     改进点：
-    1. 重复不等于失败，可能在逐步解决问题
-    2. 重复 + 无进展 → STOP
-    3. 重复 + 有进展 → 仅记录，不警告
+    1. 使用签名（工具+命令）而非仅工具名检测重复
+    2. 重复不等于失败，可能在逐步解决问题
+    3. 重复 + 无进展 → STOP
+    4. 重复 + 有进展 → 仅记录，不警告
     """
     id = "loop-001"
-    name = "Same Tool Repetition"
-    description = "检测同一工具的重复调用"
+    name = "Same Signature Repetition"
+    description = "检测相同签名（工具+命令）的重复调用"
     priority = RulePriority.HIGH
     decision_point = DecisionPoint.LOOP_DETECTION
 
@@ -56,15 +58,12 @@ class SameToolRepetitionRule(BaseRule):
         if len(recent) < self.threshold:
             return RuleEvaluationResult.not_matched()
 
-        # 检查是否全部是同一工具
-        tool_names = [
-            c.get("tool_name", c.get("tool", "unknown"))
-            for c in recent
-        ]
-        if not all(name == tool_names[0] for name in tool_names):
+        # 检查是否全部是同一签名（工具+命令）
+        signatures = [get_call_signature(c) for c in recent]
+        if not all(sig == signatures[0] for sig in signatures):
             return RuleEvaluationResult.not_matched()
 
-        tool_name = tool_names[0]
+        signature = signatures[0]
 
         # ★ 关键改进：结合进展判断
         # 重复 + 无进展 → STOP
@@ -73,8 +72,8 @@ class SameToolRepetitionRule(BaseRule):
                 matched=True,
                 action=DecisionAction.STOP,
                 score=0.9,
-                reason=f"工具 '{tool_name}' 重复 {self.threshold} 次且无进展",
-                metadata={"tool_name": tool_name, "stuck": features.stuck_iterations},
+                reason=f"签名 '{signature}' 重复 {self.threshold} 次且无进展",
+                metadata={"signature": signature, "stuck": features.stuck_iterations},
             )
 
         # 重复 + 有进展 → WARN（轻量警告）
@@ -83,8 +82,8 @@ class SameToolRepetitionRule(BaseRule):
                 matched=True,
                 action=DecisionAction.WARN,
                 score=0.4,  # 低置信度
-                reason=f"工具 '{tool_name}' 重复但正在进步 (trend={features.progress_trend:.2f})",
-                metadata={"tool_name": tool_name, "progress_trend": features.progress_trend},
+                reason=f"签名 '{signature}' 重复但正在进步 (trend={features.progress_trend:.2f})",
+                metadata={"signature": signature, "progress_trend": features.progress_trend},
             )
 
         # 重复 + 趋势不明 → WARN
@@ -92,8 +91,8 @@ class SameToolRepetitionRule(BaseRule):
             matched=True,
             action=DecisionAction.WARN,
             score=0.6,
-            reason=f"工具 '{tool_name}' 已连续调用 {self.threshold} 次",
-            metadata={"tool_name": tool_name},
+            reason=f"签名 '{signature}' 已连续调用 {self.threshold} 次",
+            metadata={"signature": signature},
         )
 
 

@@ -84,36 +84,56 @@ class SessionCompactor:
         Returns:
             是否应该压缩
         """
+        # 条件2：工具调用次数超过阈值（不受 LLM 是否存在的限制，也受冷却限制）
+        # 冷却检查
+        cooldown_blocked = False
+        if self._last_compact_tokens > 0:
+            token_count = self._estimate_tokens(memory)
+            growth = token_count - self._last_compact_tokens
+            growth_ratio = growth / max(self._last_compact_tokens, 1)
+            if growth_ratio < self._compact_cooldown_ratio:
+                cooldown_blocked = True
+                logger.debug(
+                    "[SessionCompactor] 工具调用阈值冷却中 | tool_calls=%d | 增长=%.1f%% (需>%.0f%%)",
+                    self._tool_call_count, growth_ratio * 100, self._compact_cooldown_ratio * 100
+                )
+
+        tool_call_exceeded = not cooldown_blocked and self._tool_call_count >= self.tool_call_threshold
+
+        if tool_call_exceeded:
+            logger.info(
+                "[SessionCompactor] 工具调用触发压缩 | tool_calls=%d (阈值=%d)",
+                self._tool_call_count, self.tool_call_threshold
+            )
+            return True
+
+        # 条件1：Token 数量超过阈值（需要 LLM 生成摘要）
         if self.llm is None:
             return False
 
         token_count = self._estimate_tokens(memory)
-        
-        # 冷却检查：如果上次压缩后 token 增长不足，不触发
+
+        # 冷却检查（只对 Token 阈值生效）
+        cooldown_blocked = False
         if self._last_compact_tokens > 0:
             growth = token_count - self._last_compact_tokens
             growth_ratio = growth / max(self._last_compact_tokens, 1)
             if growth_ratio < self._compact_cooldown_ratio:
+                cooldown_blocked = True
                 logger.debug(
-                    "[SessionCompactor] 冷却中 | tokens=%d | 上次=%d | 增长=%.1f%% (需>%.0f%%)",
+                    "[SessionCompactor] Token 阈值冷却中 | tokens=%d | 上次=%d | 增长=%.1f%% (需>%.0f%%)",
                     token_count, self._last_compact_tokens, growth_ratio * 100, self._compact_cooldown_ratio * 100
                 )
-                return False
 
-        # 条件1：Token 数量超过阈值
-        token_exceeded = token_count >= self.token_threshold
+        token_exceeded = not cooldown_blocked and token_count >= self.token_threshold
 
-        # 条件2：工具调用次数超过阈值
-        tool_call_exceeded = self._tool_call_count >= self.tool_call_threshold
-
-        if token_exceeded or tool_call_exceeded:
+        if token_exceeded:
             logger.info(
-                "[SessionCompactor] 触发压缩 | tokens=%d (阈值=%d) | tool_calls=%d (阈值=%d)",
-                token_count, self.token_threshold, self._tool_call_count, self.tool_call_threshold
+                "[SessionCompactor] Token 阈值触发压缩 | tokens=%d (阈值=%d)",
+                token_count, self.token_threshold
             )
-            return True
 
-        return False
+        return token_exceeded
 
     def _estimate_tokens(self, memory: "MemoryManager") -> int:
         """估算 Token 数量（简单估算：字符数 / 2）"""

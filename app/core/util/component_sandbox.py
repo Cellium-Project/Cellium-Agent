@@ -37,9 +37,17 @@ import json
 import sys
 import traceback
 import importlib.util
+import os
+
+# 项目根目录（由主进程传入）
+_project_root = None
 
 def load_component(module_path: str, class_name: str):
     """动态加载组件类"""
+    # 确保项目根目录在 sys.path 中（在加载模块之前，因为模块顶层可能有 from app.xxx import）
+    if _project_root and _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+
     spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -57,9 +65,15 @@ def main():
 
             if action == "init":
                 # 初始化组件
+                global _project_root
                 module_path = request["module_path"]
                 class_name = request["class_name"]
                 init_args = request.get("init_args", {})
+                _project_root = request.get("project_root", "")
+
+                # 设置项目根目录到 sys.path
+                if _project_root and _project_root not in sys.path:
+                    sys.path.insert(0, _project_root)
 
                 global _component
                 _component_class = load_component(module_path, class_name)
@@ -205,7 +219,7 @@ class SandboxProcess:
             self.stop()
             raise
 
-    def init_component(self, module_path: str, class_name: str, init_args: Dict = None) -> str:
+    def init_component(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None) -> str:
         """
         初始化组件
 
@@ -213,15 +227,35 @@ class SandboxProcess:
             module_path: 组件模块文件路径
             class_name: 组件类名
             init_args: 初始化参数
+            project_root: 项目根目录（用于沙箱中导入 app 模块）
 
         Returns:
             组件的 cell_name
         """
+        if project_root is None:
+            import os
+            import sys
+
+            def _find_project_root(start_path: str) -> str:
+                """从给定路径向上搜索项目根目录（包含 app 目录）"""
+                current = os.path.abspath(start_path)
+                for _ in range(10):
+                    if os.path.isdir(os.path.join(current, "app")):
+                        return current
+                    parent = os.path.dirname(current)
+                    if parent == current:
+                        break
+                    current = parent
+                return current
+
+            project_root = _find_project_root(__file__)
+
         response = self._send({
             "action": "init",
             "module_path": module_path,
             "class_name": class_name,
             "init_args": init_args or {},
+            "project_root": project_root,
         })
 
         if response.get("status") != "ok":

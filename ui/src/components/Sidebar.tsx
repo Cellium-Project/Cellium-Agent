@@ -87,10 +87,10 @@ export const Sidebar: React.FC = () => {
       <button
         className={`sidebar-settings-btn ${showSettingsPage ? 'active' : ''}`}
         onClick={() => setShowSettingsPage(!showSettingsPage)}
-        title={showSettingsPage ? "返回对话" : "设置"}
+        title="设置"
       >
-        {showSettingsPage ? <Icons.Chat size={18} /> : <Icons.Settings size={18} />}
-        <span className="text-label">{showSettingsPage ? "返回对话" : "设置"}</span>
+        <Icons.Settings size={18} />
+        <span className="text-label">设置</span>
       </button>
     </div>
   );

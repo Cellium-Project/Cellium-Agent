@@ -234,14 +234,19 @@ class SessionManager:
                         try:
                             parsed = json.loads(result_raw)
                             memory.add_tool_result(tc_id, parsed)
+                            restored_count += 1
+                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                            logger.warning(
+                                "[SessionManager] 工具结果 JSON 解析失败，跳过 | tc_id=%s | error=%s",
+                                tc_id, e,
+                            )
                         except Exception as e:
                             logger.warning(
-                                "[SessionManager] 工具结果恢复失败 | tc_id=%s | error=%s | content前100字符=%s",
-                                tc_id, e, repr(str(result_raw)[:100]),
+                                "[SessionManager] 工具结果恢复失败，跳过 | tc_id=%s | error=%s",
+                                tc_id, e,
                             )
-                        restored_count += 1
                 except (KeyError, TypeError, json.JSONDecodeError):
-                    continue
+                    pass
 
             logger.info(
                 "[SessionManager] 快照恢复 | session=%s | %d 条",

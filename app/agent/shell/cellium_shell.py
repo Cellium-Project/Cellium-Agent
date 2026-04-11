@@ -291,7 +291,7 @@ class CelliumShell:
         # 先检查危险命令
         danger_warning = check_dangerous_command(cmd)
         if danger_warning:
-            return {"allowed": False, "reason": danger_warning}
+            return {"success": False, "allowed": False, "reason": danger_warning}
 
         # 再检查 SecurityPolicy
         if self.security:
@@ -299,9 +299,9 @@ class CelliumShell:
                 from app.core.security.policy import RiskLevel
                 result = self.security.check_command(cmd)
                 if not result.get("allowed", False):
-                    return {"allowed": False, "reason": result.get("message", "被拦截")}
+                    return {"success": False, "allowed": False, "reason": result.get("message", "被拦截")}
                 risk = RiskLevel(result.get("risk_level", "medium"))
-                return {"allowed": True, "timeout": self.security.get_timeout(risk)}
+                return {"success": True, "allowed": True, "timeout": self.security.get_timeout(risk)}
             except Exception:
                 pass
 
@@ -309,9 +309,9 @@ class CelliumShell:
         cmd_lower = cmd.lower()
         for pattern in self._FALLBACK_BLOCKLIST:
             if pattern in cmd_lower:
-                return {"allowed": False, "reason": f"危险命令模式: {pattern}"}
+                return {"success": False, "allowed": False, "reason": f"危险命令模式: {pattern}"}
 
-        return {"allowed": True, "timeout": DEFAULT_TIMEOUT_SECONDS}
+        return {"success": True, "allowed": True, "timeout": DEFAULT_TIMEOUT_SECONDS}
 
     # ================================================================
     #  兼容旧接口
@@ -377,7 +377,7 @@ class CelliumShell:
             logger.info("[Shell] execute(str) | command=%s", command[:200])
             return self._run_command(command, cwd=self._cwd)
 
-        return {"error": "未提供有效的 command 参数"}
+        return {"success": False, "error": "未提供有效的 command 参数"}
 
     async def execute_async(
         self,
@@ -408,7 +408,7 @@ class CelliumShell:
             logger.info("[Shell] execute_async(str) | command=%s", command[:200])
             return await self._run_command_async(command, cwd=self._cwd)
 
-        return {"error": "未提供有效的 command 参数"}
+        return {"success": False, "error": "未提供有效的 command 参数"}
 
     def _resolve_shell(self, cmd: str) -> Tuple[str, List[str]]:
         """
@@ -473,12 +473,12 @@ class CelliumShell:
     ) -> Dict[str, Any]:
         """同步执行命令的主路径"""
         if not cmd or not cmd.strip():
-            return {"error": "命令为空"}
+            return {"success": False, "error": "命令为空"}
 
         # 安全检查
         sec = self._check_security(cmd)
         if not sec["allowed"]:
-            return {"error": f"安全拦截: {sec['reason']}"}
+            return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
         cmd_type = classify_command(cmd)
         effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
@@ -498,12 +498,12 @@ class CelliumShell:
     ) -> Dict[str, Any]:
         """异步执行命令的主路径"""
         if not cmd or not cmd.strip():
-            return {"error": "命令为空"}
+            return {"success": False, "error": "命令为空"}
 
         # 安全检查
         sec = self._check_security(cmd)
         if not sec["allowed"]:
-            return {"error": f"安全拦截: {sec['reason']}"}
+            return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
         cmd_type = classify_command(cmd)
         effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
@@ -581,11 +581,11 @@ class CelliumShell:
                 }
 
         except FileNotFoundError:
-            return {"error": f"命令未找到: {shell_cmd}"}
+            return {"success": False, "error": f"命令未找到: {shell_cmd}"}
         except PermissionError as e:
-            return {"error": f"权限拒绝: {e}"}
+            return {"success": False, "error": f"权限拒绝: {e}"}
         except Exception as e:
-            return {"error": f"执行失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"执行失败 ({type(e).__name__}): {e}"}
 
     async def _execute_async(
         self,
@@ -703,11 +703,11 @@ class CelliumShell:
                 }
 
         except FileNotFoundError:
-            return {"error": f"命令未找到: {shell_cmd}"}
+            return {"success": False, "error": f"命令未找到: {shell_cmd}"}
         except PermissionError as e:
-            return {"error": f"权限拒绝: {e}"}
+            return {"success": False, "error": f"权限拒绝: {e}"}
         except Exception as e:
-            return {"error": f"执行失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"执行失败 ({type(e).__name__}): {e}"}
 
     def _run_background(
         self,
@@ -818,13 +818,13 @@ class CelliumShell:
             try:
                 return task.result(timeout=timeout)
             except Exception as e:
-                return {"error": str(e)}
+                return {"success": False, "error": str(e)}
         else:
             if task.done():
                 try:
                     return task.result()
                 except Exception as e:
-                    return {"error": str(e)}
+                    return {"success": False, "error": str(e)}
         return None
 
     async def get_background_result_async(self, task_id: str) -> Optional[Dict]:
@@ -840,7 +840,7 @@ class CelliumShell:
         try:
             return await task
         except Exception as e:
-            return {"error": str(e)}
+            return {"success": False, "error": str(e)}
 
     # ================================================================
     #  生命周期管理

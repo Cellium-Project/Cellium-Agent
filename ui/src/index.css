@@ -266,6 +266,38 @@ body {
     max-width: none;
     height: 100vh;
     min-width: 0;
+    position: relative;
+    overflow: hidden;
+}
+
+/* 页面切换动画 */
+.page-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    opacity: 0;
+    transform: translateX(50px) scale(0.98);
+    transition: opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1), 
+                transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.page-container.active {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    pointer-events: auto;
+}
+
+.chat-page {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-page {
+    overflow-y: auto;
 }
 
 .hidden {
@@ -275,7 +307,7 @@ body {
 .chat-view {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
     overflow: hidden;
 }
 
@@ -813,7 +845,6 @@ body {
     padding: 8px 12px;
     background: #f8f9fa;
     border-radius: 6px;
-    border-left: 3px solid #4f46e5;
 }
 
 .settings-card-grid {
@@ -1649,5 +1680,79 @@ input:focus, select:focus, textarea:focus {
     .memory-item-header {
         flex-direction: column;
     }
+}
+
+/* Log Viewer */
+.log-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.log-level-select {
+    padding: 6px 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-size: 12px;
+    background: #fff;
+    cursor: pointer;
+}
+
+.log-viewer {
+    max-height: 400px;
+    overflow-y: auto;
+    background: #1a1a2e;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.log-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid #2d2d44;
+}
+
+.log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-time {
+    color: #6b7280;
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.log-level {
+    font-weight: 600;
+    flex-shrink: 0;
+    min-width: 70px;
+    text-align: center;
+}
+
+.log-logger {
+    color: #9ca3af;
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.log-message {
+    color: #e5e7eb;
+    word-break: break-word;
+}
+
+.log-empty {
+    color: #6b7280;
+    text-align: center;
+    padding: 40px;
+}
+
+.toggle-switch.small {
+    transform: scale(0.85);
+    transform-origin: center;
 }
 

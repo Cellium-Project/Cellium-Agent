@@ -372,8 +372,6 @@ const SecuritySettings: React.FC = () => {
     updateField('command_blacklist', list);
   };
 
-  const apiKey = config.api_key || {};
-
   const handleSave = () => doSave(async () => {
     await putJSON(API.configUpdate('security'), { value: config, persist: true });
   });
@@ -440,31 +438,6 @@ const SecuritySettings: React.FC = () => {
         </div>
       </div>
 
-      <div className="settings-card">
-        <div className="settings-card-header">
-          <div className="settings-card-title">
-            API Key 认证
-          </div>
-          <label className="toggle-switch">
-            <input type="checkbox" checked={!!apiKey.enabled} onChange={e => updateField('api_key.enabled', e.target.checked)} />
-            <span className="toggle-slider"></span>
-            <span className="toggle-label">{apiKey.enabled ? '已开启' : '已关闭'}</span>
-          </label>
-        </div>
-        {apiKey.enabled && (
-          <div className="settings-card-grid">
-            <div className="form-group">
-              <FieldLabel label="API Key" />
-              <input type="password" value={apiKey.key || ''} onChange={e => updateField('api_key.key', e.target.value)} placeholder="输入密钥..." />
-            </div>
-            <div className="form-group">
-              <FieldLabel label="认证请求头" />
-              <input type="text" value={apiKey.header_name || 'X-API-Key'} onChange={e => updateField('api_key.header_name', e.target.value)} />
-            </div>
-          </div>
-        )}
-      </div>
-
       <div className="form-actions">
         <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
           {saving ? '保存中...' : saved ? '✓ 已保存' : '保存安全配置'}
@@ -481,12 +454,38 @@ const LoggingSettings: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const { saving, saved, doSave } = useSavingState();
+  const [status, setStatus] = useState<Record<string, any> | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [history, setHistory] = useState<Record<string, any>[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [expandedHistory, setExpandedHistory] = useState(false);
 
   useEffect(() => {
     fetchJSON<Record<string, any>>(API.configSection('logging')).then(data => {
       setConfig(data); setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
+
+  const loadStatus = useCallback(() => {
+    setStatusLoading(true);
+    fetchJSON<Record<string, any>>(API.logsStatus)
+      .then(data => { setStatus(data); setStatusLoading(false); })
+      .catch(() => { setStatus(null); setStatusLoading(false); });
+  }, []);
+
+  const loadHistory = useCallback(() => {
+    setHistoryLoading(true);
+    fetchJSON<{ history: Record<string, any>[] }>(API.logsStatusHistory)
+      .then(data => { setHistory(data.history || []); setHistoryLoading(false); })
+      .catch(() => { setHistory([]); setHistoryLoading(false); });
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+    loadHistory();
+    const timer = setInterval(() => { loadStatus(); loadHistory(); }, 3000);
+    return () => clearInterval(timer);
+  }, [loadStatus, loadHistory]);
 
   const updateField = (path: string, value: any) => {
     setConfig(prev => ({ ...prev, [path]: value }));
@@ -545,6 +544,120 @@ const LoggingSettings: React.FC = () => {
             <input type="text" value={config.format || ''} onChange={e => updateField('format', e.target.value)} />
           </div>
         </div>
+      </div>
+
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <div className="settings-card-title">
+            <Icons.Zap size={16} /> Agent 运行状态
+          </div>
+          <button className="btn-secondary btn-sm" onClick={() => { loadStatus(); loadHistory(); }} disabled={statusLoading}>
+            {statusLoading ? '刷新中...' : '刷新'}
+          </button>
+        </div>
+        <div style={{ padding: '12px 16px' }}>
+          {!status || !status.available ? (
+            <div style={{ color: '#888', fontSize: 13 }}>Agent 未在运行</div>
+          ) : (
+            <pre style={{
+              margin: 0,
+              color: '#a8b1c2',
+              fontSize: 12,
+              fontFamily: 'monospace',
+              background: '#0f1117',
+              borderRadius: 8,
+              padding: '10px 14px',
+              lineHeight: 1.7,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+            }}>
+              {status.summary}
+            </pre>
+          )}
+        </div>
+
+        {history.length > 0 && (
+          <div style={{ borderTop: '1px solid #2a2a3e' }}>
+            <button
+              className="btn-link"
+              onClick={() => setExpandedHistory(v => !v)}
+              style={{ fontSize: 12, color: '#6b7280', padding: '8px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <span style={{
+                transition: 'transform 0.2s',
+                transform: expandedHistory ? 'rotate(0deg)' : 'rotate(-90deg)',
+                display: 'inline-block',
+              }}>
+                ▼
+              </span>
+              历史记录 ({history.length})
+            </button>
+            <div style={{
+              overflow: 'hidden',
+              maxHeight: expandedHistory ? '400px' : '0',
+              transition: 'max-height 0.3s ease-in-out',
+            }}>
+              <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
+                {history.slice(-10).map((h, i) => {
+                  const pct = h.token_pct ?? 0;
+                  const iter = h.iteration ?? '?';
+                  const tools = h.recent_tools_summary ?? '无工具';
+                  const decision = h.decision_action && h.decision_action !== 'continue'
+                    ? h.decision_action : '';
+                  const err = h.last_error ?? '';
+                  const stop = h.should_stop ? (h.stop_reason || '停止') : '';
+                  const stuck = h.stuck_iterations > 0 ? h.stuck_iterations : 0;
+                  const tokens = h.tokens_used ?? 0;
+
+                  const badge = (text: string, color: string, bg: string) => (
+                    <span style={{
+                      display: 'inline-block',
+                      padding: '1px 6px',
+                      borderRadius: 4,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color,
+                      background: bg,
+                      marginRight: 4,
+                    }}>{text}</span>
+                  );
+
+                  return (
+                    <div key={i} style={{
+                      background: '#1a1a28',
+                      border: '1px solid #2a2a3e',
+                      borderRadius: 8,
+                      padding: '8px 12px',
+                      opacity: expandedHistory ? 1 : 0,
+                      transform: expandedHistory ? 'translateY(0)' : 'translateY(-8px)',
+                      transition: 'opacity 0.25s ease, transform 0.25s ease',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <span style={{ color: '#9ca3af', fontSize: 11, fontFamily: 'monospace', minWidth: 32 }}>
+                          #{iter}
+                        </span>
+                        <span style={{ color: '#6b7280', fontSize: 11 }}>
+                          {tokens.toLocaleString()} Token
+                        </span>
+                        <span style={{ color: pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981', fontSize: 11, fontWeight: 600 }}>
+                          {pct}%
+                        </span>
+                        {stuck > 0 && badge(`卡住 ${stuck} 轮`, '#f59e0b', 'rgba(245,158,11,0.15)')}
+                        {stop && badge('已停止', '#ef4444', 'rgba(239,68,68,0.15)')}
+                        {decision && badge(decision, '#8b5cf6', 'rgba(139,92,246,0.15)')}
+                      </div>
+                      <div style={{ color: '#4b5563', fontSize: 11, lineHeight: 1.6 }}>
+                        {err && <span style={{ color: '#ef4444' }}>Warning: {err} &nbsp;</span>}
+                        {stop && <span style={{ color: '#ef4444' }}>Stop: {stop} &nbsp;</span>}
+                        <span style={{ color: '#6b7280' }}>Tools: {tools}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="form-actions">
@@ -1174,7 +1287,7 @@ const HeuristicsSettings: React.FC = () => {
       <div className="settings-card">
         <div className="settings-card-header">
           <div className="settings-card-title">
-            快速预览
+            引擎决策
           </div>
           <button
             className={`btn-link ${showAdvanced ? 'active' : ''}`}

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .loop_state import LoopState
 
 from .loop_state import ControlDecision
+from app.agent.heuristics.features import get_call_signature
 
 
 @dataclass
@@ -319,7 +320,7 @@ Current approach may be stuck."""
 
         return HardConstraint(
             hard_constraints=hard_constraints,
-            failure_conditions=failure_conditions or "Repeating same tool = FAILED",
+            failure_conditions=failure_conditions or "Repeating same action = FAILED",
             trigger_reason="redirect",
             forbidden=forbidden,
             preferred=preferred,
@@ -378,17 +379,19 @@ Current approach may be stuck."""
         state: Optional["LoopState"],
         features: Optional[Any],
     ) -> tuple:
-        """构建禁止/推荐项"""
+        """构建禁止/推荐项（使用签名而非工具名）"""
         forbidden = []
         preferred = []
 
         if state and state.tool_traces:
-            recent_tools = [
-                t.get("tool_name") or t.get("tool")
+            # 禁止特定签名（工具+命令），而非整个工具
+            recent_signatures = [
+                get_call_signature(t)
                 for t in state.tool_traces[-3:]
             ]
-            forbidden = [t for t in recent_tools if t]
+            forbidden = [s for s in recent_signatures if s]
 
+            # 推荐未使用的工具（保持原有逻辑）
             if state.available_tools:
                 used = set(
                     t.get("tool_name") or t.get("tool")

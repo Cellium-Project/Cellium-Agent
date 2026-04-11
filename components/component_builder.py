@@ -93,7 +93,7 @@ class ComponentBuilder(BaseCell):
                         elif isinstance(item, dict):
                             cmd_list.append(item)
             except json.JSONDecodeError:
-                return {"error": f"commands 参数不是有效的 JSON: {commands[:100]}"}
+                return {"success": False, "error": f"commands 参数不是有效的 JSON: {commands[:100]}"}
 
         if not cmd_list:
             cmd_list = [{"name": "execute", "desc": f"执行{description or cell_name}的主要功能"}]
@@ -125,7 +125,7 @@ class ComponentBuilder(BaseCell):
             {{"result": 处理结果}}
         """
         # TODO: 实现 {cn} 的具体逻辑
-        return {{"status": "ok", "message": "{cn} 功能待实现"}}
+        return {{"success": True, "result": "{cn} 功能待实现"}}
 '''
             methods_parts.append(method)
 
@@ -243,7 +243,7 @@ class ComponentBuilder(BaseCell):
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(file_content)
         except Exception as e:
-            return {"error": f"\u5199\u5165\u6587\u4ef6\u5931\u8d25: {e}"}
+            return {"success": False, "error": f"\u5199\u5165\u6587\u4ef6\u5931\u8d25: {e}"}
 
         return {
             "success": True,
@@ -321,7 +321,7 @@ class ComponentBuilder(BaseCell):
                         "is_new": item.get("is_new"),
                         "hint": "\u8be5\u7ec4\u4ef6\u5df2\u88ab\u53d1\u73b0\u4f46\u5c1a\u672a\u52a0\u8f7d\uff0c\u53ef\u5c1d\u8bd5 component.reload()",
                     }
-            return {"error": f"\u672a\u627e\u5230\u7ec4\u4ef6: {name}", "available": list(get_all_cells().keys())}
+            return {"success": False, "error": f"\u672a\u627e\u5230\u7ec4\u4ef6: {name}", "available": list(get_all_cells().keys())}
 
         cmds = cell.get_commands()
         source_file = getattr(cell, "_source_file", None)
@@ -374,12 +374,12 @@ class MyComponent(BaseCell):
 
     def _cmd_do_something(self, input_text: str) -> Dict[str, Any]:
         ""\u6267\u884c\u64cd\u4f5c""
-        return {"result": f"\u5904\u7406\u4e86: {input_text}"}
+        return {"success": True, "result": f"\u5904\u7406\u4e86: {input_text}"}
 
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         ""\u67e5\u8be2\u7528\u6cd5\u5e2e\u52a9""
         cmds = self.get_commands()
-        return {"name": self.cell_name, "commands": cmds, "notes": ["\u586b\u5199\u8be6\u7ec6\u7528\u6cd5"]}
+        return {"success": True, "name": self.cell_name, "commands": cmds, "notes": ["\u586b\u5199\u8be6\u7ec6\u7528\u6cd5"]}
 '''
 
         templates["full"] = None  # 太长不内联，下面动态读取
@@ -402,7 +402,7 @@ class MyComponent(BaseCell):
                 templates["example"] = templates["minimal"]
 
         template = templates.get(style, templates["minimal"])
-        return {"template": template, "style": style, "available_styles": ["minimal", "full", "example"]}
+        return {"success": True, "template": template, "style": style, "available_styles": ["minimal", "full", "example"]}
 
     def _cmd_reload(self) -> Dict[str, Any]:
         """手动触发热重载扫描"""

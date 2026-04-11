@@ -41,7 +41,12 @@ export const API = {
   memoryForget: `${API_BASE}/memories/actions/forget`,
   memoryMerge: `${API_BASE}/memories/actions/merge`,
 
-  // Health
+  // Logs
+  logs: `${API_BASE}/logs`,
+  logsStats: `${API_BASE}/logs/stats`,
+  logsErrors: `${API_BASE}/logs/errors`,
+  logsStatus: `${API_BASE}/logs/status`,
+  logsStatusHistory: `${API_BASE}/logs/status/history`,
   health: `${API_BASE}/health`,
 } as const;
 

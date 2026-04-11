@@ -73,7 +73,7 @@ class MemoryTool(BaseTool):
             return super().execute(command)
         if isinstance(command, str) and command.strip():
             return super().execute({"command": command, **kwargs})
-        return {"error": "未提供有效的 command 参数"}
+        return {"success": False, "error": "未提供有效的 command 参数"}
 
     # ================================================================
     # 子命令实现
@@ -86,9 +86,9 @@ class MemoryTool(BaseTool):
         category: Optional[str] = None,
     ) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
         if not query or not query.strip():
-            return {"error": "搜索关键词不能为空"}
+            return {"success": False, "error": "搜索关键词不能为空"}
 
         try:
             results = self.memory.search_memories(
@@ -98,7 +98,8 @@ class MemoryTool(BaseTool):
                 schema_type=schema_type,
             )
             if not results:
-                return {"found": 0, "message": f"未找到与「{query}」相关的记忆", "results": []}
+                # 搜索成功执行，只是无结果（不是失败）
+                return {"success": True, "found": 0, "message": f"未找到与「{query}」相关的记忆", "results": []}
 
             items = []
             for item in results:
@@ -116,10 +117,10 @@ class MemoryTool(BaseTool):
                     }
                 )
             logger.info("[MemoryTool] search | query=%s | found=%d", query[:50], len(items))
-            return {"found": len(items), "query": query, "results": items}
+            return {"success": True, "found": len(items), "query": query, "results": items}
         except Exception as e:
             logger.error("[MemoryTool] search 失败 | error=%s", e)
-            return {"error": f"搜索失败: {e}"}
+            return {"success": False, "error": f"搜索失败: {e}"}
 
     def _cmd_store(
         self,
@@ -133,11 +134,11 @@ class MemoryTool(BaseTool):
         allow_sensitive: bool = False,
     ) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
         if not title or not title.strip():
-            return {"error": "标题不能为空"}
+            return {"success": False, "error": "标题不能为空"}
         if not content or not content.strip():
-            return {"error": "内容不能为空"}
+            return {"success": False, "error": "内容不能为空"}
 
         try:
             result = self.memory.upsert_memory(
@@ -152,7 +153,7 @@ class MemoryTool(BaseTool):
                 merge_strategy="merge",
             )
             if not result.get("success"):
-                return {"error": result.get("error", "写入失败")}
+                return {"success": False, "error": result.get("error", "写入失败")}
             logger.info("[MemoryTool] store | title=%s | action=%s", title[:40], result.get("action"))
             return {
                 "success": True,
@@ -164,7 +165,7 @@ class MemoryTool(BaseTool):
             }
         except Exception as e:
             logger.error("[MemoryTool] store 失败 | error=%s", e)
-            return {"error": f"写入失败: {e}"}
+            return {"success": False, "error": f"写入失败: {e}"}
 
     def _cmd_update(
         self,
@@ -179,9 +180,9 @@ class MemoryTool(BaseTool):
         allow_sensitive: bool = False,
     ) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
         if not source and not memory_key:
-            return {"error": "update 需要 source 或 memory_key"}
+            return {"success": False, "error": "update 需要 source 或 memory_key"}
 
         try:
             result = self.memory.update_memory(
@@ -196,67 +197,69 @@ class MemoryTool(BaseTool):
                 allow_sensitive=allow_sensitive,
             )
             if not result.get("success"):
-                return {"error": result.get("error", "更新失败")}
+                return {"success": False, "error": result.get("error", "更新失败")}
             return {"success": True, "id": result.get("id"), "source": result.get("source"), "message": "记忆已更新"}
         except Exception as e:
             logger.error("[MemoryTool] update 失败 | error=%s", e)
-            return {"error": f"更新失败: {e}"}
+            return {"success": False, "error": f"更新失败: {e}"}
 
     def _cmd_delete(self, source: Optional[str] = None, memory_key: Optional[str] = None) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
         if not source and not memory_key:
-            return {"error": "delete 需要 source 或 memory_key"}
+            return {"success": False, "error": "delete 需要 source 或 memory_key"}
 
         try:
             result = self.memory.delete_memory(source=source, memory_key=memory_key)
             if not result.get("success"):
-                return {"error": result.get("error", "删除失败")}
+                return {"success": False, "error": result.get("error", "删除失败")}
             return {"success": True, "id": result.get("id"), "message": "记忆已删除"}
         except Exception as e:
             logger.error("[MemoryTool] delete 失败 | error=%s", e)
-            return {"error": f"删除失败: {e}"}
+            return {"success": False, "error": f"删除失败: {e}"}
 
     def _cmd_forget(self, query: Optional[str] = None, source: Optional[str] = None, all_matches: bool = False) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
         if not query and not source:
-            return {"error": "forget 需要 query 或 source"}
+            return {"success": False, "error": "forget 需要 query 或 source"}
 
         try:
             result = self.memory.forget_memories(query=query, source=source, all_matches=all_matches)
             if not result.get("success"):
-                return {"error": result.get("error", "遗忘失败")}
+                return {"success": False, "error": result.get("error", "遗忘失败")}
             return {"success": True, "forgotten": result.get("forgotten", []), "message": "记忆已遗忘"}
         except Exception as e:
             logger.error("[MemoryTool] forget 失败 | error=%s", e)
-            return {"error": f"遗忘失败: {e}"}
+            return {"success": False, "error": f"遗忘失败: {e}"}
 
     def _cmd_merge(self, memory_key: Optional[str] = None, schema_type: Optional[str] = None) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
         if not memory_key and not schema_type:
-            return {"error": "merge 需要至少提供 memory_key 或 schema_type"}
+            return {"success": False, "error": "merge 需要至少提供 memory_key 或 schema_type"}
 
         try:
             result = self.memory.merge_conflicts(memory_key=memory_key, schema_type=schema_type)
             return {"success": True, **result, "message": "冲突合并完成"}
         except Exception as e:
             logger.error("[MemoryTool] merge 失败 | error=%s", e)
-            return {"error": f"合并失败: {e}"}
+            return {"success": False, "error": f"合并失败: {e}"}
 
     def _cmd_list(self, schema_type: Optional[str] = None, category: Optional[str] = None) -> dict:
         if not self._check_memory():
-            return {"error": "长期记忆系统未初始化"}
+            return {"success": False, "error": "长期记忆系统未初始化"}
 
         try:
-            items = self.memory.list_memories(schema_type=schema_type, category=category, limit=50)
+            raw = self.memory.list_memories(schema_type=schema_type, category=category, limit=50)
+            items = raw.get("items", []) if isinstance(raw, dict) else raw
             categories = {}
             schemas = {}
             for item in items:
                 categories[item.get("category", "general")] = categories.get(item.get("category", "general"), 0) + 1
                 schemas[item.get("schema_type", "general")] = schemas.get(item.get("schema_type", "general"), 0) + 1
             return {
+                "success": True,
                 "total_memories": len(items),
                 "categories": [{"category": key, "count": value} for key, value in sorted(categories.items())],
                 "schemas": [{"schema_type": key, "count": value} for key, value in sorted(schemas.items())],
@@ -275,7 +278,7 @@ class MemoryTool(BaseTool):
             }
         except Exception as e:
             logger.error("[MemoryTool] list 失败 | error=%s", e)
-            return {"error": f"查询失败: {e}"}
+            return {"success": False, "error": f"查询失败: {e}"}
 
     # ================================================================
     # 内部方法

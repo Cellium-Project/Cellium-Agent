@@ -104,7 +104,7 @@ class FileTool(BaseTool):
 
         abs_path = self._resolve_path(path)
         if not os.path.isfile(abs_path):
-            return {"error": f"文件不存在: {abs_path}"}
+            return {"success": False, "error": f"文件不存在: {abs_path}"}
 
         try:
             file_size = os.path.getsize(abs_path)
@@ -123,7 +123,7 @@ class FileTool(BaseTool):
             if offset < 0:
                 offset = 0
             if offset >= total_lines:
-                return {"error": f"Offset {offset} 超出文件总行数 {total_lines}"}
+                return {"success": False, "error": f"Offset {offset} 超出文件总行数 {total_lines}"}
 
             end = offset + limit if limit else total_lines
             selected = all_lines[offset:end]
@@ -149,9 +149,9 @@ class FileTool(BaseTool):
                 "encoding": encoding,
             }
         except UnicodeDecodeError as e:
-            return {"error": f"文件编码不是 UTF-8: {e}", "hint": "可尝试 shell: Get-Content -Encoding Default"}
+            return {"success": False, "error": f"文件编码不是 UTF-8: {e}", "hint": "可尝试 shell: Get-Content -Encoding Default"}
         except Exception as e:
-            return {"error": f"读取失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"读取失败 ({type(e).__name__}): {e}"}
 
     def _cmd_write(self, path: str, content: str, mode: str = "overwrite") -> Dict[str, Any]:
         """写入文件（原子写入）
@@ -184,7 +184,7 @@ class FileTool(BaseTool):
                 os.makedirs(parent_dir, exist_ok=True)
 
             if mode == "create" and os.path.exists(abs_path):
-                return {"error": f"文件已存在（mode=create 不允许覆盖）: {abs_path}"}
+                return {"success": False, "error": f"文件已存在（mode=create 不允许覆盖）: {abs_path}"}
 
             if mode == "append":
                 # 追加模式需要先读取现有内容
@@ -204,7 +204,7 @@ class FileTool(BaseTool):
                 "mode": mode,
             }
         except Exception as e:
-            return {"error": f"写入失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"写入失败 ({type(e).__name__}): {e}"}
 
     def _cmd_edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> Dict[str, Any]:
         """编辑文件
@@ -216,13 +216,13 @@ class FileTool(BaseTool):
             replace_all: 是否替换所有匹配（默认 False）
         """
         if not path:
-            return {"error": "未提供 path 参数", "hint": '示例: {"command":"edit","path":"D:\\\\test.py","old_string":"hello","new_string":"hello world"}'}
+            return {"success": False, "error": "未提供 path 参数", "hint": '示例: {"command":"edit","path":"D:\\\\test.py","old_string":"hello","new_string":"hello world"}'}
         if not old_string:
-            return {"error": "未提供 old_string 参数"}
+            return {"success": False, "error": "未提供 old_string 参数"}
         if new_string is None:
-            return {"error": "未提供 new_string 参数"}
+            return {"success": False, "error": "未提供 new_string 参数"}
         if old_string == new_string:
-            return {"error": "old_string 和 new_string 相同，无需替换"}
+            return {"success": False, "error": "old_string 和 new_string 相同，无需替换"}
 
         abs_path = self._resolve_path(path)
 
@@ -233,12 +233,12 @@ class FileTool(BaseTool):
                     self._atomic_write(abs_path, new_string)
                     return {"success": True, "message": f"创建新文件: {abs_path}", "path": abs_path}
                 except Exception as e:
-                    return {"error": f"创建文件失败: {e}"}
-            return {"error": f"文件不存在: {abs_path}"}
+                    return {"success": False, "error": f"创建文件失败: {e}"}
+            return {"success": False, "error": f"文件不存在: {abs_path}"}
 
         file_state = self._get_file_state(abs_path)
         if not file_state:
-            return {"error": "文件尚未读取，请先使用 read 命令读取文件后再进行编辑"}
+            return {"success": False, "error": "文件尚未读取，请先使用 read 命令读取文件后再进行编辑"}
 
         current_mtime = os.path.getmtime(abs_path)
         if current_mtime > file_state.timestamp:
@@ -247,17 +247,17 @@ class FileTool(BaseTool):
                 with open(abs_path, "r", encoding=encoding, errors="replace") as f:
                     current_content = f.read()
                 if current_content != file_state.content:
-                    return {"error": "文件已被外部修改，请重新读取后再编辑"}
+                    return {"success": False, "error": "文件已被外部修改，请重新读取后再编辑"}
             except Exception:
-                return {"error": "文件已被外部修改，请重新读取后再编辑"}
+                return {"success": False, "error": "文件已被外部修改，请重新读取后再编辑"}
 
         actual_old_string = self._find_actual_string(file_state.content, old_string)
         if not actual_old_string:
-            return {"error": f"在文件中未找到要替换的字符串: {repr(old_string[:50])}"}
+            return {"success": False, "error": f"在文件中未找到要替换的字符串: {repr(old_string[:50])}"}
 
         matches = file_state.content.count(actual_old_string)
         if matches > 1 and not replace_all:
-            return {"error": f"找到 {matches} 处匹配，但 replace_all 为 false。设置 replace_all: true 可替换所有匹配"}
+            return {"success": False, "error": f"找到 {matches} 处匹配，但 replace_all 为 false。设置 replace_all: true 可替换所有匹配"}
 
         old_content = file_state.content
         if replace_all:
@@ -272,7 +272,7 @@ class FileTool(BaseTool):
         try:
             self._atomic_write(abs_path, new_content)
         except Exception as e:
-            return {"error": f"写入文件失败: {e}"}
+            return {"success": False, "error": f"写入文件失败: {e}"}
 
         self._set_file_state(abs_path, FileState(
             path=abs_path,
@@ -311,7 +311,7 @@ class FileTool(BaseTool):
         abs_path = self._resolve_path(path)
 
         if not os.path.exists(abs_path):
-            return {"error": f"不存在: {abs_path}"}
+            return {"success": False, "error": f"不存在: {abs_path}"}
 
         try:
             if os.path.isfile(abs_path):
@@ -324,7 +324,7 @@ class FileTool(BaseTool):
                     os.rmdir(abs_path)
                 op = "目录"
             else:
-                return {"error": f"无法识别的类型（非文件非目录）: {abs_path}"}
+                return {"success": False, "error": f"无法识别的类型（非文件非目录）: {abs_path}"}
 
             return {
                 "success": True,
@@ -337,9 +337,9 @@ class FileTool(BaseTool):
                     "error": f"目录非空（需要 recursive=True 才能删除非空目录）",
                     "path": abs_path,
                 }
-            return {"error": f"删除失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"删除失败 ({type(e).__name__}): {e}"}
         except Exception as e:
-            return {"error": f"删除失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"删除失败 ({type(e).__name__}): {e}"}
 
     def _cmd_list(self, dir_path: str = ".", show_hidden: bool = False,
                   pattern: str = None, detail: bool = False) -> Dict[str, Any]:
@@ -354,7 +354,7 @@ class FileTool(BaseTool):
         abs_path = self._resolve_path(dir_path)
 
         if not os.path.isdir(abs_path):
-            return {"error": f"目录不存在: {abs_path}"}
+            return {"success": False, "error": f"目录不存在: {abs_path}"}
 
         try:
             entries = []
@@ -407,9 +407,9 @@ class FileTool(BaseTool):
                 "count": min(count, _MAX_LIST_ENTRIES),
             }
         except PermissionError:
-            return {"error": f"无权限访问: {abs_path}"}
+            return {"success": False, "error": f"无权限访问: {abs_path}"}
         except Exception as e:
-            return {"error": f"列出失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"列出失败 ({type(e).__name__}): {e}"}
 
     def _cmd_exists(self, path: str) -> Dict[str, Any]:
         """检查路径是否存在及类型
@@ -461,7 +461,7 @@ class FileTool(BaseTool):
                 "path": abs_path,
             }
         except Exception as e:
-            return {"error": f"创建失败 ({type(e).__name__}): {e}"}
+            return {"success": False, "error": f"创建失败 ({type(e).__name__}): {e}"}
 
     def _cmd_create(self, base_dir: str, files: Dict[str, str], auto_mkdir: bool = True) -> Dict[str, Any]:
         """批量创建文件（原子写入）
@@ -493,7 +493,7 @@ class FileTool(BaseTool):
             try:
                 files = _json.loads(files)
             except (_json.JSONDecodeError, TypeError) as _e:
-                return {"error": f"files 参数格式错误（期望字典或JSON字符串）: {_e}"}
+                return {"success": False, "error": f"files 参数格式错误（期望字典或JSON字符串）: {_e}"}
 
         if not files or not isinstance(files, dict):
             return {
@@ -512,7 +512,7 @@ class FileTool(BaseTool):
         try:
             os.makedirs(abs_base, exist_ok=True)
         except Exception as e:
-            return {"error": f"无法创建目录 {abs_base}: {e}"}
+            return {"success": False, "error": f"无法创建目录 {abs_base}: {e}"}
 
         results = []
         success_count = 0

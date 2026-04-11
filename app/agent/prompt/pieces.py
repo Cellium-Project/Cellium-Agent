@@ -128,6 +128,21 @@ DYNAMIC_PIECES: List[PromptPiece] = [
         priority=200,
         enabled=True,
     ),
+    PromptPiece(
+        name="self_awareness",
+        template="""## 运行时状态参考
+
+{% if runtime_status %}
+{{ runtime_status }}
+
+**请在决策时参考以上运行状态**，特别是：
+- 出现 `[错误]` 或 `[警告]` → 当前方法有问题，应换策略
+- 出现 `[决策] redirect` → 被要求换工具，不要重复
+- 出现 `[停止]` → 已达终止条件，整理结果并结束
+{% endif %}""",
+        priority=105,
+        enabled=False,  # 有 runtime_status 时才启用
+    ),
 ]
 
 

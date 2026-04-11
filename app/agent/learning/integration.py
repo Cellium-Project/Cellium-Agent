@@ -107,6 +107,7 @@ class LearningIntegration:
         self._current_policy: str = "default"
         self._session_active = False
         self._override_policy: Optional[str] = None
+        self._round_updates: int = 0  # 累计轮次更新次数
 
         # ★ ControlLoop 引用（用于传递 Policy 阈值）
         self._control_loop = None
@@ -179,6 +180,50 @@ class LearningIntegration:
         """
         self._control_loop = control_loop
         logger.info("[LearningIntegration] ControlLoop 已设置")
+
+    def update_round(
+        self,
+        iteration: int,
+        max_iterations: int,
+        tool_call_count: int = 0,
+        stuck_iterations: int = 0,
+    ):
+        """
+        迭代级别反馈更新（轻量更新，不做持久化）
+
+        Args:
+            iteration: 当前迭代轮次
+            max_iterations: 最大迭代次数
+            tool_call_count: 本轮工具调用次数
+            stuck_iterations: 当前停滞迭代次数
+        """
+        if not self.enabled or not self._session_active:
+            return
+
+        # 参数有效性检查
+        if iteration < 0 or tool_call_count < 0 or stuck_iterations < 0:
+            logger.warning(
+                "[LearningIntegration] update_round 参数无效 | iteration=%d | tool_call_count=%d | stuck_iterations=%d",
+                iteration, tool_call_count, stuck_iterations
+            )
+            return
+
+        self._round_updates += 1
+
+        reward = compute_reward(
+            error=False,
+            iteration=iteration,
+            max_iterations=max_iterations,
+            tool_call_count=tool_call_count,
+            stuck_iterations=stuck_iterations,
+        )
+
+        self.memory.update(self._current_policy, reward, persist=False)
+
+        logger.debug(
+            "[LearningIntegration] 轮次更新 | policy=%s | reward=%.2f | round_updates=%d",
+            self._current_policy, reward, self._round_updates
+        )
 
     def end_session(
         self,

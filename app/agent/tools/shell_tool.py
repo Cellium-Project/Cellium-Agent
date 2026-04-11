@@ -122,13 +122,13 @@ class ShellTool(BaseTool):
         background = args.get("background", False)
 
         if not cmd or not cmd.strip():
-            return {"error": "缺少 cmd 参数"}
+            return {"success": False, "error": "缺少 cmd 参数"}
 
         if not self.shell:
-            return {"error": "Shell 未初始化"}
+            return {"success": False, "error": "Shell 未初始化"}
 
         if not self._check_permission(cmd):
-            return {"error": f"Permission denied: {cmd[:100]}"}
+            return {"success": False, "error": f"Permission denied: {cmd[:100]}"}
 
         try:
             logger.info("[ShellTool] run | cmd=%s | background=%s", cmd[:100], background)
@@ -151,7 +151,7 @@ class ShellTool(BaseTool):
 
         except Exception as e:
             logger.error("[ShellTool] run 失败 | error=%s", str(e))
-            return {"error": f"执行失败: {str(e)}"}
+            return {"success": False, "error": f"执行失败: {str(e)}"}
 
     def _cmd_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -161,7 +161,7 @@ class ShellTool(BaseTool):
           - tasks: 任务列表 [{task_id, status, pid?, ...}]
         """
         if not self.shell:
-            return {"error": "Shell 未初始化"}
+            return {"success": False, "error": "Shell 未初始化"}
 
         try:
             tasks = self.shell.list_background_tasks()
@@ -172,7 +172,7 @@ class ShellTool(BaseTool):
             }
         except Exception as e:
             logger.error("[ShellTool] list 失败 | error=%s", str(e))
-            return {"error": f"查询失败: {str(e)}"}
+            return {"success": False, "error": f"查询失败: {str(e)}"}
 
     def _cmd_output(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -183,10 +183,10 @@ class ShellTool(BaseTool):
         """
         task_id = args.get("task_id", "")
         if not task_id:
-            return {"error": "缺少 task_id 参数"}
+            return {"success": False, "error": "缺少 task_id 参数"}
 
         if not self.shell:
-            return {"error": "Shell 未初始化"}
+            return {"success": False, "error": "Shell 未初始化"}
 
         try:
             result = self.shell.get_background_result(task_id, timeout=0)
@@ -204,7 +204,7 @@ class ShellTool(BaseTool):
                             "output": content,
                             "running": True,
                         }
-                return {"error": f"任务不存在或已完成: {task_id}"}
+                return {"success": False, "error": f"任务不存在或已完成: {task_id}"}
 
             return {
                 "success": True,
@@ -215,7 +215,7 @@ class ShellTool(BaseTool):
             }
         except Exception as e:
             logger.error("[ShellTool] output 失败 | error=%s", str(e))
-            return {"error": f"获取输出失败: {str(e)}"}
+            return {"success": False, "error": f"获取输出失败: {str(e)}"}
 
     def _cmd_kill(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -226,10 +226,10 @@ class ShellTool(BaseTool):
         """
         task_id = args.get("task_id", "")
         if not task_id:
-            return {"error": "缺少 task_id 参数"}
+            return {"success": False, "error": "缺少 task_id 参数"}
 
         if not self.shell:
-            return {"error": "Shell 未初始化"}
+            return {"success": False, "error": "Shell 未初始化"}
 
         try:
             killed = self.shell.kill_background_task(task_id)
@@ -239,10 +239,10 @@ class ShellTool(BaseTool):
                     "task_id": task_id,
                     "message": f"任务 {task_id} 已终止",
                 }
-            return {"error": f"任务不存在: {task_id}"}
+            return {"success": False, "error": f"任务不存在: {task_id}"}
         except Exception as e:
             logger.error("[ShellTool] kill 失败 | error=%s", str(e))
-            return {"error": f"终止失败: {str(e)}"}
+            return {"success": False, "error": f"终止失败: {str(e)}"}
 
     # ================================================================
     #  权限检查
@@ -293,6 +293,6 @@ class ShellTool(BaseTool):
             elif sub_cmd == "kill":
                 return self._cmd_kill(command)
             else:
-                return {"error": f"未知子命令: {sub_cmd}，可用: run, list, output, kill"}
+                return {"success": False, "error": f"未知子命令: {sub_cmd}，可用: run, list, output, kill"}
 
-        return {"error": "未提供有效的 command 参数"}
+        return {"success": False, "error": "未提供有效的 command 参数"}

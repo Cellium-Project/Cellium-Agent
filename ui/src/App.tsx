@@ -64,10 +64,12 @@ const App: React.FC = () => {
     <div className="app-layout">
       <Sidebar />
       <div className="main-content">
-        <div style={{ display: showSettingsPage ? 'none' : 'block', flex: 1 }}>
+        <div className={`page-container chat-page ${!showSettingsPage ? 'active' : ''}`}>
           <ChatView />
         </div>
-        {showSettingsPage && <SettingsPage />}
+        <div className={`page-container settings-page ${showSettingsPage ? 'active' : ''}`}>
+          <SettingsPage />
+        </div>
       </div>
     </div>
   );
