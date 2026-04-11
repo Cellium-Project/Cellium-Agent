@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Logo](logo.png)
+<img src="logo.png" width="200" style="background:#ffffff;padding:20px;border-radius:10px;">
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-green)](https://fastapi.tiangolo.com/)
