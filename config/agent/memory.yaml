@@ -19,4 +19,3 @@ memory:
     embedding_dimensions: 96
     allow_sensitive_store: false
     default_schema: general
-
