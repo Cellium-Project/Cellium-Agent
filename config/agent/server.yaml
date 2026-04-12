@@ -3,7 +3,7 @@
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 18000
 
   # CORS 配置（支持逗号分隔字符串或列表）
   cors_origins: ["*"]

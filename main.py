@@ -46,7 +46,8 @@ class MainApplication(LogMixin):
     def run(self, host: str = None, port: int = None):
         cfg = get_config()
         _host = host or cfg.get("server.host", "127.0.0.1")
-        _port = port or cfg.get("server.port", 8000)
+        _port = port or cfg.get("server.port", 18000)
+        _port = self._ensure_available_port(_host, _port)
 
         self._setup_logging(cfg)
         self._setup_containers(cfg)
@@ -62,6 +63,31 @@ class MainApplication(LogMixin):
         self.logger.info("=" * 50)
 
         uvicorn.run(self.app, host=_host, port=_port, log_config=setup_uvicorn_logging())
+
+    def _ensure_available_port(self, host: str, preferred_port: int) -> int:
+        """确保端口可用，如果被占用则自动切换"""
+        import socket
+
+        port = preferred_port
+        max_attempts = 10
+
+        for attempt in range(max_attempts):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((host, port))
+                sock.close()
+                if port != preferred_port:
+                    self.logger.warning(f"端口 {preferred_port} 被占用，已自动切换到端口 {port}")
+                return port
+            except OSError:
+                port = preferred_port + attempt + 1
+                self.logger.debug(f"端口 {preferred_port + attempt} 被占用，尝试端口 {port}")
+
+        import random
+        random_port = random.randint(30000, 40000)
+        self.logger.warning(f"无法找到可用端口，使用随机端口 {random_port}")
+        return random_port
 
     def _setup_logging(self, cfg):
         log_level = cfg.get("logging.level", "INFO")

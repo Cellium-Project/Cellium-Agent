@@ -200,8 +200,9 @@ class AgentConfig:
     def _defaults() -> Dict[str, Any]:
         """默认配置兜底"""
         return {
-            "server": {"host": "0.0.0.0", "port": 8000,
+            "server": {"host": "0.0.0.0", "port": 18000,
                        "cors": {"enabled": True, "allow_origins": ["*"]}},
+            # 注意：端口从 8000 改为 18000，避免与常见开发端口冲突
             "llm": {"provider": "openai",
                     "openai": {"model": "gpt-4o", "temperature": 0.7},
                     "streaming": {"enabled": True}},

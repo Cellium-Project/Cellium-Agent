@@ -58,7 +58,8 @@ python main.py
 python main.py
 ```
 
-启动后访问 http://localhost:8000 打开聊天界面，访问 http://localhost:8000/docs 查看 API 文档。
+启动后访问 http://localhost:18000 打开聊天界面，访问 http://localhost:18000/docs 查看 API 文档。
+（默认端口 18000，如被占用会自动切换，请查看启动日志获取实际端口）
 
 ## 核心架构：决策环 + 自学习
 

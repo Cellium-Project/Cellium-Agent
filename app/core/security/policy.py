@@ -213,6 +213,10 @@ class SecurityPolicy:
             if path_result:
                 return path_result
 
+        self_protection_result = self._check_self_termination(cmd)
+        if self_protection_result:
+            return self_protection_result
+
         # 优先检查用户自定义黑名单
         cmd_lower = cmd.lower()
         for pattern in self._user_blacklist:
@@ -237,6 +241,37 @@ class SecurityPolicy:
             "risk_level": RiskLevel.MEDIUM.value,
             "message": "命令已放行（中等风险）"
         }
+
+    def _check_self_termination(self, cmd: str) -> Optional[Dict]:
+        """检查是否尝试终止当前进程"""
+        import os
+        current_pid = os.getpid()
+
+        taskkill_pattern = rf'taskkill\s+.*\b{current_pid}\b'
+        if re.search(taskkill_pattern, cmd, re.IGNORECASE):
+            return {
+                "allowed": False,
+                "risk_level": RiskLevel.CRITICAL.value,
+                "message": f"禁止终止当前进程 (PID: {current_pid})"
+            }
+
+        kill_pattern = rf'kill\s+.*\b{current_pid}\b'
+        if re.search(kill_pattern, cmd, re.IGNORECASE):
+            return {
+                "allowed": False,
+                "risk_level": RiskLevel.CRITICAL.value,
+                "message": f"禁止终止当前进程 (PID: {current_pid})"
+            }
+
+        stop_process_pattern = rf'stop-process\s+.*\b{current_pid}\b'
+        if re.search(stop_process_pattern, cmd, re.IGNORECASE):
+            return {
+                "allowed": False,
+                "risk_level": RiskLevel.CRITICAL.value,
+                "message": f"禁止终止当前进程 (PID: {current_pid})"
+            }
+
+        return None
 
     def _is_safe_command(self, cmd: str) -> bool:
         """检查是否在白名单中"""
