@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-orange)](LICENSE)
 [![React](https://img.shields.io/badge/React-18%2B-61DAFB?logo=react)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-3178C6?logo=typescript)](https://www.typescriptlang.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2FmacOS%2FLinux-blue)]()
 
 **这是一个 AI Agent 框架**
 
