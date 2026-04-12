@@ -160,37 +160,45 @@ class QQAdapter(ChannelAdapter):
             await self._ws.send(json.dumps(data))
 
     async def send_message(self, user_id: str, content: str, message_type: str = "c2c", **kwargs) -> bool:
+        is_markdown = kwargs.get("markdown", False)
         try:
             token = await self._get_access_token()
             if message_type == "c2c":
-                return await self._send_c2c_message(token, user_id, content, kwargs.get("msg_id", ""))
+                return await self._send_c2c_message(token, user_id, content, kwargs.get("msg_id", ""), is_markdown)
             elif message_type == "group":
-                return await self._send_group_message(token, user_id, content, kwargs.get("msg_id", ""))
+                return await self._send_group_message(token, user_id, content, kwargs.get("msg_id", ""), is_markdown)
         except Exception as e:
             logger.error(f"[QQAdapter] Send error: {e}")
         return False
 
-    async def _send_c2c_message(self, token: str, user_id: str, content: str, msg_id: str) -> bool:
+    async def _send_c2c_message(self, token: str, user_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
         url = f"https://api.sgroup.qq.com/v2/users/{user_id}/messages"
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
         import uuid
         msg_seq = int(uuid.uuid4().int % 900000000000000) + 100000000000000
-        payload = {"content": content, "msg_type": 0, "msg_id": msg_id, "seq": msg_seq}
+        if is_markdown:
+            payload = {"markdown": {"content": content}, "msg_type": 2, "msg_id": msg_id, "seq": msg_seq}
+        else:
+            payload = {"content": content, "msg_type": 0, "msg_id": msg_id, "seq": msg_seq}
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
-            logger.info(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}")
+            logger.info(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}, markdown={is_markdown}")
             return True
 
-    async def _send_group_message(self, token: str, group_id: str, content: str, msg_id: str) -> bool:
+    async def _send_group_message(self, token: str, group_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
         url = "https://api.sgroup.qq.com/openapi/msg/group"
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
-        payload = {"target": {"type": 2, "id": group_id}, "content": content, "msg_type": 0, "msg_id": msg_id}
+        if is_markdown:
+            payload = {"target": {"type": 2, "id": group_id}, "markdown": {"content": content}, "msg_type": 2, "msg_id": msg_id}
+        else:
+            payload = {"target": {"type": 2, "id": group_id}, "content": content, "msg_type": 0, "msg_id": msg_id}
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
+            logger.info(f"[QQAdapter] Group sent: markdown={is_markdown}")
             return True
 
     def _parse_message(self, t: str, d: Dict[str, Any]) -> Optional[UnifiedMessage]:

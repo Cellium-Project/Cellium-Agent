@@ -170,6 +170,12 @@ class ChannelManager:
             system_injection = adapter.build_inject_content(message, message.content) if adapter else None
             content_to_agent = message.content
             try:
+                # 从 SessionManager 获取 memory（会自动从归档恢复历史）
+                from app.agent.loop.session_manager import get_session_manager
+                session_mgr = get_session_manager()
+                session_info = session_mgr.get_or_create(session_id)
+                session_memory = session_info.memory
+
                 lock = await self._agent_loop_manager.get_lock(session_id)
                 async with lock:
                     loop = await self._agent_loop_manager.get_loop(session_id)
@@ -189,27 +195,28 @@ class ChannelManager:
                                     message.user_id,
                                     chunk,
                                     message.message_type,
+                                    markdown=True,
                                 )
                             except Exception as e:
                                 logger.warning(f"[ChannelManager] Failed to send message chunk: {e}")
 
                     try:
-                        async for event in loop.run_stream(content_to_agent, system_injection=system_injection):
+                        async for event in loop.run_stream(content_to_agent, memory=session_memory, session_id=session_id, system_injection=system_injection):
                             try:
                                 event_type = event.get("type")
                                 if event_type == "thinking":
-                                    thinking_content = event.get("content", "正在思考...")
+                                    thinking_content = event.get("content", "Thinking...")
                                     if thinking_content:
-                                        await safe_send(f"💭 {thinking_content}")
+                                        await safe_send(f"> 💭 **Thinking**: {thinking_content}")
                                 elif event_type == "error":
                                     error_msg = event.get("error", "未知错误")
-                                    await safe_send(f"❌ 错误: {error_msg}")
+                                    await safe_send(f"> ❌ **错误**: `{error_msg}`")
                                 elif event_type == "tool_start":
                                     tool_name = event.get("tool", "unknown")
                                     desc = event.get("description", "")
-                                    tool_info = f"🔧 正在调用 {tool_name}"
+                                    tool_info = f"### 🔧 正在调用 {tool_name}"
                                     if desc:
-                                        tool_info += f"\n{desc}"
+                                        tool_info += f"\n\n> {desc}"
                                     await safe_send(tool_info)
                                 elif event_type == "tool_result":
                                     tool_name = event.get("tool", "unknown")
@@ -218,10 +225,7 @@ class ChannelManager:
                                     content_str = result.get("content", "") if isinstance(result, dict) else str(result)
                                     if len(content_str) > 300:
                                         content_str = content_str[:300] + "..."
-                                    result_info = f"✅ {tool_name} 完成 ({duration}ms)"
-                                    if content_str:
-                                        result_info += f"\n{content_str}"
-                                    await safe_send(result_info)
+                                    await safe_send(f"> ## ✅ **{tool_name}** 耗时 {duration}ms")
                                 elif event_type == "content_chunk":
                                     await safe_send(event["content"])
                                     sent_any = True
