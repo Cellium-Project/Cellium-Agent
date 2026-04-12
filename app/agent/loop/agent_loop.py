@@ -412,7 +412,7 @@ class AgentLoop:
         }
 
 
-    async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None):
+    async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None, system_injection: str = None):
 
         """流式执行 Agent 循环"""
         effective_memory = memory or self.memory
@@ -472,6 +472,7 @@ class AgentLoop:
             yield {"type": "thinking", "content": "正在思考..."}
 
             self._tool_call_count_in_round = 0  # 重置轮次工具调用计数
+            _pending_system_injection = system_injection  # 外部平台注入的引导文本
 
             while True:
                 # === 在迭代开始前执行待处理的压缩 ===
@@ -516,7 +517,6 @@ class AgentLoop:
 
 
                 _pending_guidance_msg = None
-                _pending_system_injection = None
                 _force_stop = False
                 _active_constraint = None
 
@@ -541,7 +541,11 @@ class AgentLoop:
                         state=self._loop_state,
                     )
                     _active_constraint = constraint
-                    _pending_system_injection = self._constraint_renderer.render_combined(constraint)
+                    ctrl_injection = self._constraint_renderer.render_combined(constraint)
+                    if _pending_system_injection and ctrl_injection:
+                        _pending_system_injection = f"{_pending_system_injection}\n{ctrl_injection}"
+                    elif ctrl_injection:
+                        _pending_system_injection = ctrl_injection
                     _force_stop = constraint.force_stop
 
                     if decision.force_memory_compact and not self.flash_mode:

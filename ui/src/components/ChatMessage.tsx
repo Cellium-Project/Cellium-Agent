@@ -172,7 +172,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
           <span className="tool-trace-name">{escapeHtml(String(trace.tool || 'unknown'))}</span>
           {status === 'running' && (
             <span className="tool-status-running">
-              <span className="spinner"></span>
+              <span className="loading-pulse"></span>
               执行中 {durStr}
             </span>
           )}

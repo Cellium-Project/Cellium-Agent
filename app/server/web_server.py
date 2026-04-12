@@ -4,6 +4,7 @@ FastAPI 应用工厂
 """
 
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -15,7 +16,19 @@ from app.server.routes.config import router as config_router
 from app.server.routes.memory import router as memory_router
 from app.server.routes.components import router as components_router
 from app.server.routes.logs import router as logs_router
+from app.server.routes.channels import router as channels_router
+from app.server.routes.session_events import router as session_events_router
 
+
+@asynccontextmanager
+async def lifespan_context(app: FastAPI):
+    from app.channels import ChannelManager
+    channel_mgr = ChannelManager.get_instance()
+    if channel_mgr.get_adapter("qq") and not channel_mgr.is_running:
+        await channel_mgr.start_all(with_queue=False)
+        import logging
+        logging.getLogger(__name__).info("[Channel] QQ 通道已在启动时自动连接")
+    yield
 
 
 def create_app() -> FastAPI:
@@ -27,7 +40,8 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Cellium Agent",
         description="基于微内核架构（EventBus + DI + BaseTool）的跨平台通用 Agent",
-        version="2.0.0"
+        version="2.0.0",
+        lifespan=lifespan_context,
     )
 
     # ★ 从 server.yaml 读取 CORS 配置
@@ -52,6 +66,8 @@ def create_app() -> FastAPI:
     app.include_router(memory_router)
     app.include_router(components_router)
     app.include_router(logs_router)
+    app.include_router(channels_router)
+    app.include_router(session_events_router)
 
 
     # ★ 静态文件目录从 server.yaml 读取

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { API, patchJSON } from '../utils/api';
 import { Icons } from './Icons';
@@ -33,13 +33,67 @@ export const Sidebar: React.FC = () => {
     switchSession,
     toggleSidebar,
     fetchSessions,
+    updateSession,
+    removeSession,
     setShowSettingsPage,
     showSettingsPage,
   } = useAppStore();
 
-  React.useEffect(() => {
+  useEffect(() => {
     fetchSessions();
   }, [fetchSessions]);
+
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let isClosed = false;
+
+    const connect = () => {
+      if (isClosed) return;
+
+      eventSource = new EventSource('/api/session-events/events');
+
+      eventSource.onopen = () => {
+        console.log('[SSE] Connected to session events');
+      };
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'ping') return;
+          if (data.type === 'session_created') {
+            useAppStore.getState().fetchSessions();
+          } else if (data.type === 'session_updated') {
+            useAppStore.getState().updateSession(data.data);
+            const { currentSessionId, messages, isStreaming } = useAppStore.getState();
+            if (currentSessionId === data.data.session_id && !isStreaming && data.data.message_count !== messages.length) {
+              useAppStore.getState().fetchMessages(data.data.session_id, 0, true);
+            }
+          } else if (data.type === 'session_deleted') {
+            useAppStore.getState().removeSession(data.data.session_id);
+          }
+        } catch (e) {
+          console.error('[SSE] parse error:', e);
+        }
+      };
+
+      eventSource.onerror = () => {
+        eventSource?.close();
+        eventSource = null;
+        if (!isClosed) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      isClosed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      eventSource?.close();
+    };
+  }, []);
 
   const handleNewChat = async () => {
     await createSession();

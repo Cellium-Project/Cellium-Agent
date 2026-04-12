@@ -523,6 +523,7 @@ body {
 }
 
 /* ── 加载动画 ── */
+/* 基础旋转环 */
 .loading {
     display: inline-block;
     width: 18px;
@@ -533,8 +534,64 @@ body {
     animation: spin 0.8s linear infinite;
 }
 
+/* 三色脉冲点（高级感） */
+.loading-dots {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 18px;
+}
+.loading-dots span {
+    width: 6px;
+    height: 6px;
+    background: #1a73e8;
+    border-radius: 50%;
+    animation: pulse-dot 1.2s ease-in-out infinite;
+}
+.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+.loading-glow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+}
+
+.settings-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px;
+    color: #666;
+    font-size: 14px;
+}
+
+/* 呼吸脉冲 */
+.loading-pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: #1a73e8;
+    border-radius: 50%;
+    animation: breathe 1.5s ease-in-out infinite;
+}
+
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-dot {
+    0%, 100% { transform: scale(0.6); opacity: 0.4; }
+    50% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes breathe {
+    0%, 100% { transform: scale(0.8); opacity: 0.4; }
+    50% { transform: scale(1.2); opacity: 1; }
 }
 
 /* ── Markdown 样式覆盖（匹配浅色主题） ── */

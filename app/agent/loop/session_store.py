@@ -181,12 +181,18 @@ class SessionStore:
                 meta["last_active"] = datetime.now().isoformat()
                 store["last_active_session"] = session_id
                 self._write_store(store)
+                self._publish_event("session_updated", meta)
                 return SessionMeta(**meta)
 
             # 创建新会话
             if session_id is None:
                 import uuid
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
+                title = None
+            elif session_id.startswith("qq:"):
+                title = f"QQ-{session_id.split(':')[1][:8]}"
+            else:
+                title = None
 
             now = datetime.now().isoformat()
             meta = SessionMeta(
@@ -194,7 +200,7 @@ class SessionStore:
                 created_at=now,
                 last_active=now,
                 message_count=0,
-                title=None,
+                title=title,
             )
 
             sessions.append(meta.to_dict())
@@ -202,8 +208,18 @@ class SessionStore:
             store["last_active_session"] = session_id
             self._write_store(store)
 
+            self._publish_event("session_created", meta.to_dict())
             logger.info("[SessionStore] 创建新会话: %s", session_id)
             return meta
+
+    def _publish_event(self, event_type: str, data: Dict):
+        """发布会话事件到 SSE 订阅者"""
+        try:
+            from app.server.routes.session_events import publish_session_event
+            publish_session_event(event_type, data)
+            logger.debug(f"[SessionStore] 事件已发布: {event_type}")
+        except Exception as e:
+            logger.warning(f"[SessionStore] 事件发布失败: {e}")
 
     def update_message_count(self, session_id: str, delta: int = 1):
         """更新消息计数"""
@@ -215,6 +231,7 @@ class SessionStore:
                 if s["session_id"] == session_id:
                     s["message_count"] = s.get("message_count", 0) + delta
                     s["last_active"] = datetime.now().isoformat()
+                    self._publish_event("session_updated", s)
                     break
 
             store["last_active_session"] = session_id
@@ -229,6 +246,7 @@ class SessionStore:
             for s in sessions:
                 if s["session_id"] == session_id:
                     s["title"] = title
+                    self._publish_event("session_updated", s)
                     break
 
             self._write_store(store)
@@ -275,6 +293,7 @@ class SessionStore:
                 store["last_active_session"] = new_sessions[-1]["session_id"] if new_sessions else None
 
             self._write_store(store)
+            self._publish_event("session_deleted", {"session_id": session_id})
             return True
 
     def session_exists(self, session_id: str) -> bool:

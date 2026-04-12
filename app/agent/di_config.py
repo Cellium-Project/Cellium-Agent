@@ -12,7 +12,9 @@ Agent 依赖注入容器初始化
   - ShellTool          → Shell 工具
 """
 
+import asyncio
 import logging
+import os
 from typing import Optional
 from app.core.di.container import (
     get_container,
@@ -31,6 +33,33 @@ from app.agent.llm.engine import BaseLLMEngine, create_llm_engine
 from app.core.util.agent_config import get_config
 
 logger = logging.getLogger(__name__)
+
+
+async def _do_channel_reconnect(adapter):
+    """触发通道重连（模块级函数供回调使用）"""
+    try:
+        await adapter.disconnect()
+        await asyncio.sleep(0.5)
+        await adapter.connect()
+        logger.info("[AgentDI] 通道重连完成")
+    except Exception as e:
+        logger.error("[AgentDI] 通道重连失败: %s", e)
+
+
+async def _do_channel_start(channel_mgr, qq_config):
+    """启动新通道"""
+    try:
+        from app.channels.qq_adapter import QQAdapter
+        adapter = QQAdapter(
+            app_id=qq_config.get_app_id(),
+            app_secret=qq_config.get_app_secret(),
+            intents=qq_config._intents,
+        )
+        await channel_mgr.register_adapter(adapter)
+        await adapter.connect()
+        logger.info("[AgentDI] 通道启动完成")
+    except Exception as e:
+        logger.error("[AgentDI] 通道启动失败: %s", e)
 
 
 def setup_agent_di(
@@ -66,6 +95,9 @@ def setup_agent_di(
     if memory_dir is None:
         memory_dir = _cfg.get("memory.memory_dir", "memory")
 
+    _client_logger = logging.getLogger("app.client")
+    _client_logger.setLevel(logging.DEBUG if _cfg.get("logging.client_log", False) else logging.CRITICAL + 1)
+
     # ★ Agent 配置热重载支持：使用可变容器存储最新配置
     _agent_config_holder = {
         "max_iterations": max_iterations,
@@ -83,8 +115,26 @@ def setup_agent_di(
             default_iter = new_val.get("max_iterations", 10) if new_val else 10
             _agent_config_holder["max_iterations"] = default_iter if enforce else float('inf')
             _agent_config_holder["flash_mode"] = new_val.get("flash_mode", False) if new_val else False
-            logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
-                       _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
+            shell_cwd = new_val.get("shell_cwd", "") if new_val else ""
+            if shell_cwd:
+                if not os.path.isabs(shell_cwd):
+                    shell_cwd = os.path.join(get_config().config_root, shell_cwd)
+                if os.path.isdir(shell_cwd):
+                    from app.agent.shell.cellium_shell import CelliumShell
+                    shell = container.resolve(CelliumShell) if container.has(CelliumShell) else None
+                    if shell:
+                        shell._cwd = shell_cwd
+                        logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s | shell_cwd=%s",
+                                   _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"], shell_cwd)
+                    else:
+                        logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s | shell_cwd=%s (Shell未初始化)",
+                                   _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"], shell_cwd)
+                else:
+                    logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
+                               _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
+            else:
+                logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
+                           _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
         except Exception as e:
             logger.error("[AgentDI] Agent 配置热更新失败: %s", e, exc_info=True)
 
@@ -117,6 +167,86 @@ def setup_agent_di(
 
     _cfg.on_change("learning", _on_learning_config_change)
 
+    def _on_security_config_change(section, old_val, new_val):
+        """security 配置变更时重新加载 SecurityPolicy"""
+        if section != "security":
+            return
+        try:
+            # 获取 SecurityPolicy 实例并重载配置
+            if container.has(SecurityPolicy):
+                security = container.resolve(SecurityPolicy)
+                security.reload_blacklist()
+                # 更新其他安全配置
+                if new_val:
+                    forbidden_dirs = new_val.get("forbidden_dirs", [])
+                    if forbidden_dirs:
+                        security.set_forbidden_dirs(forbidden_dirs)
+                logger.info("[AgentDI] Security 配置已热更新")
+        except Exception as e:
+            logger.error("[AgentDI] Security 配置热更新失败: %s", e, exc_info=True)
+
+    _cfg.on_change("security", _on_security_config_change)
+
+    def _on_logging_config_change(section, old_val, new_val):
+        """logging 配置变更时动态调整日志级别"""
+        if section != "logging":
+            return
+        try:
+            if new_val:
+                level_str = new_val.get("level", "INFO").upper()
+                level_map = {
+                    "DEBUG": logging.DEBUG,
+                    "INFO": logging.INFO,
+                    "WARNING": logging.WARNING,
+                    "ERROR": logging.ERROR,
+                    "CRITICAL": logging.CRITICAL,
+                }
+                new_level = level_map.get(level_str, logging.INFO)
+                root_logger = logging.getLogger()
+                root_logger.setLevel(new_level)
+                for handler in root_logger.handlers:
+                    handler.setLevel(new_level)
+
+                client_log_enabled = new_val.get("client_log", False)
+                _client_logger = logging.getLogger("app.client")
+                _client_logger.setLevel(logging.DEBUG if client_log_enabled else logging.CRITICAL + 1)
+
+                logger.info("[AgentDI] Logging 配置已热更新 | level=%s | client_log=%s", level_str, client_log_enabled)
+        except Exception as e:
+            logger.error("[AgentDI] Logging 配置热更新失败: %s", e, exc_info=True)
+
+    _cfg.on_change("logging", _on_logging_config_change)
+
+    def _on_channels_config_change(section, old_val, new_val):
+        """channels 配置变更时重新加载通道配置并重连"""
+        if section != "channels":
+            return
+        try:
+            from app.channels.qq_channel_config import QQChannelConfig
+            from app.channels import ChannelManager
+            qq_config = QQChannelConfig()
+            qq_config.reload()
+            channel_mgr = ChannelManager.get_instance()
+            adapter = channel_mgr.get_adapter("qq")
+            if adapter:
+                adapter.app_id = qq_config.get_app_id(force_reload=True)
+                adapter.app_secret = qq_config.get_app_secret(force_reload=True)
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.create_task(_do_channel_reconnect(adapter))
+                )
+                logger.info("[AgentDI] Channels 配置已热更新，正在重连...")
+            elif qq_config.should_auto_start():
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.create_task(_do_channel_start(channel_mgr, qq_config))
+                )
+                logger.info("[AgentDI] Channels 配置已热更新，正在启动...")
+            else:
+                logger.warning("[AgentDI] Channels 配置已更新，但凭证缺失或未启用")
+        except Exception as e:
+            logger.error("[AgentDI] Channels 配置热更新失败: %s", e, exc_info=True)
+
+    _cfg.on_change("channels", _on_channels_config_change)
+
     # --- 1. 注册 EventBus ---
     if not container.has(EventBus):
         container.register(EventBus, get_event_bus(), singleton=True)
@@ -141,7 +271,11 @@ def setup_agent_di(
         SecurityPolicy._di_registered = True
 
     # --- 3. 注册 Shell（注入 SecurityPolicy）---
-    _shell = shell or CelliumShell(security_policy=_security)
+    agent_cfg = _cfg.get_section("agent") or {}
+    shell_cwd = agent_cfg.get("shell_cwd", "") or None
+    if shell_cwd and not os.path.isabs(shell_cwd):
+        shell_cwd = os.path.join(get_config().config_root, shell_cwd)
+    _shell = shell or CelliumShell(security_policy=_security, initial_cwd=shell_cwd)
     if not hasattr(CelliumShell, '_di_registered'):
         container.register(CelliumShell, _shell, singleton=True)
         CelliumShell._di_registered = True

@@ -1,0 +1,7 @@
+channels:
+  qq:
+    enabled: true
+    auto_start: true
+    app_id: ''
+    app_secret: ''
+    intents: 1107296256

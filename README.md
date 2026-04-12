@@ -31,6 +31,7 @@
 | 组件热插拔 | app/components/ 下文件 3 秒自动加载生效 |
 | 事件驱动架构 | 基于 EventBus 的发布-订阅模式，组件松耦合 |
 | Flash 模式 | 跳过记忆注入，加速简单任务 |
+| 多通道接入 | 支持 QQ 等外部平台（目前只支持qqbot），通过 ChannelManager 统一管理消息路由与注入 |
 
 ## 快速开始
 
@@ -354,11 +355,16 @@ Cellium-Agent/
 │   │   ├── llm/                # LLM 引擎，支持 OpenAI 兼容 API
 │   │   ├── loop/               # Agent 主循环：AgentLoop、SessionManager、ToolExecutor
 │   │   ├── memory/             # 三层记忆：FTS5、Repository、ArchiveStore
-│   │   ├── prompt/             # Prompt 构建器
-│   │   ├── security/           # 安全策略
-│   │   ├── shell/              # Shell 交互
 │   │   ├── tools/              # 工具基类与内置工具
+│   │   ├── prompt/             # Prompt 构建器（模块化拼图式）
+│   │   ├── shell/              # Shell 交互
+│   │   ├── security/           # 安全策略
 │   │   └── di_config.py        # 依赖注入配置
+│   ├── channels/               # 通道适配层
+│   │   ├── base.py             # 通道基类 IChannelAdapter
+│   │   ├── channel_manager.py  # 通道管理器，消息路由与注入
+│   │   ├── qq_adapter.py      # QQ 频道适配器（含外部平台消息注入）
+│   │   └── qq_channel_config.py # QQ 通道配置模型
 │   ├── core/                   # 核心基础设施
 │   │   ├── bus/                # 事件总线 EventBus
 │   │   ├── di/                 # 依赖注入容器
@@ -366,8 +372,10 @@ Cellium-Agent/
 │   │   ├── security/           # 安全模块
 │   │   └── util/               # 工具类：ComponentWatcher、Logger 等
 │   └── server/                 # FastAPI 服务层
-│       └── routes/             # API 路由：chat、memory、components
+│       └── routes/             # API 路由：chat、memory、channels、session_events
 ├── config/agent/               # 配置文件
+│   ├── channels.yaml           # 通道配置（QQ 等外部平台）
+│   └── llm.yaml                # LLM 模型配置
 ├── ui/                         # React 前端源码
 ├── html/                       # 前端构建输出
 ├── memory/                     # 记忆存储目录

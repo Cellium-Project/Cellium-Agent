@@ -48,7 +48,7 @@ const MessageList = memo(({
   return (
     <div className="chat-messages" ref={messagesContainerRef} onScroll={handleScroll}>
       {isLoadingMessages && messages.length === 0 && (
-        <div className="history-loading"><span className="loading"></span>加载中...</div>
+        <div className="history-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div>
       )}
       {messages.map((msg, idx) => (
         <ChatMessage 

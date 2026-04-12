@@ -59,7 +59,8 @@ class SessionNotes:
     def __init__(self, session_id: str, notes_dir: str = None):
         self.session_id = session_id
         self.notes_dir = notes_dir or self.DEFAULT_NOTES_DIR
-        self.notes_path = os.path.join(self.notes_dir, f"{session_id}.md")
+        safe_id = session_id.replace(":", "_").replace("/", "_").replace("\\", "_")
+        self.notes_path = os.path.join(self.notes_dir, f"{safe_id}.md")
         self._content: Dict[str, List[str]] = {}
         self._loaded = False
 

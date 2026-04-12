@@ -34,6 +34,7 @@ interface AppState {
   setSessions: (sessions: Session[]) => void;
   addSession: (session: Session) => void;
   removeSession: (id: string) => void;
+  updateSession: (session: Session) => void;
 
   setMessages: (messages: Message[]) => void;
   addMessage: (message: Message) => void;
@@ -58,7 +59,7 @@ interface AppState {
   fetchSessions: () => Promise<void>;
   createSession: () => Promise<string>;
   switchSession: (sessionId: string) => Promise<void>;
-  fetchMessages: (sessionId: string, offset?: number) => Promise<void>;
+  fetchMessages: (sessionId: string, offset?: number, force?: boolean) => Promise<void>;
   checkTaskStatus: (sessionId: string) => Promise<boolean>;  // ★ 新增
   stopTask: (sessionId: string) => Promise<void>;  // ★ 新增
 }
@@ -90,6 +91,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   })),
   removeSession: (id) => set((state) => ({
     sessions: state.sessions.filter((s) => s.session_id !== id),
+  })),
+  updateSession: (updated) => set((state) => ({
+    sessions: state.sessions.map((s) =>
+      s.session_id === updated.session_id ? { ...s, ...updated } : s
+    ),
   })),
 
   setMessages: (messages) => set({ messages }),
@@ -165,11 +171,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     await fetchMessages(sessionId, 0);
   },
 
-  fetchMessages: async (sessionId: string, offset = 0) => {
+  fetchMessages: async (sessionId: string, offset = 0, force = false) => {
     const state = get();
     
     // ★ 防重：如果当前没有更多历史或者已经在加载，直接返回
-    if (offset === 0 && state.messages.length > 0 && state.currentSessionId === sessionId) {
+    if (!force && offset === 0 && state.messages.length > 0 && state.currentSessionId === sessionId) {
       return;
     }
     

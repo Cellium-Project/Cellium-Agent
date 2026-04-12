@@ -47,6 +47,10 @@ export const API = {
   logsErrors: `${API_BASE}/logs/errors`,
   logsStatus: `${API_BASE}/logs/status`,
   logsStatusHistory: `${API_BASE}/logs/status/history`,
+  channelReload: `${API_BASE}/channels/reload`,
+  channelStatus: `${API_BASE}/channels/status`,
+  channelStart: `${API_BASE}/channels/start`,
+  channelStop: `${API_BASE}/channels/stop`,
   health: `${API_BASE}/health`,
 } as const;
 

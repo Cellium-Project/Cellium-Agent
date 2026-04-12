@@ -14,6 +14,7 @@ const SETTINGS_TABS = [
   { id: 'learning', label: '学习配置', Icon: Icons.BookOpen },
   { id: 'heuristics', label: '启发式引擎', Icon: Icons.Lightbulb },
   { id: 'security', label: '安全策略', Icon: Icons.Shield },
+  { id: 'channel', label: '通道配置', Icon: Icons.Globe },
   { id: 'logging', label: '日志设置', Icon: Icons.FileText },
   { id: 'server', label: '服务端 & 网络', Icon: Icons.Globe },
 ] as const;
@@ -159,7 +160,7 @@ const ModelSettings: React.FC = () => {
       <p className="settings-desc">添加多个模型配置，保存后选择当前使用的模型。</p>
 
       {loading ? (
-        <div className="settings-loading"><span className="loading"></span> 加载中...</div>
+        <div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div>
       ) : (
         <>
           <div className="settings-grid">
@@ -317,6 +318,11 @@ const AgentSettings: React.FC = () => {
               <span className="toggle-label">{config.flash_mode ? '已开启' : '已关闭'}</span>
             </label>
           </div>
+          <div className="form-group">
+            <FieldLabel label="Shell 工作目录" desc="Agent 执行命令的默认目录，留空则使用进程当前目录" />
+            <input type="text" value={config.shell_cwd || ''} placeholder="如: D:\\projects 或 /home/user/projects"
+              onChange={e => updateField('shell_cwd', e.target.value)} />
+          </div>
         </div>
         <div className="form-actions">
           <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
@@ -442,6 +448,145 @@ const SecuritySettings: React.FC = () => {
         <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
           {saving ? '保存中...' : saved ? '✓ 已保存' : '保存安全配置'}
         </button>
+      </div>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════
+// ★ 通道配置 Tab (多平台消息入口)
+// ═════════════════════════════════════════════════════════════
+const ChannelSettings: React.FC = () => {
+  const [config, setConfig] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchJSON<Record<string, any>>(API.configSection('channels')).then(data => {
+      setConfig(data?.qq || { enabled: true, auto_start: true });
+      setLoading(false);
+    }).catch(() => {
+      setConfig({ enabled: true, auto_start: true });
+      setLoading(false);
+    });
+  }, []);
+
+  const updateQQField = (field: string, value: any) => {
+    setConfig(prev => ({
+      ...prev,
+      [field]: value,
+    }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = { qq: config };
+      await putJSON(API.configUpdate('channels'), { value: payload, persist: true });
+      await fetch(`${API.channelReload}?platform=qq`, { method: 'POST' });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setError(e.message || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="settings-card"><div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div></div>;
+  }
+
+  return (
+    <div className="settings-card">
+      <div className="settings-card-header">
+        <div className="settings-card-title">
+          <Icons.Globe size={16} /> QQ 机器人通道
+        </div>
+        <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+          {saving ? '保存中...' : saved ? '已保存!' : '保存配置'}
+        </button>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="settings-card-grid">
+        <div className="form-group">
+          <FieldLabel label="启用通道" />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.enabled !== false}
+              onChange={e => updateQQField('enabled', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.enabled !== false ? '已启用' : '已禁用'}</span>
+          </label>
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="自动启动" />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.auto_start !== false}
+              onChange={e => updateQQField('auto_start', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.auto_start !== false ? '已开启' : '已关闭'}</span>
+          </label>
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="App ID" />
+          <input
+            type="text"
+            value={config.app_id || ''}
+            onChange={e => updateQQField('app_id', e.target.value)}
+            placeholder="从环境变量 QQ_BOT_APP_ID 读取"
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="App Secret" />
+          <input
+            type="password"
+            value={config.app_secret || ''}
+            onChange={e => updateQQField('app_secret', e.target.value)}
+            placeholder="从环境变量 QQ_BOT_APP_SECRET 读取"
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="Intents 值" />
+          <input
+            type="number"
+            value={config.intents || 1107296256}
+            onChange={e => updateQQField('intents', parseInt(e.target.value))}
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="凭证状态" />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: config.app_id && config.app_secret ? '#22c55e' : '#ef4444',
+            }} />
+            <span style={{ color: '#a8b1c2', fontSize: 13 }}>
+              {config.app_id && config.app_secret ? '已配置凭证' : '缺少凭证（请配置或设置环境变量）'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-card-footer">
+        <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+          提示：保存配置后将自动热重载通道连接。凭证也可以通过环境变量 QQ_BOT_APP_ID 和 QQ_BOT_APP_SECRET 设置。
+        </p>
       </div>
     </div>
   );
@@ -1279,7 +1424,7 @@ const HeuristicsSettings: React.FC = () => {
   const thresholds = config.thresholds || {};
 
   if (loading) {
-    return <div className="settings-panel"><div className="loading">加载中...</div></div>;
+    return <div className="settings-panel"><div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div></div>;
   }
 
   return (
@@ -1447,6 +1592,7 @@ export const SettingsPage: React.FC = () => {
       case 'learning': return <LearningSettings />;
       case 'heuristics': return <HeuristicsSettings />;
       case 'security': return <SecuritySettings />;
+      case 'channel': return <ChannelSettings />;
       case 'logging': return <LoggingSettings />;
       case 'server': return <ServerSettings />;
       default: return null;

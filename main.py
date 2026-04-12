@@ -5,6 +5,7 @@ Cellium Agent - 主入口
 
 import os
 import sys
+import asyncio
 import uvicorn
 import logging
 from uvicorn.logging import AccessFormatter
@@ -15,6 +16,11 @@ from app.core.util.logger import setup_logger, LogMixin, install_buffer
 from app.core.di.container import setup_di_container
 from app.agent.di_config import setup_agent_di
 from app.agent.loop.session_manager import init_session_manager
+from app.agent.loop import AgentLoopManager
+from app.agent.memory.three_layer import ThreeLayerMemory
+from app.agent.shell.cellium_shell import CelliumShell
+from app.agent.llm.engine import BaseLLMEngine
+from app.channels import ChannelManager
 from app.core.util.agent_config import get_config
 
 
@@ -71,6 +77,71 @@ class MainApplication(LogMixin):
         mem_dir = cfg.get("memory.memory_dir", "memory") or os.path.join(os.path.dirname(__file__), "memory")
         self.container = setup_agent_di(memory_dir=mem_dir)
         self.logger.info("[OK] Agent DI 容器初始化完成")
+
+        agent_loop_mgr = AgentLoopManager.get_instance()
+
+        from app.agent.tools.shell_tool import ShellTool
+        from app.agent.tools.memory_tool import MemoryTool
+        from app.agent.tools.file_tool import FileTool
+        _mem = self.container.resolve(ThreeLayerMemory)
+        _shell = self.container.resolve(CelliumShell)
+        _mem_tool = MemoryTool(three_layer_memory=_mem)
+        _file_tool = FileTool()
+        _tool = ShellTool(shell=_shell)
+
+        enforce_limit = cfg.get("agent.enforce_iteration_limit", False)
+        default_iter = cfg.get("agent.max_iterations", 10)
+        max_iter = default_iter if enforce_limit else float('inf')
+
+        agent_cfg = {
+            "max_iterations": max_iter,
+            "flash_mode": cfg.get("agent.flash_mode", False),
+            "enable_heuristics": True,
+            "enable_learning": True,
+        }
+        agent_loop_mgr.initialize(
+            llm_engine=self.container.resolve(BaseLLMEngine),
+            shell=_shell,
+            three_layer_memory=_mem,
+            tools={
+                "shell": _tool,
+                "memory": _mem_tool,
+                "file": _file_tool,
+            },
+            global_config=agent_cfg,
+        )
+        channel_mgr = ChannelManager.get_instance()
+        channel_mgr.set_agent_loop_manager(agent_loop_mgr)
+        self.logger.info("[OK] AgentLoopManager + ChannelManager 集成完成")
+
+        self._setup_channels()
+        self.logger.info("[OK] 外部平台通道初始化完成")
+
+    def _setup_channels(self):
+        from app.channels import ChannelManager, QQAdapter
+        from app.channels.qq_channel_config import QQChannelConfig
+
+        qq_config = QQChannelConfig()
+
+        if not qq_config.should_auto_start():
+            self.logger.warning("[Channel] QQ 通道未启用或凭证缺失，跳过加载")
+            return
+
+        channel_mgr = ChannelManager.get_instance()
+
+        if channel_mgr.get_adapter("qq"):
+            self.logger.info("[Channel] QQ 适配器已存在，跳过注册")
+        else:
+            qq_adapter = QQAdapter(
+                app_id=qq_config.get_app_id(),
+                app_secret=qq_config.get_app_secret(),
+            )
+            channel_mgr.register_adapter(qq_adapter)
+            app_id = qq_config.get_app_id()
+            self.logger.info(f"[Channel] QQ 适配器已注册 (app_id: {app_id[:8] if app_id else '***'}...)")
+
+        if not channel_mgr._running:
+            self.logger.info("[Channel] 适配器已注册，将在服务器启动后自动连接")
 
     def _setup_session_manager(self, cfg):
         from app.agent.memory.three_layer import ThreeLayerMemory

@@ -8,3 +8,4 @@ logging:
   file: ""
   max_size: 5000                # 日志缓冲区大小（条目数）
   backup_count: 5
+  client_log: false             # 前端日志（true=显示，false=隐藏）

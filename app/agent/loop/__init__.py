@@ -4,6 +4,7 @@ from .session_manager import SessionManager, get_session_manager, init_session_m
 from .loop_controller import LoopController
 from .prompt_context_builder import PromptContextBuilder
 from .loop_event_publisher import LoopEventPublisher
+from .agent_loop_manager import AgentLoopManager
 
 __all__ = [
     "AgentLoop",
@@ -14,4 +15,5 @@ __all__ = [
     "LoopController",
     "PromptContextBuilder",
     "LoopEventPublisher",
+    "AgentLoopManager",
 ]
