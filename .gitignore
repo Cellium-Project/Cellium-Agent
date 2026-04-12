@@ -47,6 +47,12 @@ logs/
 # 用户数据（个性化数据，每个用户独立）
 data/
 
+# 缓存文件
+workspace/.cache/
+
+# 下载文件（代码自动创建）
+workspace/downloads/
+
 # Node.js
 ui/node_modules/
 reactAgentUi/node_modules/

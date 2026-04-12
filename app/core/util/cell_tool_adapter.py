@@ -37,6 +37,7 @@ EXEMPTED_NAMES: Set[str] = {
     "component",        # ComponentBuilder — 需要创建文件
     "skill_installer",  # SkillInstaller — 需要安装包
     "web_query",        # WebQuery — 需要网络请求
+    "qq_files",         # QQFiles — 需要访问主进程的 ChannelManager
 }
 
 # 是否启用沙箱模式（可通过配置关闭）

@@ -15,4 +15,4 @@ enabled_components:
 - components.skill_installer.SkillInstaller
 - components.web_fetch.WebFetch
 - components.web_search.WebSearch
-- components.qq_config.QQConfigCell
+- components.qq_files.QQFiles

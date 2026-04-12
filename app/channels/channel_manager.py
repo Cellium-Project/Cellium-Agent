@@ -134,6 +134,42 @@ class ChannelManager:
     async def _on_message(self, message: UnifiedMessage):
         logger.info(f"[ChannelManager] Message from {message.platform}: {message.content[:50]}...")
 
+        # 检测文件消息（通过 raw 数据中的 filename 字段）
+        raw_data = message.raw or {}
+        if raw_data.get("filename"):
+            try:
+                # 文件消息：保存文件信息到 session，不触发 Agent
+                session_id = message.session_id
+                from app.agent.loop.session_manager import get_session_manager
+                session_mgr = get_session_manager()
+                session_info = session_mgr.get_or_create(session_id)
+                
+                # 保存文件信息到 session 的临时存储
+                if not hasattr(session_info, "pending_files"):
+                    session_info.pending_files = []
+                session_info.pending_files.append({
+                    "filename": raw_data.get("filename"),
+                    "url": raw_data.get("url"),
+                    "size": raw_data.get("size", 0),
+                    "msg_id": message.msg_id,
+                })
+                
+                filename = raw_data.get("filename", "unknown")
+                file_count = len(session_info.pending_files)
+                logger.info(f"[ChannelManager] File received: {filename}, session={session_id}, total={file_count}")
+                
+                # 回复用户提示
+                await self.send_message(
+                    message.platform,
+                    message.user_id,
+                    f"📎 已收到文件：{filename}\n请继续发送你要执行的任务",
+                    message.message_type,
+                )
+                return
+            except Exception as e:
+                logger.error(f"[ChannelManager] 文件消息处理失败: {e}")
+                # 继续处理为普通消息，让 Agent 有机会响应
+
         if message.content.strip() == "/stop":
             session_id = message.session_id
             try:
@@ -169,11 +205,23 @@ class ChannelManager:
             adapter = self._adapters.get(message.platform)
             system_injection = adapter.build_inject_content(message, message.content) if adapter else None
             content_to_agent = message.content
+            
+            # 检查是否有待处理的文件，如果有则附加到消息内容
+            from app.agent.loop.session_manager import get_session_manager
+            session_mgr = get_session_manager()
+            session_info = session_mgr.get_or_create(session_id)
+            if hasattr(session_info, "pending_files") and session_info.pending_files:
+                file_info = "📎 **已收到的文件**：\n"
+                for i, f in enumerate(session_info.pending_files, 1):
+                    file_info += f"  {i}. {f['filename']} ({f['size']} bytes)\n"
+                    if f.get('url'):
+                        file_info += f"     下载链接: {f['url']}\n"
+                content_to_agent = file_info + "\n" + content_to_agent
+                # 清空已处理的文件列表
+                session_info.pending_files = []
+                logger.info(f"[ChannelManager] Attached {i} pending files to message for session={session_id}")
+            
             try:
-                # 从 SessionManager 获取 memory（会自动从归档恢复历史）
-                from app.agent.loop.session_manager import get_session_manager
-                session_mgr = get_session_manager()
-                session_info = session_mgr.get_or_create(session_id)
                 session_memory = session_info.memory
 
                 lock = await self._agent_loop_manager.get_lock(session_id)
