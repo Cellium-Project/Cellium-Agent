@@ -136,13 +136,9 @@ class SessionCompactor:
         return token_exceeded
 
     def _estimate_tokens(self, memory: "MemoryManager") -> int:
-        """估算 Token 数量（简单估算：字符数 / 2）"""
-        total_chars = 0
-        for msg in memory.messages:
-            content = msg.get("content", "")
-            if content:
-                total_chars += len(content)
-        return total_chars // 2
+        """估算 Token 数量"""
+        from app.agent.llm.engine import _estimate_messages_tokens
+        return _estimate_messages_tokens(memory.messages)
 
     def request_compact(self):
         """请求在下一次迭代开始时执行压缩"""

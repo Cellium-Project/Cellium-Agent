@@ -82,6 +82,10 @@ class BackgroundTaskManager:
         """获取事件历史"""
         return self._event_history.get(session_id, [])
 
+    def get_pending_input(self, session_id: str) -> Optional[str]:
+        """获取待处理的用户输入（用于重新连接时恢复）"""
+        return self._pending_inputs.get(session_id)
+
     async def start_task(
         self,
         session_id: str,

@@ -19,9 +19,11 @@
 """
 
 import os
+import re
 import shutil
 import tempfile
 import logging
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 
@@ -56,22 +58,33 @@ class FileTool(BaseTool):
 
     name = "file"
     description = (
-        "文件操作工具。用于读取、写入、创建、删除、列出文件和目录。"
-        "比使用shell命令更可靠，自动处理UTF-8编码。"
-        "支持：read(读文件)、write(写单文件)、create(批量创建多文件)、delete(删除)、"
-        "list(列目录)、exists(检查存在)、mkdir(创建目录)。"
-        "★ 创建项目或多文件时优先使用 create 命令，一次调用写入所有文件。"
+        "文件读写删查。原子写入防损坏，自动 UTF-8。\n\n"
+        "| 命令 | 说明 | 注意 |\n"
+        "|------|------|------|\n"
+        "| read | 读文件，支持 offset/limit 分页 | 大文件先用 insight |\n"
+        "| write | 写文件 | mode: overwrite/append/create |\n"
+        "| edit | 编辑文件 | **必须先 read** |\n"
+        "| create | 批量创建多文件 | files 为 {路径:内容} 字典 |\n"
+        "| delete | 删除文件或目录 | recursive=True 删除非空目录 |\n"
+        "| list | 列目录 | pattern 支持 glob 如 *.py |\n"
+        "| exists | 检查路径存在 | - |\n"
+        "| mkdir | 创建目录 | parents=True 自动建父目录 |\n"
+        "| insight | 搜索/结构/摘要 | 大文件先 insight 再 read |"
     )
 
     def __init__(self, allowed_roots=None):
         """
         Args:
             allowed_roots: 允许访问的根目录列表，如 ["F:\\", "D:\\project"]
-                          None 表示不限制
+                          None 或不传参时默认为项目下的 workspace 目录（跨平台）
         """
         super().__init__()
         global _ALLOWED_ROOTS
-        _ALLOWED_ROOTS = allowed_roots
+        if allowed_roots is None:
+            workspace_path = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+            _ALLOWED_ROOTS = [str(workspace_path)]
+        else:
+            _ALLOWED_ROOTS = allowed_roots
         self._read_cache: Dict[str, FileState] = {}
         self._edit_history: list = []
 
@@ -109,10 +122,20 @@ class FileTool(BaseTool):
         try:
             file_size = os.path.getsize(abs_path)
             if file_size > _MAX_FILE_SIZE:
+                ext = os.path.splitext(abs_path)[1].lower()
+                is_code = ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.rs', '.rb', '.php']
+                hint_msg = (
+                    f"文件过大 ({_to_mb(file_size):.1f}MB > {_to_mb(_MAX_FILE_SIZE):.1f}MB)。"
+                    f"建议先用 `file insight` 获取结构大纲，再用 `read(offset=X, limit=Y)` 精准读取。"
+                    if is_code else
+                    f"文件过大 ({_to_mb(file_size):.1f}MB > {_to_mb(_MAX_FILE_SIZE):.1f}MB)。"
+                    f"建议先用 `file insight` 搜索关键词定位，再用 `read(offset=X, limit=Y)` 分段读取。"
+                )
                 return {
                     "success": False,
-                    "error": f"文件过大 ({_to_mb(file_size):.1f}MB > {_to_mb(_MAX_FILE_SIZE):.1f}MB)，请用 shell 的 head/tail 分段读取",
+                    "error": hint_msg,
                     "size": file_size,
+                    "hint_command": f'file insight(path="{path}", mode="structure")' if is_code else f'file insight(path="{path}", mode="search", query="关键字")',
                 }
 
             encoding = self._detect_encoding(abs_path)
@@ -550,6 +573,110 @@ class FileTool(BaseTool):
             "total_bytes": total_bytes,
             "details": results,
             **({"errors": failed} if failed else {}),
+        }
+
+    def _cmd_insight(self, path: str, mode: str = "auto", query: str = None) -> Dict[str, Any]:
+        """
+        理解层工具：返回文件大纲或搜索索引。
+        原则：绝不返回超过 2KB 的数据，强制 Agent 进行分层阅读。
+        """
+        abs_path = self._resolve_path(path)
+        if not os.path.isfile(abs_path):
+            return {"success": False, "error": f"文件不存在: {abs_path}"}
+
+        # 1. 基础信息探测
+        file_size = os.path.getsize(abs_path)
+        ext = os.path.splitext(abs_path)[1].lower()
+        encoding = self._detect_encoding(abs_path)
+
+        # 2. 模式自动分发
+        if mode == "auto":
+            if ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c']:
+                mode = "structure"
+            elif query or ext in ['.log', '.txt']:
+                mode = "search"
+            else:
+                mode = "summary"
+
+        try:
+            with open(abs_path, "r", encoding=encoding, errors="replace") as f:
+                if mode == "structure":
+                    return self._extract_structure(f, ext)
+                elif mode == "search":
+                    return self._stream_search(f, query)
+                else:
+                    return self._file_summary(f, abs_path, file_size)
+        except Exception as e:
+            return {"success": False, "error": f"Insight failed: {str(e)}"}
+
+    # ================================================================
+    # 理解层私有实现（流式处理，不炸内存）
+    # ================================================================
+
+    def _extract_structure(self, f, ext: str) -> Dict[str, Any]:
+        """模式1：提取代码骨架（Classes, Functions, Imports）"""
+        # 针对不同语言的轻量级正则
+        patterns = {
+            '.py': r'^\s*(class\s+|def\s+|import\s+|from\s+)(?P<name>[\w\.]+)',
+            '.js': r'^\s*(export\s+)?(function|class|const|async)\s+(?P<name>\w+)',
+            '.ts': r'^\s*(export\s+)?(interface|type|class|function)\s+(?P<name>\w+)'
+        }
+        regex = patterns.get(ext, r'^\s*(class|function|def|struct|interface)\s+(?P<name>\w+)')
+
+        raw_symbols = []
+        f.seek(0)
+        for i, line in enumerate(f):
+            match = re.search(regex, line)
+            if match:
+                raw_symbols.append({
+                    "line": i + 1,
+                    "type": match.group(1).strip() if match.groups() else "symbol",
+                    "name": match.group("name"),
+                    "raw": line.strip()[:100]  # 截断保护
+                })
+            if len(raw_symbols) >= 150:
+                break  # 目录保护
+
+        # 估算每个符号的影响范围（end_line = 下一符号行号 - 1，最后一个无上限）
+        results = []
+        for idx, sym in enumerate(raw_symbols):
+            end_line = raw_symbols[idx + 1]["line"] - 1 if idx + 1 < len(raw_symbols) else None
+            results.append({
+                **sym,
+                "end_line": end_line,
+                "_range_hint": f"L{sym['line']}-{end_line}" if end_line else f"L{sym['line']}+"
+            })
+
+        return {"success": True, "type": "structure", "language": ext, "symbols": results, "total_symbols": len(results)}
+
+    def _stream_search(self, f, query: str) -> Dict[str, Any]:
+        """模式2：流式关键词定位（替代全量 read 后的检索）"""
+        if not query:
+            return {"success": False, "error": "Search 模式必须提供 query 参数"}
+
+        hits = []
+        target = query.lower()
+        f.seek(0)
+
+        for i, line in enumerate(f):
+            if target in line.lower():
+                hits.append({"line": i + 1, "content": line.strip()})
+            if len(hits) >= 20:
+                break  # 检索保护，只给前20个锚点
+
+        return {"success": True, "type": "search", "hits": hits, "query": query}
+
+    def _file_summary(self, f, path: str, size: int) -> Dict[str, Any]:
+        """模式3：快速摘要（适用于配置和文档）"""
+        f.seek(0)
+        head = [next(f, "").strip() for _ in range(5)]  # 只看前5行
+        return {
+            "success": True,
+            "type": "summary",
+            "path": path,
+            "size_kb": round(size / 1024, 2),
+            "head": head,
+            "hint": "文件较长，建议使用 search 模式定位具体配置项"
         }
 
     # ================================================================

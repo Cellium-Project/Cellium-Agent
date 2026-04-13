@@ -105,13 +105,17 @@ async def _consume_queue(session_id: str, queue: asyncio.Queue, session_info):
             task_mgr.cleanup_task(session_id)
 
 
-async def _consume_queue_with_history(session_id: str, queue: asyncio.Queue, session_info, history: list):
-    """从事件队列消费并生成 SSE 事件（先发送历史事件）"""
+async def _consume_queue_with_history(session_id: str, queue: asyncio.Queue, session_info, history: list, pending_input: str = None):
+    """从事件队列消费并生成 SSE 事件（先发送历史事件和待处理输入）"""
     try:
-        # ★ 先发送历史事件（限制最多发送 50 条，避免前端阻塞）
+        if pending_input:
+            yield f"data: {json.dumps({'type': 'message_received', 'session_id': session_id, 'message': pending_input}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0)
+
+        # 先发送历史事件（限制最多发送 50 条，避免前端阻塞）
         max_history_send = 50
         history_to_send = history[-max_history_send:] if len(history) > max_history_send else history
-        
+
         for event in history_to_send:
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0)
@@ -233,12 +237,13 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     # 检查是否已有运行中的任务（重新连接）
     if task_mgr.has_running_task(session_id):
         history = task_mgr.get_event_history(session_id)
-        logger.info("[chat_stream] 重新连接到运行中的任务 | session=%s | history_count=%d", 
+        logger.info("[chat_stream] 重新连接到运行中的任务 | session=%s | history_count=%d",
                    session_id, len(history))
+        pending_input = task_mgr.get_pending_input(session_id)
         queue = task_mgr.get_queue(session_id)
         if queue:
             return StreamingResponse(
-                _consume_queue_with_history(session_id, queue, session_info, history),
+                _consume_queue_with_history(session_id, queue, session_info, history, pending_input),
                 media_type="text/event-stream; charset=utf-8",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )

@@ -30,13 +30,13 @@ const MessageList = memo(({
     wasEmptyRef.current = messages.length === 0;
 
     // 滚动到底部的条件：
-    // 1. 正在流式输出
-    // 2. 消息增量小于50（新增少量消息）
-    // 3. ★ 从空变为有内容（首次加载历史）
-    if (streamingMessage || (messages.length > prevCount && messages.length - prevCount < 50) || (wasEmpty && messages.length > 0)) {
+    // 1. 消息增量小于50（新增少量消息）
+    // 2. ★ 从空变为有内容（首次加载历史）
+    // 注意：流式输出时不自动滚动，等待最终回复完成后再滚动
+    if ((messages.length > prevCount && messages.length - prevCount < 50) || (wasEmpty && messages.length > 0)) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }
-  }, [messages, streamingMessage]);
+  }, [messages]);
 
   const handleScroll = () => {
     if (!messagesContainerRef.current || isLoadingMessages || !hasMoreHistory || !currentSessionId) return;

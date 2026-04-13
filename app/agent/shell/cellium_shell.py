@@ -231,7 +231,8 @@ class CelliumShell:
         security_policy=None,
     ):
         self._platform = sys.platform
-        self._executor = ThreadPoolExecutor(max_workers=4)
+        self._executor = None
+        self._max_workers = max(8, (os.cpu_count() or 4))
         self._background_tasks: Dict[str, Any] = {}
         self._cwd = initial_cwd if initial_cwd and os.path.isdir(initial_cwd) else os.getcwd()
         self.security = security_policy
@@ -281,6 +282,13 @@ class CelliumShell:
     def _find_pwsh() -> Optional[str]:
         """查找 PowerShell Core (pwsh) 或 Windows PowerShell 的路径"""
         return shutil.which("pwsh") or shutil.which("powershell")
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """延迟初始化线程池"""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
+            logger.info(f"[Shell] 线程池初始化 | max_workers={self._max_workers}")
+        return self._executor
 
     # ================================================================
     #  安全检查
@@ -778,7 +786,7 @@ class CelliumShell:
                     "error": str(e),
                 }
 
-        future = self._executor.submit(run_in_thread)
+        future = self._get_executor().submit(run_in_thread)
         self._background_tasks[task_id] = future
 
         return {
@@ -850,7 +858,9 @@ class CelliumShell:
         """清理资源"""
         for task_id in list(self._background_tasks.keys()):
             self.kill_background_task(task_id)
-        self._executor.shutdown(wait=False)
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
 
     def close(self):
         """关闭"""

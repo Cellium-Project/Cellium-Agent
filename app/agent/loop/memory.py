@@ -106,7 +106,18 @@ class MemoryManager:
 
     def get_messages(self) -> List[Dict]:
         messages = self._smart_truncate(self.messages, self.max_history)
+        messages = self._truncate_long_tool_contents(messages)
         return self._fix_message_sequence(messages)
+
+    def _truncate_long_tool_contents(self, messages: List[Dict]) -> List[Dict]:
+        """截断过长的工具结果内容"""
+        for msg in messages:
+            if msg.get("role") == "tool" and not msg.get("_compacted"):
+                content = msg.get("content", "")
+                if len(content) > self.max_tool_result_length:
+                    msg["content"] = content[:self.max_tool_result_length] + "\n...[已截断]"
+                    msg["_truncated"] = True
+        return messages
 
     def _smart_truncate(self, messages: List[Dict], max_count: int) -> List[Dict]:
         """
@@ -154,13 +165,55 @@ class MemoryManager:
     def _fix_message_sequence(self, messages: List[Dict]) -> List[Dict]:
         """
         修复消息序列，确保 tool 消息前面有对应的 tool_calls assistant 消息
-        这是为了兼容某些 LLM API（如 DeepSeek）的严格校验
-        
-        注意：不再移除孤立消息，而是保留它们，避免历史对话恢复时数据丢失
+
+        规则：
+        1. 如果 assistant 消息有 tool_calls，必须确保后续有对应的 tool 消息
+        2. 如果 assistant 消息有 tool_calls 但后续没有对应 tool 消息，清除 tool_calls
+        3. 如果有孤立的 tool 消息（前面没有对应的 assistant/tool_calls），移除它们
         """
-        # 不再移除孤立消息，直接返回
-        # 如果需要严格校验，可以在发送给 LLM 之前处理
-        return messages
+        if not messages:
+            return messages
+
+        fixed = []
+        i = 0
+        n = len(messages)
+
+        while i < n:
+            msg = messages[i]
+
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tool_call_ids = {tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")}
+                if tool_call_ids:
+                    fixed.append(msg)
+                    i += 1
+                    seen_tool_ids = set()
+                    while i < n and messages[i].get("role") == "tool":
+                        tid = messages[i].get("tool_call_id", "")
+                        if tid in tool_call_ids:
+                            seen_tool_ids.add(tid)
+                            fixed.append(messages[i])
+                        i += 1
+                    if seen_tool_ids != tool_call_ids:
+                        missing = tool_call_ids - seen_tool_ids
+                        msg_copy = dict(msg)
+                        msg_copy["tool_calls"] = [tc for tc in msg_copy.get("tool_calls", []) if tc.get("id") not in missing]
+                        if not msg_copy["tool_calls"]:
+                            msg_copy.pop("tool_calls", None)
+                            if not msg_copy.get("content"):
+                                msg_copy["content"] = ""
+                        fixed[-1] = msg_copy
+                else:
+                    fixed.append(msg)
+                    i += 1
+
+            elif msg.get("role") == "tool":
+                i += 1
+
+            else:
+                fixed.append(msg)
+                i += 1
+
+        return fixed
 
     def clear(self):
         """清空对话历史"""

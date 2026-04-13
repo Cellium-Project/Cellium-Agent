@@ -11,6 +11,7 @@ Agent 主循环
 import json
 import logging
 import time
+import asyncio
 from typing import List, Dict, Any, Optional
 
 from app.core.bus.event_bus import event_bus
@@ -356,6 +357,138 @@ class AgentLoop:
             if isinstance(item, str) and item in self.tools
         }
 
+    READ_ONLY_TOOLS = {"file", "memory", "web_search", "web_fetch", "read_file", "file_read", "shell"}
+    WRITE_TOOLS = {"write_to_file", "file_write", "mkdir", "delete", "edit", "move", "copy"}
+
+    def _can_parallel(self, tool_name: str) -> bool:
+        """判断工具是否可以并行执行"""
+        return tool_name in self.READ_ONLY_TOOLS
+
+    async def _execute_tools_parallel(
+        self,
+        tool_calls_info: List[Dict[str, Any]],
+        effective_session: str,
+        iteration: int,
+        effective_memory: MemoryManager,
+    ):
+        """并行执行独立工具，串行执行修改型工具（async generator，逐个yield结果）"""
+        if not tool_calls_info:
+            return
+
+        independent_calls = []
+        write_calls = []
+        for info in tool_calls_info:
+            if info["blocked_by_constraint"] or not self._can_parallel(info["tool_name"]):
+                write_calls.append(info)
+            else:
+                independent_calls.append(info)
+
+        async def execute_and_yield(info: Dict[str, Any]) -> Dict[str, Any]:
+            trace = await self._execute_single_tool(info, effective_session, iteration, effective_memory)
+            return info["tool_name"], info["arguments"], trace
+
+        pending_futures = {}
+        completed_results = {}
+
+        if independent_calls:
+            for idx, info in enumerate(independent_calls):
+                task = asyncio.create_task(execute_and_yield(info))
+                pending_futures[task] = (idx, info["tool_name"])
+
+        if write_calls:
+            for idx, info in enumerate(write_calls):
+                _, arguments, trace = await execute_and_yield(info)
+                completed_results[len(independent_calls) + idx] = (info["tool_name"], arguments, trace)
+                yield {"type": "tool_result", "tool": info["tool_name"],
+                       "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
+
+        for future in asyncio.as_completed(pending_futures):
+            idx, tool_name = pending_futures[future]
+            try:
+                name, arguments, trace = await future
+                completed_results[idx] = (name, arguments, trace)
+            except Exception as e:
+                completed_results[idx] = (tool_name, None, {"error": str(e)})
+
+        for idx in sorted(completed_results.keys()):
+            name, arguments, trace = completed_results[idx]
+            if arguments is not None:
+                yield {"type": "tool_result", "tool": name,
+                       "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
+
+    async def _execute_single_tool(
+        self,
+        info: Dict[str, Any],
+        effective_session: str,
+        iteration: int,
+        effective_memory: MemoryManager,
+    ) -> Dict[str, Any]:
+        """执行单个工具并发布事件"""
+        tool_call = info["tool_call"]
+        tool_name = info["tool_name"]
+        arguments = info["arguments"]
+        tool_call_id = info["tool_call_id"]
+        blocked_by_constraint = info["blocked_by_constraint"]
+
+        t0 = time.time()
+        if blocked_by_constraint:
+            duration_ms = 0
+            result = {
+                "error": f"Tool '{tool_name}' is blocked by current control decision",
+                "blocked": True,
+                "reason": "redirect",
+                "forbidden_tools": [],
+            }
+            logger.warning("[AgentLoop] 阻止重复工具调用 | tool=%s", tool_name)
+            self._event_publisher.publish_tool_call_error(
+                session_id=effective_session,
+                iteration=iteration,
+                tool_name=tool_name,
+                call_id=tool_call_id,
+                error=result["error"],
+            )
+        else:
+            try:
+                result = await self._tool_executor.execute(tool_call)
+                duration_ms = (time.time() - t0) * 1000
+                self._event_publisher.publish_tool_call_end(
+                    session_id=effective_session,
+                    iteration=iteration,
+                    tool_name=tool_name,
+                    call_id=tool_call_id,
+                    result=result,
+                    duration_ms=duration_ms,
+                )
+            except Exception as e:
+                duration_ms = (time.time() - t0) * 1000
+                result = {"error": str(e)}
+                self._event_publisher.publish_tool_call_error(
+                    session_id=effective_session,
+                    iteration=iteration,
+                    tool_name=tool_name,
+                    call_id=tool_call_id,
+                    error=str(e),
+                )
+
+        if isinstance(result, dict):
+            result["elapsed_ms"] = round(duration_ms)
+        if not self.flash_mode:
+            effective_memory.add_tool_result(tool_call_id, result)
+        self._tool_executor.track_result(tool_name, result)
+
+        trace = {
+            "tool": tool_name,
+            "arguments": arguments,
+            "result": result if isinstance(result, dict) else {"output": str(result)},
+            "duration_ms": round(duration_ms),
+            "success": not isinstance(result, dict) or (
+                result.get("success") is not False and result.get("error") is None
+            ),
+        }
+
+        logger.info("[AgentLoop] 发送 tool_result 事件 | tool=%s | duration=%dms", tool_name, round(duration_ms))
+        return trace
+
     async def _emit_stop_and_finalize(
         self,
         *,
@@ -655,6 +788,11 @@ class AgentLoop:
                     )
                 else:
                     auto_hints = self._auto_hints.get_auto_tool_hints(self.tools)
+
+                    security_hint = self._auto_hints.check_security_error_and_suggest(tool_traces)
+                    if security_hint:
+                        auto_hints = auto_hints + "\n\n" + security_hint if auto_hints else security_hint
+
                     llm_messages = self._prompt_context_builder.build_subsequent_round(
                         session_messages=session_messages,
                         auto_hints=auto_hints,
@@ -707,15 +845,17 @@ class AgentLoop:
 
                 # === 5. 处理工具调用 ===
                 if response.tool_calls:
-                    self._tool_call_count_in_round += len(response.tool_calls)  # 计数
-                    self._session_compactor.track_tool_call()  # 追踪压缩条件
+                    self._tool_call_count_in_round += len(response.tool_calls)
+                    self._session_compactor.track_tool_call()
 
                     interim_content = (response.content or "").strip()
                     if interim_content:
-                        if not self.flash_mode:
-                            effective_memory.add_assistant_message(interim_content)
                         yield {"type": "content_chunk", "content": interim_content}
+                        if not self.flash_mode:
+                            if not response.tool_calls:
+                                effective_memory.add_assistant_message(interim_content)
 
+                    tool_calls_info: List[Dict[str, Any]] = []
                     for tool_call in response.tool_calls:
                         tool_name = tool_call.name
                         arguments = tool_call.arguments
@@ -727,11 +867,11 @@ class AgentLoop:
                         else:
                             tool_call_id = None
 
-
                         description = ToolDescriptionGenerator.generate(tool_name, arguments)
                         desc_str = description if isinstance(description, str) else str(description)
                         logger.debug("[AgentLoop] 工具描述（兜底）: %s", desc_str[:60] if desc_str else "")
 
+                        logger.info("[AgentLoop] 发送 tool_start 事件 | tool=%s", tool_name)
                         yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description}
 
                         self._event_publisher.publish_tool_call_start(
@@ -742,70 +882,37 @@ class AgentLoop:
                             call_id=tool_call_id,
                         )
 
-                        t0 = time.time()
-                        if blocked_by_constraint:
-                            duration_ms = 0
-                            result = {
-                                "error": f"Tool '{tool_name}' is blocked by current control decision",
-                                "blocked": True,
-                                "reason": getattr(_active_constraint, "trigger_reason", "redirect"),
-                                "forbidden_tools": sorted(forbidden_tools),
-                            }
-                            logger.warning(
-                                "[AgentLoop] 阻止重复工具调用 | tool=%s | forbidden=%s",
-                                tool_name,
-                                sorted(forbidden_tools),
-                            )
-                            self._event_publisher.publish_tool_call_error(
-                                session_id=effective_session,
-                                iteration=iteration,
-                                tool_name=tool_name,
-                                call_id=tool_call_id,
-                                error=result["error"],
-                            )
-                        else:
-                            try:
-                                result = await self._tool_executor.execute(tool_call)
-                                duration_ms = (time.time() - t0) * 1000
-                                self._event_publisher.publish_tool_call_end(
-                                    session_id=effective_session,
-                                    iteration=iteration,
-                                    tool_name=tool_name,
-                                    call_id=tool_call_id,
-                                    result=result,
-                                    duration_ms=duration_ms,
-                                )
-                            except Exception as e:
-                                duration_ms = (time.time() - t0) * 1000
-                                result = {"error": str(e)}
-                                self._event_publisher.publish_tool_call_error(
-                                    session_id=effective_session,
-                                    iteration=iteration,
-                                    tool_name=tool_name,
-                                    call_id=tool_call_id,
-                                    error=str(e),
-                                )
-
-
-                        if isinstance(result, dict):
-                            result["elapsed_ms"] = round(duration_ms)
-                        if not self.flash_mode:
-                            effective_memory.add_tool_result(tool_call_id, result)
-                        self._tool_executor.track_result(tool_name, result)
-
-                        tool_traces.append({
-                            "tool": tool_name,
+                        tool_calls_info.append({
+                            "tool_call": tool_call,
+                            "tool_name": tool_name,
                             "arguments": arguments,
-                            "result": result if isinstance(result, dict) else {"output": str(result)},
-                            "duration_ms": round(duration_ms),
-                            "success": not isinstance(result, dict) or (
-                                result.get("success") is not False and result.get("error") is None
-                            ),
+                            "tool_call_id": tool_call_id,
+                            "blocked_by_constraint": blocked_by_constraint,
                         })
 
-                        yield {"type": "tool_result", "tool": tool_name,
-                               "arguments": arguments, "result": result, "duration_ms": round(duration_ms)}
+                    await asyncio.sleep(0.05)
 
+                    tool_traces = []
+                    async for event in self._execute_tools_parallel(
+                        tool_calls_info, effective_session, iteration, effective_memory
+                    ):
+                        if event.get("type") == "tool_result":
+                            tool_name = event["tool"]
+                            arguments = event["arguments"]
+                            result = event["result"]
+                            duration_ms = event["duration_ms"]
+                            tool_traces.append({
+                                "tool": tool_name,
+                                "arguments": arguments,
+                                "result": result,
+                                "duration_ms": duration_ms,
+                                "success": not isinstance(result, dict) or (
+                                    result.get("success") is not False and result.get("error") is None
+                                ),
+                            })
+                        yield event
+
+                    if self._loop_state:
                         set_runtime_status(self._loop_state)
 
                     # Control Loop: 每轮结束，更新 Bandit

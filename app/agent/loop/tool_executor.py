@@ -23,50 +23,13 @@ logger = logging.getLogger(__name__)
 #  每轮注入的精简工具调用规范（不依赖 personality.md 的单次注入）
 #  目的：让 LLM 在多轮对话中始终记得正确的工具调用格式
 # ================================================================
-TOOL_CALL_GUIDE = """\
-## ⚠️ 工具调用规范（每次调用前必须遵守）
+TOOL_CALL_GUIDE = """
+## §TOOL_CALL 工具调用规范
 
-### 🔴 _intent 字段 — 严格必填，不可省略！
-每次调用任何工具时，**必须在参数中包含 `_intent` 字段**。
-这是向用户汇报你正在做什么的唯一方式。缺失 _intent 会导致用户看到模糊的「正在调用工具」提示。
-
-**格式要求：**
-- 放在所有参数的最前面
-- 模板：`正在{动词}{对象}`，15~30字中文
-- 示例：`"正在读取配置文件 main.py"`、`"正在安装依赖包 requests"`
-
-**错误示例（禁止）：**
-- ❌ 不带 _intent → 用户只能看到「正在调用工具」
-- ❌ `"_intent": "调用工具"` → 太笼统，没有信息量
-- ❌ `"_intent": "read file"` → 必须用中文
-
-### file 工具（子命令模式）
-- **`command` 必填**：read / write / create / delete / list / exists / mkdir
-- 参数名直接用原始名（path, content 等），无需添加子命令前缀
-- 不要发送空字符串参数
-示例：
-```json
-{"command": "read", "path": "F:\\\\test.py", "_intent": "正在读取测试文件 test.py"}
-{"command": "write", "path": "F:\\\\out.py", "content": "...", "_intent": "正在写入输出文件 out.py"}
-{"command": "create", "base_dir": "F:\\\\项目", "files": {"a.py":""}, "_intent": "正在创建新项目（2个文件）"}
-```
-
-### memory 工具
-```json
-{"command": "search", "query": "用户偏好设置", "_intent": "正在搜索历史记忆中的用户偏好"}
-{"command": "store", "title": "项目路径", "content": "D:\\\\project", "_intent": "正在保存项目路径到长期记忆"}
-```
-
-### shell 工具
-```json
-{"command": "ls -la F:\\\\project", "_intent": "正在查看 project 目录内容"}
-```
-
-### 组件工具
-组件工具同样需要 _intent，描述你在操作什么组件、做什么动作。
-
-### 查询工具帮助
-如果你不确定某个工具的参数格式，可以在回复中说明你想查询的工具名，系统会自动提供该工具的完整定义。
+### §_intent 协议 [强制]
+- 每次调用工具必须携带 `_intent` 字段
+- 格式：`正在{动作}{对象}`
+- 长度：15~25字中文
 """
 
 
@@ -78,11 +41,13 @@ class ToolDescriptionGenerator:
         "file": {
             "read":     "正在读取文件：{basename}",
             "write":    "正在写入文件：{basename}",
+            "edit":     "正在编辑文件：{basename}",
             "create":   "正在创建项目：{base_dir}（{file_count} 个文件）",
             "delete":   "正在删除：{target}",
             "list":     "正在查看目录：{dir_path}",
             "exists":   "正在检查是否存在：{basename}",
             "mkdir":    "正在创建目录：{target}",
+            "insight":  "{insight_desc}",
             "_default": "正在操作文件：{basename}",
         },
         "memory": {
@@ -90,8 +55,32 @@ class ToolDescriptionGenerator:
             "store":    "正在保存记忆：{title}",
             "_default": "正在操作记忆：{command}",
         },
-        "web_search":  "正在搜索：{query}",
-        "web_fetch":   "正在获取网页内容：{url_short}",
+        "web_search": {
+            "search":   "正在搜索：{query}",
+            "close":    "正在关闭搜索浏览器",
+            "help":     "正在查询搜索帮助",
+            "_default": "正在搜索：{query}",
+        },
+        "web_fetch": {
+            "fetch":           "正在获取网页内容：{url_short}",
+            "fetch_many":      "正在批量获取网页（{url_count} 个）：{url_short}",
+            "insight":         "正在分析网页结构：{url_short}",
+            "close":           "正在关闭浏览器",
+            "get_screenshot":  "正在获取网页截图",
+            "do_action":       "正在执行网页操作：{action}",
+            "get_element_tree":"正在获取页面元素",
+            "save_cookies":    "正在保存 Cookie",
+            "load_cookies":    "正在加载 Cookie",
+            "help":            "正在查询抓取帮助",
+            "_default":        "正在获取网页内容：{url_short}",
+        },
+        "qq_files": {
+            "download":    "正在从 QQ 下载文件",
+            "send_file":   "正在发送文件到 QQ：{filename}",
+            "send_image":  "正在发送图片到 QQ：{filename}",
+            "list":        "正在列出 QQ 下载文件",
+            "_default":    "正在处理 QQ 文件",
+        },
         "_default":    "正在调用 {tool_name}：{param_value}",
     }
 
@@ -136,6 +125,22 @@ class ToolDescriptionGenerator:
             else:
                 ctx["file_count"] = "?"
             ctx["base_dir"] = arguments.get("base_dir") or ""
+            ctx["mode"] = arguments.get("mode") or "auto"
+            ctx["query"] = (arguments.get("query") or "")[:30]
+            if tool_name == "file" and ctx["command"] == "insight":
+                mode = ctx["mode"]
+                query = ctx["query"]
+                basename = ctx["basename"]
+                if query:
+                    ctx["insight_desc"] = f"正在搜索 {basename} 中的：{query}"
+                elif mode == "structure":
+                    ctx["insight_desc"] = f"正在分析 {basename} 的代码结构"
+                elif mode == "summary":
+                    ctx["insight_desc"] = f"正在获取 {basename} 的摘要"
+                else:
+                    ctx["insight_desc"] = f"正在分析 {basename}（{mode}模式）"
+            else:
+                ctx["insight_desc"] = ""
 
         # Memory 特有
         ctx["query"] = (arguments.get("query") or arguments.get("q") or "")[:30]
@@ -145,6 +150,25 @@ class ToolDescriptionGenerator:
         url = arguments.get("url") or ""
         ctx["url"] = url
         ctx["url_short"] = url[:50] if url else ""
+
+        urls = arguments.get("urls")
+        if isinstance(urls, list):
+            ctx["url_count"] = len(urls)
+        elif isinstance(urls, str):
+            try:
+                parsed = json.loads(urls)
+                ctx["url_count"] = len(parsed) if isinstance(parsed, list) else "?"
+            except Exception:
+                ctx["url_count"] = "?"
+        else:
+            ctx["url_count"] = "?"
+
+        # QQ Files 特有
+        ctx["filename"] = os.path.basename(arguments.get("url") or arguments.get("file_path") or arguments.get("image_path") or "")
+        ctx["target_id"] = arguments.get("target_id") or ""
+
+        # Web 操作特有
+        ctx["action"] = arguments.get("action") or ""
 
         # Shell 特有
         ctx["cmd"] = (arguments.get("command") or "").strip()

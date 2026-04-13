@@ -4,11 +4,11 @@ memory:
   short_term:
     max_history: 50
     max_tool_results: 10
-    max_tool_result_length: 500
-    auto_compact_threshold: 20000
+    max_tool_result_length: 2000
+    auto_compact_threshold: 5000
   session_compact:
     enabled: true
-    token_threshold: 100000
+    token_threshold: 80000
     tool_call_threshold: 20
     keep_recent_messages: 20
     max_notes_length: 2000

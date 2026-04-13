@@ -47,6 +47,16 @@ class ShellTool(BaseTool):
     """
 
     name = "shell"
+    description = (
+        "执行系统命令。Win=PowerShell, Linux/Mac=bash。支持后台任务管理。\n\n"
+        "| 子命令 | 用途 | 必填参数 |\n"
+        "|--------|------|----------|\n"
+        "| `run` | 执行命令 | `cmd` |\n"
+        "| `list` | 列出后台任务 | - |\n"
+        "| `output` | 获取任务输出 | `task_id` |\n"
+        "| `kill` | 终止后台任务 | `task_id` |\n\n"
+        "**铁律**: 长运行服务（server/dev 等）必须 `background=true`，否则会阻塞超时"
+    )
 
     @property
     def tool_name(self) -> str:
@@ -69,36 +79,26 @@ class ShellTool(BaseTool):
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                "description": (
-                    "执行系统命令，支持后台任务管理。\n"
-                    "在 Windows 上使用 PowerShell 语法，Linux/Mac 上使用 bash 语法。\n\n"
-                    "子命令：\n"
-                    "1. run - 执行命令（默认前台，可设后台）\n"
-                    "2. list - 列出所有后台任务\n"
-                    "3. output - 获取后台任务的输出内容\n"
-                    "4. kill - 终止指定的后台任务\n\n"
-                    "⚠️ 对于长时间运行的服务（如 python server.py、npm run dev、uvicorn），"
-                    "必须使用 background=true 在后台运行，否则会阻塞直到超时。"
-                ),
+                "description": self.description,
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {
                             "type": "string",
                             "enum": ["run", "list", "output", "kill"],
-                            "description": "子命令：run(执行) / list(列表) / output(输出) / kill(终止)",
+                            "description": "子命令：run/list/output/kill",
                         },
                         "cmd": {
                             "type": "string",
-                            "description": "要执行的完整命令（仅 run 命令需要）",
+                            "description": "[run] 要执行的命令",
                         },
                         "background": {
                             "type": "boolean",
-                            "description": "是否后台运行（仅 run 命令，默认 false）",
+                            "description": "[run] 是否后台运行（默认 false）",
                         },
                         "task_id": {
                             "type": "string",
-                            "description": "任务 ID（仅 output/kill 命令需要）",
+                            "description": "[output/kill] 任务 ID",
                         },
                     },
                     "required": ["command"],
