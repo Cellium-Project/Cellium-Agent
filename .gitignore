@@ -53,6 +53,9 @@ workspace/.cache/
 # 下载文件（代码自动创建）
 workspace/downloads/
 
+# 截图文件（web_fetch 工具生成）
+workspace/web_fetch_screenshots/
+
 # Node.js
 ui/node_modules/
 reactAgentUi/node_modules/

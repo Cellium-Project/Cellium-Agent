@@ -30,7 +30,9 @@ export function useChat() {
   const reconnectToTask = useCallback(async (sessionId: string) => {
     // 防止重复连接
     if (abortControllerRef.current) {
-      console.log('[reconnectToTask] 已经在连接中，跳过');
+      if (import.meta.env.DEV) {
+        console.log('[reconnectToTask] 已经在连接中，跳过');
+      }
       return;
     }
 
@@ -78,7 +80,9 @@ export function useChat() {
             const event: SSEEvent = JSON.parse(raw);
             handleSSEEvent(event, ctx);
           } catch (e) {
-            console.warn('Failed to parse SSE event:', raw);
+            if (import.meta.env.DEV) {
+              console.warn('Failed to parse SSE event:', raw);
+            }
           }
         }
       }
@@ -88,7 +92,9 @@ export function useChat() {
       fetchSessions();
     } catch (error: any) {
       if (error.name !== 'AbortError') {
-        console.error('Reconnect error:', error);
+        if (import.meta.env.DEV) {
+          console.error('Reconnect error:', error);
+        }
       }
       updateStreamingMessage(null);
     } finally {
@@ -170,7 +176,9 @@ export function useChat() {
             const event: SSEEvent = JSON.parse(raw);
             handleSSEEvent(event, ctx);
           } catch (e) {
-            console.warn('Failed to parse SSE event:', raw);
+            if (import.meta.env.DEV) {
+              console.warn('Failed to parse SSE event:', raw);
+            }
           }
         }
       }
@@ -284,6 +292,9 @@ export function useChat() {
 
       case 'content_chunk': {
         const chunk = (event.content || '').trim();
+        if (import.meta.env.DEV) {
+          console.log('[content_chunk] received:', chunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
+        }
         if (chunk) {
           ctx.timeline.push({ kind: 'text', content: chunk });
         }
@@ -294,6 +305,9 @@ export function useChat() {
           toolTraces: ctx.traces,
           timeline: [...ctx.timeline],
         });
+        if (import.meta.env.DEV) {
+          console.log('[content_chunk] updated timeline length:', ctx.timeline.length);
+        }
         break;
       }
 

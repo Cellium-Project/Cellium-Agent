@@ -69,3 +69,53 @@ class ChannelAdapter(ABC):
     def _dispatch(self, message: UnifiedMessage):
         if hasattr(self, '_message_handler') and self._message_handler:
             self._message_handler(message)
+
+    def extract_file_info(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        从原始消息数据中提取文件信息
+        各平台 Adapter 可重写此方法以支持文件消息
+
+        Returns:
+            {
+                "filename": str,
+                "url": str (optional),
+                "size": int (optional),
+                "mime_type": str (optional),
+            }
+            或 None 表示不是文件消息
+        """
+        return None
+
+    async def handle_file_message(self, message: UnifiedMessage) -> bool:
+        """
+        处理文件消息，保存到 session
+        返回 True 表示已处理，False 表示不是文件消息
+        """
+        raw_data = message.raw or {}
+        file_info = self.extract_file_info(raw_data)
+
+        if not file_info:
+            return False
+
+        try:
+            session_id = message.session_id
+            from app.agent.loop.session_manager import get_session_manager
+            session_mgr = get_session_manager()
+            session_info = session_mgr.get_or_create(session_id)
+
+            # 保存文件信息到 session 的临时存储
+            if not hasattr(session_info, "pending_files"):
+                session_info.pending_files = []
+            session_info.pending_files.append({
+                "filename": file_info.get("filename", "unknown"),
+                "url": file_info.get("url"),
+                "size": file_info.get("size", 0),
+                "mime_type": file_info.get("mime_type"),
+                "msg_id": message.msg_id,
+                "platform": self.platform_name,
+            })
+
+            return True
+        except Exception as e:
+            logger.error(f"[{self.platform_name}] 文件消息处理失败: {e}")
+            return False

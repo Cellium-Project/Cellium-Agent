@@ -41,7 +41,7 @@ class SessionNotes:
     ```
     """
 
-    DEFAULT_NOTES_DIR = "memory/notes"
+    DEFAULT_NOTES_DIR = os.path.join("memory", "notes")
     
     # 最大历史目标数量
     MAX_GOAL_HISTORY = 10

@@ -13,6 +13,6 @@
 enabled_components:
 - components.component_builder.ComponentBuilder
 - components.skill_installer.SkillInstaller
-- components.web_fetch.WebFetch
 - components.qq_files.QQFiles
 - components.web_search.WebSearch
+- components.web_fetch.WebFetch

@@ -27,7 +27,7 @@ class QQFiles(BaseCell):
     def __init__(self):
         super().__init__()
         # 下载目录：workspace/downloads/qq
-        self._download_dir = Path("workspace/downloads/qq")
+        self._download_dir = Path("workspace") / "downloads" / "qq"
         self._download_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_adapter(self):
@@ -153,20 +153,11 @@ class QQFiles(BaseCell):
                 finally:
                     loop.close()
 
-            # 先检查上传是否能成功
-            upload_coro = adapter.upload_media(target_id, file_path, file_type=4, is_group=is_group)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                upload_future = executor.submit(_run_in_new_loop, upload_coro)
-                upload_result = upload_future.result(timeout=60)
-
-            if "error" in upload_result:
-                return {"success": False, "error": f"上传失败: {upload_result['error']}"}
-
-            # 再发送文件消息
+            # send_file_message 内部已包含上传逻辑，直接调用即可
             send_coro = adapter.send_file_message(target_id, file_path, is_group)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 send_future = executor.submit(_run_in_new_loop, send_coro)
-                success = send_future.result(timeout=30)
+                success = send_future.result(timeout=60)
 
             if success:
                 return {"success": True, "message": "文件发送成功"}

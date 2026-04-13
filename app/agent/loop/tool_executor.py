@@ -62,15 +62,12 @@ class ToolDescriptionGenerator:
             "_default": "正在搜索：{query}",
         },
         "web_fetch": {
-            "fetch":           "正在获取网页内容：{url_short}",
-            "fetch_many":      "正在批量获取网页（{url_count} 个）：{url_short}",
-            "insight":         "正在分析网页结构：{url_short}",
+            "read":            "正在阅读网页：{url_short}",
+            "control":         "正在操控页面：{action}",
+            "set_mode":        "正在切换浏览器模式为：{headless}",
+            "get_screenshot":  "正在截图：{selector}",
+            "find_qrcode":     "正在查找页面二维码",
             "close":           "正在关闭浏览器",
-            "get_screenshot":  "正在获取网页截图",
-            "do_action":       "正在执行网页操作：{action}",
-            "get_element_tree":"正在获取页面元素",
-            "save_cookies":    "正在保存 Cookie",
-            "load_cookies":    "正在加载 Cookie",
             "help":            "正在查询抓取帮助",
             "_default":        "正在获取网页内容：{url_short}",
         },
@@ -142,8 +139,8 @@ class ToolDescriptionGenerator:
             else:
                 ctx["insight_desc"] = ""
 
-        # Memory 特有
-        ctx["query"] = (arguments.get("query") or arguments.get("q") or "")[:30]
+        # Memory / Web Search 特有
+        ctx["query"] = (arguments.get("query") or arguments.get("q") or arguments.get("keywords") or "")[:30]
         ctx["title"] = (arguments.get("title") or "")[:30]
 
         # Web 特有
@@ -169,6 +166,8 @@ class ToolDescriptionGenerator:
 
         # Web 操作特有
         ctx["action"] = arguments.get("action") or ""
+        ctx["selector"] = arguments.get("selector") or "页面"
+        ctx["headless"] = "后台" if arguments.get("headless", True) else "可视化"
 
         # Shell 特有
         ctx["cmd"] = (arguments.get("command") or "").strip()
@@ -191,11 +190,17 @@ class ToolDescriptionGenerator:
         """根据工具名和参数，使用模板生成用户友好的中文操作描述。
 
         模板优先级：
+          0. arguments["_intent"]                     — LLM 提供的意图描述（最高优先级）
           1. _DESC_TEMPLATES[tool_name][sub_command]  — 精确匹配
           2. _DESC_TEMPLATES[tool_name]["_default"]   — 工具级默认
           3. _DESC_TEMPLATES["_default"]              — 全局兜底
           4. shell 走独立的命令解析器
         """
+        # 0) 优先使用 LLM 提供的 _intent
+        intent = arguments.get("_intent")
+        if intent and isinstance(intent, str) and len(intent.strip()) > 0:
+            return intent.strip()
+
         # Shell 走独立解析器（正则匹配，无法用简单模板覆盖）
         if tool_name == "shell":
             cmd = (arguments.get("command") or "").strip()

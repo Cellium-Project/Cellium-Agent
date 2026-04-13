@@ -27,6 +27,8 @@ class BaseCell(ICell, metaclass=AutoInjectMeta):
         return self.__class__.__name__.lower()
     
     def execute(self, command: str, *args, **kwargs) -> Any:
+        # 清理命令名（去除可能的特殊字符）
+        command = command.strip().strip('>"\'')
         method_name = f"{self.COMMAND_PREFIX}{command}"
         if hasattr(self, method_name):
             return getattr(self, method_name)(*args, **kwargs)

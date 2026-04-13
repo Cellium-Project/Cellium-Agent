@@ -387,13 +387,16 @@ class AgentLoop:
             trace = await self._execute_single_tool(info, effective_session, iteration, effective_memory)
             return info["tool_name"], info["arguments"], trace
 
-        pending_futures = {}
+        pending_tasks = []
+        future_to_info = {}
         completed_results = {}
 
         if independent_calls:
             for idx, info in enumerate(independent_calls):
                 task = asyncio.create_task(execute_and_yield(info))
-                pending_futures[task] = (idx, info["tool_name"])
+                pending_tasks.append(task)
+                # 使用 task 本身作为 key（Python 3.13+ as_completed 会返回原始 task）
+                future_to_info[task] = (idx, info["tool_name"])
 
         if write_calls:
             for idx, info in enumerate(write_calls):
@@ -402,13 +405,17 @@ class AgentLoop:
                 yield {"type": "tool_result", "tool": info["tool_name"],
                        "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
 
-        for future in asyncio.as_completed(pending_futures):
-            idx, tool_name = pending_futures[future]
-            try:
-                name, arguments, trace = await future
-                completed_results[idx] = (name, arguments, trace)
-            except Exception as e:
-                completed_results[idx] = (tool_name, None, {"error": str(e)})
+        if pending_tasks:
+            # 使用 asyncio.as_completed 按完成顺序处理任务
+            for completed_future in asyncio.as_completed(pending_tasks):
+                # 在 Python 3.13+ 中，as_completed 返回的是原始 task
+                # 在旧版本中，返回的是包装后的 future，但我们可以通过映射找到原始信息
+                idx, tool_name = future_to_info.get(completed_future, (0, "unknown"))
+                try:
+                    name, arguments, trace = await completed_future
+                    completed_results[idx] = (name, arguments, trace)
+                except Exception as e:
+                    completed_results[idx] = (tool_name, None, {"error": str(e)})
 
         for idx in sorted(completed_results.keys()):
             name, arguments, trace = completed_results[idx]

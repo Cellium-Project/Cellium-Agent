@@ -129,7 +129,7 @@ class SessionState:
 
 
 def _get_session_path(app_id: str) -> Path:
-    cache_dir = Path("workspace/.cache/qqbot")
+    cache_dir = Path("workspace") / ".cache" / "qqbot"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / f"session_{app_id}.json"
 
@@ -270,7 +270,7 @@ class QQAdapter(ChannelAdapter):
         self._token_expires_at: float = 0
 
         # 数据目录（用于存储下载的文件）
-        self._data_dir = Path("workspace/downloads/qq")
+        self._data_dir = Path("workspace") / "downloads" / "qq"
         self._data_dir.mkdir(parents=True, exist_ok=True)
 
     async def update_config(self, app_id: str = None, app_secret: str = None, intents: int = None):
@@ -453,6 +453,24 @@ class QQAdapter(ChannelAdapter):
                 group_id=d.get("group_openid", ""),
                 raw=d,
             )
+        return None
+
+    def extract_file_info(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        从 QQ 消息中提取文件信息
+        支持 C2C_FILE_CREATE 和 GROUP_FILE_CREATE 类型
+        """
+        msg_type = raw_data.get("t") or raw_data.get("type", "")
+        data = raw_data.get("d", raw_data)
+
+        # 检查是否是文件消息类型
+        if msg_type in ("C2C_FILE_CREATE", "GROUP_FILE_CREATE") or raw_data.get("filename"):
+            return {
+                "filename": data.get("filename") or raw_data.get("filename", "unknown"),
+                "url": data.get("url") or raw_data.get("url"),
+                "size": data.get("size") or raw_data.get("size", 0),
+                "mime_type": data.get("content_type") or raw_data.get("content_type"),
+            }
         return None
 
     async def _heartbeat(self, interval: int):

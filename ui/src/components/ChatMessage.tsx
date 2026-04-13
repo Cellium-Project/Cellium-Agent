@@ -41,6 +41,7 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
 
 /** ★ 按时间顺序渲染时间线片段（文本 + 工具调用交错显示） */
 function renderTimeline(message: Message): React.ReactNode {
+  console.log('[renderTimeline] timeline:', message.timeline?.length, 'content:', message.content?.slice(0, 50));
   // 如果有 timeline，按顺序渲染每个片段
   if (message.timeline && message.timeline.length > 0) {
     return (

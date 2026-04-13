@@ -134,41 +134,23 @@ class ChannelManager:
     async def _on_message(self, message: UnifiedMessage):
         logger.info(f"[ChannelManager] Message from {message.platform}: {message.content[:50]}...")
 
-        # 检测文件消息（通过 raw 数据中的 filename 字段）
-        raw_data = message.raw or {}
-        if raw_data.get("filename"):
+        # 获取对应平台的 adapter 处理文件消息
+        adapter = self._adapters.get(message.platform)
+        if adapter:
             try:
-                # 文件消息：保存文件信息到 session，不触发 Agent
-                session_id = message.session_id
-                from app.agent.loop.session_manager import get_session_manager
-                session_mgr = get_session_manager()
-                session_info = session_mgr.get_or_create(session_id)
-                
-                # 保存文件信息到 session 的临时存储
-                if not hasattr(session_info, "pending_files"):
-                    session_info.pending_files = []
-                session_info.pending_files.append({
-                    "filename": raw_data.get("filename"),
-                    "url": raw_data.get("url"),
-                    "size": raw_data.get("size", 0),
-                    "msg_id": message.msg_id,
-                })
-                
-                filename = raw_data.get("filename", "unknown")
-                file_count = len(session_info.pending_files)
-                logger.info(f"[ChannelManager] File received: {filename}, session={session_id}, total={file_count}")
-                
-                # 回复用户提示
-                await self.send_message(
-                    message.platform,
-                    message.user_id,
-                    f"📎 已收到文件：{filename}\n请继续发送你要执行的任务",
-                    message.message_type,
-                )
-                return
+                is_file = await adapter.handle_file_message(message)
+                if is_file:
+                    filename = message.raw.get("filename", "unknown") if message.raw else "unknown"
+                    logger.info(f"[ChannelManager] File received via {message.platform}: {filename}")
+                    await self.send_message(
+                        message.platform,
+                        message.user_id,
+                        f"📎 已收到文件：{filename}\n请继续发送你要执行的任务",
+                        message.message_type,
+                    )
+                    return
             except Exception as e:
-                logger.error(f"[ChannelManager] 文件消息处理失败: {e}")
-                # 继续处理为普通消息，让 Agent 有机会响应
+                logger.error(f"[ChannelManager] File message handling failed: {e}")
 
         if message.content.strip() == "/stop":
             session_id = message.session_id
@@ -275,14 +257,19 @@ class ChannelManager:
                                         content_str = content_str[:300] + "..."
                                     await safe_send(f"> ## ✅ **{tool_name}** 耗时 {duration}ms")
                                 elif event_type == "content_chunk":
-                                    await safe_send(event["content"])
+                                    chunk_content = event.get("content", "")
+                                    logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
+                                    await safe_send(chunk_content)
                                     sent_any = True
+                                    logger.debug(f"[ChannelManager] content_chunk sent successfully")
                                 elif event_type == "done":
+                                    done_content = event.get("content", "")
+                                    logger.debug(f"[ChannelManager] done event | sent_any={sent_any} | pending_len={len(pending)} | content_len={len(done_content)}")
                                     if sent_any and pending:
                                         await safe_send(pending)
                                         pending = ""
                                     elif not sent_any:
-                                        await safe_send(event.get("content", "..."))
+                                        await safe_send(done_content or "...")
                             except Exception as e:
                                 logger.warning(f"[ChannelManager] Failed to handle stream event {event.get('type')}: {e}")
                     except Exception as e:

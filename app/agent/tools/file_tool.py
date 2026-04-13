@@ -9,13 +9,6 @@
   - 支持大文件自动截断
   - 原子写入（temp + rename）
   - 文件读取缓存 + 外部修改检测
-
-用法：
-    tool = FileTool()
-    result = tool.execute("read", {"path": "F:\\test.py"})
-    result = tool.execute("write", {"path": "F:\\test.py", "content": "print('hello')"})
-    result = tool.execute("list", {"dir": "F:\\project"})
-    result = tool.execute("edit", {"path": "F:\\test.py", "old_string": "hello", "new_string": "hello world"})
 """
 
 import os
@@ -683,18 +676,20 @@ class FileTool(BaseTool):
     #  内部工具方法
     # ================================================================
 
-    @staticmethod
-    def _resolve_path(path: str) -> str:
-        """解析为绝对路径 + 安全检查"""
+    def _resolve_path(self, path: str) -> str:
+        """解析为绝对路径，空路径或无效路径时使用默认 workspace"""
+        if not path or not isinstance(path, str):
+            # 使用默认 workspace
+            return str(Path(__file__).resolve().parent.parent.parent.parent / "workspace")
+
+        # 如果是相对路径，先尝试作为相对于 workspace 的路径
+        if not os.path.isabs(path):
+            workspace_path = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
+            relative_path = workspace_path / path
+            if relative_path.exists():
+                return str(relative_path)
+
         abs_path = os.path.abspath(path)
-
-        # 可选：限制在允许的根目录内
-        if _ALLOWED_ROOTS:
-            safe = any(abs_path.startswith(root) for root in _ALLOWED_ROOTS)
-            if not safe:
-                logger.warning("[FileTool] 路径被拒绝 | path=%s | 允许根=%s", abs_path, _ALLOWED_ROOTS)
-                raise PermissionError(f"路径不在允许范围内: {abs_path}")
-
         return abs_path
 
     def _detect_encoding(self, file_path: str) -> str:
