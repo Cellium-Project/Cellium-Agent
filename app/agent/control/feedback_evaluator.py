@@ -64,7 +64,6 @@ class FeedbackEvaluator:
           2. 成功分支：扣效率和成本
           3. 失败分支：扣停滞时间
         """
-        # 1. 判断本轮是否成功
         success = self._is_round_success(state)
 
         if success:
@@ -72,7 +71,6 @@ class FeedbackEvaluator:
         else:
             reward = self._evaluate_failure(state)
 
-        # 限制在 [0, 1] 范围内
         reward = max(0.0, min(1.0, reward))
 
         logger.debug(
@@ -91,20 +89,17 @@ class FeedbackEvaluator:
           - 没有错误
         """
         if not state.last_tool_result:
-            # 如果没有工具调用结果，视为中性
             return True
 
         result = state.last_tool_result
 
         if isinstance(result, dict):
-            # 检查错误标记
             if result.get("error") or result.get("status") == "error":
                 return False
             if result.get("success") is False:
                 return False
             return True
 
-        # 非字典类型，视为成功
         return True
 
     def _evaluate_success(self, state: LoopState) -> float:
@@ -115,15 +110,12 @@ class FeedbackEvaluator:
         """
         reward = self.success_base
 
-        # 2. 效率惩罚（迭代越多扣越多）
         iteration_ratio = state.iteration / max(state.max_iterations, 1)
         iteration_penalty = self.iteration_penalty_coef * iteration_ratio
         reward -= iteration_penalty
 
-        # 3. 成本惩罚（Token 超预算扣更多）
         token_ratio = state.tokens_used / max(state.token_budget, 1)
         if token_ratio > self.token_threshold:
-            # 超阈值部分线性惩罚
             excess = (token_ratio - self.token_threshold) / (1 - self.token_threshold)
             cost_penalty = self.cost_penalty_coef * excess
             reward -= cost_penalty
@@ -144,10 +136,8 @@ class FeedbackEvaluator:
         """
         reward = self.failure_base
 
-        # 4. 失败惩罚（卡得越久扣越多）
         if state.features:
             stuck = state.features.stuck_iterations
-            # 最多扣 stuck_penalty_coef
             stuck_penalty = self.stuck_penalty_coef * min(stuck / 5, 1.0)
             reward -= stuck_penalty
 
@@ -156,15 +146,11 @@ class FeedbackEvaluator:
                 self.failure_base, stuck, stuck_penalty
             )
         else:
-            # 没有特征，扣一半
             reward -= self.stuck_penalty_coef / 2
 
         return reward
 
     def explain(self, state: LoopState) -> Dict[str, Any]:
-        """
-        解释 reward 计算过程（用于调试）
-        """
         success = self._is_round_success(state)
 
         explanation = {
@@ -175,7 +161,6 @@ class FeedbackEvaluator:
         }
 
         if success:
-            # 成功分支的惩罚
             iteration_ratio = state.iteration / max(state.max_iterations, 1)
             explanation["penalties"]["iteration"] = {
                 "ratio": iteration_ratio,
@@ -191,7 +176,6 @@ class FeedbackEvaluator:
                     "amount": self.cost_penalty_coef * excess,
                 }
         else:
-            # 失败分支的惩罚
             if state.features:
                 stuck = state.features.stuck_iterations
                 explanation["penalties"]["stuck"] = {

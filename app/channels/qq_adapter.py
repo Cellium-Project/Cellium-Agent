@@ -23,7 +23,7 @@ from .base import ChannelAdapter, UnifiedMessage
 
 logger = logging.getLogger(__name__)
 
-# QQ Bot API 各类型文件上传大小限制（QQ 机器人上行）
+# QQ Bot API 各类型文件上传大小限制
 UPLOAD_SIZE_LIMITS: Dict[int, int] = {
     1: 30 * 1024 * 1024,   # IMAGE:  30MB
     2: 100 * 1024 * 1024,  # VIDEO:  100MB
@@ -67,7 +67,6 @@ def _get_cached_file_info(cache_key: str) -> Optional[Dict[str, Any]]:
     if not entry:
         return None
 
-    # 检查是否过期（提前60秒失效）
     if now >= entry.get("expires_at", 0):
         del _upload_cache[cache_key]
         return None
@@ -86,18 +85,15 @@ def _set_cached_file_info(
     global _upload_cache
     now = time.time()
 
-    # 清理过期条目
     expired_keys = [k for k, v in _upload_cache.items() if now >= v.get("expires_at", 0)]
     for k in expired_keys:
         del _upload_cache[k]
 
-    # 如果仍然超限，删除最早的一半（简化LRU）
     if len(_upload_cache) >= MAX_UPLOAD_CACHE_SIZE:
         keys = list(_upload_cache.keys())
         for i in range(len(keys) // 2):
             del _upload_cache[keys[i]]
 
-    # 写入缓存（提前60秒过期，避免临界点）
     _upload_cache[cache_key] = {
         "file_info": file_info,
         "file_uuid": file_uuid,
@@ -287,6 +283,8 @@ class QQAdapter(ChannelAdapter):
     def build_inject_content(self, message, content: str) -> str:
         if message.message_type == "group":
             source = f"QQ群（群号：{message.group_id}）"
+        elif message.message_type == "guild":
+            source = f"QQ频道（guild={message.guild_id}, channel={message.channel_id}）"
         else:
             source = f"QQ私聊（UIN：{message.user_id}）"
 
@@ -347,14 +345,17 @@ class QQAdapter(ChannelAdapter):
         if self._ws:
             await self._ws.send(json.dumps(data))
 
-    async def send_message(self, user_id: str, content: str, message_type: str = "c2c", **kwargs) -> bool:
+    async def send_message(self, target_id: str, content: str, message_type: str = "c2c", **kwargs) -> bool:
         is_markdown = kwargs.get("markdown", False)
+        guild_id = kwargs.get("guild_id", "")
         try:
             token = await self._get_access_token()
             if message_type == "c2c":
-                return await self._send_c2c_message(token, user_id, content, kwargs.get("msg_id", ""), is_markdown)
+                return await self._send_c2c_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
             elif message_type == "group":
-                return await self._send_group_message(token, user_id, content, kwargs.get("msg_id", ""), is_markdown)
+                return await self._send_group_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
+            elif message_type == "guild":
+                return await self._send_guild_message(token, target_id, guild_id, content, kwargs.get("msg_id", ""), is_markdown)
         except Exception as e:
             logger.error(f"[QQAdapter] Send error: {e}")
         return False
@@ -387,6 +388,23 @@ class QQAdapter(ChannelAdapter):
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             logger.info(f"[QQAdapter] Group sent: markdown={is_markdown}")
+            return True
+
+    async def _send_guild_message(self, token: str, channel_id: str, guild_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
+        url = f"https://api.sgroup.qq.com/channels/{channel_id}/messages"
+        headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
+        payload = {"msg_id": msg_id}
+        if guild_id:
+            payload["guild_id"] = guild_id
+        if is_markdown:
+            payload.update({"markdown": {"content": content}, "msg_type": 2})
+        else:
+            payload.update({"content": content, "msg_type": 0})
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            logger.info(f"[QQAdapter] Guild sent: channel={channel_id}, markdown={is_markdown}")
             return True
 
     def _parse_message(self, t: str, d: Dict[str, Any]) -> Optional[UnifiedMessage]:
@@ -607,17 +625,14 @@ class QQAdapter(ChannelAdapter):
             {"file_path": str, "file_size": int, "filename": str} 或 {"error": str}
         """
         try:
-            # 确定文件名
             if not filename:
                 parsed = urlparse(url)
                 filename = os.path.basename(parsed.path) or "unknown"
 
-            # 清理文件名
             filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
             if not filename:
                 filename = "download"
 
-            # 构建保存路径
             save_dir = Path(self._data_dir) / sub_dir
             save_dir.mkdir(parents=True, exist_ok=True)
             file_path = save_dir / filename
@@ -675,23 +690,19 @@ class QQAdapter(ChannelAdapter):
             file_size = file_path_obj.stat().st_size
             file_name = file_path_obj.name
 
-            # 检查文件大小限制
             size_limit = UPLOAD_SIZE_LIMITS.get(file_type, 30 * 1024 * 1024)
             if file_size > size_limit:
                 type_names = {1: "图片", 2: "视频", 3: "语音", 4: "文件"}
                 return {"error": f"{type_names.get(file_type, '文件')}大小超过限制 ({size_limit / 1024 / 1024:.0f}MB)"}
 
-            # 计算文件内容哈希（用于缓存）
             logger.info(f"[QQAdapter] 计算文件哈希: {file_name}")
             md5_hash, _, _ = await _compute_file_hashes(file_path, file_size)
 
-            # 检查缓存
             scope = "group" if is_group else "c2c"
             cache_key = _get_cache_key(md5_hash, scope, target_id, file_type)
             cached = _get_cached_file_info(cache_key)
 
             if cached:
-                # 缓存命中，直接复用
                 return {
                     "file_info": cached["file_info"],
                     "file_uuid": cached["file_uuid"],
@@ -699,25 +710,21 @@ class QQAdapter(ChannelAdapter):
                     "cached": True
                 }
 
-            # 大文件进度提示
             if file_size > LARGE_FILE_THRESHOLD:
                 logger.info(f"[QQAdapter] 开始上传大文件: {file_name}, 大小: {file_size / 1024 / 1024:.2f} MB")
 
             token = await self._get_access_token()
 
-            # 获取上传 URL
             if is_group:
                 url = "https://api.sgroup.qq.com/v2/groups/{}/files".format(target_id)
             else:
                 url = "https://api.sgroup.qq.com/v2/users/{}/files".format(target_id)
 
-            # 执行上传
             if file_size <= 20 * 1024 * 1024:
                 result = await self._upload_small_file(url, token, file_path, file_name, file_type)
             else:
                 result = await self._upload_large_file(url, token, file_path, file_name, file_type, file_size)
 
-            # 写入缓存
             if "file_info" in result and "ttl" in result:
                 _set_cached_file_info(
                     cache_key,
@@ -748,7 +755,6 @@ class QQAdapter(ChannelAdapter):
             with open(file_path, "rb") as f:
                 file_data = base64.b64encode(f.read()).decode("utf-8")
             
-            # 使用 JSON body 而不是 FormData
             body = {
                 "file_type": file_type,
                 "file_data": file_data,
@@ -777,21 +783,17 @@ class QQAdapter(ChannelAdapter):
         file_size: int
     ) -> Dict[str, Any]:
         """分片上传大文件（>=20MB）"""
-        # 计算文件哈希
         logger.info(f"[QQAdapter] 计算文件哈希: {file_name}")
         md5, sha1, md5_10m = await _compute_file_hashes(file_path, file_size)
 
-        # 准备上传
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
 
-        # 计算分片数量
         total_parts = (file_size + PART_SIZE - 1) // PART_SIZE
         logger.info(f"[QQAdapter] 开始分片上传: {file_name}, 共 {total_parts} 个分片")
 
         uploaded_parts = []
 
         async with aiohttp.ClientSession() as session:
-            # 并发上传分片
             semaphore = asyncio.Semaphore(DEFAULT_CONCURRENT_PARTS)
 
             async def upload_part(part_index: int) -> Dict[str, Any]:
@@ -799,12 +801,10 @@ class QQAdapter(ChannelAdapter):
                     offset = part_index * PART_SIZE
                     length = min(PART_SIZE, file_size - offset)
 
-                    # 读取分片数据
                     async with aiofiles.open(file_path, "rb") as f:
                         await f.seek(offset)
                         part_data = await f.read(length)
 
-                    # 构建分片表单
                     form_data = aiohttp.FormData()
                     form_data.add_field("file", part_data, filename=f"{file_name}.part{part_index}")
                     form_data.add_field("file_type", str(file_type))
@@ -820,11 +820,9 @@ class QQAdapter(ChannelAdapter):
 
                     return result
 
-            # 创建所有分片上传任务
             tasks = [upload_part(i) for i in range(total_parts)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # 检查上传结果
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     return {"error": f"分片 {i + 1} 上传异常: {result}"}
@@ -833,7 +831,6 @@ class QQAdapter(ChannelAdapter):
                 if "file_info" in result:
                     uploaded_parts.append(result["file_info"])
 
-        # 返回最后一个分片的结果（包含完整的 file_info）
         if uploaded_parts:
             logger.info(f"[QQAdapter] 大文件上传完成: {file_name}")
             return {"file_info": uploaded_parts[-1]}
@@ -860,7 +857,6 @@ class QQAdapter(ChannelAdapter):
             是否发送成功
         """
         try:
-            # 上传文件
             upload_result = await self.upload_media(target_id, file_path, file_type=4, is_group=is_group)
             file_info = upload_result.get("file_info")
 
@@ -869,7 +865,6 @@ class QQAdapter(ChannelAdapter):
                 logger.error(f"[QQAdapter] 上传文件失败: {error_msg}, upload_result={upload_result}")
                 return False
 
-            # 发送文件消息
             token = await self._get_access_token()
 
             if is_group:
@@ -948,7 +943,7 @@ class QQAdapter(ChannelAdapter):
             msg_seq = int(uuid.uuid4().int % 900000000000000) + 100000000000000
 
             payload = {
-                "msg_type": 7,  # 富媒体消息
+                "msg_type": 7, 
                 "msg_id": msg_id,
                 "seq": msg_seq,
                 "content": "",
@@ -986,7 +981,6 @@ class QQAdapter(ChannelAdapter):
         if not attachments:
             return {"attachments": [], "downloaded": []}
 
-        # 构建子目录路径
         peer_id = message.group_id or message.user_id or "unknown"
         sub_dir = f"{self.app_id}/{peer_id}"
 
@@ -1002,7 +996,6 @@ class QQAdapter(ChannelAdapter):
                 url = att.get("url", "")
                 filename = att.get("filename") or att.get("name", "unknown")
 
-                # 处理协议相对 URL
                 if url.startswith("//"):
                     url = f"https:{url}"
 

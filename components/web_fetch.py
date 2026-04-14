@@ -10,11 +10,14 @@ import os
 import time
 import base64
 import concurrent.futures
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
+
+import httpx
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 from app.core.interface.base_cell import BaseCell
-from app.core.util.browser_utils import find_browser_path
+from app.core.util.browser_utils import find_browser_path, get_browser_candidates
+from app.core.util.browser_runtime import get_runtime_download_spec
 
 logger = logging.getLogger(__name__)
 
@@ -30,31 +33,59 @@ class WebFetch(BaseCell):
       - read: 支持分页读取，同一URL在短时间内会复用缓存
     """
 
-    # ★ 页面缓存：url -> {timestamp, page, content}
+    #页面缓存：url -> {timestamp, page, content}
     _page_cache: Dict[str, Dict[str, Any]] = {}
     _cache_ttl = 300  # 缓存有效期 5 分钟
+    MAX_WAIT_TIME = 30  # 最大等待时间（秒）
+
+    # 通用类名列表
+    GENERIC_CLASSES = {
+        'btn', 'button', 'link', 'item', 'active', 'disabled', 'selected',
+        'hover', 'focus', 'open', 'show', 'hide', 'hidden', 'visible',
+        'container', 'wrapper', 'content', 'inner', 'outer', 'box',
+        'left', 'right', 'center', 'top', 'bottom', 'middle',
+        'col', 'row', 'col-xs', 'col-sm', 'col-md', 'col-lg',
+        'pull-left', 'pull-right', 'text-left', 'text-right', 'text-center',
+        'clearfix', 'float-left', 'float-right', 'd-none', 'd-block', 'd-inline'
+    }
 
     def __init__(self):
         super().__init__()
         self._page = None
+        self._browser = None  # 保存浏览器对象（CDP 模式）
         self._headless = True  # 默认 headless 模式
         self._current_url = None  # 当前缓存的URL
+        self._working_browser_path: Optional[str] = None
+        self._working_browser_name: Optional[str] = None
+        self._browser_probe_failed = False
 
     @property
     def cell_name(self) -> str:
         return "web_fetch"
 
-    def _get_options(self, force_headless: bool = None):
+    def _is_generic_class(self, class_name: str) -> bool:
+        """判断类名是否过于通用，不适合作为选择器"""
+        # 检查完全匹配
+        if class_name.lower() in self.GENERIC_CLASSES:
+            return True
+        # 检查前缀匹配（如 col-md-6）
+        for prefix in ['col-', 'col-xs-', 'col-sm-', 'col-md-', 'col-lg-', 'd-', 'm-', 'p-', 'text-']:
+            if class_name.startswith(prefix):
+                return True
+        return False
+
+    def _build_options(self, browser_path: Optional[str] = None, force_headless: bool = None):
         """
         获取浏览器配置
 
         Args:
+            browser_path: 指定浏览器路径（None 则自动查找）
             force_headless: 强制指定 headless 模式（None 则使用实例设置）
         """
         options = ChromiumOptions()
-        browser_path = find_browser_path()
-        if browser_path:
-            options.set_browser_path(browser_path)
+        resolved_browser_path = browser_path or self._working_browser_path or find_browser_path()
+        if resolved_browser_path:
+            options.set_browser_path(resolved_browser_path)
         options.set_argument('--disable-gpu')
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-blink-features=AutomationControlled')
@@ -66,11 +97,9 @@ class WebFetch(BaseCell):
         options.set_argument('--disable-popup-blocking')
         options.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
-        # headless 模式控制
         is_headless = force_headless if force_headless is not None else self._headless
         options.headless(is_headless)
 
-        # 非 headless 模式下不禁用图片（扫码需要看到二维码）
         if is_headless:
             options.no_imgs(True)
             options.set_argument('--blink-settings=imagesEnabled=false')
@@ -79,6 +108,105 @@ class WebFetch(BaseCell):
             options.set_argument('--disable-background-networking')
 
         return options
+
+    def _get_options(self, force_headless: bool = None):
+        return self._build_options(force_headless=force_headless)
+
+    def _probe_browser(self, browser_path: str) -> Tuple[bool, Optional[str]]:
+        page = None
+        try:
+            page = ChromiumPage(self._build_options(browser_path=browser_path), timeout=10)
+            _ = page.url
+            return True, None
+        except Exception as e:
+            return False, str(e)
+        finally:
+            if page:
+                try:
+                    page.quit()
+                except Exception:
+                    pass
+
+    def _get_working_browser_path(self) -> Optional[str]:
+        if self._working_browser_path:
+            return self._working_browser_path
+
+        # 直接使用 find_browser_path() 获取 Edge 路径
+        browser_path = find_browser_path()
+        if browser_path:
+            self._working_browser_path = browser_path
+            self._working_browser_name = "edge"
+            logger.info(f"[WebFetch] 使用浏览器: {browser_path}")
+        else:
+            logger.warning("[WebFetch] 未找到可用浏览器")
+            self._browser_probe_failed = True
+
+        return self._working_browser_path
+
+    def _browser_unavailable_error(self) -> dict:
+        download_spec = get_runtime_download_spec()
+        return {
+            "success": False,
+            "error": "浏览器模式不可用：已探测的浏览器均启动失败，请先使用 open/fetch 的 HTTP fallback 或修复本机浏览器环境",
+            "can_download_browser": bool(download_spec.get("can_download")),
+            "download_browser_runtime": download_spec,
+        }
+
+    def _resolve_browser_backend(self, require_browser: bool = False) -> Dict[str, Any]:
+        browser_path = self._get_working_browser_path()
+        download_spec = get_runtime_download_spec()
+        if browser_path:
+            return {
+                "status": "ready",
+                "browser_path": browser_path,
+                "browser_source": self._working_browser_name,
+                "can_download_browser": False,
+                "download_browser_runtime": None,
+            }
+        if require_browser:
+            return {
+                "status": "downloadable",
+                "browser_path": None,
+                "browser_source": None,
+                "can_download_browser": bool(download_spec.get("can_download")),
+                "download_browser_runtime": download_spec,
+                "reason": "no_working_browser_found",
+            }
+        return {
+            "status": "http_only",
+            "browser_path": None,
+            "browser_source": None,
+            "can_download_browser": False,
+            "download_browser_runtime": None,
+            "reason": "fall_back_to_http",
+        }
+
+    def _http_fetch_text(self, url: str, timeout: int = 20) -> dict:
+        try:
+            with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+                response = client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                })
+                response.raise_for_status()
+                html = response.text
+
+            title_match = re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.IGNORECASE | re.DOTALL)
+            title = self._clean_text(title_match.group(1)) if title_match else ""
+
+            body_match = re.search(r'<body[^>]*>(.*?)</body>', html, flags=re.IGNORECASE | re.DOTALL)
+            body_html = body_match.group(1) if body_match else html
+            text = self._clean_text(body_html)[:2000]
+
+            return {
+                "success": True,
+                "url": str(response.url),
+                "title": title,
+                "text": text,
+                "mode": "http_fallback",
+                "hint": "当前已降级为 HTTP 模式，scroll/find/structure/screenshot 等浏览器交互能力可能不可用",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def _set_headless(self, headless: bool):
         """设置 headless 模式（需要重启浏览器生效）"""
@@ -91,20 +219,45 @@ class WebFetch(BaseCell):
 
     def _get_page(self):
         if self._page is None or not self._is_page_alive():
-            # 如果页面不可用，先清理
             if self._page:
                 try:
                     self._page.quit()
                 except Exception:
                     pass
                 self._page = None
-            # 创建新页面
+            browser_path = self._get_working_browser_path()
+            if not browser_path:
+                raise RuntimeError("没有可用的浏览器后端")
             try:
-                self._page = ChromiumPage(self._get_options(), timeout=15)
+                from DrissionPage import Chromium
+                # 使用 _build_options 获取完整配置，确保 headless 设置一致
+                co = self._build_options(browser_path=browser_path)
+                self._browser = Chromium(addr_or_opts=co)
+                # 确保浏览器创建成功
+                if self._browser is None:
+                    raise RuntimeError("Chromium 浏览器创建失败")
+                # 获取最新标签页
+                self._page = self._browser.latest_tab
+                if self._page is None:
+                    # 尝试创建新标签页
+                    self._page = self._browser.new_tab()
+                    if self._page is None:
+                        raise RuntimeError("无法获取浏览器标签页")
                 logger.info("[WebFetch] 浏览器页面创建成功")
             except Exception as e:
                 logger.error(f"[WebFetch] 浏览器创建失败: {e}")
-                raise
+                self._working_browser_path = None
+                self._working_browser_name = None
+                self._browser_probe_failed = False
+                # 清理资源
+                if self._browser:
+                    try:
+                        self._browser.quit()
+                    except:
+                        pass
+                    self._browser = None
+                self._page = None
+                raise RuntimeError(f"浏览器初始化失败: {e}")
         return self._page
 
     def _is_page_alive(self) -> bool:
@@ -123,14 +276,30 @@ class WebFetch(BaseCell):
             try:
                 self._page.quit()
             except Exception as e:
-                logger.debug("[WebFetch] 关闭浏览器失败: %s", e)
+                logger.debug("[WebFetch] 关闭页面失败: %s", e)
             finally:
                 self._page = None
+        if self._browser:
+            try:
+                self._browser.quit()
+            except Exception as e:
+                logger.debug("[WebFetch] 关闭浏览器失败: %s", e)
+            finally:
+                self._browser = None
 
     def _new_page(self):
         """创建新页面（强制新建）"""
         self._close_page()
-        self._page = ChromiumPage(self._get_options(), timeout=15)
+        browser_path = self._get_working_browser_path()
+        if not browser_path:
+            raise RuntimeError("没有可用的浏览器后端")
+        from DrissionPage import Chromium, ChromiumOptions
+        co = ChromiumOptions()
+        co.set_browser_path(browser_path)
+        if self._headless:
+            co.set_argument('--headless')
+        self._browser = Chromium(addr_or_opts=co)
+        self._page = self._browser.latest_tab
         return self._page
 
     def _clean_text(self, text):
@@ -194,28 +363,44 @@ class WebFetch(BaseCell):
             {"success": bool, "text": str, "url": str}
         """
         try:
+            if wait_time is None:
+                wait_time = 3
+            elif wait_time > self.MAX_WAIT_TIME:
+                logger.warning(f"[WebFetch] wait_time={wait_time}s 过大，已限制为 {self.MAX_WAIT_TIME}s")
+                wait_time = self.MAX_WAIT_TIME
+            elif wait_time < 0:
+                wait_time = 0
+
             if action == "open":
                 if not url:
                     return {"success": False, "error": "open 操作需要提供 url"}
-                # 清理 URL（去除引号、反引号等）
                 url = url.strip().strip('`"\'')
                 if not url.startswith('http'):
                     return {"success": False, "error": f"无效URL: {url}"}
 
-                # ★ 检查缓存
                 cached_page, is_cached = self._get_cached_page(url)
                 if is_cached:
                     page = cached_page
                     self._page = page
                     self._current_url = url
                 else:
-                    # 没有缓存，加载新页面
-                    page = self._get_page()
-                    page.get(url, timeout=30)
-                    page.wait(wait_time)
-                    self._current_url = url
-                    # 缓存页面
-                    self._cache_page(url, page)
+                    browser_path = self._get_working_browser_path()
+                    if not browser_path:
+                        return self._http_fetch_text(url)
+                    try:
+                        page = self._get_page()
+                        if page is None:
+                            logger.warning("[WebFetch] 浏览器页面获取失败，降级到 HTTP 模式")
+                            return self._http_fetch_text(url)
+                        page.get(url, timeout=30)
+                        page.wait(wait_time)
+                        self._current_url = url
+                        self._cache_page(url, page)
+                    except Exception as e:
+                        logger.error(f"[WebFetch] 浏览器操作失败: {e}")
+                        # 清理失败的浏览器状态
+                        self._close_page()
+                        return self._http_fetch_text(url)
 
                 # 返回摘要
                 body = page.ele('tag:body', timeout=2)
@@ -237,9 +422,10 @@ class WebFetch(BaseCell):
                 }
 
             elif action == "scroll":
-                # ★ 复用当前缓存的页面
                 page = self._page
                 if not page or not self._current_url:
+                    if not self._get_working_browser_path():
+                        return self._browser_unavailable_error()
                     return {"success": False, "error": "没有可滚动的页面，请先执行 read(action='open', url='...')"}
 
                 page.scroll.down(600)
@@ -266,9 +452,10 @@ class WebFetch(BaseCell):
                 if not keyword:
                     return {"success": False, "error": "find 操作需要提供 keyword"}
 
-                # ★ 复用当前缓存的页面
                 page = self._page
                 if not page or not self._current_url:
+                    if not self._get_working_browser_path():
+                        return self._browser_unavailable_error()
                     return {"success": False, "error": "没有可搜索的页面，请先执行 read(action='open', url='...')"}
 
                 element = page.ele(f'text:{keyword}', timeout=3)
@@ -292,9 +479,10 @@ class WebFetch(BaseCell):
                 }
 
             elif action == "structure":
-                # ★ 复用当前缓存的页面
                 page = self._page
                 if not page or not self._current_url:
+                    if not self._get_working_browser_path():
+                        return self._browser_unavailable_error()
                     return {"success": False, "error": "没有可分析的页面，请先执行 read(action='open', url='...')"}
 
                 structure = self._extract_page_structure(page)
@@ -315,80 +503,6 @@ class WebFetch(BaseCell):
     def _cmd_fetch(self, url: str, wait_time: int = 3) -> dict:
         """fetch 命令兼容层，实际调用 read"""
         return self._cmd_read(url=url, action="open", wait_time=wait_time)
-
-    def _fetch_single(self, url: str, wait_time: float = 5) -> dict:
-        """抓取单个 URL（用于线程池）"""
-        result = {
-            'url': url,
-            'title': '',
-            'text': '',
-            'success': False,
-            'error': ''
-        }
-        page = None
-        try:
-            options = ChromiumOptions()
-            browser_path = find_browser_path()
-            if browser_path:
-                options.set_browser_path(browser_path)
-            options.set_argument('--disable-gpu')
-            options.set_argument('--no-sandbox')
-            options.set_argument('--disable-blink-features=AutomationControlled')
-            options.set_argument('--disable-dev-shm-usage')
-            options.set_argument('--disable-extensions')
-            options.set_argument('--disable-popup-blocking')
-            options.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-
-            page = ChromiumPage(options, timeout=15)
-            
-            page.get(url, timeout=30)
-            page.wait(wait_time)
-            
-            result['title'] = page.title
-            
-            selectors = [
-                ('tag', 'article'), ('tag', 'main'),
-                ('css', '.article-content'), ('css', '.post-content'),
-                ('css', '.entry-content'), ('css', '.content'),
-                ('css', '#content'), ('css', '.article-body'),
-            ]
-            
-            best_text = ''
-            for sel_type, sel_value in selectors:
-                try:
-                    if sel_type == 'tag':
-                        elem = page.ele(f'tag:{sel_value}', timeout=1)
-                    else:
-                        elem = page.ele(f'css:.{sel_value}', timeout=1)
-                    if elem:
-                        txt = self._clean_text(elem.text)
-                        if len(txt) > len(best_text):
-                            best_text = txt
-                except Exception:
-                    continue  # 选择器未匹配，尝试下一个
-            
-            if not best_text:
-                try:
-                    body = page.ele('tag:body', timeout=2)
-                    if body:
-                        best_text = self._clean_text(body.text)
-                except Exception as e:
-                    logger.debug("[WebFetch] _fetch_single 获取 body 失败: %s", e)
-            
-            result['text'] = best_text[:5000]
-            result['success'] = True
-            
-        except Exception as e:
-            result['error'] = str(e)
-        finally:
-            # 确保页面关闭，释放资源
-            if page:
-                try:
-                    page.quit()
-                except Exception:
-                    pass
-        
-        return result
 
     def _cmd_fetch_many(self, urls: list, wait_time: int = 3, max_workers: int = 3) -> dict:
         """
@@ -415,6 +529,14 @@ class WebFetch(BaseCell):
             if max_workers > _MAX_PARALLEL_TABS:
                 max_workers = _MAX_PARALLEL_TABS
                 logger.warning("[WebFetch] max_workers 超过限制，已限制为 %d", max_workers)
+
+            if wait_time is None:
+                wait_time = 3
+            elif wait_time > self.MAX_WAIT_TIME:
+                logger.warning(f"[WebFetch] wait_time={wait_time}s 过大，已限制为 {self.MAX_WAIT_TIME}s")
+                wait_time = self.MAX_WAIT_TIME
+            elif wait_time < 0:
+                wait_time = 0
 
             logger.info("[WebFetch] 启动单浏览器多标签抓取，共 %d 个 URL", len(urls))
             browser = None
@@ -482,6 +604,11 @@ class WebFetch(BaseCell):
 
         page = None
         try:
+            if not self._get_working_browser_path():
+                return {
+                    **self._browser_unavailable_error(),
+                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+                }
             page = self._new_page()
             page.get(url, timeout=30)
             page.wait(3)
@@ -607,6 +734,11 @@ class WebFetch(BaseCell):
         实现"分页"阅读，避免一次性返回全文
         """
         try:
+            if not self._get_working_browser_path():
+                return {
+                    **self._browser_unavailable_error(),
+                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+                }
             page = self._get_page()
             # 执行 JS 获取仅在可视区域内的文本
             js_code = """
@@ -636,31 +768,124 @@ class WebFetch(BaseCell):
         """
         在页面中搜索关键词，并自动滚动到该位置，返回上下文
         实现"关键字定位"而非全文抓取
+        
+        策略：
+        1. 优先使用 DrissionPage 的 text 定位（最可靠）
+        2. 如果失败，回退到 JS 实现
         """
         try:
+            if not self._get_working_browser_path():
+                return {
+                    **self._browser_unavailable_error(),
+                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+                }
             page = self._get_page()
-            # 使用 DrissionPage 的寻找功能
-            element = page.ele(f'text:{keyword}', timeout=3)
-
-            if element:
-                element.scroll.to_see()  # 自动滚动到关键词
-                # 获取该元素周围的上下文
-                parent = element.parent()
-                context_text = parent.text if parent else element.text
-
-                # 获取更广泛的上下文（祖父元素）
-                grandparent = parent.parent() if parent else None
-                wider_context = grandparent.text if grandparent else context_text
-
+            
+            # 方法1：优先使用 DrissionPage 的 text 定位
+            try:
+                # 使用 text 选择器查找元素
+                element = page.ele(f'text:{keyword}', timeout=3)
+                
+                if element:
+                    # 滚动到元素（使用 JS 避免 DrissionPage 的 scroll 问题）
+                    page.run_js("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                    page.wait(0.5)  # 等待滚动完成
+                    
+                    # 获取元素信息
+                    try:
+                        tag = element.tag
+                        text = element.text
+                        elem_id = element.attr('id')
+                        elem_class = element.attr('class')
+                    except:
+                        tag = 'unknown'
+                        text = ''
+                        elem_id = ''
+                        elem_class = ''
+                    
+                    # 获取上下文（父元素文本）
+                    try:
+                        parent = element.parent()
+                        context_text = parent.text if parent else text
+                    except:
+                        context_text = text
+                    
+                    return {
+                        "success": True,
+                        "found": True,
+                        "keyword": keyword,
+                        "context": (context_text or text)[:800],
+                        "element_info": {
+                            "tag": tag,
+                            "id": elem_id,
+                            "class": elem_class,
+                            "text_preview": text[:100] if text else ""
+                        },
+                        "current_url": page.url,
+                        "note": f"已自动滚动到关键词 '{keyword}' 所在位置"
+                    }
+            except Exception as dp_error:
+                # DrissionPage 方法失败，记录日志并回退到 JS
+                logger.debug(f"[WebFetch] DrissionPage 搜索失败，回退到 JS: {dp_error}")
+            
+            # 方法2：使用 JS 实现（备用方案）
+            js_code = f"""
+                (function() {{
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        null,
+                        false
+                    );
+                    const keyword = '{keyword.replace("'", "\\'")}';
+                    let node;
+                    while (node = walker.nextNode()) {{
+                        if (node.textContent.includes(keyword)) {{
+                            const element = node.parentElement;
+                            if (element) {{
+                                element.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+                                return {{
+                                    found: true,
+                                    text: node.textContent.trim(),
+                                    tagName: element.tagName,
+                                    id: element.id,
+                                    className: element.className
+                                }};
+                            }}
+                        }}
+                    }}
+                    return {{found: false}};
+                }})();
+            """
+            
+            result = page.run_js(js_code)
+            
+            if result and result.get('found'):
+                # 获取更广泛的上下文
+                context_js = f"""
+                    (function() {{
+                        const keyword = '{keyword.replace("'", "\\'")}';
+                        const elements = document.querySelectorAll('p, div, span, h1, h2, h3, h4, h5, h6, li, td');
+                        for (let el of elements) {{
+                            if (el.textContent.includes(keyword)) {{
+                                return el.textContent.trim().substring(0, 800);
+                            }}
+                        }}
+                        return '';
+                    }})();
+                """
+                context_text = page.run_js(context_js) or result.get('text', '')
+                
                 return {
                     "success": True,
                     "found": True,
                     "keyword": keyword,
-                    "context": context_text[:800] if context_text else "",
-                    "wider_context": wider_context[:1500] if wider_context else "",
+                    "context": context_text[:800] if isinstance(context_text, str) else result.get('text', '')[:800],
+                    "element_info": result,
                     "current_url": page.url,
-                    "note": f"已自动滚动到关键词 '{keyword}' 所在位置"
+                    "note": f"已自动滚动到关键词 '{keyword}' 所在位置 (JS模式)"
                 }
+            
             return {
                 "success": True,
                 "found": False,
@@ -669,7 +894,15 @@ class WebFetch(BaseCell):
                 "hint": "尝试使用不同的关键词，或使用 get_structure 查看页面目录"
             }
         except Exception as e:
-            return {"success": False, "error": f"搜索失败: {str(e)}"}
+            error_msg = str(e)
+            # 处理特定错误
+            if "位置及大小" in error_msg:
+                return {
+                    "success": False,
+                    "error": "页面元素定位失败，可能是动态内容未完全加载",
+                    "hint": "建议先等待页面加载完成，或使用 read(action='scroll') 滚动后再搜索"
+                }
+            return {"success": False, "error": f"搜索失败: {error_msg}"}
 
     def _cmd_close(self) -> dict:
         """关闭浏览器，释放资源"""
@@ -687,12 +920,33 @@ class WebFetch(BaseCell):
             {"success": bool, "headless": bool, "message": str}
         """
         try:
+            # 检查是否已经是目标模式
+            if self._headless == headless:
+                mode = "headless（后台）" if headless else "可视化（显示窗口）"
+                return {
+                    "success": True,
+                    "headless": headless,
+                    "message": f"已经是 {mode} 模式，无需切换",
+                    "note": "如果浏览器已打开，需要关闭后重新打开才能生效"
+                }
+            
+            # 检查是否有打开的页面需要关闭
+            had_open_page = self._page is not None
+            
             self._set_headless(headless)
             mode = "headless（后台）" if headless else "可视化（显示窗口）"
+            
+            message = f"已切换到 {mode} 模式"
+            if had_open_page:
+                message += "，已关闭当前页面以便下次使用新模式打开"
+            else:
+                message += "，下次打开页面时生效"
+            
             return {
                 "success": True,
                 "headless": headless,
-                "message": f"已切换到 {mode} 模式，下次打开页面时生效"
+                "message": message,
+                "had_open_page": had_open_page
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -711,6 +965,11 @@ class WebFetch(BaseCell):
         import concurrent.futures
 
         def _do_screenshot():
+            if not self._get_working_browser_path():
+                return {
+                    **self._browser_unavailable_error(),
+                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+                }
             page = self._get_page()
 
             # 固定保存路径：workspace/web_fetch_screenshots/域名_时间戳.png
@@ -778,6 +1037,11 @@ class WebFetch(BaseCell):
         import concurrent.futures
 
         def _do_find():
+            if not self._get_working_browser_path():
+                return {
+                    **self._browser_unavailable_error(),
+                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+                }
             page = self._get_page()
             found_elements = []
 
@@ -943,40 +1207,71 @@ class WebFetch(BaseCell):
                 elements = page.run_js(js_code)
                 keyword_lower = (keyword or '').lower()
 
+                # 收集所有候选按钮并打分
+                candidates = []
                 for el in elements:
                     text = el.get('text', '')
                     cls = el.get('className', '')
                     elem_id = el.get('id', '')
+                    tag = el.get('tag', 'button')
+                    href = el.get('href', '')
 
-                    # 构建选择器
+                    # 构建选择器（优先级：id > 特定类名 > 文本 xpath）
                     if elem_id:
                         selector = f"#{elem_id}"
+                        selector_quality = 3  # ID 选择器最可靠
                     elif cls:
-                        # 取第一个类名
-                        first_class = cls.split()[0]
-                        selector = f".{first_class}"
+                        # 过滤掉通用的类名，选择更具体的
+                        class_list = cls.split()
+                        specific_classes = [c for c in class_list if not self._is_generic_class(c)]
+                        if specific_classes:
+                            selector = f".{specific_classes[0]}"
+                            selector_quality = 2
+                        else:
+                            # 使用 tag + 类名组合
+                            selector = f"{tag}.{class_list[0]}"
+                            selector_quality = 1
                     else:
-                        # 用文本内容构建 xpath
-                        selector = f"//*[contains(text(), '{text[:20]}')]"
+                        # 用文本内容构建 xpath（最不可靠）
+                        safe_text = text[:20].replace("'", "\\'")
+                        selector = f"//{tag}[contains(text(), '{safe_text}')]"
+                        selector_quality = 0
 
-                    # 如果有关键词，只返回匹配的
+                    # 计算匹配分数
+                    score = selector_quality * 10
                     if keyword_lower:
-                        check_text = f"{text} {cls}".lower()
-                        if keyword_lower in check_text:
-                            buttons.append({
-                                "text": text,
-                                "selector": selector,
-                                "tag": el.get('tag', 'button')
-                            })
-                    else:
-                        buttons.append({
-                            "text": text,
-                            "selector": selector,
-                            "tag": el.get('tag', 'button')
-                        })
+                        text_lower = text.lower()
+                        cls_lower = cls.lower()
+                        # 完全匹配关键词加分
+                        if keyword_lower == text_lower:
+                            score += 100
+                        elif keyword_lower in text_lower:
+                            score += 50
+                        elif keyword_lower in cls_lower:
+                            score += 20
+                        # 按钮类标签加分
+                        if tag in ['button', 'input']:
+                            score += 10
+                        # 有 href 的链接加分（如果是搜索相关）
+                        if href and any(k in href.lower() for k in ['search', 'query', 'submit']):
+                            score += 5
 
-                    if len(buttons) >= 10:
-                        break
+                    candidates.append({
+                        "text": text,
+                        "selector": selector,
+                        "tag": tag,
+                        "score": score,
+                        "selector_quality": selector_quality
+                    })
+
+                # 按分数排序
+                candidates.sort(key=lambda x: x["score"], reverse=True)
+
+                # 如果有关键词，只返回匹配的
+                if keyword_lower:
+                    buttons = [c for c in candidates if keyword_lower in c["text"].lower() or keyword_lower in c.get("selector", "").lower()][:10]
+                else:
+                    buttons = candidates[:10]
 
             except Exception as e:
                 logger.debug(f"[WebFetch] 查找按钮失败: {e}")
@@ -1009,6 +1304,12 @@ class WebFetch(BaseCell):
             page = self._get_page()
             if action == 'click':
                 if selector:
+                    # 先尝试等待元素出现（处理动态加载）
+                    try:
+                        page.wait.ele_displayed(selector, timeout=3)
+                    except:
+                        pass  # 继续尝试查找
+                    
                     element = page.ele(selector, timeout=5)
                     if not element:
                         return {
@@ -1016,10 +1317,53 @@ class WebFetch(BaseCell):
                             "error": f"Element not found: {selector}",
                             "hint": "选择器格式错误或不支持。建议：1) 先用 find_button 查找按钮获取正确的选择器 2) 使用 CSS 选择器如 #id 或 .class 3) 或使用 XPath 如 //button[contains(text(),'文本')]"
                         }
-                    if hasattr(element, 'states') and not element.states.is_displayed:
-                        return {"success": False, "error": f"Element not visible: {selector}", "hint": "元素存在但不可见，可能需要滚动页面或等待加载"}
-                    element.scroll.to_see()
-                    element.click()
+                    
+                    # 检查元素是否可见
+                    try:
+                        if hasattr(element, 'states') and not element.states.is_displayed:
+                            return {"success": False, "error": f"Element not visible: {selector}", "hint": "元素存在但不可见，可能需要滚动页面或等待加载"}
+                    except:
+                        pass  # 某些元素可能没有 states 属性
+                    
+                    # 滚动到元素（优先使用 JS，更可靠）
+                    try:
+                        page.run_js("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                        page.wait(0.3)  # 等待滚动完成
+                    except:
+                        try:
+                            element.scroll.to_see()
+                        except:
+                            pass  # 如果滚动失败也继续尝试点击
+                    
+                    # 使用多种点击方式
+                    click_success = False
+                    
+                    # 方式1：DrissionPage 原生点击
+                    try:
+                        element.click()
+                        click_success = True
+                    except Exception as click_err:
+                        logger.debug(f"[WebFetch] 原生点击失败: {click_err}")
+                    
+                    # 方式2：JS 点击（备用）
+                    if not click_success:
+                        try:
+                            # 尝试通过元素直接点击
+                            page.run_js("arguments[0].click();", element)
+                            click_success = True
+                        except Exception as js_click_err:
+                            logger.debug(f"[WebFetch] JS 元素点击失败: {js_click_err}")
+                    
+                    # 方式3：通过选择器点击（最后备用）
+                    if not click_success:
+                        try:
+                            # 转换选择器用于 JS（简单处理）
+                            js_selector = selector.replace("'", "\\'")
+                            page.run_js(f"document.querySelector('{js_selector}').click();")
+                            click_success = True
+                        except Exception as selector_click_err:
+                            logger.debug(f"[WebFetch] JS 选择器点击失败: {selector_click_err}")
+                            raise Exception(f"点击失败，已尝试多种方式: {selector}")
                 elif x is not None and y is not None:
                     page.click((x, y))
             elif action == 'input':

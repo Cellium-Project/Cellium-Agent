@@ -44,35 +44,20 @@ def compute_reward(
       - 顺畅：无停滞 = 高分
       - 用户反馈：覆盖其他维度
     """
-    # 有错误 → 0.0
     if error:
         return 0.0
-
-    # 用户反馈优先
     if user_feedback is not None:
         return max(0.0, min(1.0, user_feedback))
-
-    # 基础分：完成了任务
     base = 0.6
-
-    # 效率分：迭代越少分越高 (0-0.2)
     efficiency_ratio = 1.0 - (iteration / max_iterations)
     efficiency_score = efficiency_ratio * 0.2
-
-    # 顺畅分：无停滞 = 高分 (0-0.15)
-    # 停滞多 = 扣分
     smooth_score = 0.15 * (1.0 - min(stuck_iterations / max(iteration, 1), 1.0))
-
-    # 工具效率：工具调用少但完成了任务 = 高分 (0-0.05)
     if iteration > 0:
         tool_efficiency = 0.05 * max(0, 1.0 - tool_call_count / (iteration * 3))
     else:
         tool_efficiency = 0.05
-
     reward = base + efficiency_score + smooth_score + tool_efficiency
-
     return max(0.0, min(1.0, reward))
-
 
 class LearningIntegration:
     """
@@ -100,16 +85,12 @@ class LearningIntegration:
         """
         self.heuristic_engine = heuristic_engine
         self.enabled = enabled
-
         self.memory = PolicyBanditMemory(path=memory_path)
         self.bandit = BayesianBandit(self.memory)
-
         self._current_policy: str = "default"
         self._session_active = False
         self._override_policy: Optional[str] = None
         self._round_updates: int = 0  # 累计轮次更新次数
-
-        # ★ ControlLoop 引用（用于传递 Policy 阈值）
         self._control_loop = None
 
     def set_override_policy(self, policy_name: Optional[str]):
@@ -127,7 +108,6 @@ class LearningIntegration:
         if not self.enabled:
             return "default"
 
-        # 优先使用 override 策略
         if self._override_policy:
             self._current_policy = self._override_policy
         else:
@@ -152,7 +132,6 @@ class LearningIntegration:
         """
         params = get_policy_params(policy_name)
 
-        # 1. 注入到 HeuristicEngine.config.thresholds
         if hasattr(self.heuristic_engine, "config"):
             if hasattr(self.heuristic_engine.config, "thresholds"):
                 for key, value in params.items():
@@ -161,7 +140,6 @@ class LearningIntegration:
                         "[LearningIntegration] 注入参数 | %s=%s", key, value
                     )
 
-        # 2. 传递到 ControlLoop → ActionBandit（分层协作）
         if self._control_loop:
             self._control_loop.set_policy_thresholds(params)
 
@@ -200,7 +178,6 @@ class LearningIntegration:
         if not self.enabled or not self._session_active:
             return
 
-        # 参数有效性检查
         if iteration < 0 or tool_call_count < 0 or stuck_iterations < 0:
             logger.warning(
                 "[LearningIntegration] update_round 参数无效 | iteration=%d | tool_call_count=%d | stuck_iterations=%d",
@@ -248,7 +225,6 @@ class LearningIntegration:
         if not self.enabled or not self._session_active:
             return
 
-        # 计算 reward
         reward = compute_reward(
             error=error,
             iteration=iteration,
@@ -258,10 +234,8 @@ class LearningIntegration:
             stuck_iterations=stuck_iterations,
         )
 
-        # 更新统计
         self.memory.update(self._current_policy, reward)
 
-        # 检查是否需要衰减
         if self.memory.should_decay():
             self.memory.decay()
 

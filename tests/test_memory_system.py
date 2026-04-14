@@ -222,7 +222,8 @@ class TestMemoryGovernance(unittest.TestCase):
 
         self.assertTrue(first["success"])
         self.assertEqual(second["action"], "merged")
-        profiles = self.memory.list_memories(schema_type="profile")
+        result = self.memory.list_memories(schema_type="profile")
+        profiles = result.get("items", [])
         self.assertEqual(len(profiles), 1)
         self.assertIn("简体中文", profiles[0]["content"])
         self.assertIn("回答应尽量简洁", profiles[0]["content"])
@@ -250,7 +251,10 @@ class TestMemoryGovernance(unittest.TestCase):
         self.assertTrue(redacted["success"])
         self.assertTrue(redacted["sensitive"])
 
-        item = self.memory.list_memories(schema_type="profile", include_sensitive=True, limit=10)[0]
+        result = self.memory.list_memories(schema_type="profile", include_sensitive=True, limit=10)
+        items = result.get("items", [])
+        self.assertTrue(len(items) > 0, "应该返回至少一条敏感记忆")
+        item = items[0]
         self.assertIn("[REDACTED]", item["content"])
         self.assertNotIn("SECRET-1234567890", item["content"])
 
@@ -316,7 +320,8 @@ class TestMemoryGovernance(unittest.TestCase):
 
         merged = self.memory.merge_conflicts(memory_key="project:path", schema_type="project")
         self.assertTrue(merged["success"])
-        active = self.memory.list_memories(schema_type="project")
+        result = self.memory.list_memories(schema_type="project")
+        active = result.get("items", [])
         self.assertEqual(len(active), 1)
         self.assertIn("C:/repo/app", active[0]["content"])
         self.assertIn("C:/repo/app/dist", active[0]["content"])

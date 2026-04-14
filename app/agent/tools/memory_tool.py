@@ -98,7 +98,6 @@ class MemoryTool(BaseTool):
                 schema_type=schema_type,
             )
             if not results:
-                # 搜索成功执行，只是无结果（不是失败）
                 return {"success": True, "found": 0, "message": f"未找到与「{query}」相关的记忆", "results": []}
 
             items = []

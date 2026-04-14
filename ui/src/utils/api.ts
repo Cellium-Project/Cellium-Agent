@@ -3,6 +3,7 @@ const API_BASE = '/api';
 export const API = {
   // Chat
   stream: `${API_BASE}/chat/stream`,
+  supplement: `${API_BASE}/chat/supplement`,
   chatStatus: (sessionId: string) => `${API_BASE}/chat/status?session_id=${sessionId}`,
   chatStop: `${API_BASE}/chat/stop`,
 

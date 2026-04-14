@@ -15,6 +15,7 @@ from typing import Dict, List, TYPE_CHECKING
 if TYPE_CHECKING:
     from app.agent.llm.engine import BaseLLMEngine
     from app.agent.loop.memory import MemoryManager
+    from app.agent.memory.repository import MemoryRepository
     from app.agent.memory.session_notes import SessionNotes
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class SessionCompactor:
         tool_call_threshold: int = 10,  # 默认 10 次工具调用触发压缩
         keep_recent_messages: int = 10,
         max_notes_length: int = 2000,
+        repository: "MemoryRepository" = None,
     ):
         self.llm = llm_engine
         self.token_threshold = token_threshold
@@ -69,6 +71,7 @@ class SessionCompactor:
         self._tool_call_count = 0  # 累计工具调用次数
         self._last_compact_tokens = 0  # 上次压缩后的 token 数量
         self._compact_cooldown_ratio = 0.3  # 冷却比例：token 增长 30% 后才再次触发
+        self._repository = repository  # 长期记忆仓库引用
 
     def track_tool_call(self):
         """追踪工具调用次数"""
@@ -174,7 +177,6 @@ class SessionCompactor:
         summary_data = await self._generate_summary_with_llm(formatted)
 
         notes.load()
-        # ★ 使用 LLM 总结的目标更新（自动将旧目标移到历史）
         if summary_data.get("goal"):
             notes.update_goal_from_summary(summary_data["goal"])
         for action in summary_data.get("actions", []):
@@ -186,15 +188,114 @@ class SessionCompactor:
 
         notes.save()
 
+        if self._repository:
+            self._persist_notes_to_long_term(notes, summary_data)
+
         self._replace_old_messages(memory, notes, summary_data.get("summary", ""))
 
-        # 记录压缩后的 token 数量（用于冷却检查）
         self._last_compact_tokens = self._estimate_tokens(memory)
 
         logger.info(
             "[SessionCompactor] LLM 压缩完成 | 压缩 %d 条消息 | 保留 %d 条原文 | 当前 tokens=%d",
             len(old_messages), self.keep_recent_messages, self._last_compact_tokens
         )
+
+    def _persist_notes_to_long_term(self, notes: "SessionNotes", summary_data: dict):
+        """将笔记内容按分类逐条存入长期记忆"""
+        try:
+            from datetime import datetime
+            day_cn = datetime.now().strftime("%m月%d日")
+
+            goal = notes.get_goal()
+            goal_history = notes.get_goal_history()
+            completed = notes.get_completed()
+            findings = notes.get_findings()
+            errors = notes.get_errors()
+            pending = notes.get_pending()
+
+            if goal:
+                self._repository.upsert_memory(
+                    title=f"当前目标: {goal[:50]}",
+                    content=f"[{day_cn}] {goal}",
+                    category="general",
+                    schema_type="general",
+                    memory_key=f"session_goal:{notes.session_id}",
+                    metadata={"session_id": notes.session_id, "type": "goal", "source": "session_compact"},
+                    allow_sensitive=True,
+                    merge_strategy="create_new",
+                )
+
+            for i, hist_goal in enumerate(goal_history[-5:]):
+                self._repository.upsert_memory(
+                    title=f"历史目标: {hist_goal[:50]}",
+                    content=f"[{day_cn}] {hist_goal}",
+                    category="general",
+                    schema_type="general",
+                    memory_key=f"session_goal_hist:{notes.session_id}:{i}",
+                    metadata={"session_id": notes.session_id, "type": "goal_history", "source": "session_compact"},
+                    allow_sensitive=True,
+                    merge_strategy="create_new",
+                )
+
+            for i, action in enumerate(completed[-10:]):
+                self._repository.upsert_memory(
+                    title=f"已完成操作: {action[:50]}",
+                    content=f"[{day_cn}] {action}",
+                    category="general",
+                    schema_type="general",
+                    memory_key=f"session_action:{notes.session_id}:{i}",
+                    metadata={"session_id": notes.session_id, "type": "completed", "source": "session_compact"},
+                    allow_sensitive=True,
+                    merge_strategy="create_new",
+                )
+
+            for i, finding in enumerate(findings[-10:]):
+                self._repository.upsert_memory(
+                    title=f"关键发现: {finding[:50]}",
+                    content=f"[{day_cn}] {finding}",
+                    category="general",
+                    schema_type="general",
+                    memory_key=f"session_finding:{notes.session_id}:{i}",
+                    metadata={"session_id": notes.session_id, "type": "finding", "source": "session_compact"},
+                    allow_sensitive=True,
+                    merge_strategy="create_new",
+                )
+
+            for i, error in enumerate(errors[-5:]):
+                error_msg = error.get("error", "") if isinstance(error, dict) else str(error)
+                error_res = error.get("resolution", "") if isinstance(error, dict) else ""
+                content = error_msg
+                if error_res:
+                    content += f"\n解决方案: {error_res}"
+                self._repository.upsert_memory(
+                    title=f"错误: {error_msg[:50]}",
+                    content=f"[{day_cn}] {content}",
+                    category="general",
+                    schema_type="general",
+                    memory_key=f"session_error:{notes.session_id}:{i}",
+                    metadata={"session_id": notes.session_id, "type": "error", "source": "session_compact"},
+                    allow_sensitive=True,
+                    merge_strategy="create_new",
+                )
+
+            for i, task in enumerate(pending[-5:]):
+                self._repository.upsert_memory(
+                    title=f"待处理: {task[:50]}",
+                    content=f"[{day_cn}] {task}",
+                    category="general",
+                    schema_type="general",
+                    memory_key=f"session_pending:{notes.session_id}:{i}",
+                    metadata={"session_id": notes.session_id, "type": "pending", "source": "session_compact"},
+                    allow_sensitive=True,
+                    merge_strategy="create_new",
+                )
+
+            logger.info(
+                "[SessionCompactor] 笔记已存入长期记忆 | session=%s | goal=%d | actions=%d | findings=%d | errors=%d | pending=%d",
+                notes.session_id, bool(goal), len(completed), len(findings), len(errors), len(pending)
+            )
+        except Exception as e:
+            logger.warning("[SessionCompactor] 存入长期记忆失败: %s", e)
 
     def _format_messages(self, messages: List[Dict]) -> str:
         """将消息格式化为可读文本"""

@@ -6,10 +6,6 @@ ControlLoop - 控制环核心
   1. 每轮开始时，综合所有信息做出决策
   2. 每轮结束时，评估反馈并更新 Bandit
   3. 统一决策入口
-
-核心变化：
-  - Bandit 选 action，不是 policy
-  - 每轮更新 Bandit（不是只 end_session）
 """
 
 import logging
@@ -27,43 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 class ControlLoop:
-    """
-    控制环 - Harness 核心
-
-    使用方式：
-        # 初始化
-        control_loop = ControlLoop(heuristic_engine, action_bandit, feedback_evaluator)
-
-        # 会话开始
-        state = LoopState(session_id="xxx", ...)
-        control_loop.start_session(state)
-
-        # 每轮循环
-        while True:
-            decision = control_loop.step(state)
-            if decision.should_stop:
-                break
-            # ... 执行 LLM 调用 ...
-            reward = control_loop.end_round(state)
-
-        # 会话结束
-        control_loop.end_session(state)
-    """
-
     def __init__(
         self,
         heuristic_engine: "HeuristicEngine",
         action_bandit: ActionBandit,
         feedback_evaluator: FeedbackEvaluator,
     ):
-        """
-        初始化控制环
-
-        Args:
-            heuristic_engine: 启发式引擎（特征提取）
-            action_bandit: Action 选择器
-            feedback_evaluator: 反馈评估器
-        """
         self.heuristics = heuristic_engine
         self.bandit = action_bandit
         self.evaluator = feedback_evaluator
@@ -71,15 +36,6 @@ class ControlLoop:
         self._state: Optional[LoopState] = None
 
     def start_session(self, state: LoopState) -> ControlDecision:
-        """
-        会话开始 - 初始化状态
-
-        Args:
-            state: 初始状态
-
-        Returns:
-            初始决策
-        """
         self._state = state
         self.heuristics.reset()
 
@@ -88,37 +44,13 @@ class ControlLoop:
             state.session_id,
             "∞" if state.max_iterations == float('inf') else str(state.max_iterations)
         )
-
-        # 返回默认决策
         return ControlDecision(action_type="continue")
 
     def set_policy_thresholds(self, thresholds: Dict[str, Any]):
-        """
-        接收 Learning 的 Policy 阈值，传递给 ActionBandit
-
-        Args:
-            thresholds: Policy 参数，如 {"stuck_iterations": 3, "repetition_threshold": 3}
-        """
         self.bandit.set_policy_thresholds(thresholds)
         logger.info("[ControlLoop] Policy 阈值已传递: %s", list(thresholds.keys()))
 
     def step(self, state: LoopState) -> ControlDecision:
-        """
-        每轮决策 - 核心控制逻辑
-
-        流程：
-          1. 特征提取（Heuristic 作为特征提取器）
-          2. 规则先给出 action 候选
-          3. Bandit 仅在候选集合内部做 tie-break
-          4. 根据 Action 构建决策
-          5. 记录决策轨迹
-
-        Args:
-            state: 当前状态
-
-        Returns:
-            本轮决策
-        """
         context = self._build_context(state)
         features = self.heuristics.feature_extractor.extract(context)
         state.features = features
@@ -164,21 +96,10 @@ class ControlLoop:
         return decision
 
     def end_round(self, state: LoopState) -> float:
-        """
-        每轮结束 - 评估反馈并更新 Bandit
-
-        Args:
-            state: 当前状态
-
-        Returns:
-            本轮 reward
-        """
-        # 1. 评估反馈
         reward = self.evaluator.evaluate(state)
         state.round_reward = reward
         state.cumulative_reward += reward
 
-        # 2. 仅当 Bandit 真的参与 tie-break 时更新统计
         last_decision = state.get_last_decision()
         if last_decision and last_decision.params.get("bandit_tiebreak"):
             self.bandit.update(last_decision.action_type, reward)
@@ -191,9 +112,6 @@ class ControlLoop:
         return reward
 
     def end_session(self, state: LoopState):
-        """
-        会话结束 - 清理和持久化
-        """
         self.bandit.end_session()
 
         summary = state.get_decision_summary()
@@ -207,9 +125,6 @@ class ControlLoop:
     # ============================================================
 
     def _build_context(self, state: LoopState) -> "EvaluationContext":
-        """
-        构建评估上下文
-        """
         from app.agent.heuristics.types import EvaluationContext
 
         context = EvaluationContext(
@@ -224,7 +139,7 @@ class ControlLoop:
             elapsed_ms=state.elapsed_ms,
             user_input=state.user_input,
             last_tool_result=state.last_tool_result,
-            recent_llm_outputs=state.recent_llm_outputs,  # ★ 新增
+            recent_llm_outputs=state.recent_llm_outputs, 
         )
 
         return context
@@ -379,9 +294,6 @@ class ControlLoop:
         features: "DerivedFeatures",
         suggestions: Optional[List[str]] = None,
     ) -> str:
-        """
-        构建重定向引导消息
-        """
         reasons = []
 
         if features.repetition_score > 0.5:
@@ -393,7 +305,7 @@ class ControlLoop:
         if not reasons:
             reasons.append("当前方向可能遇到困难")
 
-        message = "## ⚠️ 方向调整建议\n\n"
+        message = "## §方向调整建议\n\n"
         message += "检测到当前执行可能陷入困境：\n\n"
         message += "**问题原因：**\n"
         for r in reasons:
@@ -409,13 +321,9 @@ class ControlLoop:
         return message
 
     def _get_alternative_tools(self, state: LoopState) -> List[str]:
-        """
-        获取推荐的工具列表
-        """
         if not state.available_tools:
             return []
 
-        # 找出还没用过的工具
         used_tools = set()
         for trace in state.tool_traces:
             tool = trace.get("tool_name") or trace.get("tool")
@@ -424,11 +332,9 @@ class ControlLoop:
 
         unused = [t for t in state.available_tools if t not in used_tools]
 
-        # 优先推荐没用过的
         if unused:
             return unused[:3]
 
-        # 否则返回所有可用工具
         return state.available_tools[:3]
 
 
@@ -439,12 +345,6 @@ class ControlLoop:
 def create_control_loop(
     memory_path: Optional[str] = None,
 ) -> ControlLoop:
-    """
-    创建控制环实例
-
-    Args:
-        memory_path: Bandit 统计数据持久化路径
-    """
     from app.agent.heuristics.engine import get_heuristic_engine
 
     engine = get_heuristic_engine()

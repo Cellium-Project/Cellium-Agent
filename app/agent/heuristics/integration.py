@@ -62,13 +62,8 @@ class AgentLoopIntegration:
         Returns:
             EvaluationContext
         """
-        # 提取最近调用
         recent_calls = self._extract_recent_calls(tool_traces)
-
-        # 提取所有调用
         all_calls = self._extract_all_calls(tool_traces)
-
-        # 最后一次结果
         last_result = recent_calls[-1] if recent_calls else None
 
         context = EvaluationContext(
@@ -219,7 +214,6 @@ class AgentLoopIntegration:
         if features is None:
             features = self.engine.feature_extractor.extract(context)
 
-        # 只有在停滞时才推荐
         if features.stuck_iterations < 1:
             return None
 
@@ -227,7 +221,6 @@ class AgentLoopIntegration:
         if not scores:
             return None
 
-        # 取前 top_k 个
         top_scores = scores[:top_k]
 
         return {

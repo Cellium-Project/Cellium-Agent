@@ -159,12 +159,7 @@ class TokenBudgetRule(BaseRule):
 
 class EmptyResultChainRule(BaseRule):
     """
-    空结果链检测规则（★ 改进：引导换方向而非直接终止）
-
-    改进点：
-    1. 连续空结果 → 先 REDIRECT（引导换方向）
-    2. 多次 REDIRECT 无效后才考虑 STOP
-    3. 提供具体的换方向建议
+    空结果链检测规则
     """
     id = "term-003"
     name = "Empty Result Chain Detection"
@@ -185,12 +180,11 @@ class EmptyResultChainRule(BaseRule):
         threshold = engine.config.get_threshold("repetition_threshold", self.threshold)
         stop_threshold = threshold * 2
 
-        calls = context.recent_tool_calls[-stop_threshold * 2:]  # 多看一些
+        calls = context.recent_tool_calls[-stop_threshold * 2:]
 
         if len(calls) < threshold:
             return RuleEvaluationResult.not_matched()
 
-        # 检查最近的调用
         consecutive_empty = 0
         last_error_info = None
 
@@ -203,7 +197,6 @@ class EmptyResultChainRule(BaseRule):
                 break
 
         if consecutive_empty >= stop_threshold:
-            # ★ 多次尝试无效 → STOP（但带建议）
             return RuleEvaluationResult(
                 matched=True,
                 action=DecisionAction.STOP,
@@ -217,7 +210,6 @@ class EmptyResultChainRule(BaseRule):
             )
 
         if consecutive_empty >= threshold:
-            # ★ 初次检测到问题 → REDIRECT（引导换方向）
             return RuleEvaluationResult(
                 matched=True,
                 action=DecisionAction.REDIRECT,
@@ -237,21 +229,16 @@ class EmptyResultChainRule(BaseRule):
         if result is None:
             return True
         if isinstance(result, dict):
-            # 优先检查 error 字段
             if result.get("error"):
                 return True
-            # 检查 success 字段（file 工具返回）
             if result.get("success") is True:
                 return False
-            # 检查是否有实质性内容
             output = result.get("output", "")
             if isinstance(output, str) and output.strip():
                 return False
-            # 检查 data/content/text 字段
             content = result.get("content") or result.get("data") or result.get("text")
             if content and str(content).strip():
                 return False
-            # 其他情况视为空
             return True
         return False
 
@@ -274,7 +261,6 @@ class EmptyResultChainRule(BaseRule):
         tool_name = error_info.get("tool", "") if error_info else ""
         available_tools = context.available_tools or []
 
-        # 根据失败的工具体现建议
         if tool_name == "shell":
             suggestions.append("考虑使用 file 工具直接读取文件，而非 shell 命令")
             suggestions.append("检查命令语法是否正确，路径是否存在")
@@ -289,7 +275,6 @@ class EmptyResultChainRule(BaseRule):
             suggestions.append("尝试用不同的关键词搜索")
             suggestions.append("使用 memory list 查看当前记忆概况")
 
-        # 通用建议
         if "memory" in available_tools and tool_name != "memory":
             suggestions.append("尝试搜索相关记忆，可能有历史解决方案")
 
@@ -297,18 +282,12 @@ class EmptyResultChainRule(BaseRule):
             suggestions.append("尝试换一个工具或方法")
             suggestions.append("回顾之前的步骤，确认当前方向是否正确")
 
-        return suggestions[:3]  # 最多 3 条建议
+        return suggestions[:3]
 
 
 class NoProgressRule(BaseRule):
     """
-    无进展检测规则（★ 改进：区分 plateau vs 真停滞 + 引导换方向）
-
-    改进点：
-    1. 不把 plateau（高原期）当作失败
-    2. 高原期：趋势平 + 停滞短 + 质量可 → 继续观察
-    3. 真停滞：趋势负 + 停滞长 + 质量差 → REDIRECT 或 STOP
-    4. ★ 提供换方向建议
+    无进展检测规则
     """
     id = "term-004"
     name = "No Progress Detection"
@@ -318,23 +297,19 @@ class NoProgressRule(BaseRule):
 
     stuck_threshold: int = 3
     trend_threshold: float = -0.1
-    redirect_threshold: int = 5    # ★ 触发 REDIRECT 的停滞次数
+    redirect_threshold: int = 5   
 
     def evaluate(
         self,
         context: EvaluationContext,
         features: DerivedFeatures,
     ) -> RuleEvaluationResult:
-        # ★ 从全局配置获取动态阈值（由 Policy 注入）
         from app.agent.heuristics.engine import get_heuristic_engine
         engine = get_heuristic_engine()
         self.stuck_threshold = engine.config.get_threshold("stuck_iterations", self.stuck_threshold)
 
-        # ★ 首先检查是否是 plateau
         if features.is_plateau:
-            # 高原期：给更多时间
             if features.stuck_iterations >= self.stuck_threshold * 3:
-                # 高原期很久 → REDIRECT（建议换方法）
                 return RuleEvaluationResult(
                     matched=True,
                     action=DecisionAction.REDIRECT,
@@ -353,7 +328,6 @@ class NoProgressRule(BaseRule):
             # 高原期初期 → 不干预
             return RuleEvaluationResult.not_matched()
 
-        # ★ 停滞中期 → REDIRECT（引导换方向）
         if (features.stuck_iterations >= self.redirect_threshold
             and features.stuck_iterations < self.stuck_threshold * 3):
             return RuleEvaluationResult(
@@ -415,18 +389,15 @@ class NoProgressRule(BaseRule):
         """生成换方向建议"""
         suggestions = []
 
-        # 根据工具使用情况建议
         if features.dominant_tool_ratio > 0.6:
             suggestions.append(f"过度依赖单一工具，尝试使用其他可用工具")
 
         if features.tool_diversity_score < 0.3:
             suggestions.append("尝试探索更多工具组合")
 
-        # 根据错误率建议
         if features.error_rate > 0.3:
             suggestions.append("错误率较高，建议先检查之前的错误原因")
 
-        # 通用建议
         suggestions.append("回顾任务目标，确认当前方向是否正确")
         suggestions.append("尝试将任务分解为更小的步骤")
 

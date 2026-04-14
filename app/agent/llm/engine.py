@@ -7,10 +7,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-
 logger = logging.getLogger(__name__)
 
-# 验证结果缓存（session 级别）
+_EMPTY_RESPONSE_COUNT = 0
+
 _VERIFY_CACHE: Dict[str, bool] = {}
 
 @dataclass(frozen=True)
@@ -266,8 +266,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                   else "保守默认值(待校准)"),
         )
 
-    # ---- 属性 ----
-
     @property
     def model_info(self) -> ModelInfo:
         return self._model_info
@@ -284,8 +282,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     @property
     def max_tokens(self) -> int:
         return self._model_info.max_output_tokens
-
-    # ---- Lazy init client ----
 
     def _ensure_sync_client(self):
         if self._client is None:
@@ -306,8 +302,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 timeout=self.timeout,
                 **self._extra_client_args,
             )
-
-    # ---- 核心方法 ----
 
     async def chat(
         self,
@@ -342,7 +336,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                     self.context_window,
                 )
 
-        # 计算 max_tokens
         final_max_tokens = self._resolve_max_tokens(
             effective_messages, tools, max_tokens
         )
@@ -367,10 +360,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             params.update(kwargs)
 
         req_tokens = _estimate_messages_tokens(effective_messages)
+        tools_count = len(tools) if tools else 0
         logger.info(
             "[LLM] >>> 调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%d | tools=%d | temperature=%s",
             self.model, len(effective_messages), req_tokens,
-            final_max_tokens, len(tools) if tools else 0,
+            final_max_tokens, tools_count,
             params.get("temperature", "N/A"),
         )
 
@@ -394,13 +388,50 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
         logger.info(
             "[LLM] <<< 调用成功 | model=%s | 耗时=%.0fms | finish_reason=%s | "
-            "tool_calls=%d | content长度=%d | %s",
+            "tool_calls=%d | content长度=%d | %s | response_type=%s",
             self.model, elapsed_ms, parsed.finish_reason,
             len(parsed.tool_calls),
             len(parsed.content or ""), usage_info,
+            type(response).__name__,
         )
 
-        # tool_call 详情
+        if not parsed.content and not parsed.tool_calls:
+            global _EMPTY_RESPONSE_COUNT
+            _EMPTY_RESPONSE_COUNT += 1
+            
+            tool_names = [t.get("function", {}).get("name", "?") for t in (tools or [])]
+            
+            logger.warning(
+                "[LLM] 空响应 #%d | model=%s | base_url=%s | response_type=%s | "
+                "req_tokens≈%d | max_tokens=%d | tools=%d(%s) | finish_reason=%s | "
+                "usage=%s | temperature=%.2f | preview=%s",
+                _EMPTY_RESPONSE_COUNT,
+                self.model,
+                getattr(self, 'base_url', '?'),
+                type(response).__name__,
+                req_tokens,
+                final_max_tokens,
+                tools_count,
+                tool_names,
+                parsed.finish_reason,
+                parsed.usage,
+                self.temperature,
+                str(response)[:500],
+            )
+            
+            if _EMPTY_RESPONSE_COUNT % 5 == 0:
+                logger.error(
+                    "[LLM] 空响应累计 %d 次，可能存在模型配置或 API 问题！",
+                    _EMPTY_RESPONSE_COUNT,
+                )
+            
+            return ChatResponse(
+                content="",
+                tool_calls=[],
+                finish_reason=parsed.finish_reason or "stop",
+                usage=parsed.usage or {"prompt_tokens": req_tokens, "completion_tokens": 0, "total_tokens": req_tokens},
+            )
+
         if parsed.tool_calls:
             for tc in parsed.tool_calls:
                 logger.info(
@@ -461,8 +492,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
         return parsed
 
-    # ---- 上下文管理 ----
-
     def _resolve_max_tokens(
         self,
         messages: List[Dict],
@@ -479,7 +508,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         """
         input_estimate = _estimate_messages_tokens(messages)
 
-        # 工具定义也占 token（粗估每个工具 ~150 tokens）
         if tools:
             input_estimate += len(tools) * 150
 
@@ -487,7 +515,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         available = self.context_window - input_estimate - safety_margin
         if available < 256:
-            available = 256  # 最小允许输出
+            available = 256 
 
         model_default = self.effective_max_tokens
 
@@ -541,56 +569,152 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
         return result, True
 
-    # ---- 解析器 ----
-
     @staticmethod
-    def _parse_response(raw_response) -> ChatResponse:
-        """统一解析 OpenAI SDK 响应"""
-        choice = raw_response.choices[0]
-        message = choice.message
-
-        content = message.content
-
-        logger.info(
-            "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s",
-            choice.finish_reason,
-            (content or "(空)")[:200],
-            hasattr(message, 'tool_calls') and bool(message.tool_calls),
-        )
-
-        tool_calls = []
-        if hasattr(message, 'tool_calls') and message.tool_calls:
-            import json as _json
-            for tc in message.tool_calls:
-                args = {}
-                if tc.function and tc.function.arguments:
-                    try:
-                        args = _json.loads(tc.function.arguments)
-                    except _json.JSONDecodeError:
-                        args = {"raw": tc.function.arguments}
-                tool_calls.append(ToolCall(
-                    id=tc.id or "",
-                    name=tc.function.name if tc.function else "",
-                    arguments=args,
-                ))
-
+    def _parse_sse_text_response(raw_text: str) -> ChatResponse:
+        """解析整段 SSE 文本串响应，兼容第三方把流式结果整体返回为字符串"""
+        lines = raw_text.splitlines()
+        full_content = ""
+        finish_reason = ""
         usage = {}
-        if hasattr(raw_response, 'usage') and raw_response.usage:
-            usage = {
-                "prompt_tokens": raw_response.usage.prompt_tokens or 0,
-                "completion_tokens": raw_response.usage.completion_tokens or 0,
-                "total_tokens": raw_response.usage.total_tokens or 0,
-            }
+        model = ""
+
+        for line in lines:
+            raw = (line or "").strip()
+            if not raw:
+                continue
+            if raw.startswith("data:"):
+                raw = raw[5:].strip()
+            if not raw or raw == "[DONE]":
+                continue
+            try:
+                item = json.loads(raw)
+            except Exception:
+                continue
+
+            if isinstance(item, dict):
+                if not model:
+                    model = item.get("model", "") or model
+                choices = item.get("choices") or []
+                if choices:
+                    choice0 = choices[0] or {}
+                    delta = choice0.get("delta") or {}
+                    delta_content = delta.get("content") if isinstance(delta, dict) else None
+                    if delta_content:
+                        full_content += delta_content
+                    if choice0.get("finish_reason"):
+                        finish_reason = choice0.get("finish_reason") or finish_reason
+                if item.get("usage"):
+                    usage = item.get("usage") or usage
 
         return ChatResponse(
-            content=content,
-            tool_calls=tool_calls,
-            model=getattr(raw_response, 'model', ''),
-            finish_reason=choice.finish_reason or '',
+            content=full_content,
+            tool_calls=[],
+            model=model,
+            finish_reason=finish_reason or "stop",
             usage=usage,
         )
 
-    # ---- 流式 ----
+    @staticmethod
+    def _parse_response(raw_response) -> ChatResponse:
+        """统一解析 OpenAI SDK 响应，并兼容部分第三方非标准返回"""
+        if hasattr(raw_response, "choices"):
+            choice = raw_response.choices[0]
+            message = choice.message
+
+            content = message.content
+
+            logger.info(
+                "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s",
+                choice.finish_reason,
+                (content or "(空)")[:200],
+                hasattr(message, 'tool_calls') and bool(message.tool_calls),
+            )
+
+            tool_calls = []
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                import json as _json
+                for tc in message.tool_calls:
+                    args = {}
+                    if tc.function and tc.function.arguments:
+                        try:
+                            args = _json.loads(tc.function.arguments)
+                        except _json.JSONDecodeError:
+                            args = {"raw": tc.function.arguments}
+                    tool_calls.append(ToolCall(
+                        id=tc.id or "",
+                        name=tc.function.name if tc.function else "",
+                        arguments=args,
+                    ))
+
+            usage = {}
+            if hasattr(raw_response, 'usage') and raw_response.usage:
+                usage = {
+                    "prompt_tokens": raw_response.usage.prompt_tokens or 0,
+                    "completion_tokens": raw_response.usage.completion_tokens or 0,
+                    "total_tokens": raw_response.usage.total_tokens or 0,
+                }
+
+            return ChatResponse(
+                content=content,
+                tool_calls=tool_calls,
+                model=getattr(raw_response, 'model', ''),
+                finish_reason=choice.finish_reason or '',
+                usage=usage,
+            )
+
+        if isinstance(raw_response, str):
+            raw = raw_response.strip()
+            if raw.startswith("data:") and "\n" in raw_response:
+                parsed_sse = OpenAILLMEngine._parse_sse_text_response(raw_response)
+                logger.warning(
+                    "[LLM] 收到整段 SSE 文本串响应，按兼容模式聚合解析 | content_len=%d | finish_reason=%s",
+                    len(parsed_sse.content or ""),
+                    parsed_sse.finish_reason,
+                )
+                return parsed_sse
+            if raw.startswith("data:"):
+                raw = raw[5:].strip()
+            if raw == "[DONE]":
+                return ChatResponse(content="", tool_calls=[], model="", finish_reason="stop", usage={})
+            try:
+                parsed_json = json.loads(raw)
+            except Exception:
+                preview = raw[:300]
+                logger.warning("[LLM] 收到字符串响应而非标准对象，按纯文本回复处理 | preview=%s", preview)
+                return ChatResponse(
+                    content=raw_response,
+                    tool_calls=[],
+                    model="",
+                    finish_reason="stop",
+                    usage={},
+                )
+            raw_response = parsed_json
+
+        if isinstance(raw_response, dict):
+            if isinstance(raw_response.get("choices"), list) and raw_response["choices"]:
+                choice = raw_response["choices"][0] or {}
+                message = choice.get("message", {}) or {}
+                content = message.get("content", "")
+                return ChatResponse(
+                    content=content,
+                    tool_calls=[],
+                    model=raw_response.get("model", ""),
+                    finish_reason=choice.get("finish_reason", "") or "",
+                    usage=raw_response.get("usage", {}) or {},
+                )
+            if raw_response.get("choices") == [] and raw_response.get("usage"):
+                return ChatResponse(
+                    content="",
+                    tool_calls=[],
+                    model=raw_response.get("model", ""),
+                    finish_reason="stop",
+                    usage=raw_response.get("usage", {}) or {},
+                )
+            preview = str(raw_response)[:300]
+            raise TypeError(f"LLM 返回 dict 但不包含标准 choices 结构: {preview}")
+
+        preview = str(raw_response)[:300]
+        raise TypeError(f"LLM 返回类型异常: {type(raw_response).__name__}, preview={preview}")
 
     async def chat_stream(
         self,
@@ -621,16 +745,98 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         stream = await self._async_client.chat.completions.create(**params)
 
-        full_content = ""
-        async for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                full_content += delta.content
-                yield {"type": "chunk", "content": delta.content, "full_content": full_content}
-            elif not delta or (chunk.choices and chunk.choices[0].finish_reason in ("stop", None)):
-                yield {"type": "done", "full_content": full_content}
+        req_tokens = _estimate_messages_tokens(effective_messages)
+        tools_count = len(tools) if tools else 0
+        logger.info(
+            "[LLM] >>> 流式调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%d | tools=%d | temperature=%s",
+            self.model, len(effective_messages), req_tokens,
+            params.get("max_tokens", self.effective_max_tokens), tools_count,
+            params.get("temperature", "N/A"),
+        )
 
-    # ---- 健康检查 ----
+        full_content = ""
+        done_sent = False
+        saw_content_chunk = False
+        async for chunk in stream:
+            if hasattr(chunk, "choices"):
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    full_content += delta.content
+                    saw_content_chunk = True
+                    yield {"type": "chunk", "content": delta.content, "full_content": full_content}
+                elif not done_sent and (not delta or (chunk.choices and chunk.choices[0].finish_reason in ("stop", None))):
+                    done_sent = True
+                    yield {"type": "done", "full_content": full_content}
+                continue
+
+            if isinstance(chunk, str):
+                raw = chunk.strip()
+                if raw.startswith("data:") and "\n" in chunk:
+                    parsed_sse = self._parse_sse_text_response(chunk)
+                    if parsed_sse.content:
+                        full_content += parsed_sse.content
+                        saw_content_chunk = True
+                        yield {"type": "chunk", "content": parsed_sse.content, "full_content": full_content}
+                    if parsed_sse.usage:
+                        logger.debug("[LLM] 收到整段 SSE 文本串 chunk，usage=%s", parsed_sse.usage)
+                    if not done_sent:
+                        done_sent = True
+                        yield {"type": "done", "full_content": full_content}
+                    continue
+                if raw.startswith("data:"):
+                    raw = raw[5:].strip()
+                if raw == "[DONE]":
+                    if not done_sent:
+                        done_sent = True
+                        yield {"type": "done", "full_content": full_content}
+                    continue
+                try:
+                    chunk = json.loads(raw)
+                except Exception:
+                    if raw:
+                        full_content += raw
+                        saw_content_chunk = True
+                        yield {"type": "chunk", "content": raw, "full_content": full_content}
+                    continue
+
+            if isinstance(chunk, dict):
+                choices = chunk.get("choices") or []
+                if choices:
+                    choice0 = choices[0] or {}
+                    delta = choice0.get("delta") or {}
+                    delta_content = delta.get("content") if isinstance(delta, dict) else None
+                    finish_reason = choice0.get("finish_reason")
+                    if delta_content:
+                        full_content += delta_content
+                        saw_content_chunk = True
+                        yield {"type": "chunk", "content": delta_content, "full_content": full_content}
+                        continue
+                    if not done_sent and finish_reason in ("stop", None):
+                        done_sent = True
+                        yield {"type": "done", "full_content": full_content}
+                        continue
+                elif chunk.get("usage"):
+                    logger.debug("[LLM] 收到 usage 尾包 chunk，忽略内容")
+                    continue
+                preview = str(chunk)[:200]
+                logger.warning("[LLM] 流式 chunk 为非标准 dict，跳过 | preview=%s", preview)
+                continue
+
+            preview = str(chunk)[:200]
+            logger.warning("[LLM] 流式 chunk 类型异常，跳过 | type=%s | preview=%s", type(chunk).__name__, preview)
+
+        if not saw_content_chunk and not full_content:
+            logger.error(
+                "[LLM] 流式空完成 | model=%s | req_tokens≈%d | max_tokens=%d | tools=%d",
+                self.model,
+                req_tokens,
+                params.get("max_tokens", self.effective_max_tokens),
+                tools_count,
+            )
+            raise ValueError(
+                f"第三方兼容接口返回空流式完成：model={self.model}, req_tokens≈{req_tokens}, max_tokens={params.get('max_tokens', self.effective_max_tokens)}, tools={tools_count}"
+            )
+
 
     async def health_check(self) -> bool:
         try:
@@ -643,14 +849,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             logger.warning("[LLM] 健康检查失败: %s", e)
             return False
 
-    # ---- 延迟模型验证----
-
     def _trigger_deferred_verify(self):
-        """在后台线程中执行延迟的模型验证，不阻塞当前请求
-
-        启动时已跳过 verify_model_exists()，改为首次调用 chat() 时
-        在后台线程中异步验证。验证结果仅记录日志，不影响请求。
-        """
         import threading
 
         self._verify_done = True 
@@ -660,7 +859,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 ok = self.verify_model_exists()
                 if not ok:
                     logger.warning(
-                        "[LLM] ⚠ 后台验证失败：模型 '%s' 可能不存在 | 引擎仍将尝试调用",
+                        "[LLM] 后台验证失败：模型 '%s' 可能不存在 | 引擎仍将尝试调用",
                         self.model,
                     )
                 else:
@@ -672,35 +871,18 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         t.start()
         logger.info("[LLM] 已触发后台模型验证（线程=%s）", t.name)
 
-    # ---- API 模型验证----
-
     def verify_model_exists(self) -> bool:
-        """
-        调用 /models 接口验证配置的模型是否存在于远端
-
-        OpenAI 兼容接口的 GET /models 返回模型列表，
-        虽然不包含 context/max_output 等参数，但可以：
-          1. 确认模型名拼写正确
-          2. 确认 API key 有效且能访问该模型
-          3. 发现可用模型列表
-
-        Returns:
-            True: 模型存在或 /models 接口不可用时静默通过
-            False: 模型明确不存在
-        """
         global _VERIFY_CACHE
 
         if not self._verify_model:
             logger.debug("[LLM] 模型验证已跳过 (verify_model=False)")
             return True
 
-        # ★ 检查缓存（同一 base_url + model 组合）
         cache_key = f"{self.base_url}|{self.model}"
         if cache_key in _VERIFY_CACHE:
             logger.debug("[LLM] 模型验证命中缓存 | model=%s | cached=%s", self.model, _VERIFY_CACHE[cache_key])
             return _VERIFY_CACHE[cache_key]
 
-        # ★ 内置注册表中的模型可直接跳过 API 验证
         if _match_model(self.model) is not None:
             logger.info("[LLM] 模型 '%s' 在内置注册表中，跳过 API 验证", self.model)
             _VERIFY_CACHE[cache_key] = True
@@ -741,7 +923,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 "首次实际调用时会暴露问题。",
                 type(e).__name__, str(e),
             )
-            _VERIFY_CACHE[cache_key] = True  # 失败时假设可用
+            _VERIFY_CACHE[cache_key] = True 
             return True  
 
     def _calibrate_from_usage(self, actual_usage: Dict, estimated_input: int):
@@ -812,7 +994,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
                 model_config = m
                 break
 
-        # 如果未找到指定模型，尝试使用第一个可用模型
         if not model_config:
             if models:
                 model_config = models[0]
@@ -823,7 +1004,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
                 raise ValueError(f"未找到当前模型配置: {current_model_name}，且 models 列表为空")
 
         api_key = model_config.get("api_key", "")
-        # 调试：显示 API key 的前后4位（如果长度足够）
         api_key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
         logger.info("[LLMFactory] 使用模型配置 | name=%s | api_key=%s | base_url=%s",
                     current_model_name, api_key_preview, model_config.get("base_url", ""))

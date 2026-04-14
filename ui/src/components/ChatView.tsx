@@ -73,7 +73,7 @@ export const ChatView: React.FC = () => {
 
   // Handle send
   const handleSend = () => {
-    if (!inputValue.trim() || isStreaming) return;
+    if (!inputValue.trim()) return;
     sendMessage(inputValue.trim());
     setInputValue('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
@@ -119,25 +119,23 @@ export const ChatView: React.FC = () => {
             onChange={(e) => setInputValue(e.target.value)}
             onInput={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder="输入消息..."
+            placeholder={isStreaming ? "输入补充说明..." : "输入消息..."}
             rows={1}
-            disabled={isStreaming}
           />
           <div className="input-actions">
-            {isStreaming ? (
+            {isStreaming && (
               <button className="btn-stop" onClick={stopStreaming} title="停止生成">
                 <Icons.Square size={18} />
               </button>
-            ) : (
-              <button
-                className="btn-send"
-                onClick={handleSend}
-                disabled={!inputValue.trim()}
-                title="发送消息"
-              >
-                <Icons.Send size={18} />
-              </button>
             )}
+            <button
+              className="btn-send"
+              onClick={handleSend}
+              disabled={!inputValue.trim()}
+              title={isStreaming ? "发送补充说明" : "发送消息"}
+            >
+              <Icons.Send size={18} />
+            </button>
           </div>
         </div>
         <div className="input-footer">

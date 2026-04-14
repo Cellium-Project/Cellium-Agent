@@ -23,7 +23,7 @@ class ControlDecision:
       - 包含参数化决策（为中期演进准备）
     """
 
-    # ★ 核心维度：Action 类型
+    # 核心维度：Action 类型
     action_type: str = "continue"
     # 可选值: "continue" | "redirect" | "compress" | "terminate"
 
@@ -41,7 +41,7 @@ class ControlDecision:
     force_memory_compact: bool = False
     context_trim_level: str = "normal"  # normal / aggressive / minimal
 
-    # ★ 参数化决策（替代 policy 字符串，为中期演进准备）
+    # 参数化决策（替代 policy 字符串，为中期演进准备）
     params: Dict[str, Any] = field(default_factory=dict)
     # 示例:
     # {

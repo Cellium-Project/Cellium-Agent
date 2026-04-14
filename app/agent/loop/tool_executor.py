@@ -173,7 +173,7 @@ class ToolDescriptionGenerator:
         ctx["cmd"] = (arguments.get("command") or "").strip()
         ctx["cmd_first"] = ctx["cmd"].split()[0] if ctx["cmd"].split() else ""
 
-        # ★ 组件工具通用参数提取（用于兜底描述生成）
+        # 组件工具通用参数提取
         if not any([ctx["basename"], ctx["query"], ctx["title"], ctx["cmd"]]):
             for v in arguments.values():
                 if isinstance(v, str) and len(v.strip()) > 2 and len(v.strip()) < 100:
@@ -326,13 +326,14 @@ class ToolExecutor:
         self.tools = tools
 
     async def execute(self, tool_call) -> Dict[str, Any]:
-        """执行工具调用"""
+        """执行工具调用（异步包装，避免阻塞事件循环）"""
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
         from app.core.util.component_tool_registry import get_component_tool_registry
 
         tool_name = tool_call.name
         arguments = tool_call.arguments
 
-        # ★ 确保工具表是最新的
         try:
             registry = get_component_tool_registry()
             component_tools = registry.get_component_tools()
@@ -345,16 +346,29 @@ class ToolExecutor:
             tool_name, list(self.tools.keys()),
         )
 
-        if tool_name in self.tools:
-            tool_instance = self.tools[tool_name]
+        if tool_name not in self.tools:
+            error_msg = f"Unknown tool: {tool_name}. Available: {list(self.tools.keys())}"
+            logger.error("[ToolExecutor] %s", error_msg)
+            return {"error": error_msg}
+
+        tool_instance = self.tools[tool_name]
+
+        # 在线程池中执行同步工具，避免阻塞事件循环
+        def _run_tool():
             if hasattr(tool_instance, "execute"):
                 return tool_instance.execute(arguments)
             elif callable(tool_instance):
                 return tool_instance(**arguments)
+            return {"error": f"Tool {tool_name} is not callable"}
 
-        error_msg = f"Unknown tool: {tool_name}. Available: {list(self.tools.keys())}"
-        logger.error("[ToolExecutor] %s", error_msg)
-        return {"error": error_msg}
+        try:
+            # 使用默认 executor 在线程中执行同步工具
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, _run_tool)
+            return result
+        except Exception as e:
+            logger.error("[ToolExecutor] 工具执行失败: %s | error=%s", tool_name, e)
+            return {"error": str(e)}
 
     def track_result(self, tool_name: str, result: Dict[str, Any]) -> None:
         """追踪工具调用的成功/失败状态"""

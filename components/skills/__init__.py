@@ -24,7 +24,7 @@ Skills 是 Cellium Agent 的能力扩展包，与组件(Components)的区别：
     ├── component_builder.py      # 组件生成器（系统）
     ├── skill_installer.py        # Skill 管理器（系统）
     ├── text_processor.py          # 组件示例（系统）
-    └── skills/                   # ★ Skill 安装目录
+    └── skills/                   # Skill 安装目录
         ├── __init__.py           # 本文件
 
 """

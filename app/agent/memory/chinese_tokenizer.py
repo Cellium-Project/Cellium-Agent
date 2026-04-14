@@ -201,7 +201,7 @@ class ChineseTokenizer:
         1. 原始查询
         2. 分词后的查询
         3. 关键词扩展
-        4. ★ 同义词扩展
+        4. 同义词扩展
 
         Args:
             query: 原始查询
@@ -213,23 +213,20 @@ class ChineseTokenizer:
 
         tokens = self.tokenize(query)
 
-        # 变体1：分词后用空格连接（FTS5 会自动 OR）
         if len(tokens) > 1:
             variants.append(" ".join(tokens))
 
-        # 变体2：提取关键词单独搜索
         keywords = self.extract_keywords(query, top_k=3)
         for kw in keywords:
             if kw not in variants and len(kw) >= 2:
                 variants.append(kw)
 
-        # ★ 变体3：同义词扩展
         synonyms = self._expand_synonyms(tokens)
         for syn in synonyms:
             if syn not in variants:
                 variants.append(syn)
 
-        return variants[:8]  # 最多 8 个变体
+        return variants[:8] 
 
     def _expand_synonyms(self, tokens: List[str]) -> List[str]:
         """
@@ -245,15 +242,12 @@ class ChineseTokenizer:
 
         for token in tokens:
             if token in self.SYNONYMS:
-                # 找到同义词，加入扩展列表
                 for syn in self.SYNONYMS[token]:
                     if syn != token and syn not in expanded:
                         expanded.append(syn)
 
         return expanded
 
-
-# 全局单例（懒加载）
 _tokenizer: Optional[ChineseTokenizer] = None
 
 

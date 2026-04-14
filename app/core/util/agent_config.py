@@ -44,22 +44,6 @@ class AgentConfig:
     """
     多文件热加载配置管理器
 
-    用法:
-        from app.core.util.agent_config import get_config
-
-        config = get_config()
-
-        # 读取
-        config.get("llm.openai.model")           # → "gpt-4o"
-        config.get_section("security")            # → dict
-
-        # 热重载
-        config.reload()                           # 手动全量重载
-        config.reload_section("security")         # 仅重载安全配置
-        config.auto_reload = True                 # 开启文件监听（每次读取前检查）
-
-        # 监听变更
-        config.on_change("llm", my_callback)      # LLM 配置变更时触发
     """
 
     _instance: Optional["AgentConfig"] = None
@@ -96,7 +80,6 @@ class AgentConfig:
         else:
             self._config_dir = config_dir
 
-        # 合并后的完整配置
         self._config: Dict[str, Any] = {}
 
         # 各文件的最后修改时间（用于变更检测）
@@ -137,11 +120,9 @@ class AgentConfig:
                 if file_config:
                     new_mtimes[filename] = filepath.stat().st_mtime
 
-                    # 记录每个顶层 key 来自哪个文件
                     for key in file_config:
                         new_section_sources[key] = filename
 
-                    # 深度合并
                     merged = self._deep_merge(merged, file_config)
 
             except Exception as e:
@@ -202,7 +183,6 @@ class AgentConfig:
         return {
             "server": {"host": "0.0.0.0", "port": 18000,
                        "cors": {"enabled": True, "allow_origins": ["*"]}},
-            # 注意：端口从 8000 改为 18000，避免与常见开发端口冲突
             "llm": {"provider": "openai",
                     "openai": {"model": "gpt-4o", "temperature": 0.7},
                     "streaming": {"enabled": True}},
@@ -457,7 +437,6 @@ class AgentConfig:
         for section, change_info in changes.items():
             action, old_val, new_val = change_info if isinstance(change_info, tuple) else ("updated", None, change_info)
 
-            # 通知该段的专属回调
             for cb in self._callbacks.get(section, []):
                 try:
                     cb(section, old_val, new_val)
@@ -465,7 +444,6 @@ class AgentConfig:
                     if self._logger:
                         self._logger.error(f"[AgentConfig] 回调异常 ({section}): {e}")
 
-            # 通知全局 "*" 回调
             for cb in self._callbacks.get("*", []):
                 try:
                     cb(section, old_val, new_val)
@@ -500,7 +478,6 @@ class AgentConfig:
             if filepath.exists():
                 info["mtime"] = filepath.stat().st_mtime
                 info["size_kb"] = round(filepath.stat().st_size / 1024, 1)
-                # 该文件贡献了哪些配置段
                 info["sections"] = [
                     k for k, src in self._section_sources.items() if src == filename
                 ]

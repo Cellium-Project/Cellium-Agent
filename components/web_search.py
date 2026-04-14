@@ -94,6 +94,7 @@ class WebSearch(BaseCell):
     def __init__(self):
         super().__init__()
         self._page = None
+        self._browser = None
         self._options = None
         self._last_search_time = 0
         self._min_search_interval = 5
@@ -165,7 +166,7 @@ class WebSearch(BaseCell):
 
     def _select_best_engine(self) -> str:
         """自动选择最佳的可用搜索引擎"""
-        priority_order = ['baidu', 'bing', 'google', 'duckduckgo']
+        priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
 
         for engine in priority_order:
             if engine not in self.SEARCH_ENGINES:
@@ -229,8 +230,10 @@ class WebSearch(BaseCell):
 
     def _get_page(self):
         if self._page is None:
-            from DrissionPage import ChromiumPage
-            self._page = ChromiumPage(self._get_options(), timeout=15)
+            from DrissionPage import Chromium, ChromiumOptions
+            co = self._get_options()
+            self._browser = Chromium(addr_or_opts=co)
+            self._page = self._browser.latest_tab
         return self._page
 
     def _close_page(self):
@@ -238,24 +241,26 @@ class WebSearch(BaseCell):
             try:
                 self._page.quit()
             except Exception as e:
-                logger.debug("[WebSearch] 关闭浏览器失败: %s", e)
+                logger.debug("[WebSearch] 关闭页面失败: %s", e)
             finally:
                 self._page = None
+        if self._browser:
+            try:
+                self._browser.quit()
+            except Exception as e:
+                logger.debug("[WebSearch] 关闭浏览器失败: %s", e)
+            finally:
+                self._browser = None
 
     def _get_or_create_page(self):
         """获取或创建页面（复用浏览器 session）"""
         if self._page is None or not self._is_page_alive():
-            from DrissionPage import ChromiumPage
-            # 如果页面不可用，先尝试关闭
-            if self._page:
-                try:
-                    self._page.quit()
-                except Exception:
-                    pass
-                self._page = None
-            # 创建新页面
+            from DrissionPage import Chromium, ChromiumOptions
+            self._close_page()
             try:
-                self._page = ChromiumPage(self._get_options(), timeout=15)
+                co = self._get_options()
+                self._browser = Chromium(addr_or_opts=co)
+                self._page = self._browser.latest_tab
                 logger.info("[WebSearch] 浏览器页面创建成功")
             except Exception as e:
                 logger.error(f"[WebSearch] 浏览器创建失败: {e}")
@@ -617,6 +622,12 @@ class WebSearch(BaseCell):
                 '/search?',  # 搜索结果页（不是内容页）
                 'baike.baidu.com/search',  # 百度百科搜索页
                 'zhihu.com/search',  # 知乎搜索页
+                'baidu.com/video',  # 百度视频
+                'haokan.baidu.com',  # 百度视频
+                'ixigua.com',  # 头条视频
+                'bilibili.com/video',  # B站视频
+                'v.douyin.com',  # 抖音视频
+                'weibo.com/v',  # 微博视频
             ]
 
             short_links = []

@@ -15,7 +15,7 @@
   ├── component_builder.py      # 组件生成器（系统内置）
   ├── skill_installer.py        # Skill 管理器（系统内置）
   ├── my_tool.py               # Agent 创建的组件（系统级）
-  └── skills/                  # ★ Skill 安装目录（插件式，通过 skill_installer 管理）
+  └── skills/                  # Skill 安装目录（插件式，通过 skill_installer 管理）
       ├── __init__.py          # 包标记
       ├── git_helper.py         # 已安装的 Skill
       └── code_refactor.py      # 已安装的 Skill

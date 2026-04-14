@@ -182,7 +182,7 @@ class MainApplication(LogMixin):
             three_layer_memory=tlm,
         )
         self.logger.info("[OK] 会话管理器初始化完成")
-
+        
     def _setup_components(self):
         from app.core.util.components_loader import load_components, get_all_commands
 

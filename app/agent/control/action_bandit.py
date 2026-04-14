@@ -45,20 +45,7 @@ class ActionStats:
 
 class ActionBandit:
     """
-    Action-based Bandit（v3）
-
-    核心变化：
-      1. Heuristic 只提供 bias，不 override Bandit
-      2. 所有 action 都通过 Thompson Sampling + bias 选择
-      3. terminate 有特殊保护（只能通过硬规则触发，但不会覆盖 Bandit 学习）
-      4. n-step return reward 累积更新
-
-    Action 类型：
-      - continue: 继续当前方向
-      - retry: 保持方向但修正策略（调整 prompt/参数/约束）
-      - redirect: 换方向/换工具
-      - compress: 压缩上下文
-      - terminate: 终止（硬规则触发）
+    Action-based Bandit
     """
 
     def __init__(self, memory_path: Optional[str] = None, n_step: int = 3):
@@ -80,14 +67,10 @@ class ActionBandit:
         self._decay_interval = 50
         self._session_count = 0
 
-        # ★ Policy 阈值约束（由 Learning 模块设置）
         self._policy_thresholds: Dict[str, Any] = {}
-
-        # ★ n-step return 累积器
         self._reward_buffer: deque = deque(maxlen=n_step)
         self._last_actions: deque = deque(maxlen=n_step)
 
-        # 加载已有数据
         if memory_path:
             self._load()
 
@@ -157,7 +140,6 @@ class ActionBandit:
         for action in candidates:
             stats = self._stats[action]
 
-            # Thompson Sampling
             try:
                 import numpy as np
                 sample = np.random.beta(stats.alpha, stats.beta)
@@ -166,7 +148,6 @@ class ActionBandit:
                 noise = random.gauss(0, 0.1)
                 sample = max(0, min(1, mean + noise))
 
-            # ★ Heuristic bias（不是 override，是加分）
             bias = self._heuristic_bias(action, features)
 
             scores[action] = sample + bias
@@ -192,46 +173,37 @@ class ActionBandit:
           - Heuristic 不决定 action，只调整分数
           - bias > 0 表示"推荐"，但 Bandit 仍可选择其他
           - 不同 action 有不同的触发条件
-          - ★ 使用 Policy 阈值动态调整判断条件
+          - 使用 Policy 阈值动态调整判断条件
 
         Returns:
             bias 值 [0, 1]
         """
         bias = 0.0
 
-        # ★ 获取 Policy 阈值
         stuck_threshold = self._policy_thresholds.get("stuck_iterations", 3)
         repetition_threshold = self._policy_thresholds.get("repetition_threshold", 3)
 
-        # 1. redirect bias：工具重复
         if action == "redirect":
             if hasattr(features, 'repetition_score') and features.repetition_score > 0.5:
                 bias = max(bias, 0.2 * features.repetition_score)
-            # ★ 停滞超过阈值时增加 redirect 倾向
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations >= stuck_threshold:
                 bias = max(bias, 0.25)
 
-        # 2. retry bias：轻微停滞但不是严重问题
         if action == "retry":
-            # ★ 使用 Policy 阈值判断"轻微停滞"
             if hasattr(features, 'stuck_iterations') and 1 <= features.stuck_iterations < stuck_threshold:
                 bias = max(bias, 0.15)
             if hasattr(features, 'progress_trend') and 0 < features.progress_trend < 0.3:
                 bias = max(bias, 0.1)
 
-        # 3. compress bias：上下文压力 + 停滞
         if action == "compress":
             if hasattr(features, 'context_saturation') and features.context_saturation > 0.6:
                 bias = max(bias, 0.2)
-            # ★ 停滞超过阈值一半时考虑压缩
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations >= stuck_threshold // 2:
                 bias = max(bias, 0.15)
 
-        # 4. continue bias：正在取得进展
         if action == "continue":
             if hasattr(features, 'progress_score') and features.progress_score > 0.5:
                 bias = max(bias, 0.15)
-            # ★ 没有停滞时继续的倾向更强
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations == 0:
                 bias = max(bias, 0.2)
 
@@ -243,29 +215,18 @@ class ActionBandit:
         logger.info("[ActionBandit] Policy 阈值已设置: %s", list(thresholds.keys()))
 
     def update(self, action: str, reward: float):
-        """
-        更新 Action 统计（n-step return 累积）
-
-        原理：
-          - 将当前 reward 加入 buffer
-          - 用 n-step 累积 reward 更新 Bandit
-          - 支持延迟反馈
-        """
         if action not in self._stats:
             logger.warning("[ActionBandit] 未知 action: %s", action)
             return
 
-        # ★ n-step return 累积
         self._reward_buffer.append(reward)
         self._last_actions.append(action)
 
-        # 计算 n-step return
         n_step_reward = self._compute_n_step_return()
 
         stats = self._stats[action]
         stats.count += 1
 
-        # Beta 分布更新（使用累积 reward）
         if n_step_reward > 0.5:
             stats.alpha += n_step_reward
         else:
@@ -282,10 +243,8 @@ class ActionBandit:
     def _compute_n_step_return(self) -> float:
         """
         计算 n-step return
-
         G_t = (r_t + r_{t+1} + ... + r_{t+n-1}) / n
 
-        如果 buffer 不满，用实际数量平均
         """
         if not self._reward_buffer:
             return 0.5  # 默认中性
@@ -293,20 +252,16 @@ class ActionBandit:
         return sum(self._reward_buffer) / len(self._reward_buffer)
 
     def end_session(self):
-        """会话结束"""
         self._session_count += 1
 
-        # 衰减旧数据
         if self._session_count >= self._decay_interval:
             self._decay()
             self._session_count = 0
 
-        # 清空 buffer
         self._reward_buffer.clear()
         self._last_actions.clear()
 
     def _decay(self):
-        """衰减统计数据（防止过拟合）"""
         for action, stats in self._stats.items():
             stats.alpha = 1 + (stats.alpha - 1) * self._decay_factor
             stats.beta = 1 + (stats.beta - 1) * self._decay_factor
@@ -314,14 +269,12 @@ class ActionBandit:
         logger.info("[ActionBandit] 统计已衰减 (factor=%.2f)", self._decay_factor)
 
     def get_stats(self) -> Dict[str, Dict]:
-        """获取所有 Action 的统计"""
         return {
             action: stats.to_dict()
             for action, stats in self._stats.items()
         }
 
     def get_summary(self) -> Dict[str, Any]:
-        """获取统计摘要"""
         summary = {
             "total_actions": sum(s.count for s in self._stats.values()),
             "actions": {},
@@ -337,7 +290,6 @@ class ActionBandit:
         return summary
 
     def _load(self):
-        """从文件加载统计数据"""
         if not self.memory_path or not os.path.exists(self.memory_path):
             return
 
@@ -355,7 +307,6 @@ class ActionBandit:
             logger.warning("[ActionBandit] 加载失败: %s", e)
 
     def _save(self):
-        """保存统计数据到文件"""
         if not self.memory_path:
             return
 
@@ -374,7 +325,6 @@ class ActionBandit:
             logger.warning("[ActionBandit] 保存失败: %s", e)
 
     def reset(self):
-        """重置所有统计"""
         for action in self._stats:
             self._stats[action] = ActionStats()
         self._session_count = 0

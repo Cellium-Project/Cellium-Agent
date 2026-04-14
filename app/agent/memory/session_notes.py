@@ -235,6 +235,22 @@ class SessionNotes:
         """获取历史目标列表"""
         return self._content.get("goal_history", [])
 
+    def get_completed(self) -> List[str]:
+        """获取已完成操作列表"""
+        return self._content.get("completed", [])
+
+    def get_findings(self) -> List[str]:
+        """获取关键发现列表"""
+        return self._content.get("findings", [])
+
+    def get_errors(self) -> List[Dict]:
+        """获取错误历史列表"""
+        return self._content.get("errors", [])
+
+    def get_pending(self) -> List[str]:
+        """获取待处理列表"""
+        return self._content.get("pending", [])
+
     def add_completed(self, action: str, tool: str = None):
         """添加已完成操作"""
         item = f"- {action}"

@@ -88,7 +88,6 @@ class SessionManager:
             if len(self._sessions) >= self._max_sessions:
                 self._evict_oldest()
 
-            # ★ 从配置读取 memory 参数
             from app.core.util.agent_config import get_config
             _cfg = get_config()
             memory_cfg = _cfg.get_section("memory") or {}
@@ -222,7 +221,7 @@ class SessionManager:
                                 memory.add_tool_call(
                                     tc.get("function", {}).get("name", ""),
                                     json.loads(tc.get("function", {}).get("arguments", "{}")),
-                                    tool_call_id=original_tc_id,  # ★ 保留原始 ID，与 tool_result 匹配
+                                    tool_call_id=original_tc_id,  #保留原始 ID，与 tool_result 匹配
                                 )
                                 restored_count += 1
                         elif content:

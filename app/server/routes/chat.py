@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default"
+    last_event_id: int = 0
+
+
+class SupplementRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = "default"
 
 
 class ChatResponse(BaseModel):
@@ -90,7 +96,6 @@ async def _consume_queue(session_id: str, queue: asyncio.Queue, session_info):
             if event is None:
                 break
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            # ★ 强制让出控制权，确保事件立即发送
             await asyncio.sleep(0)
             if event.get("type") in ("done", "stopped"):
                 session_info.message_count += 1
@@ -108,25 +113,19 @@ async def _consume_queue(session_id: str, queue: asyncio.Queue, session_info):
 async def _consume_queue_with_history(session_id: str, queue: asyncio.Queue, session_info, history: list, pending_input: str = None):
     """从事件队列消费并生成 SSE 事件（先发送历史事件和待处理输入）"""
     try:
-        if pending_input:
+        if pending_input and not history:
             yield f"data: {json.dumps({'type': 'message_received', 'session_id': session_id, 'message': pending_input}, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0)
 
-        # 先发送历史事件（限制最多发送 50 条，避免前端阻塞）
-        max_history_send = 50
-        history_to_send = history[-max_history_send:] if len(history) > max_history_send else history
-
-        for event in history_to_send:
+        for event in history:
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0)
-        
-        # 继续消费新事件
+
         while True:
             event = await queue.get()
             if event is None:
                 break
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            # ★ 强制让出控制权，确保事件立即发送
             await asyncio.sleep(0)
             if event.get("type") in ("done", "stopped"):
                 session_info.message_count += 1
@@ -236,9 +235,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 
     # 检查是否已有运行中的任务（重新连接）
     if task_mgr.has_running_task(session_id):
-        history = task_mgr.get_event_history(session_id)
-        logger.info("[chat_stream] 重新连接到运行中的任务 | session=%s | history_count=%d",
-                   session_id, len(history))
+        history = task_mgr.get_event_history(session_id, after_event_id=request.last_event_id)
+        logger.info("[chat_stream] 重新连接到运行中的任务 | session=%s | replay_from=%d | replay_count=%d",
+                   session_id, request.last_event_id, len(history))
         pending_input = task_mgr.get_pending_input(session_id)
         queue = task_mgr.get_queue(session_id)
         if queue:
@@ -290,13 +289,38 @@ async def get_chat_status(session_id: str = Query("default", description="会话
             "event_count": info.event_count,
             "started_at": info.started_at,
             "error_message": info.error_message,
+            "last_event_type": info.last_event_type,
+            "last_event_id": info.last_event_id,
         }
 
     return {
         "session_id": session_id,
         "has_running_task": False,
         "task_status": None,
+        "last_event_id": task_mgr.get_latest_event_id(session_id),
     }
+
+
+@router.post("/chat/supplement")
+async def supplement_chat(request: SupplementRequest):
+    """向运行中的任务追加补充消息"""
+    session_id = request.session_id or "default"
+    message = (request.message or "").strip()
+    if not message:
+        return {"status": "ignored", "reason": "empty_message", "session_id": session_id}
+
+    task_mgr = get_task_manager()
+    queued = task_mgr.enqueue_supplement_message(session_id, {
+        "content": message,
+        "source": "webui",
+        "msg_id": None,
+        "received_at": __import__('time').time(),
+        "platform": None,
+        "message_type": None,
+    })
+    if not queued:
+        return {"status": "not_running", "session_id": session_id}
+    return {"status": "queued", "session_id": session_id}
 
 
 @router.post("/chat/stop")
@@ -408,6 +432,7 @@ def _messages_to_renderable(raw_messages: list) -> list:
             renderable.append({
                 "role": "user",
                 "content": msg.get("content") or "",
+                "timeline": None,
             })
             i += 1
 
@@ -415,9 +440,9 @@ def _messages_to_renderable(raw_messages: list) -> list:
             tool_calls = msg.get("tool_calls")
             content = msg.get("content")
 
-            # ★ 修复：如果有 tool_calls，收集工具调用信息
             if tool_calls:
                 tool_traces = []
+                timeline = []
                 tc_map = {}
 
                 for tc in tool_calls:
@@ -428,9 +453,8 @@ def _messages_to_renderable(raw_messages: list) -> list:
                         "arguments": json.loads(fn.get("arguments", "{}")) if fn.get("arguments") else {},
                     }
 
-                # 向后查找 tool 结果
                 j = i + 1
-                final_text = content  # ★ 默认使用当前消息的 content
+                final_text = content
                 while j < len(raw_messages):
                     sub = raw_messages[j]
                     if sub.get("role") == "tool":
@@ -443,21 +467,16 @@ def _messages_to_renderable(raw_messages: list) -> list:
                             tc_map[tc_id]["result"] = result
                         j += 1
                     elif sub.get("role") == "assistant" and sub.get("tool_calls"):
-                        # ★ 遇到另一个 tool_calls 消息，说明当前链结束
-                        # ★ 不处理这个新消息，让外层循环来处理
                         break
                     elif sub.get("role") == "assistant" and sub.get("content") and not sub.get("tool_calls"):
-                        # ★ 找到最终回复
                         final_text = sub.get("content", "")
                         j += 1
                         break
                     elif sub.get("role") == "user":
-                        # 遇到用户消息，停止
                         break
                     else:
                         j += 1
 
-                # 构建工具轨迹
                 for tc_info in tc_map.values():
                     args = tc_info["arguments"]
                     result = tc_info.get("result")
@@ -488,20 +507,33 @@ def _messages_to_renderable(raw_messages: list) -> list:
                     else:
                         trace["description"] = f"正在调用 {trace['tool']}"
                     tool_traces.append(trace)
+                    timeline.append({
+                        "kind": "tool",
+                        "tool": trace["tool"],
+                        "arguments": trace["arguments"],
+                        "result": trace["result"],
+                        "duration_ms": trace["duration_ms"],
+                        "description": trace.get("description"),
+                        "status": "done",
+                    })
+
+                if final_text:
+                    timeline.append({"kind": "text", "content": final_text})
 
                 renderable.append({
                     "role": "assistant",
                     "content": final_text or "",
                     "toolTraces": tool_traces,
+                    "timeline": timeline,
                 })
                 i = j
 
             else:
-                # 普通 assistant 消息（无工具调用）
                 renderable.append({
                     "role": "assistant",
                     "content": content or "",
                     "toolTraces": [],
+                    "timeline": [{"kind": "text", "content": content or ""}] if (content or "") else [],
                 })
                 i += 1
         else:
@@ -523,31 +555,24 @@ async def get_session_history(
     mgr = get_session_manager()
     raw_msgs = []
 
-    # ★ 从 archive 读取完整历史
     try:
         if mgr.three_layer_memory and mgr.three_layer_memory.archive:
             records = mgr.three_layer_memory.archive.get_by_session(session_id, limit=500)
             if records:
-                # ★ 合并所有记录的消息，然后去重（保留最后一次出现）
-                # 因为每条记录都包含当时的完整消息列表，后面的记录包含前面的
                 all_messages = []
                 seen = set()
-                
-                # 从最新的记录开始遍历
+
                 for rec in reversed(records):
                     msgs = rec.get("messages")
                     if isinstance(msgs, list):
-                        # 跳过压缩后的摘要消息
                         filtered = [m for m in msgs if not (m.get("role") == "user" and m.get("_is_compacted_notes"))]
-                        # 从后往前遍历，保留最后一次出现
                         for msg in reversed(filtered):
-                            # 生成消息的唯一键
+    
                             msg_key = json.dumps(msg, sort_keys=True, ensure_ascii=False)
                             if msg_key not in seen:
                                 seen.add(msg_key)
                                 all_messages.append(msg)
                 
-                # 反转回来，保持时间顺序
                 raw_msgs = list(reversed(all_messages))
                 
                 _hist_log.info(
@@ -557,7 +582,6 @@ async def get_session_history(
     except Exception as e:
         _hist_log.warning("[History] archive 读取失败，回退到内存: %s", e)
 
-    # 回退到内存
     if not raw_msgs:
         info = mgr.get_or_create(session_id)
         raw_msgs = info.memory.get_messages()
@@ -569,7 +593,6 @@ async def get_session_history(
     if not raw_msgs:
         return {"session_id": session_id, "messages": [], "count": 0, "total": 0, "has_more": False}
 
-    # ★ 分页：从末尾往前切
     total = len(raw_msgs)
     end_idx = total - offset
     start_idx = max(0, end_idx - limit)

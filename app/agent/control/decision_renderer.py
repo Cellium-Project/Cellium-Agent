@@ -43,24 +43,10 @@ class RenderedPrompt:
 class DecisionRenderer:
     """
     决策渲染器
-
-    将 ControlDecision 转换为 LLM 可理解的提示词参数。
-
-    使用方式：
-        renderer = DecisionRenderer()
-        prompt_params = renderer.render(decision)
-
-        # 注入 System Prompt
-        if prompt_params.system_injection:
-            prompt_builder.inject(prompt_params.system_injection, priority=50)
-
-        # 注入 User Message
-        if prompt_params.guidance_message:
-            messages.append({"role": "user", "content": f"[系统引导]\n{prompt_params.guidance_message}"})
     """
 
     # 提示词模板
-    REDIRECT_TEMPLATE = """## ⚠️ 方向调整建议
+    REDIRECT_TEMPLATE = """## §方向调整建议
 
 检测到当前执行可能陷入困境：
 
@@ -72,7 +58,7 @@ class DecisionRenderer:
 - 回顾之前的步骤，确认是否有遗漏
 {tools_section}"""
 
-    COMPRESS_TEMPLATE = """## ⚠️ 上下文压力警告
+    COMPRESS_TEMPLATE = """## §上下文压力警告
 
 当前对话上下文接近 Token 限制，请：
 - 精简后续回复，避免重复已有信息
@@ -110,7 +96,6 @@ class DecisionRenderer:
         result = RenderedPrompt()
 
         if decision.action_type == "continue":
-            # continue: 可能只有参数调整，不需要额外提示
             if self.verbose:
                 result.context_modifier = self._build_continue_hint(decision)
 
@@ -130,22 +115,18 @@ class DecisionRenderer:
         result = RenderedPrompt()
         result.suggested_tools = decision.suggested_tools or []
 
-        # 构建原因列表
         reasons = []
         if decision.guidance_message:
-            # 如果已有引导消息，直接使用
             reasons.append(decision.guidance_message)
         else:
             reasons.append("当前方向可能遇到困难")
 
-        # 构建工具推荐部分
         tools_section = ""
         if result.suggested_tools:
             tools_section = "\n**推荐尝试的工具：**\n"
             for i, tool in enumerate(result.suggested_tools[:3], 1):
                 tools_section += f"{i}. `{tool}`\n"
 
-        # 渲染完整消息
         result.guidance_message = self.REDIRECT_TEMPLATE.format(
             reasons="\n".join(f"- {r}" for r in reasons),
             tools_section=tools_section,
@@ -157,13 +138,10 @@ class DecisionRenderer:
         """渲染 compress 决策"""
         result = RenderedPrompt()
 
-        # compress 优先使用 System Prompt 注入
-        # 这样约束更持久，不会被后续对话冲淡
         result.system_injection = self.COMPRESS_TEMPLATE
 
-        # 同时提供 User Message 作为即时提醒
         if decision.context_trim_level == "aggressive":
-            result.guidance_message = "⚠️ 上下文严重不足，请极度精简回复。"
+            result.guidance_message = "§上下文严重不足，请极度精简回复。"
 
         return result
 
@@ -172,8 +150,6 @@ class DecisionRenderer:
         result = RenderedPrompt()
         result.force_stop = True
 
-        # terminate 使用 User Message 注入
-        # 让 LLM 做最终总结
         result.guidance_message = self.TERMINATE_TEMPLATE.format(
             stop_reason=decision.stop_reason or "达到系统限制",
         )
@@ -196,11 +172,6 @@ class DecisionRenderer:
         return None
 
     def render_simple(self, decision: ControlDecision) -> Dict[str, Any]:
-        """
-        简化的渲染接口（返回字典）
-
-        用于快速集成，不需要 RenderedPrompt 类型。
-        """
         rendered = self.render(decision)
         return {
             "guidance_message": rendered.guidance_message,

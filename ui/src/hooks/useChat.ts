@@ -5,6 +5,8 @@ import type { SSEEvent, Message, ToolTrace, TimelineSegment } from '../types';
 
 export function useChat() {
   const abortControllerRef = useRef<AbortController | null>(null);
+  const connectionIdRef = useRef(0);
+  const lastEventIdBySessionRef = useRef<Record<string, number>>({});
   const {
     currentSessionId,
     messages,
@@ -24,6 +26,11 @@ export function useChat() {
   const buildStreamingContext = useCallback(() => ({
     timeline: [] as TimelineSegment[],
     traces: [] as ToolTrace[],
+    lastEventId: 0,
+    finalized: false,
+    stopRequested: false,
+    stoppedByServer: false,
+    sawDone: false,
   }), []);
 
   // ★ 连接到正在运行的任务（重新连接）
@@ -37,12 +44,22 @@ export function useChat() {
     }
 
     const ctx = buildStreamingContext();
-    updateStreamingMessage({
-      role: 'assistant',
-      content: '',
-      toolTraces: [],
-      timeline: [],
-    });
+    ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
+    if (streamingMessage?.timeline?.length) {
+      ctx.timeline = [...streamingMessage.timeline];
+    }
+    if (streamingMessage?.toolTraces?.length) {
+      ctx.traces = [...streamingMessage.toolTraces];
+    }
+    const connectionId = ++connectionIdRef.current;
+    if (!streamingMessage) {
+      updateStreamingMessage({
+        role: 'assistant',
+        content: '',
+        toolTraces: [],
+        timeline: [],
+      });
+    }
     setIsStreaming(true);
 
     abortControllerRef.current = new AbortController();
@@ -51,7 +68,7 @@ export function useChat() {
       const response = await fetch(API.stream, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: '', session_id: sessionId }),  // 空消息表示重新连接
+        body: JSON.stringify({ message: '', session_id: sessionId, last_event_id: ctx.lastEventId }),  // 空消息表示重新连接
         signal: abortControllerRef.current.signal,
       });
 
@@ -78,7 +95,7 @@ export function useChat() {
 
           try {
             const event: SSEEvent = JSON.parse(raw);
-            handleSSEEvent(event, ctx);
+            handleSSEEvent(event, ctx, sessionId, connectionId);
           } catch (e) {
             if (import.meta.env.DEV) {
               console.warn('Failed to parse SSE event:', raw);
@@ -88,28 +105,44 @@ export function useChat() {
       }
 
       // Finalize message
-      finalizeMessage(ctx);
+      finalizeMessage(ctx, connectionId);
       fetchSessions();
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         if (import.meta.env.DEV) {
           console.error('Reconnect error:', error);
         }
+        updateStreamingMessage(null);
       }
-      updateStreamingMessage(null);
     } finally {
       setIsStreaming(false);
-      setHasRunningTask(false);
+      setHasRunningTask(await checkTaskStatus(sessionId));
       abortControllerRef.current = null;
     }
-  }, [buildStreamingContext, updateStreamingMessage, setIsStreaming, setHasRunningTask, fetchSessions]);
+  }, [buildStreamingContext, updateStreamingMessage, setIsStreaming, setHasRunningTask, fetchSessions, checkTaskStatus, streamingMessage]);
 
   // Finalize message helper
-  const finalizeMessage = useCallback((ctx: ReturnType<typeof buildStreamingContext>) => {
+  const finalizeMessage = useCallback((ctx: ReturnType<typeof buildStreamingContext>, connectionId?: number) => {
+    if (ctx.finalized) {
+      updateStreamingMessage(null);
+      return;
+    }
+    if (typeof connectionId === 'number' && connectionId !== connectionIdRef.current) {
+      return;
+    }
+
     const finalText = ctx.timeline
       .filter(s => s.kind === 'text')
       .map(s => s.content)
       .join('\n\n');
+
+    const hasUsefulContent = Boolean(finalText.trim()) || ctx.traces.length > 0 || ctx.timeline.length > 0;
+    ctx.finalized = true;
+
+    if (!hasUsefulContent) {
+      updateStreamingMessage(null);
+      return;
+    }
 
     const finalMessage: Message = {
       role: 'assistant',
@@ -123,9 +156,19 @@ export function useChat() {
 
   // Send message — 发送消息并处理流式响应
   const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim() || isStreaming) return;
+    if (!content.trim()) return;
 
     const sessionId = currentSessionId || 'default';
+
+    if (isStreaming) {
+      addMessage({ role: 'user', content: content.trim() });
+      try {
+        await postJSON(API.supplement, { message: content.trim(), session_id: sessionId });
+      } catch (error: any) {
+        addMessage({ role: 'assistant', content: `补充消息发送失败: ${error.message}` });
+      }
+      return;
+    }
 
     // Add user message
     addMessage({ role: 'user', content: content.trim() });
@@ -134,6 +177,8 @@ export function useChat() {
 
     // Create streaming message placeholder
     const ctx = buildStreamingContext();
+    lastEventIdBySessionRef.current[sessionId] = 0;
+    const connectionId = ++connectionIdRef.current;
     updateStreamingMessage({
       role: 'assistant',
       content: '',
@@ -147,7 +192,7 @@ export function useChat() {
       const response = await fetch(API.stream, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content.trim(), session_id: sessionId }),
+        body: JSON.stringify({ message: content.trim(), session_id: sessionId, last_event_id: 0 }),
         signal: abortControllerRef.current.signal,
       });
 
@@ -174,7 +219,7 @@ export function useChat() {
 
           try {
             const event: SSEEvent = JSON.parse(raw);
-            handleSSEEvent(event, ctx);
+            handleSSEEvent(event, ctx, sessionId, connectionId);
           } catch (e) {
             if (import.meta.env.DEV) {
               console.warn('Failed to parse SSE event:', raw);
@@ -184,36 +229,30 @@ export function useChat() {
       }
 
       // Finalize message
-      finalizeMessage(ctx);
+      finalizeMessage(ctx, connectionId);
 
       // Refresh session list
       fetchSessions();
     } catch (error: any) {
-      if (error.name === 'AbortError') {
-        const stoppedContent = ctx.timeline
-          .filter(s => s.kind === 'text')
-          .map(s => s.content)
-          .join('\n\n');
-        const stoppedMessage: Message = {
-          role: 'assistant',
-          content: stoppedContent ? stoppedContent + '\n\n[已停止推理]' : '[已停止推理]',
-          toolTraces: ctx.traces,
-          timeline: ctx.timeline,
-        };
-        addMessage(stoppedMessage);
-      } else {
+      if (error.name !== 'AbortError') {
         addMessage({ role: 'assistant', content: `错误: ${error.message}` });
+        updateStreamingMessage(null);
       }
-      updateStreamingMessage(null);
     } finally {
       setIsStreaming(false);
-      setHasRunningTask(false);
+      setHasRunningTask(await checkTaskStatus(sessionId));
       abortControllerRef.current = null;
     }
-  }, [currentSessionId, isStreaming, addMessage, setIsStreaming, setHasRunningTask, updateStreamingMessage, buildStreamingContext, fetchSessions, finalizeMessage]);
+  }, [currentSessionId, isStreaming, addMessage, setIsStreaming, setHasRunningTask, updateStreamingMessage, buildStreamingContext, fetchSessions, finalizeMessage, checkTaskStatus]);
 
   // Handle SSE event — 按时间顺序构建时间线
-  const handleSSEEvent = useCallback((event: SSEEvent, ctx: ReturnType<typeof buildStreamingContext>) => {
+  const handleSSEEvent = useCallback((event: SSEEvent, ctx: ReturnType<typeof buildStreamingContext>, sessionId: string, connectionId: number) => {
+    if (connectionId !== connectionIdRef.current) return;
+    if (event.session_id && event.session_id !== sessionId) return;
+    if (event.event_id && event.event_id > ctx.lastEventId) {
+      ctx.lastEventId = event.event_id;
+      lastEventIdBySessionRef.current[sessionId] = event.event_id;
+    }
     switch (event.type) {
       case 'thinking':
         updateStreamingMessage({
@@ -226,7 +265,7 @@ export function useChat() {
 
       case 'tool_start': {
         if (event.tool && event.arguments) {
-          // ★ 追加工具片段到时间线（保持顺序）
+          // 追加工具片段到时间线（保持顺序）
           const toolSeg: TimelineSegment = {
             kind: 'tool',
             tool: event.tool,
@@ -234,7 +273,7 @@ export function useChat() {
             duration_ms: 0,
             description: event.description,
             status: 'running',
-            call_id: event.call_id,  // ★ 使用 call_id 唯一标识
+            call_id: event.call_id,  // 使用 call_id 唯一标识
           };
           ctx.timeline.push(toolSeg);
 
@@ -345,11 +384,13 @@ export function useChat() {
       }
 
       case 'done':
+        ctx.sawDone = true;
         if (event.tool_traces && event.tool_traces.length > 0) {
           if (ctx.traces.length === 0) {
             ctx.traces = event.tool_traces;
           }
         }
+        finalizeMessage(ctx, connectionId);
         break;
 
       case 'error': {
@@ -365,32 +406,49 @@ export function useChat() {
       }
 
       case 'stopped': {
-        const stopMsg = `已停止: ${event.reason || '用户取消'}`;
+        if (ctx.sawDone) {
+          break;
+        }
+        ctx.stoppedByServer = true;
+        const stopMsg = (() => {
+          switch (event.reason) {
+            case 'user_cancelled':
+              return '已停止生成';
+            case 'max_iterations_exceeded':
+              return '已停止：达到最大迭代次数';
+            case 'loop_detected':
+              return '已停止：检测到重复输出';
+            default:
+              return event.reason ? `已停止：${event.reason}` : '已停止生成';
+          }
+        })();
         ctx.timeline.push({ kind: 'text', content: stopMsg });
-        const currentContent = streamingMessage?.content || '';
         updateStreamingMessage({
           role: 'assistant',
-          content: currentContent ? currentContent + '\n\n[已停止推理]' : '[已停止推理]',
+          content: '[正在停止...]',
           toolTraces: ctx.traces,
           timeline: [...ctx.timeline],
         });
+        finalizeMessage(ctx, connectionId);
         break;
       }
     }
-  }, [updateStreamingMessage, streamingMessage]);
+  }, [updateStreamingMessage, finalizeMessage]);
 
   // Stop streaming — ★ 改为调用后端停止接口
   const stopStreaming = useCallback(async () => {
     const sessionId = currentSessionId || 'default';
     
-    // 先取消本地请求
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+    if (streamingMessage) {
+      updateStreamingMessage({
+        ...streamingMessage,
+        content: '[正在停止...]',
+      });
     }
-    
+
     // 调用后端停止任务
     await stopTask(sessionId);
-  }, [currentSessionId, stopTask]);
+  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage]);
 
   // ★ 页面加载时检查是否有运行中的任务
   useEffect(() => {

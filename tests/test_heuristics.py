@@ -290,7 +290,7 @@ class TestSameToolRepetitionRule(unittest.TestCase):
         """测试规则存在"""
         rule = SameToolRepetitionRule()
         self.assertEqual(rule.id, "loop-001")
-        self.assertEqual(rule.name, "Same Tool Repetition")
+        self.assertEqual(rule.name, "Same Signature Repetition")
 
 
 class TestPatternLoopRule(unittest.TestCase):

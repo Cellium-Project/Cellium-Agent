@@ -7,7 +7,10 @@ Channel Base - 多平台消息抽象层
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, Any
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,6 +29,9 @@ class UnifiedMessage:
     def session_id(self) -> str:
         if self.message_type == "group" and self.group_id:
             return f"{self.platform}:group:{self.group_id}"
+        if self.message_type == "guild" and self.channel_id:
+            guild_part = self.guild_id or "unknown"
+            return f"{self.platform}:guild:{guild_part}:{self.channel_id}"
         return f"{self.platform}:{self.user_id}"
 
     def to_agent_dict(self) -> Dict[str, Any]:
@@ -57,7 +63,7 @@ class ChannelAdapter(ABC):
         pass
 
     @abstractmethod
-    async def send_message(self, user_id: str, content: str, message_type: str, **kwargs) -> bool:
+    async def send_message(self, target_id: str, content: str, message_type: str, **kwargs) -> bool:
         pass
 
     def build_inject_content(self, message: UnifiedMessage, content: str) -> str:

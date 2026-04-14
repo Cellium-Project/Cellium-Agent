@@ -40,7 +40,7 @@ class ResponseCompleteEvent(AgentEvent):
     """响应完成事件"""
     content: str = ""
     iterations: int = 0
-    response_type: str = "response"  # response | error
+    response_type: str = "response"  
 
 
 @dataclass
@@ -72,7 +72,7 @@ class ToolCallErrorEvent(AgentEvent):
 class MemorySearchEvent(AgentEvent):
     """记忆检索事件"""
     query: str = ""
-    memory_type: str = "all"  # all | short_term | long_term | personality
+    memory_type: str = "all"  
 
 
 @dataclass
@@ -103,7 +103,7 @@ class LoopIterationEvent(AgentEvent):
 class LoopEndEvent(AgentEvent):
     """循环结束事件"""
     total_iterations: int = 0
-    reason: str = ""  # complete | max_iterations_exceeded | error
+    reason: str = ""  
     result: Dict[str, Any] = field(default_factory=dict)
 
 

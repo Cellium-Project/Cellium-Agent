@@ -1,19 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-组件热插拔监控器 — 后台实时监控 components/ 目录
-
-能力：
-  - 无需重启，文件放入/删除后 3 秒内自动生效
-  - 后台守护线程，低开销（每 3 秒检查一次 mtime）
-  - 自动加载新组件、自动卸载已删除的组件
-  - 通过 file_system_event 总线事件通知其他模块
-  - 支持优雅启停（start/stop）
-
-用法：
-    watcher = ComponentWatcher()
-    watcher.start()     # 开始监控
-    watcher.stop()      # 停止监控
-    watcher.status()    # 查看状态
+组件热插拔监控器 —监控 components/ 目录
 """
 
 import logging
@@ -46,7 +33,7 @@ class ComponentWatcher:
       3. 发现新文件或文件修改时间变化 → 触发热重载
       4. 发现文件被删除 → 自动卸载对应组件
     
-    热插拔 = 写入 .py 文件到 components/ → 最多等 3 秒 → 组件可用
+    热插拔 = 写入 .py 文件到 components/ 目录 → 自动加载组件
     """
 
     # 默认扫描间隔（秒）
@@ -118,10 +105,8 @@ class ComponentWatcher:
         self._running = True
         self._stats["started_at"] = time.time()
 
-        # 初始快照
         self._take_snapshot()
 
-        # ★ 启动时同步已有组件到工具注册表
         try:
             tool_registry = get_component_tool_registry()
             tool_registry.sync_from_components_loader()
@@ -132,7 +117,7 @@ class ComponentWatcher:
         self._thread = threading.Thread(
             target=self._monitor_loop,
             name="ComponentWatcher",
-            daemon=True,  # 主进程退出时自动结束
+            daemon=True,  
         )
         self._thread.start()
 
@@ -167,7 +152,6 @@ class ComponentWatcher:
 
         report = hot_reload(container=container)
 
-        # ★ 关键：同步到组件工具注册表，让 AgentLoop 能立即使用新组件
         try:
             tool_registry = get_component_tool_registry()
             tool_registry.sync_from_components_loader()
@@ -175,8 +159,6 @@ class ComponentWatcher:
         except Exception as e:
             logger.warning("[ComponentWatcher] 工具注册表同步失败: %s", e)
             report["_tool_registry_synced"] = False
-
-        # 更新快照
         self._take_snapshot()
         self._stats["last_change_time"] = time.time()
 

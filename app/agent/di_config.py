@@ -98,7 +98,6 @@ def setup_agent_di(
     _client_logger = logging.getLogger("app.client")
     _client_logger.setLevel(logging.DEBUG if _cfg.get("logging.client_log", False) else logging.CRITICAL + 1)
 
-    # ★ Agent 配置热重载支持：使用可变容器存储最新配置
     _agent_config_holder = {
         "max_iterations": max_iterations,
         "flash_mode": flash_mode,
@@ -287,7 +286,6 @@ def setup_agent_di(
         ThreeLayerMemory._di_registered = True
 
     # --- 5. 注册对话上下文 MemoryManager ---
-    # ★ 从 memory.yaml 读取配置
     memory_cfg = _cfg.get_section("memory") or {}
     short_term = memory_cfg.get("short_term", {})
     _mem_mgr = MemoryManager(
@@ -297,10 +295,9 @@ def setup_agent_di(
         auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
     )
     if not hasattr(MemoryManager, '_di_registered'):
-        container.register(MemoryManager, _mem_mgr, singleton=False)  # 每次会话新实例
+        container.register(MemoryManager, _mem_mgr, singleton=False) 
         MemoryManager._di_registered = True
 
-    # ★ 注册 memory 配置热重载回调
     def _on_memory_config_change(section, old_val, new_val):
         """memory 配置变更时更新所有活跃的 MemoryManager"""
         if section != "memory":

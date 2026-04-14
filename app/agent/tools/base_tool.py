@@ -62,12 +62,10 @@ class BaseTool:
         Returns:
             命令执行结果
         """
-        # ★ 新模式: 直接传入了完整的 LLM 参数字典
         if isinstance(command, dict):
             all_args = command
             cmd_name = (all_args.pop("command") or "").strip()
 
-            # ★ 智能推断：当 LLM 未提供 command 时，根据有值的参数反推子命令
             if not cmd_name:
                 cmd_name = self._infer_command(all_args)
                 if cmd_name:
@@ -88,7 +86,6 @@ class BaseTool:
                 if callable(method):
                     import inspect as _inspect
 
-                    # ★ 简化：只过滤目标方法能接受的参数，不做前缀转换
                     sig = _inspect.signature(method)
                     valid_params = {p for p in sig.parameters if p != "self"}
 
@@ -105,14 +102,11 @@ class BaseTool:
                 f"Available: {list(self.get_commands().keys())}"
             )
 
-        # 原有模式: command 是字符串命令名
         method_name = f"{self.COMMAND_PREFIX}{command}" if command else None
 
-        # 如果有 command 参数且方法存在，调用 _cmd_xxx
         if method_name and hasattr(self, method_name):
             method = getattr(self, method_name)
             if callable(method):
-                # 优先传 kwargs，否则传 args
                 if kwargs:
                     return method(**kwargs)
                 elif args:
@@ -139,19 +133,16 @@ class BaseTool:
         if not commands:
             return ""
 
-        # 收集有意义的值（排除空串/None/False/0/空容器）
         non_empty = {k: v for k, v in all_args.items()
                      if v not in (None, "", False, 0, [], {}, b"")}
         if not non_empty:
             return ""
 
-        # ★ 快速路径：是否有键名恰好等于某个命令名（如 {"read": "xxx"}）
         for cmd_name in commands:
             if cmd_name in non_empty and non_empty[cmd_name] not in (None, "", False):
                 logger.info("[BaseTool] 直接命中 | key='%s' == command", cmd_name)
                 return cmd_name
 
-        # ★ 构建每个子命令的参数集（从 _cmd_ 方法签名提取）
         cmd_param_map: Dict[str, set] = {}  # {cmd_name: {param_names}}
         cmd_required_map: Dict[str, set] = {}  # {cmd_name: {required_param_names}}
 
@@ -171,7 +162,6 @@ class BaseTool:
             except (ValueError, TypeError):
                 continue
 
-        # ★ 覆盖度评分：all_args 中的键与哪个子命令参数重合最多
         cmd_scores: Dict[str, float] = defaultdict(float)
         input_keys = set(non_empty.keys())
 
@@ -180,9 +170,7 @@ class BaseTool:
             if not overlap:
                 continue
 
-            # 必填参数命中 → 权重 +2（强信号）
             required_hits = overlap & cmd_required_map.get(cmd_name, set())
-            # 可选参数命中 → 权重 +1
             optional_hits = overlap - required_hits
 
             score = len(required_hits) * 2.0 + len(optional_hits) * 1.0
@@ -228,10 +216,8 @@ class BaseTool:
         for cmd_name, cmd_desc in self.get_commands().items():
             method = getattr(self, f"{self.COMMAND_PREFIX}{cmd_name}", None)
             if method:
-                # 提取参数签名
                 sig = inspect.signature(method)
                 
-                # ★ 从 docstring 第一行提取参数描述
                 _doc_lines = (method.__doc__ or "").strip().split("\n")
                 _doc_summary = _doc_lines[0].strip() if _doc_lines else ""
                 
@@ -240,14 +226,11 @@ class BaseTool:
                 for param_name, param in sig.parameters.items():
                     if param_name == "self":
                         continue
-
-                    # ★ 用参数名作为基础，但加上命令上下文
                     param_info: Dict[str, Any] = {
                         "type": "string",
                         "description": f"[{cmd_name}] {param_name}",
                     }
 
-                    # 类型推断
                     annotation = param.annotation
                     if annotation != inspect.Parameter.empty:
                         type_map = {
@@ -262,7 +245,6 @@ class BaseTool:
 
                     params[param_name] = param_info
 
-                    # 必填/选填
                     if param.default == inspect.Parameter.empty:
                         required.append(param_name)
 
@@ -271,11 +253,10 @@ class BaseTool:
                     "description": cmd_desc or _doc_summary,
                     "parameters": params,
                     "required": required.copy() if required else [],
-                    "_summary": _doc_summary,  # 保留摘要用于多模式提示
+                    "_summary": _doc_summary,  
                 })
                 required.clear()
 
-        # 如果只有一个命令或没有子命令，简化结构
         if len(commands_info) == 1:
             cmd = commands_info[0]
             return {
@@ -291,17 +272,13 @@ class BaseTool:
                 }
             }
 
-        # 多命令模式：用 command 字段分发
-        # ★ 简化设计：参数名直接用方法签名原名（无前缀），LLM 看到 path 就传 path
         all_properties = {"command": {
             "type": "string",
             "description": "要执行的子命令（必填）",
             "enum": [c["command"] for c in commands_info],
         }}
-        # ★ 只有 command 是必填，其他参数按子命令需要选择性填写
         all_required = ["command"]
 
-        # ★ 构建调用示例 + 合并所有子命令的原始参数名
         _examples = []
         
         for cmd in commands_info:
@@ -312,7 +289,6 @@ class BaseTool:
                 _example_parts = ['"(无需额外参数)"']
             _examples.append(f'  • {cmd["command"]}: {{" ".join(_example_parts)}}')
             
-            # ★ 直接用原始参数名，不加前缀！LLM 看到什么就传什么
             for pname, pinfo in cmd["parameters"].items():
                 all_properties[pname] = {
                     **pinfo, 
@@ -322,13 +298,12 @@ class BaseTool:
                     ),
                 }
 
-        # ★ description 追加调用示例
         _desc_base = self.description or ""
         _example_text = "\n".join(_examples)
         _enhanced_desc = (
             f"{_desc_base}\n\n"
-            f"★ 调用示例：\n{_example_text}\n"
-            f"★ 参数直接使用原始名称（如 path, content, files），无需添加子命令前缀"
+            f"§调用示例：\n{_example_text}\n"
+            f"§参数直接使用原始名称（如 path, content, files），无需添加子命令前缀"
         )
 
         return {

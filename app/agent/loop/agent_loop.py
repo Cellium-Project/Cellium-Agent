@@ -98,27 +98,22 @@ class AgentLoop:
             if override:
                 self.learning.set_override_policy(override)
 
-        # Control Loop Harness（flash_mode=False 时启用完整控制环）
         self.control_loop: Optional[ControlLoop] = None
         self._constraint_renderer: Optional[HardConstraintRenderer] = None
         self._loop_state: Optional[LoopState] = None
         if not flash_mode and self.heuristics:
-            # flash_mode=False → ControlLoop + Heuristics（完整能力）
             from app.agent.control import create_control_loop
             bandit_memory_path = "data/control/bandit_stats.json"
             self.control_loop = create_control_loop(memory_path=bandit_memory_path)
             self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100)
-            logger.info("[AgentLoop] 控制环已启用（强约束模式）")
+            logger.info("[AgentLoop] 控制环已启用")
         elif flash_mode:
-            # flash_mode=True → 只用 Heuristics（轻量模式）
             logger.info("[AgentLoop] 控制环已禁用")
 
-        # ★ 分层协作：Learning → ControlLoop
         if self.control_loop and self.learning:
             self.learning.set_control_loop(self.control_loop)
             logger.info("[AgentLoop] Learning 与 ControlLoop 已建立协作")
 
-        # Prompt 构建器
         self._prompt_builder = create_default_builder(memory_dir)
         self._prompt_context_builder = PromptContextBuilder(
             prompt_builder=self._prompt_builder,
@@ -126,7 +121,6 @@ class AgentLoop:
             flash_mode=flash_mode,
         )
 
-        # 会话笔记压缩
         session_config = self._mem_config.get("session_compact", {})
         self._notes_dir = session_config.get("notes_dir", f"{memory_dir}/notes")
         self._session_notes_cache: Dict[str, SessionNotes] = {}  # session_id -> SessionNotes
@@ -136,15 +130,14 @@ class AgentLoop:
             tool_call_threshold=session_config.get("tool_call_threshold", 10),
             keep_recent_messages=session_config.get("keep_recent_messages", 10),
             max_notes_length=session_config.get("max_notes_length", 2000),
+            repository=self.three_layer_memory.repository if self.three_layer_memory else None,
         )
 
-        # 循环控制器
         self._loop_controller = LoopController(
             max_iterations=max_iterations,
             loop_detection_threshold=loop_detection_threshold,
         )
 
-        # 工具注册表
         self._builtin_tools: Dict[str, Any] = tools or {}
         self.tools = dict(self._builtin_tools)
 
@@ -163,10 +156,8 @@ class AgentLoop:
     def _load_memory_config(self, memory_dir: str):
         """
         加载记忆配置
-
-        修复：使用 AgentConfig 单例，而非独立读取文件
         """
-        # 默认配置
+
         self._mem_config = {
             "short_term": {
                 "max_history": 50,
@@ -183,13 +174,11 @@ class AgentLoop:
         }
 
         try:
-            # 使用 AgentConfig 单例获取配置
             from app.core.util.agent_config import get_config
             config = get_config()
             mem_config = config.get_section("memory")
 
             if mem_config:
-                # 深度合并配置
                 for key in ["short_term", "session_compact", "long_term"]:
                     if key in mem_config:
                         if key not in self._mem_config:
@@ -227,11 +216,9 @@ class AgentLoop:
         Returns:
             是否应该更新目标
         """
-        # 没有当前目标，需要设置
         if not current_goal:
             return True
 
-        # 检测明确的"新任务"信号词
         new_task_keywords = [
             "新任务", "新的任务", "换一个", "接下来", "现在请",
             "帮我", "请帮我", "我想要", "我想让", "现在需要",
@@ -242,11 +229,9 @@ class AgentLoop:
         new_input_lower = new_input.lower()
         for kw in new_task_keywords:
             if kw in new_input_lower:
-                # 进一步检查：输入是否与当前目标明显不同
                 if not self._is_similar_goal(new_input, current_goal):
                     return True
 
-        # 检测明确的取消/否定当前任务
         cancel_keywords = ["不对", "不是这个", "弄错了", "取消", "停止", "不要了"]
         for kw in cancel_keywords:
             if kw in new_input_lower:
@@ -256,13 +241,11 @@ class AgentLoop:
 
     def _is_similar_goal(self, new_input: str, current_goal: str) -> bool:
         """
-        判断新输入是否与当前目标相似（可能是延续同一任务）
+        判断新输入是否与当前目标相似
         """
-        # 简单的关键词重叠检查
         new_words = set(new_input.lower().split())
         goal_words = set(current_goal.lower().split())
         
-        # 移除常见停用词
         stop_words = {"的", "了", "是", "在", "有", "和", "与", "或", "我", "你", "他", "她", "它"}
         new_words -= stop_words
         goal_words -= stop_words
@@ -270,11 +253,10 @@ class AgentLoop:
         if not new_words or not goal_words:
             return False
         
-        # 计算重叠率
         overlap = len(new_words & goal_words)
         similarity = overlap / min(len(new_words), len(goal_words))
         
-        return similarity > 0.3  # 30% 以上重叠认为是相似目标
+        return similarity > 0.3 
 
     @property
     def has_long_term_memory(self) -> bool:
@@ -326,6 +308,27 @@ class AgentLoop:
                 return msg.get("content", "")
         return ""
 
+    def _drain_pending_supplements(self, effective_session: str, effective_memory: MemoryManager) -> int:
+        """提取运行中补充消息，并在下一轮前注入 memory"""
+        try:
+            from app.server.task_manager import get_task_manager
+            task_mgr = get_task_manager()
+            queued = task_mgr.drain_supplement_messages(effective_session)
+        except Exception as e:
+            logger.warning("[AgentLoop] 读取补充消息失败 | session=%s | error=%s", effective_session, e)
+            return 0
+
+        applied = 0
+        for item in queued:
+            content = (item or {}).get("content", "").strip()
+            if not content:
+                continue
+            effective_memory.add_user_message(f"[补充说明｜运行中追加] {content}")
+            applied += 1
+        if applied > 0:
+            logger.info("[AgentLoop] 注入 %d 条补充消息 | session=%s", applied, effective_session)
+        return applied
+
     def _persist_snapshot_before_compact(
         self,
         user_input: str,
@@ -357,76 +360,81 @@ class AgentLoop:
             if isinstance(item, str) and item in self.tools
         }
 
-    READ_ONLY_TOOLS = {"file", "memory", "web_search", "web_fetch", "read_file", "file_read", "shell"}
-    WRITE_TOOLS = {"write_to_file", "file_write", "mkdir", "delete", "edit", "move", "copy"}
+    # 读操作工具：可以安全并发
+    READ_ONLY_TOOLS = {"file", "memory", "web_search", "web_fetch", "read_file", "file_read", "shell", "search_files"}
+    # 写操作工具：必须顺序执行
+    WRITE_TOOLS = {"write_to_file", "file_write", "mkdir", "delete", "edit", "move", "copy", "apply_diff"}
 
-    def _can_parallel(self, tool_name: str) -> bool:
-        """判断工具是否可以并行执行"""
+    def _is_read_only_tool(self, tool_name: str) -> bool:
+        """判断工具是否为只读操作（可安全并发）"""
         return tool_name in self.READ_ONLY_TOOLS
 
-    async def _execute_tools_parallel(
+    async def _execute_tools_with_concurrency(
         self,
         tool_calls_info: List[Dict[str, Any]],
         effective_session: str,
         iteration: int,
         effective_memory: MemoryManager,
     ):
-        """并行执行独立工具，串行执行修改型工具（async generator，逐个yield结果）"""
+        """
+        执行工具，支持读操作并发、写操作顺序
+
+        策略：
+        1. 连续读操作 -> 并发执行
+        2. 遇到写操作 -> 等待前面所有操作完成，然后单独执行写操作
+        3. 写操作完成后 -> 继续处理后续工具
+        """
         if not tool_calls_info:
             return
 
-        independent_calls = []
-        write_calls = []
-        for info in tool_calls_info:
-            if info["blocked_by_constraint"] or not self._can_parallel(info["tool_name"]):
-                write_calls.append(info)
-            else:
-                independent_calls.append(info)
-
-        async def execute_and_yield(info: Dict[str, Any]) -> Dict[str, Any]:
+        async def execute_one(info: Dict[str, Any]) -> Dict[str, Any]:
+            """执行单个工具并返回结果"""
             trace = await self._execute_single_tool(info, effective_session, iteration, effective_memory)
-            # ★ 返回 call_id 用于前端匹配
-            call_id = info.get("tool_call_id") or f"{info['tool_name']}_{id(info['tool_call'])}"
-            return info["tool_name"], info["arguments"], trace, call_id
+            # tool_call_id 已经在前面统一设置为 call_id
+            call_id = info["tool_call_id"]
+            return {
+                "type": "tool_result",
+                "tool": info["tool_name"],
+                "call_id": call_id,
+                "arguments": info["arguments"],
+                "result": trace["result"],
+                "duration_ms": trace["duration_ms"]
+            }
 
-        pending_tasks = []
-        future_to_info = {}
-        completed_results = {}
+        i = 0
+        while i < len(tool_calls_info):
+            info = tool_calls_info[i]
+            tool_name = info["tool_name"]
 
-        if independent_calls:
-            for idx, info in enumerate(independent_calls):
-                task = asyncio.create_task(execute_and_yield(info))
-                pending_tasks.append(task)
-                future_to_info[task] = (idx, info["tool_name"], info.get("tool_call_id") or f"{info['tool_name']}_{id(info['tool_call'])}")
+            # 收集连续的读操作
+            if self._is_read_only_tool(tool_name) and not info.get("blocked_by_constraint"):
+                read_batch = [info]
+                j = i + 1
+                while j < len(tool_calls_info):
+                    next_info = tool_calls_info[j]
+                    if (self._is_read_only_tool(next_info["tool_name"]) and
+                        not next_info.get("blocked_by_constraint")):
+                        read_batch.append(next_info)
+                        j += 1
+                    else:
+                        break
 
-        if write_calls:
-            for idx, info in enumerate(write_calls):
-                _, arguments, trace, call_id = await execute_and_yield(info)
-                completed_results[len(independent_calls) + idx] = (info["tool_name"], arguments, trace, call_id)
-                yield {"type": "tool_result", "tool": info["tool_name"], "call_id": call_id,
-                       "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
+                # 并发执行这批读操作
+                if len(read_batch) == 1:
+                    # 单个读操作，直接顺序执行（避免协程开销）
+                    yield await execute_one(read_batch[0])
+                else:
+                    # 多个读操作，并发执行
+                    tasks = [asyncio.create_task(execute_one(r)) for r in read_batch]
+                    for task in asyncio.as_completed(tasks):
+                        yield await task
 
-        if pending_tasks:
-            # 使用 asyncio.as_completed 按完成顺序处理任务
-            for completed_future in asyncio.as_completed(pending_tasks):
-                # 在 Python 3.13+ 中，as_completed 返回的是原始 task
-                # 在旧版本中，返回的是包装后的 future，但我们可以通过映射找到原始信息
-                idx, tool_name, expected_call_id = future_to_info.get(completed_future, (0, "unknown", "unknown"))
-                try:
-                    name, arguments, trace, actual_call_id = await completed_future
-                    # ★ 使用实际返回的 call_id，如果不一致则记录警告
-                    if actual_call_id != expected_call_id:
-                        logger.warning("[AgentLoop] call_id 不匹配 | expected=%s | actual=%s", expected_call_id, actual_call_id)
-                    completed_results[idx] = (name, arguments, trace, actual_call_id)
-                except Exception as e:
-                    # ★ 异常情况下使用预期的 call_id 确保前端能匹配
-                    completed_results[idx] = (tool_name, None, {"error": str(e)}, expected_call_id)
+                i = j  # 跳到已处理的位置
 
-        for idx in sorted(completed_results.keys()):
-            name, arguments, trace, call_id = completed_results[idx]
-            if arguments is not None:
-                yield {"type": "tool_result", "tool": name, "call_id": call_id,
-                       "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
+            else:
+                # 写操作或被约束阻止的工具 -> 顺序执行
+                yield await execute_one(info)
+                i += 1
 
     async def _execute_single_tool(
         self,
@@ -620,6 +628,9 @@ class AgentLoop:
             _pending_system_injection = system_injection  # 外部平台注入的引导文本
 
             while True:
+                applied_supplements = self._drain_pending_supplements(effective_session, effective_memory) if not self.flash_mode else 0
+                if applied_supplements > 0:
+                    yield {"type": "thinking", "content": f"已接收 {applied_supplements} 条补充说明，正在调整处理..."}
                 # === 在迭代开始前执行待处理的压缩 ===
                 if not self.flash_mode and self._session_compactor.has_pending_compact():
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
@@ -829,14 +840,11 @@ class AgentLoop:
                 logger.info("[AgentLoop] 迭代 %d: LLM 返回 (tool_calls=%d, content长度=%d)",
                            iteration, len(response.tool_calls) if response.tool_calls else 0, len(response.content or ""))
 
-                # ★ 记录 LLM 输出内容（用于检测重复循环）
                 if self._loop_state and response.content:
                     self._loop_state.recent_llm_outputs.append(response.content)
-                    # 保留最近 10 条
                     if len(self._loop_state.recent_llm_outputs) > 10:
                         self._loop_state.recent_llm_outputs.pop(0)
 
-                # 更新 token 统计（从 LLM 响应中获取实际值）
                 if response.usage and self._loop_state:
                     prompt_tokens = response.usage.get("prompt_tokens", 0)
                     completion_tokens = response.usage.get("completion_tokens", 0)
@@ -883,7 +891,7 @@ class AgentLoop:
                         desc_str = description if isinstance(description, str) else str(description)
                         logger.debug("[AgentLoop] 工具描述（兜底）: %s", desc_str[:60] if desc_str else "")
 
-                        # ★ 使用 tool_call.id 作为唯一标识符（确保前后端匹配）
+                        # 统一使用 tool_call.id 作为唯一标识符
                         call_id = getattr(tool_call, 'id', None) or tool_call_id or f"{tool_name}_{id(tool_call)}"
                         logger.info("[AgentLoop] 发送 tool_start 事件 | tool=%s | call_id=%s", tool_name, call_id)
                         yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description, "call_id": call_id}
@@ -893,21 +901,21 @@ class AgentLoop:
                             iteration=iteration,
                             tool_name=tool_name,
                             arguments=arguments,
-                            call_id=tool_call_id,
+                            call_id=call_id,
                         )
 
                         tool_calls_info.append({
                             "tool_call": tool_call,
                             "tool_name": tool_name,
                             "arguments": arguments,
-                            "tool_call_id": tool_call_id,
+                            "tool_call_id": call_id,  # 使用统一的 call_id
                             "blocked_by_constraint": blocked_by_constraint,
                         })
 
                     await asyncio.sleep(0.05)
 
                     tool_traces = []
-                    async for event in self._execute_tools_parallel(
+                    async for event in self._execute_tools_with_concurrency(
                         tool_calls_info, effective_session, iteration, effective_memory
                     ):
                         if event.get("type") == "tool_result":

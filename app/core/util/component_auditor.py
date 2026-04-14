@@ -19,9 +19,9 @@ ComponentAuditor — 组件合规性审查器
     result = auditor.audit(cell_instance)
     
     if result.passed:
-        registry.register(cell_instance)   # ✅ 通过
+        registry.register(cell_instance)   # 通过
     else:
-        # ❌ 不通过 → 将 result.hint_text 注入给 LLM 让它修复
+        # 不通过 → 将 result.hint_text 注入给 LLM 让它修复
         print(result.hint_text)
 """
 
@@ -151,13 +151,9 @@ class ComponentAuditor:
     在组件加载/热插拔时自动调用，
     确保只有符合规范的组件才能注册为工具。
     
-    ★ 白名单机制：
-        系统内置组件（如 component）在 EXEMPTED_NAMES 中，
-        豁免部分严格规则（保留名检查、危险导入、help方法要求）。
-        但仍检查基本规范（有命令、类docstring），确保可用性。
     """
 
-    # ★ 系统内置组件白名单 — 豁免部分 strict 规则
+    # 系统内置组件白名单 — 豁免部分 strict 规则
     EXEMPTED_NAMES: Set[str] = {
         "component",        # ComponentBuilder — 系统核心组件，需要 import os/json
         "skill_installer",  # SkillInstaller — Skill 包管理器，需要 import os 操作文件系统
@@ -220,12 +216,11 @@ class ComponentAuditor:
         except Exception:
             cell_name = ""
 
-        # ★ 白名单检查：系统内置组件豁免部分 strict 规则
         is_exempted = cell_name in self.EXEMPTED_NAMES
 
         issues = []
         warnings = []
-        score = 100  # 起始满分，每项扣分
+        score = 100  
 
         # ── 1. cell_name 审查（白名单跳过保留名检查）──
         name_issues = self._check_cell_name(cell_name, skip_reserved=is_exempted)

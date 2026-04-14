@@ -47,7 +47,7 @@ function useSavingState() {
 }
 
 // ═════════════════════════════════════════════════════════════
-// ★ 模型配置 Tab
+// 模型配置 Tab
 // ═════════════════════════════════════════════════════════════
 const ModelSettings: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({});
@@ -454,7 +454,7 @@ const SecuritySettings: React.FC = () => {
 };
 
 // ═════════════════════════════════════════════════════════════
-// ★ 通道配置 Tab (多平台消息入口)
+// 通道配置 Tab (多平台消息入口)
 // ═════════════════════════════════════════════════════════════
 const ChannelSettings: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({});
@@ -593,7 +593,7 @@ const ChannelSettings: React.FC = () => {
 };
 
 // ═════════════════════════════════════════════════════════════
-// ★ 日志设置 Tab
+// 日志设置 Tab
 // ═════════════════════════════════════════════════════════════
 const LoggingSettings: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({});

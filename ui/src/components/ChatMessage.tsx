@@ -39,9 +39,8 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
   );
 });
 
-/** ★ 按时间顺序渲染时间线片段（文本 + 工具调用交错显示） */
+/**按时间顺序渲染时间线片段（文本 + 工具调用交错显示） */
 function renderTimeline(message: Message): React.ReactNode {
-  console.log('[renderTimeline] timeline:', message.timeline?.length, 'content:', message.content?.slice(0, 50));
   // 如果有 timeline，按顺序渲染每个片段
   if (message.timeline && message.timeline.length > 0) {
     return (
@@ -113,7 +112,7 @@ interface ToolTraceCardProps {
 }
 
 const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
-  // ★ 防御性处理
+  // 防御性处理
   const argsStr = JSON.stringify(trace.arguments || {}, null, 2);
   const resultPreview = makeResultPreview(trace.result);
   
@@ -134,7 +133,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
     }
   })();
   
-  // ★ 实时计时器（带清理）
+  // 实时计时器（带清理）
   const [elapsedMs, setElapsedMs] = useState(0);
   const startTimeRef = useRef(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -230,7 +229,7 @@ function makeResultPreview(result: any): React.ReactNode {
   );
 }
 
-// ★ 使用更高效的 HTML 转义方式（避免每次创建 DOM 元素）
+//使用更高效的 HTML 转义方式（避免每次创建 DOM 元素）
 const HTML_ESCAPE_MAP: Record<string, string> = {
   '&': '&amp;',
   '<': '&lt;',

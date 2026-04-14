@@ -22,6 +22,12 @@ try:
 except ImportError:
     HAS_PINYIN = False
 
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
 from .chinese_tokenizer import get_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -67,6 +73,8 @@ class MemoryRepository:
         self._catalog: Dict[str, Any] = {"version": 1, "records": {}}
         self._load_catalog()
         self._backfill_from_index()
+        self._query_embedding_cache: Dict[str, List[float]] = {}
+        self._query_cache_max_size = 100
 
     # ============================================================
     # Catalog
@@ -264,6 +272,8 @@ class MemoryRepository:
         if not query:
             return []
 
+        query = self._expand_date_query(query)
+
         self._backfill_from_index()
         fetch_top_k = max(top_k * 4, 8)
         fts_results = self.searcher.search(query, top_k=fetch_top_k, category=category)
@@ -310,6 +320,44 @@ class MemoryRepository:
         results = [entry for entry in merged.values() if entry]
         results.sort(key=lambda item: item.get("score", 0.0), reverse=True)
         return results[:top_k]
+
+    def _expand_date_query(self, query: str) -> str:
+        """扩展日期查询：英文日期自动加上中文格式"""
+        import re
+        from datetime import datetime
+
+        month_map = {
+            "january": "01", "february": "02", "march": "03", "april": "04",
+            "may": "05", "june": "06", "july": "07", "august": "08",
+            "september": "09", "october": "10", "november": "11", "december": "12",
+            "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+            "jun": "06", "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+        }
+
+        expanded = query
+        lower_q = query.lower()
+
+        for eng_month, num_month in month_map.items():
+            if eng_month in lower_q:
+                cn_format = f"{num_month}月"
+                if cn_format not in expanded:
+                    expanded = f"{expanded} {cn_format}"
+
+        today = datetime.now()
+        for pattern in [
+            r"yesterday", r"yesterday\s*(\d+)?",
+            r"(\d+)\s*days?\s*ago", r"(\d+)\s*天前",
+        ]:
+            if re.search(pattern, lower_q):
+                if "昨天" not in expanded:
+                    expanded = f"{expanded} 昨天"
+                break
+
+        if re.search(r"today", lower_q):
+            if "今天" not in expanded:
+                expanded = f"{expanded} 今天"
+
+        return expanded
 
     def list_memories(
         self,
@@ -640,16 +688,71 @@ class MemoryRepository:
         schema_type: Optional[str],
         include_sensitive: bool,
     ) -> List[Dict[str, Any]]:
-        query_vector = self._embed_text(query)
+        """
+        向量搜索 - 使用矩阵运算优化
+
+        策略：
+        - 动态构建 embedding 矩阵（N x 96）
+        - 使用 numpy 批量点积计算相似度
+        - 复杂度仍是 O(n)，但比 Python for-loop 快 10-50 倍
+        """
+        cache_key = query.lower().strip()
+        if cache_key in self._query_embedding_cache:
+            query_vector = self._query_embedding_cache[cache_key]
+        else:
+            query_vector = self._embed_text(query)
+            if len(self._query_embedding_cache) < self._query_cache_max_size:
+                self._query_embedding_cache[cache_key] = query_vector
+
         if not query_vector:
             return []
 
-        scored = []
+        # 收集符合条件的记录（过滤 + 确保有 embedding）
+        active_records = []
+        record_ids = []
+
         for record_id, record in self._catalog.get("records", {}).items():
             if not self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
                 continue
-            vector = record.get("embedding") or self._embed_text(record.get("title", "") + "\n" + record.get("content", ""))
-            record["embedding"] = vector
+
+            vector = record.get("embedding")
+            if not vector:
+                vector = self._embed_text(record.get("title", "") + "\n" + record.get("content", ""))
+                record["embedding"] = vector
+
+            active_records.append(vector)
+            record_ids.append(record_id)
+
+        if not active_records:
+            return []
+
+        # 使用 numpy 矩阵运算批量计算相似度
+        if HAS_NUMPY:
+            embeddings = np.array(active_records, dtype=np.float32)
+            query_vec = np.array(query_vector, dtype=np.float32)
+
+            # 批量点积: (N, 96) @ (96,) -> (N,)
+            scores = embeddings @ query_vec
+
+            # 取 top_k（使用 partition 避免全排序）
+            k = min(top_k, len(scores))
+            top_indices = np.argpartition(-scores, k - 1)[:k]
+            top_indices = top_indices[np.argsort(-scores[top_indices])]
+
+            results = []
+            for idx in top_indices:
+                score = float(scores[idx])
+                if score <= 0.08:
+                    continue
+                results.append({
+                    "rowid": int(record_ids[idx]),
+                    "embedding_score": score,
+                })
+            return results
+
+        # Fallback: Python 循环（无 numpy 时）
+        scored = []
+        for record_id, vector in zip(record_ids, active_records):
             score = self._cosine_similarity(query_vector, vector)
             if score <= 0.08:
                 continue
@@ -657,7 +760,6 @@ class MemoryRepository:
                 "rowid": int(record_id),
                 "embedding_score": score,
             })
-
         scored.sort(key=lambda item: item["embedding_score"], reverse=True)
         return scored[:top_k]
 

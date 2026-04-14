@@ -194,7 +194,6 @@ class FileTool(BaseTool):
         abs_path = self._resolve_path(path)
 
         try:
-            # 确保父目录存在
             parent_dir = os.path.dirname(abs_path)
             if parent_dir and not os.path.exists(parent_dir):
                 os.makedirs(parent_dir, exist_ok=True)
@@ -203,13 +202,11 @@ class FileTool(BaseTool):
                 return {"success": False, "error": f"文件已存在（mode=create 不允许覆盖）: {abs_path}"}
 
             if mode == "append":
-                # 追加模式需要先读取现有内容
                 if os.path.exists(abs_path):
                     with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                         existing = f.read()
                     content = existing + content
 
-            # 原子写入
             self._atomic_write(abs_path, content)
 
             return {
@@ -480,16 +477,13 @@ class FileTool(BaseTool):
             return {"success": False, "error": f"创建失败 ({type(e).__name__}): {e}"}
 
     def _cmd_create(self, base_dir: str, files: Dict[str, str], auto_mkdir: bool = True) -> Dict[str, Any]:
-        """批量创建文件（原子写入）
+        """批量创建文件
 
         Args:
             base_dir: 基础目录（如 F:\\计算器），所有文件相对于此目录
             files: 文件字典 {相对路径: 内容}，如 {"index.html":"...", "style.css":"..."}
             auto_mkdir: 是否自动创建不存在的父目录（默认True）
 
-        用例：
-            创建完整的前端项目：一次调用写 HTML + CSS + JS
-            创建配置文件组：一次性写入多个 .yaml/.json
         """
         if not base_dir:
             return {
@@ -503,7 +497,6 @@ class FileTool(BaseTool):
                 ),
             }
 
-        # 兼容 LLM 可能将 dict 序列化为 JSON 字符串的情况
         import json as _json
         if isinstance(files, str):
             try:
@@ -524,7 +517,6 @@ class FileTool(BaseTool):
 
         abs_base = self._resolve_path(base_dir)
 
-        # 自动创建基础目录
         try:
             os.makedirs(abs_base, exist_ok=True)
         except Exception as e:
@@ -541,12 +533,10 @@ class FileTool(BaseTool):
             full_path = os.path.join(abs_base, rel_path.replace('/', os.sep).replace('\\', os.sep))
 
             try:
-                # 确保子目录存在
                 parent = os.path.dirname(full_path)
                 if parent and auto_mkdir and not os.path.exists(parent):
                     os.makedirs(parent, exist_ok=True)
 
-                # 原子写入
                 self._atomic_write(full_path, content or "")
 
                 file_size = len((content or "").encode("utf-8"))
@@ -577,12 +567,10 @@ class FileTool(BaseTool):
         if not os.path.isfile(abs_path):
             return {"success": False, "error": f"文件不存在: {abs_path}"}
 
-        # 1. 基础信息探测
         file_size = os.path.getsize(abs_path)
         ext = os.path.splitext(abs_path)[1].lower()
         encoding = self._detect_encoding(abs_path)
 
-        # 2. 模式自动分发
         if mode == "auto":
             if ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c']:
                 mode = "structure"
@@ -603,12 +591,11 @@ class FileTool(BaseTool):
             return {"success": False, "error": f"Insight failed: {str(e)}"}
 
     # ================================================================
-    # 理解层私有实现（流式处理，不炸内存）
+    # 理解层私有实现
     # ================================================================
 
     def _extract_structure(self, f, ext: str) -> Dict[str, Any]:
         """模式1：提取代码骨架（Classes, Functions, Imports）"""
-        # 针对不同语言的轻量级正则
         patterns = {
             '.py': r'^\s*(class\s+|def\s+|import\s+|from\s+)(?P<name>[\w\.]+)',
             '.js': r'^\s*(export\s+)?(function|class|const|async)\s+(?P<name>\w+)',
@@ -625,12 +612,11 @@ class FileTool(BaseTool):
                     "line": i + 1,
                     "type": match.group(1).strip() if match.groups() else "symbol",
                     "name": match.group("name"),
-                    "raw": line.strip()[:100]  # 截断保护
+                    "raw": line.strip()[:100]
                 })
             if len(raw_symbols) >= 150:
-                break  # 目录保护
+                break  
 
-        # 估算每个符号的影响范围（end_line = 下一符号行号 - 1，最后一个无上限）
         results = []
         for idx, sym in enumerate(raw_symbols):
             end_line = raw_symbols[idx + 1]["line"] - 1 if idx + 1 < len(raw_symbols) else None
@@ -655,7 +641,7 @@ class FileTool(BaseTool):
             if target in line.lower():
                 hits.append({"line": i + 1, "content": line.strip()})
             if len(hits) >= 20:
-                break  # 检索保护，只给前20个锚点
+                break 
 
         return {"success": True, "type": "search", "hits": hits, "query": query}
 
@@ -679,10 +665,9 @@ class FileTool(BaseTool):
     def _resolve_path(self, path: str) -> str:
         """解析为绝对路径，空路径或无效路径时使用默认 workspace"""
         if not path or not isinstance(path, str):
-            # 使用默认 workspace
+
             return str(Path(__file__).resolve().parent.parent.parent.parent / "workspace")
 
-        # 如果是相对路径，先尝试作为相对于 workspace 的路径
         if not os.path.isabs(path):
             workspace_path = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
             relative_path = workspace_path / path
@@ -798,5 +783,4 @@ class FileTool(BaseTool):
 
 
 def _to_mb(n: int) -> float:
-    """将字节数转换为 MB（用于人类可读的文件大小显示）"""
     return n / (1024 * 1024)

@@ -669,7 +669,7 @@ body {
 .tool-trace-active .tool-trace-header { background: #e8f0fe; }
 .tool-trace-active .tool-status { color: #1a73e8; font-size: 11px; animation: pulse 1.2s ease-in-out infinite; }
 
-/* ★ 工具运行中状态样式 */
+/* 工具运行中状态样式 */
 .tool-running {
     border-color: #1a73e8 !important;
     background: #f8faff !important;

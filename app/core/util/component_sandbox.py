@@ -138,7 +138,6 @@ class SandboxProcess:
         if self._process is not None:
             return
 
-        # 创建临时工作器脚本
         self._worker_file = tempfile.NamedTemporaryFile(
             mode='w', suffix='.py', delete=False, encoding='utf-8'
         )
@@ -147,8 +146,6 @@ class SandboxProcess:
         self._worker_path = self._worker_file.name
         self._worker_file.close()
 
-        # 启动子进程
-        # 使用 utf-8 编码，忽略错误避免 Windows 控制台编码问题
         self._process = subprocess.Popen(
             [sys.executable, "-u", self._worker_path],  # -u: 无缓冲
             stdin=subprocess.PIPE,
@@ -177,7 +174,6 @@ class SandboxProcess:
             self._process = None
             self._initialized = False
 
-            # 清理临时文件
             try:
                 os.unlink(self._worker_path)
             except Exception:
@@ -191,15 +187,12 @@ class SandboxProcess:
             self.start()
 
         try:
-            # 发送请求
             request_json = json.dumps(request, ensure_ascii=True)
             self._process.stdin.write(request_json + '\n')
             self._process.stdin.flush()
 
-            # 接收响应
             response_line = self._process.stdout.readline()
             if not response_line:
-                # 进程可能已退出
                 stderr = self._process.stderr.read() if self._process.stderr else ""
                 raise RuntimeError(f"Sandbox process closed unexpectedly. stderr: {stderr[:500]}")
 
@@ -207,7 +200,6 @@ class SandboxProcess:
 
         except json.JSONDecodeError as e:
             logger.error("[Sandbox] JSON decode error: %s", e)
-            # 返回错误而不是抛出异常
             return {
                 "status": "error",
                 "error": "Sandbox communication error",
@@ -215,7 +207,6 @@ class SandboxProcess:
             }
         except Exception as e:
             logger.error("[Sandbox] IPC error: %s", e)
-            # 重启进程
             self.stop()
             raise
 

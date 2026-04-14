@@ -30,8 +30,6 @@ MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 HARD_TIMEOUT_SECONDS = 300
 PREVIEW_SIZE_BYTES = 500
 
-# 危险命令检测已移至 SecurityPolicy，此处保留快速预检列表用于 classify_command
-# 完整检测请使用 SecurityPolicy.check_command()
 _WRITE_INDICATORS = [
     r"rm\s+-rf", r"rmdir\s+/s", r"del\s+/[fq]", r"remove-item\s+-recurse",
     r"format\s+", r"diskpart", r"mkfs\.", r"dd\s+if=",
@@ -109,7 +107,6 @@ def classify_command(command: str) -> CommandType:
     """分类命令为只读或写入"""
     cmd = command.strip()
 
-    # 使用快速预检列表判断写入操作
     for pattern in _WRITE_INDICATORS:
         if re.search(pattern, cmd, re.IGNORECASE):
             return CommandType.WRITE
@@ -237,7 +234,6 @@ class CelliumShell:
         self._cwd = initial_cwd if initial_cwd and os.path.isdir(initial_cwd) else os.getcwd()
         self.security = security_policy
 
-        # 从配置读取超时和输出限制
         try:
             from app.core.util.agent_config import get_config
             cfg = get_config()
@@ -248,7 +244,6 @@ class CelliumShell:
         except Exception:
             pass
 
-        # 平台初始化
         self._shell_cmd: List[str] = []
         self._shell_name: str = ""
         self._pwsh_path: Optional[str] = None
@@ -257,7 +252,6 @@ class CelliumShell:
     def _init_platform_shell(self) -> None:
         """根据操作系统选择默认 Shell"""
         if self._platform == "win32":
-            # Windows: 优先 PowerShell
             pwsh = self._find_pwsh()
             if pwsh:
                 self._shell_cmd = [pwsh, "-NoProfile", "-NonInteractive", "-Command"]
@@ -296,12 +290,10 @@ class CelliumShell:
 
     def _check_security(self, cmd: str) -> Dict[str, Any]:
         """安全策略检查"""
-        # 先检查危险命令
         danger_warning = check_dangerous_command(cmd)
         if danger_warning:
             return {"success": False, "allowed": False, "reason": danger_warning}
 
-        # 再检查 SecurityPolicy
         if self.security:
             try:
                 from app.core.security.policy import RiskLevel
@@ -313,7 +305,6 @@ class CelliumShell:
             except Exception:
                 pass
 
-        # 降级：内置简单黑名单
         cmd_lower = cmd.lower()
         for pattern in self._FALLBACK_BLOCKLIST:
             if pattern in cmd_lower:
@@ -343,7 +334,6 @@ class CelliumShell:
         """
         result = self.execute({"command": cmd, "timeout": timeout})
 
-        # 转换为旧格式
         if result.get("error"):
             return {
                 "error": result["error"],
@@ -483,7 +473,6 @@ class CelliumShell:
         if not cmd or not cmd.strip():
             return {"success": False, "error": "命令为空"}
 
-        # 安全检查
         sec = self._check_security(cmd)
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
@@ -508,7 +497,6 @@ class CelliumShell:
         if not cmd or not cmd.strip():
             return {"success": False, "error": "命令为空"}
 
-        # 安全检查
         sec = self._check_security(cmd)
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
@@ -542,7 +530,6 @@ class CelliumShell:
         start_time = time.time()
 
         try:
-            # ★ 关闭 stdin，防止进程挂起等待输入
             process = subprocess.Popen(
                 full_cmd,
                 stdin=subprocess.DEVNULL,
@@ -619,7 +606,6 @@ class CelliumShell:
         stderr_lines = []
 
         try:
-            # ★ 关闭 stdin，防止进程挂起等待输入
             process = await asyncio.create_subprocess_exec(
                 *full_cmd,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -740,7 +726,6 @@ class CelliumShell:
             env = os.environ.copy()
 
             try:
-                # ★ 关闭 stdin，防止进程挂起等待输入
                 process = subprocess.Popen(
                     full_cmd,
                     stdin=subprocess.DEVNULL,

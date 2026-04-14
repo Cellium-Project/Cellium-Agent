@@ -44,14 +44,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan_context,
     )
 
-    # ★ 从 server.yaml 读取 CORS 配置
     cors_origins = cfg.get("server.cors_origins", ["*"])
     if isinstance(cors_origins, str):
         cors_origins = [o.strip() for o in cors_origins.split(",")]
     cors_methods = cfg.get("server.cors_methods", ["*"])
     cors_headers = cfg.get("server.cors_headers", ["*"])
 
-    # CORS 中间件
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -60,7 +58,6 @@ def create_app() -> FastAPI:
         allow_headers=cors_headers,
     )
 
-    # 注册路由
     app.include_router(chat_router)
     app.include_router(config_router)
     app.include_router(memory_router)
@@ -69,17 +66,14 @@ def create_app() -> FastAPI:
     app.include_router(channels_router)
     app.include_router(session_events_router)
 
-
-    # ★ 静态文件目录从 server.yaml 读取
     html_dir = cfg.get("server.static_dir") or os.path.join(os.path.dirname(__file__), "..", "..", "html")
     if os.path.exists(html_dir):
         app.mount("/", StaticFiles(directory=html_dir, html=True), name="static")
 
-    # ★ 静默拦截 favicon 请求（浏览器自动请求，项目不使用）
     @app.middleware("http")
     async def _suppress_favicon(request, call_next):
         if request.url.path == "/favicon.ico":
-            return Response(status_code=204)  # No Content
+            return Response(status_code=204)  
         return await call_next(request)
 
     return app

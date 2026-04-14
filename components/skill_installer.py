@@ -177,7 +177,6 @@ class SkillInstaller(BaseCell):
           skill_installer.list_available()
           skill_installer.list_available(category="code")
         """
-        # ★ 内置 Skill 模板库（后续可接入远程仓库）
         available = [
             {
                 "name": "git_helper",

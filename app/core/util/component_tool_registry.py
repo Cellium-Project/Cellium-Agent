@@ -63,7 +63,7 @@ class ComponentToolRegistry:
         registry.get_tool_definitions()               → [definition_dict, ...]  LLM 格式
     """
 
-    # ★ 系统保留的工具名 — 组件不能覆盖这些（默认内置工具）
+    #系统保留的工具名 — 组件不能覆盖这些（默认内置工具）
     RESERVED_TOOL_NAMES: Set[str] = {
         "shell",      # ShellTool — 系统命令执行
         "memory",     # MemoryTool — 记忆管理
@@ -89,10 +89,10 @@ class ComponentToolRegistry:
         with self._lock:
             return len(self._registry)
 
-    # ★ 审查结果缓存（不合规组件的修复建议，供 AgentLoop 注入给 LLM）
+    # 审查结果缓存（不合规组件的修复建议，供 AgentLoop 注入给 LLM）
     _audit_hints: Dict[str, str] = {}   # {tool_name: hint_text}
 
-    # ★ 用户审批队列（危险导入的组件等待用户 /trust 确认）
+    # 用户审批队列（危险导入的组件等待用户 /trust 确认）
     # {tool_name: {"cell": BaseCell, "adapter": CellToolAdapter, "audit_result": AuditResult, "requested_at": str}}
     _pending_approvals: Dict[str, Dict[str, Any]] = {}
 
@@ -157,9 +157,7 @@ class ComponentToolRegistry:
         from datetime import datetime
 
         with self._lock:
-            # 检查是否在待审批队列中
             if tool_name not in self._pending_approvals:
-                # 检查是否已注册
                 if tool_name in self._registry:
                     return {
                         "success": False,
@@ -176,15 +174,12 @@ class ComponentToolRegistry:
             cell = pending["cell"]
             adapter = pending["adapter"]
 
-            # 加入信任白名单
             trusted = self._load_trust_list()
             trusted.add(tool_name)
             self._save_trust_list(trusted)
 
-            # 清除审查提示
             self._audit_hints.pop(tool_name, None)
 
-            # 执行实际注册
             existed = tool_name in self._registry
             self._registry[tool_name] = adapter
             self._version += 1
@@ -207,7 +202,7 @@ class ComponentToolRegistry:
 
     def get_pending_approvals(self) -> Dict[str, Any]:
         """
-        获取所有待用户审批的组件详情（供前端展示 + 注入给 LLM）
+        获取所有待用户审批的组件详情
         
         Returns:
             {total: N, items: [{tool_name, component_type, issues, hint_summary}]}
@@ -271,16 +266,13 @@ class ComponentToolRegistry:
         adapter = CellToolAdapter(cell)
         tool_name = adapter.tool_name
 
-        # ★ 步骤2: 合规性审查
         from app.core.util.component_auditor import get_auditor
         audit_result = get_auditor().audit(cell)
 
         if not audit_result.passed:
-            # ★ 判断是否因为危险导入而不通过
             has_danger = any(i.get("rule") == "no_dangerous_imports" for i in audit_result.issues)
 
             if has_danger and not self.is_trusted(tool_name):
-                # ★ 危险导入 + 用户未信任 → 进入待审批队列
                 from datetime import datetime
                 with self._lock:
                     self._pending_approvals[tool_name] = {
@@ -294,11 +286,9 @@ class ComponentToolRegistry:
                     "[ComponentToolRegistry] [待审批] %s (type=%s) | score=%d | 包含危险导入，等待用户 /trust",
                     tool_name, adapter.component_type, audit_result.score,
                 )
-                # 也缓存修复建议（供 LLM 每轮注入提示用户）
                 self._audit_hints[tool_name] = self._format_approval_request_hint(tool_name, audit_result)
                 return None
 
-            # ★ 其他原因不通过（非危险导入）→ 缓存修复建议给 LLM 自行修复
             logger.warning(
                 "[ComponentToolRegistry] [审查不通过] %s (type=%s) | score=%d | issues=%d | reason=%s",
                 tool_name, adapter.component_type,
@@ -309,7 +299,6 @@ class ComponentToolRegistry:
             return None
 
         with self._lock:
-            # ★ 保护内置工具不被覆盖
             if tool_name in self.RESERVED_TOOL_NAMES:
                 logger.warning(
                     "[ComponentToolRegistry] '%s' 是系统保留名，组件 %s 无法注册",
@@ -317,7 +306,6 @@ class ComponentToolRegistry:
                 )
                 return None
 
-            # 清除之前的审查提示（如果之前不通过了）
             self._audit_hints.pop(tool_name, None)
 
             existed = tool_name in self._registry
@@ -331,7 +319,6 @@ class ComponentToolRegistry:
                 action, tool_name, adapter.component_type, cmds, audit_result.score,
             )
             
-            # 发布事件（可选，用于通知其他模块）
             self._on_tool_registered(tool_name, adapter, is_new=not existed)
 
         return adapter
@@ -355,7 +342,6 @@ class ComponentToolRegistry:
         imports_list = []
         for issue in danger_issues:
             msg = issue.get("message", "")
-            # 提取 import xxx 部分
             if "import " in msg:
                 imp = msg[msg.index("import "):]
                 imports_list.append(f"  - `{imp}`")
@@ -470,7 +456,6 @@ class ComponentToolRegistry:
                     cell_name, e,
                 )
 
-        # 清理已不存在的组件（从 loader 中消失的）
         current_names = set(cells.keys())
         registered_names = set(self.get_all_names())
         orphaned = registered_names - current_names

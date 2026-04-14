@@ -84,7 +84,6 @@ class EvaluationContext:
     elapsed_ms: int = 0
     user_input: str = ""
     last_tool_result: Optional[Dict] = None
-    # ★ 新增：最近 LLM 输出（用于检测重复循环）
     recent_llm_outputs: List[str] = field(default_factory=list)
 
 
@@ -120,7 +119,7 @@ class DerivedFeatures:
     empty_result_rate: float = 0.0        # 空结果率
     avg_result_size: float = 0.0          # 平均结果大小
     result_growth_rate: float = 0.0       # 结果增长率
-    result_quality_score: float = 0.0     # ★ 新增：结果质量综合分数
+    result_quality_score: float = 0.0     # 结果质量综合分数
 
     # ===== 上下文特征 =====
     context_saturation: float = 0.0       # 上下文饱和度 (已用/budget)

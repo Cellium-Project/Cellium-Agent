@@ -8,7 +8,7 @@
   - info: 查看指定组件的详细信息（命令、源文件路径等）
   - template: 获取标准组件模板代码
 
-★ 生成的组件自带 _cmd_help 方法，LLM 可通过 help 命令自查询用法
+生成的组件自带 _cmd_help 方法，LLM 可通过 help 命令自查询用法
 """
 
 import json
@@ -50,7 +50,7 @@ class ComponentBuilder(BaseCell):
           - 完整的类 docstring
           - cell_name 属性（小写）
           - 所有 _cmd_ 命令方法 + docstring
-          ★ _cmd_help 方法（LLM 可自查询用法，减少连续错误）
+          - _cmd_help 方法（LLM 可自查询用法，减少连续错误）
         
         Args:
             name: 组件名称（小写英文，如 calculator、hash_tool）
@@ -68,7 +68,6 @@ class ComponentBuilder(BaseCell):
             commands='[{"name":"rename","desc":"执行批量重命名"},{"name":"preview","desc":"预览重命名结果"}]')
         """
 
-        # 校验名称
         if not name or not name.isidentifier():
             return {
                 "error": f"无效的组件名称 '{name}'：必须是合法 Python 标识符",
@@ -78,7 +77,6 @@ class ComponentBuilder(BaseCell):
         cell_name = name.lower()
         class_name = "".join(word.capitalize() for word in name.split("_"))
 
-        # 解析命令定义
         cmd_list = []
         if commands and commands.strip():
             try:

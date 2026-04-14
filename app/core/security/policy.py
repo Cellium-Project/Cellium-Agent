@@ -28,7 +28,7 @@ class RiskLevel(Enum):
 class SecurityPolicy:
     """安全策略 — 命令安全检查与风险分级"""
 
-    # 危险模式黑名单（正则）— ★ 全部使用 re.IGNORECASE
+    # 危险模式黑名单）— 全部使用 re.IGNORECASE
     DANGEROUS_PATTERNS = [
         # ═══ 文件系统破坏 ═══
         (r'remove-item\s+-recurse\s+', RiskLevel.CRITICAL, "禁止递归删除目录"),
@@ -87,10 +87,13 @@ class SecurityPolicy:
         (r'ufw\s+(?:disable|reset)', RiskLevel.HIGH, "禁止关闭/重置防火墙"),
 
         # ═══ 敏感文件访问 ═══
-        (r'(?:type|cat|get-content)\s+["\']?[A-Za-z]:\\[^\s]*?(?:password|credentials|\.pem|\.key)', RiskLevel.MEDIUM, "禁止读取密码/密钥文件"),
-        (r'(?:type|cat|get-content)\s+["\']?/[^\s]*?(?:password|credentials|\.pem|\.key|shadow)\b', RiskLevel.HIGH, "禁止读取敏感文件"),
+        # Windows 路径格式
+        (r'(?:type|get-content)\s+["\']?[A-Za-z]:\\[^\s]*?(?:password|credentials|\.pem|\.key)', RiskLevel.MEDIUM, "禁止读取密码/密钥文件"),
+        # Unix 路径格式 (Linux/macOS)
+        (r'(?:cat|less|more|head|tail)\s+["\']?/[^\s]*?(?:password|credentials|\.pem|\.key|shadow|passwd|id_rsa|id_dsa)\b', RiskLevel.HIGH, "禁止读取敏感文件"),
         (r'get-content\s+.*\\sam\b', RiskLevel.HIGH, "禁止读取SAM注册表配置"),
         (r'(?:type|cat)\s+.*[/\\]shadow\b', RiskLevel.HIGH, "禁止读取shadow密码文件"),
+        (r'cat\s+/etc/(?:passwd|shadow|group|gshadow|hosts|resolv\.conf)\b', RiskLevel.HIGH, "禁止读取系统配置文件"),
 
         # ═══ 进程终止（核心进程保护） ═══
         (r'taskkill\s+/f\s+.*(?:explorer|csrss|lsass|services|svchost|wininit|winlogon)',
@@ -157,12 +160,21 @@ class SecurityPolicy:
         (r'>\s*~/.bashrc', RiskLevel.HIGH, "禁止覆盖bashrc"),
         (r'>\s*~/.zshrc', RiskLevel.HIGH, "禁止覆盖zshrc"),
         (r'>\s*~/.ssh/', RiskLevel.HIGH, "禁止覆盖SSH配置"),
+        (r'>\s*~/.gnupg/', RiskLevel.HIGH, "禁止覆盖GPG配置"),
         (r'>\s*/etc/passwd', RiskLevel.CRITICAL, "禁止覆盖passwd文件"),
         (r'>\s*/etc/shadow', RiskLevel.CRITICAL, "禁止覆盖shadow文件"),
+        (r'>\s*/etc/hosts', RiskLevel.HIGH, "禁止覆盖hosts文件"),
+        (r'>\s*/etc/resolv.conf', RiskLevel.HIGH, "禁止覆盖DNS配置"),
+        (r'>\s*/etc/sudoers', RiskLevel.CRITICAL, "禁止覆盖sudoers文件"),
+        (r'>\s*/etc/ssh/', RiskLevel.CRITICAL, "禁止覆盖SSH系统配置"),
 
         # ═══ 删除关键系统目录 ═══
-        (r'rm\s+-rf\s+/(?:bin|usr|lib|boot|home|var|etc)\b', RiskLevel.CRITICAL, "禁止删除系统关键目录"),
+        # Linux/macOS
+        (r'rm\s+-rf\s+/(?:bin|usr|lib|boot|home|var|etc|sbin|opt|tmp)\b', RiskLevel.CRITICAL, "禁止删除系统关键目录"),
+        (r'rm\s+-rf\s+~\/\.', RiskLevel.HIGH, "禁止删除用户配置目录"),
+        # Windows
         (r'remove-item\s+-recurse\s+[A-Za-z]:\\(?:Windows|Program Files|ProgramData)', RiskLevel.CRITICAL, "禁止删除Windows系统目录"),
+        (r'rmdir\s+/s\s+[A-Za-z]:\\', RiskLevel.CRITICAL, "禁止删除Windows盘符根目录"),
 
         # ═══ Python/脚本内联执行 ═══
         (r'\bpython(?:3)?\s+-c\s+["\']', RiskLevel.MEDIUM, "Python内联代码执行"),
@@ -217,7 +229,12 @@ class SecurityPolicy:
         if self_protection_result:
             return self_protection_result
 
-        # 优先检查用户自定义黑名单
+        # 优先检查硬编码危险模式（确保 CRITICAL 级别被正确识别）
+        for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
+            if re.search(pattern, cmd, re.IGNORECASE):
+                return {"allowed": False, "risk_level": risk_level.value, "message": message}
+
+        # 再检查用户自定义黑名单（兜底检测）
         cmd_lower = cmd.lower()
         for pattern in self._user_blacklist:
             if pattern and pattern in cmd_lower:
@@ -226,11 +243,6 @@ class SecurityPolicy:
                     "risk_level": RiskLevel.HIGH.value,
                     "message": f"用户自定义黑名单拦截: {pattern}"
                 }
-
-        # 再检查硬编码危险模式（保底检测）
-        for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
-            if re.search(pattern, cmd, re.IGNORECASE):
-                return {"allowed": False, "risk_level": risk_level.value, "message": message}
 
         # 最后检查白名单
         if self._is_safe_command(cmd):
@@ -281,7 +293,7 @@ class SecurityPolicy:
         return False
 
     def _check_forbidden_path(self, cmd: str) -> Optional[Dict]:
-        """路径级访问控制"""
+        """路径级访问控制 - 支持 Windows 和 Unix 路径格式"""
         if not self.forbidden_dirs:
             return None
 
@@ -291,17 +303,26 @@ class SecurityPolicy:
                 continue
             f_upper = forbidden.upper().replace("*", "")
 
+            # Windows 路径检测 (C:\path\to\dir)
             if re.search(r'[A-Z]:\\\\', cmd, re.IGNORECASE):
-                paths_in_cmd = re.findall(r'[A-Z]:\\\\[^\s"\']*', cmd)
+                paths_in_cmd = re.findall(r'[A-Z]:\\\\[^"\']*', cmd)
                 for p in paths_in_cmd:
                     if f_upper in p.upper():
                         return {"allowed": False, "risk_level": RiskLevel.CRITICAL.value, "message": f"禁止访问目录: {forbidden}"}
-
-            if f_upper.startswith("/") or "/" in forbidden:
-                unix_paths = re.findall(r'["\']?(/[^\s"\']+)', cmd)
-                for p in unix_paths:
-                    if p.startswith(f_upper.rstrip("*")) or \
-                       (f_upper.endswith("*") and p.startswith(f_upper[:-1])):
+            
+            # Unix 路径检测 (/path/to/dir 或 ~/path)
+            if f_upper.startswith("/") or f_upper.startswith("~/"):
+                # 检测绝对路径 /path
+                unix_paths = re.findall(r'["\']?(/[^"\'\s]+)', cmd)
+                # 检测用户目录 ~/path
+                home_paths = re.findall(r'(~\/[^"\'\s]+)', cmd)
+                all_paths = unix_paths + home_paths
+                
+                for p in all_paths:
+                    p_upper = p.upper()
+                    # 完全匹配或前缀匹配
+                    if p_upper.startswith(f_upper.rstrip("*")) or \
+                       (f_upper.endswith("*") and p_upper.startswith(f_upper[:-1])):
                         return {"allowed": False, "risk_level": RiskLevel.CRITICAL.value, "message": f"禁止访问目录: {forbidden}"}
         return None
 

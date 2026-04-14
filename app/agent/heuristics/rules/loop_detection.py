@@ -26,15 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class SameToolRepetitionRule(BaseRule):
-    """
-    相同签名重复检测规则（★ 已改进：工具+命令级别检测）
 
-    改进点：
-    1. 使用签名（工具+命令）而非仅工具名检测重复
-    2. 重复不等于失败，可能在逐步解决问题
-    3. 重复 + 无进展 → STOP
-    4. 重复 + 有进展 → 仅记录，不警告
-    """
     id = "loop-001"
     name = "Same Signature Repetition"
     description = "检测相同签名（工具+命令）的重复调用"
@@ -48,7 +40,6 @@ class SameToolRepetitionRule(BaseRule):
         context: EvaluationContext,
         features: DerivedFeatures,
     ) -> RuleEvaluationResult:
-        # ★ 从全局配置获取动态阈值（由 Policy 注入）
         from app.agent.heuristics.engine import get_heuristic_engine
         engine = get_heuristic_engine()
         self.threshold = engine.config.get_threshold("repetition_threshold", self.threshold)
@@ -65,7 +56,6 @@ class SameToolRepetitionRule(BaseRule):
 
         signature = signatures[0]
 
-        # ★ 关键改进：结合进展判断
         # 重复 + 无进展 → STOP
         if features.stuck_iterations >= 2 and features.progress_trend < 0:
             return RuleEvaluationResult(
@@ -98,13 +88,7 @@ class SameToolRepetitionRule(BaseRule):
 
 class PatternLoopRule(BaseRule):
     """
-    模式循环检测规则（★ 必改-3：加结果质量门控）
-
-    改进点：
-    1. 检测到循环不直接 STOP
-    2. ★ 必须检查结果质量（Gating）
-    3. 循环 + 结果质量差 + 无进展 → STOP
-    4. 循环 + 结果质量好 → 继续观察
+    模式循环检测规则
     """
     id = "loop-002"
     name = "Pattern Loop Detection"
@@ -123,8 +107,6 @@ class PatternLoopRule(BaseRule):
         if features.pattern_detected != "cycle":
             return RuleEvaluationResult.not_matched()
 
-        # ★ 结果质量门控
-        # 循环 + 结果质量差 → 可能是真的问题
         if features.result_quality_score < self.QUALITY_THRESHOLD:
             # 质量差 + 无进展 → STOP
             if features.progress_trend < 0 or features.stuck_iterations >= 2:

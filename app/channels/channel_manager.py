@@ -80,6 +80,7 @@ class MessageQueue:
 
 class ChannelManager:
     _instance: Optional['ChannelManager'] = None
+    FILE_MESSAGE_JOIN_WINDOW_SECONDS = 3.0
 
     def __init__(self):
         self._adapters: Dict[str, ChannelAdapter] = {}
@@ -87,6 +88,7 @@ class ChannelManager:
         self._running = False
         self._message_queue: Optional[MessageQueue] = None
         self._agent_loop_manager = None
+        self._channel_task_consumers: Dict[str, asyncio.Task] = {}
 
     @classmethod
     def get_instance(cls) -> 'ChannelManager':
@@ -131,23 +133,180 @@ class ChannelManager:
             await adapter.disconnect()
         logger.info("[ChannelManager] Stopped all adapters")
 
+    def _resolve_target_id(self, message: UnifiedMessage) -> str:
+        if message.message_type == "group":
+            return message.group_id or message.user_id
+        if message.message_type == "guild":
+            return message.channel_id or message.user_id
+        return message.user_id
+
+    def _cancel_pending_file_notice(self, session_info) -> None:
+        task = getattr(session_info, "pending_file_notice_task", None)
+        if task and not task.done():
+            task.cancel()
+        session_info.pending_file_notice_task = None
+        session_info.pending_file_notice_created_at = None
+
+    def _schedule_file_followup_notice(self, message: UnifiedMessage, session_info) -> None:
+        self._cancel_pending_file_notice(session_info)
+
+        async def _notice_later():
+            try:
+                await asyncio.sleep(self.FILE_MESSAGE_JOIN_WINDOW_SECONDS)
+                pending_files = getattr(session_info, "pending_files", None) or []
+                if not pending_files:
+                    return
+                latest = pending_files[-1]
+                filename = latest.get("filename", "unknown")
+                await self.send_message(
+                    message.platform,
+                    self._resolve_target_id(message),
+                    f"📎 已收到文件：{filename}\n请继续发送你要执行的任务",
+                    message.message_type,
+                    guild_id=message.guild_id,
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning(f"[ChannelManager] 延迟文件提示发送失败: {e}")
+            finally:
+                current = getattr(session_info, "pending_file_notice_task", None)
+                if current is asyncio.current_task():
+                    session_info.pending_file_notice_task = None
+                    session_info.pending_file_notice_created_at = None
+
+        session_info.pending_file_notice_task = asyncio.create_task(_notice_later())
+        session_info.pending_file_notice_created_at = time.time()
+
+    async def _consume_channel_task_queue(self, message: UnifiedMessage, session_id: str, queue: asyncio.Queue):
+        sent_any = False
+        pending = ""
+        MAX_MSG_LEN = 1000
+
+        async def safe_send(content: str):
+            if not content:
+                return
+            chunks = [content[i:i+MAX_MSG_LEN] for i in range(0, len(content), MAX_MSG_LEN)]
+            for chunk in chunks:
+                try:
+                    await self.send_message(
+                        message.platform,
+                        self._resolve_target_id(message),
+                        chunk,
+                        message.message_type,
+                        markdown=True,
+                        guild_id=message.guild_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"[ChannelManager] Failed to send message chunk: {e}")
+
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                try:
+                    event_type = event.get("type")
+                    if event_type == "thinking":
+                        thinking_content = event.get("content", "Thinking...")
+                        if thinking_content:
+                            await safe_send(f"> 💭 **Thinking**: {thinking_content}")
+                    elif event_type == "error":
+                        error_msg = event.get("error", "未知错误")
+                        await safe_send(f"> ❌ **错误**: `{error_msg}`")
+                    elif event_type == "tool_start":
+                        tool_name = event.get("tool", "unknown")
+                        desc = event.get("description", "")
+                        tool_info = f"### 🔧 正在调用 {tool_name}"
+                        if desc:
+                            tool_info += f"\n\n> {desc}"
+                        await safe_send(tool_info)
+                    elif event_type == "tool_result":
+                        tool_name = event.get("tool", "unknown")
+                        result = event.get("result", {})
+                        duration = event.get("duration_ms", 0)
+                        content_str = result.get("content", "") if isinstance(result, dict) else str(result)
+                        if len(content_str) > 300:
+                            content_str = content_str[:300] + "..."
+                        await safe_send(f"> ## ✅ **{tool_name}** 耗时 {duration}ms")
+                    elif event_type == "content_chunk":
+                        chunk_content = event.get("content", "")
+                        logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
+                        await safe_send(chunk_content)
+                        sent_any = True
+                        logger.debug("[ChannelManager] content_chunk sent successfully")
+                    elif event_type == "done":
+                        done_content = event.get("content", "")
+                        logger.debug(f"[ChannelManager] done event | sent_any={sent_any} | pending_len={len(pending)} | content_len={len(done_content)}")
+                        if sent_any and pending:
+                            await safe_send(pending)
+                            pending = ""
+                        elif not sent_any:
+                            await safe_send(done_content or "...")
+                    elif event_type == "stopped":
+                        await safe_send("> ⏹ **已停止**: 当前任务已终止")
+                except Exception as e:
+                    logger.warning(f"[ChannelManager] Failed to handle task event {event.get('type')}: {e}")
+        except Exception as e:
+            logger.error(f"[ChannelManager] Task queue broken for session {session_id}: {e}")
+            if pending:
+                await safe_send(pending)
+        finally:
+            self._channel_task_consumers.pop(session_id, None)
+            try:
+                from app.server.task_manager import get_task_manager
+                task_mgr = get_task_manager()
+                info = task_mgr.get_task_info(session_id)
+                if info and info.status.value in ("completed", "cancelled", "error"):
+                    task_mgr.cleanup_task(session_id)
+            except Exception as e:
+                logger.warning(f"[ChannelManager] Failed to cleanup task for session {session_id}: {e}")
+            self._update_session_message_count(session_id)
+
+    def _ensure_channel_task_consumer(self, message: UnifiedMessage, session_id: str, queue: asyncio.Queue):
+        current = self._channel_task_consumers.get(session_id)
+        if current and not current.done():
+            return
+        self._channel_task_consumers[session_id] = asyncio.create_task(
+            self._consume_channel_task_queue(message, session_id, queue)
+        )
+
+    async def _start_channel_task(self, message: UnifiedMessage, session_id: str, content_to_agent: str, session_memory, system_injection: Optional[str]):
+        from app.server.task_manager import get_task_manager
+
+        task_mgr = get_task_manager()
+        loop = await self._agent_loop_manager.get_loop(session_id)
+        started = await task_mgr.start_task(
+            session_id=session_id,
+            agent_loop=loop,
+            user_input=content_to_agent,
+            memory=session_memory,
+            system_injection=system_injection,
+        )
+        if not started:
+            raise RuntimeError(f"无法启动任务，session={session_id}")
+
+        queue = task_mgr.get_queue(session_id)
+        if queue is None:
+            raise RuntimeError(f"任务队列不可用，session={session_id}")
+
+        self._ensure_channel_task_consumer(message, session_id, queue)
+
     async def _on_message(self, message: UnifiedMessage):
         logger.info(f"[ChannelManager] Message from {message.platform}: {message.content[:50]}...")
 
         # 获取对应平台的 adapter 处理文件消息
         adapter = self._adapters.get(message.platform)
+        from app.agent.loop.session_manager import get_session_manager
+        session_mgr = get_session_manager()
+        session_info = session_mgr.get_or_create(message.session_id)
         if adapter:
             try:
                 is_file = await adapter.handle_file_message(message)
                 if is_file:
                     filename = message.raw.get("filename", "unknown") if message.raw else "unknown"
                     logger.info(f"[ChannelManager] File received via {message.platform}: {filename}")
-                    await self.send_message(
-                        message.platform,
-                        message.user_id,
-                        f"📎 已收到文件：{filename}\n请继续发送你要执行的任务",
-                        message.message_type,
-                    )
+                    self._schedule_file_followup_notice(message, session_info)
                     return
             except Exception as e:
                 logger.error(f"[ChannelManager] File message handling failed: {e}")
@@ -155,43 +314,84 @@ class ChannelManager:
         if message.content.strip() == "/stop":
             session_id = message.session_id
             try:
+                from app.server.task_manager import get_task_manager
+                task_mgr = get_task_manager()
+                if task_mgr.has_running_task(session_id):
+                    task_mgr.cancel_task(session_id)
+                    await self.send_message(
+                        message.platform,
+                        self._resolve_target_id(message),
+                        "⏹ 已发送停止请求，Agent 将在当前迭代结束后停止",
+                        message.message_type,
+                        guild_id=message.guild_id,
+                    )
+                    logger.info(f"[ChannelManager] /stop 请求已发送至运行中任务 session={session_id}")
+                    return
                 if not self._agent_loop_manager.has_session(session_id):
                     await self.send_message(
                         message.platform,
-                        message.user_id,
+                        self._resolve_target_id(message),
                         "⏹ 当前没有正在运行的 Agent 会话",
                         message.message_type,
+                        guild_id=message.guild_id,
                     )
                     return
                 loop = await self._agent_loop_manager.get_loop(session_id)
                 loop.stop()
                 await self.send_message(
                     message.platform,
-                    message.user_id,
+                    self._resolve_target_id(message),
                     "⏹ 已发送停止请求，Agent 将在当前迭代结束后停止",
                     message.message_type,
+                    guild_id=message.guild_id,
                 )
                 logger.info(f"[ChannelManager] /stop 请求已发送至 session={session_id}")
             except Exception as e:
                 logger.error(f"[ChannelManager] /stop 处理失败: {e}")
                 await self.send_message(
                     message.platform,
-                    message.user_id,
+                    self._resolve_target_id(message),
                     f"停止失败: {e}",
                     message.message_type,
+                    guild_id=message.guild_id,
                 )
             return
 
         if self._agent_loop_manager:
             session_id = message.session_id
+
+            task_mgr = None
+            try:
+                from app.server.task_manager import get_task_manager
+                task_mgr = get_task_manager()
+            except Exception:
+                task_mgr = None
+
+            if task_mgr and task_mgr.has_running_task(session_id):
+                queued = task_mgr.enqueue_supplement_message(session_id, {
+                    "content": message.content,
+                    "source": "channel",
+                    "msg_id": message.msg_id,
+                    "received_at": time.time(),
+                    "platform": message.platform,
+                    "message_type": message.message_type,
+                })
+                if queued:
+                    await self.send_message(
+                        message.platform,
+                        self._resolve_target_id(message),
+                        "📝 已收到补充说明，将在当前步骤完成后继续处理",
+                        message.message_type,
+                        guild_id=message.guild_id,
+                    )
+                    return
+
             adapter = self._adapters.get(message.platform)
             system_injection = adapter.build_inject_content(message, message.content) if adapter else None
             content_to_agent = message.content
+            self._cancel_pending_file_notice(session_info)
             
             # 检查是否有待处理的文件，如果有则附加到消息内容
-            from app.agent.loop.session_manager import get_session_manager
-            session_mgr = get_session_manager()
-            session_info = session_mgr.get_or_create(session_id)
             if hasattr(session_info, "pending_files") and session_info.pending_files:
                 file_info = "📎 **已收到的文件**：\n"
                 for i, f in enumerate(session_info.pending_files, 1):
@@ -205,89 +405,23 @@ class ChannelManager:
             
             try:
                 session_memory = session_info.memory
-
-                lock = await self._agent_loop_manager.get_lock(session_id)
-                async with lock:
-                    loop = await self._agent_loop_manager.get_loop(session_id)
-                    sent_any = False
-                    pending = ""
-
-                    MAX_MSG_LEN = 1000
-
-                    async def safe_send(content: str):
-                        if not content:
-                            return
-                        chunks = [content[i:i+MAX_MSG_LEN] for i in range(0, len(content), MAX_MSG_LEN)]
-                        for chunk in chunks:
-                            try:
-                                await self.send_message(
-                                    message.platform,
-                                    message.user_id,
-                                    chunk,
-                                    message.message_type,
-                                    markdown=True,
-                                )
-                            except Exception as e:
-                                logger.warning(f"[ChannelManager] Failed to send message chunk: {e}")
-
-                    try:
-                        async for event in loop.run_stream(content_to_agent, memory=session_memory, session_id=session_id, system_injection=system_injection):
-                            try:
-                                event_type = event.get("type")
-                                if event_type == "thinking":
-                                    thinking_content = event.get("content", "Thinking...")
-                                    if thinking_content:
-                                        await safe_send(f"> 💭 **Thinking**: {thinking_content}")
-                                elif event_type == "error":
-                                    error_msg = event.get("error", "未知错误")
-                                    await safe_send(f"> ❌ **错误**: `{error_msg}`")
-                                elif event_type == "tool_start":
-                                    tool_name = event.get("tool", "unknown")
-                                    desc = event.get("description", "")
-                                    tool_info = f"### 🔧 正在调用 {tool_name}"
-                                    if desc:
-                                        tool_info += f"\n\n> {desc}"
-                                    await safe_send(tool_info)
-                                elif event_type == "tool_result":
-                                    tool_name = event.get("tool", "unknown")
-                                    result = event.get("result", {})
-                                    duration = event.get("duration_ms", 0)
-                                    content_str = result.get("content", "") if isinstance(result, dict) else str(result)
-                                    if len(content_str) > 300:
-                                        content_str = content_str[:300] + "..."
-                                    await safe_send(f"> ## ✅ **{tool_name}** 耗时 {duration}ms")
-                                elif event_type == "content_chunk":
-                                    chunk_content = event.get("content", "")
-                                    logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
-                                    await safe_send(chunk_content)
-                                    sent_any = True
-                                    logger.debug(f"[ChannelManager] content_chunk sent successfully")
-                                elif event_type == "done":
-                                    done_content = event.get("content", "")
-                                    logger.debug(f"[ChannelManager] done event | sent_any={sent_any} | pending_len={len(pending)} | content_len={len(done_content)}")
-                                    if sent_any and pending:
-                                        await safe_send(pending)
-                                        pending = ""
-                                    elif not sent_any:
-                                        await safe_send(done_content or "...")
-                            except Exception as e:
-                                logger.warning(f"[ChannelManager] Failed to handle stream event {event.get('type')}: {e}")
-                    except Exception as e:
-                        logger.error(f"[ChannelManager] Stream broken for session {session_id}: {e}")
-                        if pending:
-                            await safe_send(pending)
-                            pending = ""
-
-                self._update_session_message_count(session_id)
+                await self._start_channel_task(
+                    message=message,
+                    session_id=session_id,
+                    content_to_agent=content_to_agent,
+                    session_memory=session_memory,
+                    system_injection=system_injection,
+                )
             except Exception as e:
-                logger.error(f"[ChannelManager] Agent loop error for session {session_id}: {e}")
+                logger.error(f"[ChannelManager] Agent task start error for session {session_id}: {e}")
                 error_content = (await self._handle_message_failure(session_id, e)).get("content", "处理消息时发生错误，请稍后重试")
                 await self.send_message(
                     message.platform,
-                    message.user_id,
+                    self._resolve_target_id(message),
                     error_content,
                     message.message_type,
                     msg_id=message.msg_id,
+                    guild_id=message.guild_id,
                 )
             return
 
@@ -330,13 +464,13 @@ class ChannelManager:
         except Exception as e:
             logger.warning(f"[ChannelManager] Failed to update message count: {e}")
 
-    async def send_message(self, platform: str, user_id: str, content: str,
+    async def send_message(self, platform: str, target_id: str, content: str,
                           message_type: str = "c2c", **kwargs) -> bool:
         adapter = self._adapters.get(platform)
         if not adapter:
             logger.error(f"[ChannelManager] No adapter for platform: {platform}")
             return False
-        return await adapter.send_message(user_id, content, message_type, **kwargs)
+        return await adapter.send_message(target_id, content, message_type, **kwargs)
 
     def get_adapter(self, platform: str) -> Optional[ChannelAdapter]:
         return self._adapters.get(platform)

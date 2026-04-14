@@ -54,6 +54,8 @@ export type SSEEventType =
 
 export interface SSEEvent {
   type: SSEEventType;
+  event_id?: number;
+  session_id?: string;
   content?: string;
   tool?: string;
   arguments?: Record<string, any>;

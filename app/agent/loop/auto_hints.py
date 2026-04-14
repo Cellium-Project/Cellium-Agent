@@ -62,7 +62,6 @@ class AutoHintManager:
         """
         hints = []
 
-        # ★ 优先级0：检查组件审查提示（组件注册被拒绝的修复建议）
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
             reg = get_component_tool_registry()
@@ -91,7 +90,7 @@ class AutoHintManager:
             lines = [f"- **{t['name']}** (score: {t['score']:.2f}) — {t['reason']}" for t in tools]
             tools_section = f"\n**推荐尝试的工具：**\n{chr(10).join(lines)}"
 
-        return f"""## ⚠️ 方向调整建议
+        return f"""## 方向调整建议
 
 检测到当前执行可能陷入困境：
 
