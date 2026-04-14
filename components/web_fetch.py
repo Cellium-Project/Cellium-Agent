@@ -27,12 +27,18 @@ class WebFetch(BaseCell):
 
     功能说明:
       - fetch: 用无头浏览器抓取页面正文内容（支持 JS 渲染）
+      - read: 支持分页读取，同一URL在短时间内会复用缓存
     """
+
+    # ★ 页面缓存：url -> {timestamp, page, content}
+    _page_cache: Dict[str, Dict[str, Any]] = {}
+    _cache_ttl = 300  # 缓存有效期 5 分钟
 
     def __init__(self):
         super().__init__()
         self._page = None
         self._headless = True  # 默认 headless 模式
+        self._current_url = None  # 当前缓存的URL
 
     @property
     def cell_name(self) -> str:
@@ -134,6 +140,42 @@ class WebFetch(BaseCell):
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
 
+    def _get_cached_page(self, url: str) -> tuple:
+        """获取缓存的页面，返回 (page, is_cached)"""
+        now = time.time()
+        # 清理过期缓存
+        expired = [k for k, v in self._page_cache.items() if now - v['timestamp'] > self._cache_ttl]
+        for k in expired:
+            try:
+                self._page_cache[k]['page'].quit()
+            except Exception:
+                pass
+            del self._page_cache[k]
+            logger.info(f"[WebFetch] 清理过期缓存: {k}")
+
+        # 检查当前URL是否匹配缓存
+        if url in self._page_cache:
+            cache_entry = self._page_cache[url]
+            try:
+                # 验证页面是否仍然有效
+                _ = cache_entry['page'].url
+                logger.info(f"[WebFetch] 使用缓存页面: {url}")
+                return cache_entry['page'], True
+            except Exception:
+                # 页面失效，删除缓存
+                del self._page_cache[url]
+
+        return None, False
+
+    def _cache_page(self, url: str, page):
+        """缓存页面"""
+        self._page_cache[url] = {
+            'timestamp': time.time(),
+            'page': page,
+            'url': url
+        }
+        logger.info(f"[WebFetch] 缓存页面: {url}")
+
     def _cmd_read(self, url: str = None, action: str = "open", keyword: str = None, wait_time: int = 3) -> dict:
         """
         统一的页面阅读命令
@@ -141,10 +183,10 @@ class WebFetch(BaseCell):
         Args:
             url: 页面URL（action="open"时必填）
             action: 操作类型（默认 "open"）
-                    "open" - 打开URL，返回摘要
-                    "scroll" - 向下滚动，返回新视口内容
-                    "find" - 搜索关键词并定位
-                    "structure" - 获取页面目录结构
+                    "open" - 打开URL，返回摘要（会缓存页面）
+                    "scroll" - 向下滚动，返回新视口内容（复用缓存）
+                    "find" - 搜索关键词并定位（复用缓存）
+                    "structure" - 获取页面目录结构（复用缓存）
             keyword: 搜索关键词（action="find"时必填）
             wait_time: 等待秒数（默认 3）
 
@@ -152,8 +194,6 @@ class WebFetch(BaseCell):
             {"success": bool, "text": str, "url": str}
         """
         try:
-            page = self._get_page()
-
             if action == "open":
                 if not url:
                     return {"success": False, "error": "open 操作需要提供 url"}
@@ -161,8 +201,21 @@ class WebFetch(BaseCell):
                 url = url.strip().strip('`"\'')
                 if not url.startswith('http'):
                     return {"success": False, "error": f"无效URL: {url}"}
-                page.get(url, timeout=30)
-                page.wait(wait_time)
+
+                # ★ 检查缓存
+                cached_page, is_cached = self._get_cached_page(url)
+                if is_cached:
+                    page = cached_page
+                    self._page = page
+                    self._current_url = url
+                else:
+                    # 没有缓存，加载新页面
+                    page = self._get_page()
+                    page.get(url, timeout=30)
+                    page.wait(wait_time)
+                    self._current_url = url
+                    # 缓存页面
+                    self._cache_page(url, page)
 
                 # 返回摘要
                 body = page.ele('tag:body', timeout=2)
@@ -184,6 +237,11 @@ class WebFetch(BaseCell):
                 }
 
             elif action == "scroll":
+                # ★ 复用当前缓存的页面
+                page = self._page
+                if not page or not self._current_url:
+                    return {"success": False, "error": "没有可滚动的页面，请先执行 read(action='open', url='...')"}
+
                 page.scroll.down(600)
                 page.wait(1)
 
@@ -208,6 +266,11 @@ class WebFetch(BaseCell):
                 if not keyword:
                     return {"success": False, "error": "find 操作需要提供 keyword"}
 
+                # ★ 复用当前缓存的页面
+                page = self._page
+                if not page or not self._current_url:
+                    return {"success": False, "error": "没有可搜索的页面，请先执行 read(action='open', url='...')"}
+
                 element = page.ele(f'text:{keyword}', timeout=3)
                 if element:
                     element.scroll.to_see()
@@ -229,6 +292,11 @@ class WebFetch(BaseCell):
                 }
 
             elif action == "structure":
+                # ★ 复用当前缓存的页面
+                page = self._page
+                if not page or not self._current_url:
+                    return {"success": False, "error": "没有可分析的页面，请先执行 read(action='open', url='...')"}
+
                 structure = self._extract_page_structure(page)
                 headings_text = '\n'.join([f"[{h['level']}] {h['text']}" for h in structure.get('structure', {}).get('headings', [])[:15]])
                 return {

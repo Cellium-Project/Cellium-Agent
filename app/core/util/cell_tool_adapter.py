@@ -173,7 +173,6 @@ class CellToolAdapter(BaseTool):
                 if not cmd_name:
                     cmd_name = self._infer_command(all_args)
 
-                # 过滤有效参数
                 target_method = getattr(self._cell, f"{self.COMMAND_PREFIX}{cmd_name}", None)
                 if target_method:
                     sig = inspect.signature(target_method)
@@ -263,10 +262,31 @@ class CellToolAdapter(BaseTool):
                 "[CellToolAdapter] %s.execute 失败: %s\n%s",
                 self.name, e, tb_str,
             )
+
+            error_msg = str(e)
+            error_type = type(e).__name__
+
+            # ★ 根据错误类型提供针对性提示
+            hint = ""
+            if "not found" in error_msg.lower() or "找不到" in error_msg:
+                hint = f"可用的命令: {list(self.get_commands().keys())}"
+            elif "missing" in error_msg.lower() or "缺少" in error_msg:
+                hint = "请提供所有必填参数"
+            elif "invalid" in error_msg.lower() or "无效" in error_msg:
+                hint = "请检查参数格式是否正确"
+            elif "timeout" in error_msg.lower() or "超时" in error_msg:
+                hint = "操作超时，请稍后重试或检查网络连接"
+            elif "connection" in error_msg.lower() or "连接" in error_msg:
+                hint = "连接失败，请检查网络或URL是否正确"
+            else:
+                hint = "请检查命令名称和参数是否正确"
+
             return {
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "traceback": tb_str,
+                "success": False,
+                "error": error_msg,
+                "error_type": error_type,
+                "hint": hint,
+                "command": cmd_name if isinstance(command, dict) else command,
                 "_source": f"component:{self.name}",
                 "status": "error",
             }
@@ -405,6 +425,10 @@ class CellToolAdapter(BaseTool):
                         str: "string",
                     }
                     param_info["type"] = type_map.get(annotation, "string")
+
+                    # array 类型需要指定 items
+                    if annotation == list:
+                        param_info["items"] = {"type": "string"}
 
                 params[param_name] = param_info
 

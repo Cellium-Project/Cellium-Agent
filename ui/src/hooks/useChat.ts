@@ -234,6 +234,7 @@ export function useChat() {
             duration_ms: 0,
             description: event.description,
             status: 'running',
+            call_id: event.call_id,  // ★ 使用 call_id 唯一标识
           };
           ctx.timeline.push(toolSeg);
 
@@ -243,6 +244,7 @@ export function useChat() {
             arguments: event.arguments,
             duration_ms: 0,
             description: event.description,
+            call_id: event.call_id,  // ★ 使用 call_id 唯一标识
           });
 
           updateStreamingMessage({
@@ -256,11 +258,13 @@ export function useChat() {
       }
 
       case 'tool_result': {
-        if (event.tool && ctx.traces.length > 0) {
-          // 找到最后一个匹配的 tool segment，更新为 done
+        // ★ 使用 call_id 精确匹配 tool_start 和 tool_result
+        const targetCallId = event.call_id;
+        if (targetCallId && ctx.traces.length > 0) {
+          // 找到匹配的 tool segment（通过 call_id）
           for (let i = ctx.timeline.length - 1; i >= 0; i--) {
             const seg = ctx.timeline[i];
-            if (seg.kind === 'tool' && seg.tool === event.tool && seg.status === 'running') {
+            if (seg.kind === 'tool' && seg.call_id === targetCallId && seg.status === 'running') {
               seg.status = 'done';
               seg.duration_ms = event.duration_ms || 0;
               seg.result = event.result;
@@ -270,7 +274,7 @@ export function useChat() {
 
           // 同步更新 traces
           for (let i = ctx.traces.length - 1; i >= 0; i--) {
-            if (ctx.traces[i].tool === event.tool) {
+            if (ctx.traces[i].call_id === targetCallId) {
               ctx.traces[i] = {
                 ...ctx.traces[i],
                 result: event.result,
@@ -286,17 +290,46 @@ export function useChat() {
             toolTraces: [...ctx.traces],
             timeline: [...ctx.timeline],
           });
+        } else if (event.tool && ctx.traces.length > 0) {
+          // 降级：如果没有 call_id，使用工具名匹配（兼容旧版本）
+          for (let i = ctx.timeline.length - 1; i >= 0; i--) {
+            const seg = ctx.timeline[i];
+            if (seg.kind === 'tool' && seg.tool === event.tool && seg.status === 'running') {
+              seg.status = 'done';
+              seg.duration_ms = event.duration_ms || 0;
+              seg.result = event.result;
+              break;
+            }
+          }
+          for (let i = ctx.traces.length - 1; i >= 0; i--) {
+            if (ctx.traces[i].tool === event.tool) {
+              ctx.traces[i] = {
+                ...ctx.traces[i],
+                result: event.result,
+                duration_ms: event.duration_ms || 0,
+              };
+              break;
+            }
+          }
+          updateStreamingMessage({
+            role: 'assistant',
+            content: '',
+            toolTraces: [...ctx.traces],
+            timeline: [...ctx.timeline],
+          });
         }
         break;
       }
 
       case 'content_chunk': {
-        const chunk = (event.content || '').trim();
+        const rawChunk = event.content || '';
+        // ★ 不要 trim()，保留原始格式（包括换行和缩进）
+        // 只过滤掉完全空的 chunk
         if (import.meta.env.DEV) {
-          console.log('[content_chunk] received:', chunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
+          console.log('[content_chunk] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
         }
-        if (chunk) {
-          ctx.timeline.push({ kind: 'text', content: chunk });
+        if (rawChunk.length > 0) {
+          ctx.timeline.push({ kind: 'text', content: rawChunk });
         }
 
         updateStreamingMessage({

@@ -385,7 +385,9 @@ class AgentLoop:
 
         async def execute_and_yield(info: Dict[str, Any]) -> Dict[str, Any]:
             trace = await self._execute_single_tool(info, effective_session, iteration, effective_memory)
-            return info["tool_name"], info["arguments"], trace
+            # ★ 返回 call_id 用于前端匹配
+            call_id = info.get("tool_call_id") or f"{info['tool_name']}_{id(info['tool_call'])}"
+            return info["tool_name"], info["arguments"], trace, call_id
 
         pending_tasks = []
         future_to_info = {}
@@ -395,14 +397,13 @@ class AgentLoop:
             for idx, info in enumerate(independent_calls):
                 task = asyncio.create_task(execute_and_yield(info))
                 pending_tasks.append(task)
-                # 使用 task 本身作为 key（Python 3.13+ as_completed 会返回原始 task）
-                future_to_info[task] = (idx, info["tool_name"])
+                future_to_info[task] = (idx, info["tool_name"], info.get("tool_call_id") or f"{info['tool_name']}_{id(info['tool_call'])}")
 
         if write_calls:
             for idx, info in enumerate(write_calls):
-                _, arguments, trace = await execute_and_yield(info)
-                completed_results[len(independent_calls) + idx] = (info["tool_name"], arguments, trace)
-                yield {"type": "tool_result", "tool": info["tool_name"],
+                _, arguments, trace, call_id = await execute_and_yield(info)
+                completed_results[len(independent_calls) + idx] = (info["tool_name"], arguments, trace, call_id)
+                yield {"type": "tool_result", "tool": info["tool_name"], "call_id": call_id,
                        "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
 
         if pending_tasks:
@@ -410,17 +411,21 @@ class AgentLoop:
             for completed_future in asyncio.as_completed(pending_tasks):
                 # 在 Python 3.13+ 中，as_completed 返回的是原始 task
                 # 在旧版本中，返回的是包装后的 future，但我们可以通过映射找到原始信息
-                idx, tool_name = future_to_info.get(completed_future, (0, "unknown"))
+                idx, tool_name, expected_call_id = future_to_info.get(completed_future, (0, "unknown", "unknown"))
                 try:
-                    name, arguments, trace = await completed_future
-                    completed_results[idx] = (name, arguments, trace)
+                    name, arguments, trace, actual_call_id = await completed_future
+                    # ★ 使用实际返回的 call_id，如果不一致则记录警告
+                    if actual_call_id != expected_call_id:
+                        logger.warning("[AgentLoop] call_id 不匹配 | expected=%s | actual=%s", expected_call_id, actual_call_id)
+                    completed_results[idx] = (name, arguments, trace, actual_call_id)
                 except Exception as e:
-                    completed_results[idx] = (tool_name, None, {"error": str(e)})
+                    # ★ 异常情况下使用预期的 call_id 确保前端能匹配
+                    completed_results[idx] = (tool_name, None, {"error": str(e)}, expected_call_id)
 
         for idx in sorted(completed_results.keys()):
-            name, arguments, trace = completed_results[idx]
+            name, arguments, trace, call_id = completed_results[idx]
             if arguments is not None:
-                yield {"type": "tool_result", "tool": name,
+                yield {"type": "tool_result", "tool": name, "call_id": call_id,
                        "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
 
     async def _execute_single_tool(
@@ -878,8 +883,10 @@ class AgentLoop:
                         desc_str = description if isinstance(description, str) else str(description)
                         logger.debug("[AgentLoop] 工具描述（兜底）: %s", desc_str[:60] if desc_str else "")
 
-                        logger.info("[AgentLoop] 发送 tool_start 事件 | tool=%s", tool_name)
-                        yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description}
+                        # ★ 使用 tool_call.id 作为唯一标识符（确保前后端匹配）
+                        call_id = getattr(tool_call, 'id', None) or tool_call_id or f"{tool_name}_{id(tool_call)}"
+                        logger.info("[AgentLoop] 发送 tool_start 事件 | tool=%s | call_id=%s", tool_name, call_id)
+                        yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description, "call_id": call_id}
 
                         self._event_publisher.publish_tool_call_start(
                             session_id=effective_session,

@@ -16,12 +16,13 @@ export interface ToolTrace {
   result?: any;
   duration_ms: number;
   description?: string;
+  call_id?: string;  // ★ 唯一标识符，用于匹配并行工具调用
 }
 
 // ★ 有序时间线片段 — 支持文本和工具调用按时间顺序交错显示
 export type TimelineSegment =
   | { kind: 'text'; content: string }
-  | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error' };
+  | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error'; call_id?: string };  // ★ 唯一标识符
 
 export interface Message {
   id?: string;  // 唯一标识符，用于 React key
@@ -59,6 +60,7 @@ export interface SSEEvent {
   result?: any;
   duration_ms?: number;
   description?: string;
+  call_id?: string;  // ★ 唯一标识符，用于匹配 tool_start 和 tool_result
   error?: string;
   reason?: string;
   tool_traces?: ToolTrace[];

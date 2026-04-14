@@ -233,6 +233,12 @@ class ComponentWatcher:
         while self._running and not self._stop_event.is_set():
             try:
                 self._scan_once()
+            except OSError as e:
+                # Windows 路径问题（如文件被锁定、设备不存在等）
+                if "WinError 433" in str(e) or "不存在的设备" in str(e):
+                    logger.warning("[ComponentWatcher] 文件系统暂时不可用，将在下次扫描时重试: %s", e)
+                else:
+                    logger.error("[ComponentWatcher] 扫描异常 (OSError): %s", e)
             except Exception as e:
                 logger.error("[ComponentWatcher] 扫描异常: %s", e, exc_info=True)
 
@@ -259,8 +265,12 @@ class ComponentWatcher:
             if py_file.name == "__init__.py":
                 continue
 
-            abs_path = str(py_file.resolve())
-            current_files.add(abs_path)
+            try:
+                abs_path = str(py_file.resolve())
+                current_files.add(abs_path)
+            except OSError:
+                # Windows 路径解析失败（文件被锁定或设备不存在）
+                continue
 
             try:
                 current_mtime = os.path.getmtime(abs_path)
