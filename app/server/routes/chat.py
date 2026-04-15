@@ -1,21 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 聊天 API 路由 — 会话感知 + EventBus 事件 + DI 容器
-
-核心改动：
-    - 同一 session_id 复用 MemoryManager（多轮对话上下文累加）
-    - 对话结束自动持久化到 ThreeLayerMemory
-    - 支持 /api/sessions 管理接口
-    - 后台任务模式：页面刷新不会中断 agent 循环
 """
 
 import logging
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import json
-import asyncio
 
 from app.core.bus.event_bus import event_bus
 from app.core.di.container import get_container
@@ -86,58 +78,6 @@ def _get_agent_loop():
         return container.resolve(AgentLoop)
     except ValueError:
         return None
-
-
-async def _consume_queue(session_id: str, queue: asyncio.Queue, session_info):
-    """从事件队列消费并生成 SSE 事件"""
-    try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)
-            if event.get("type") in ("done", "stopped"):
-                session_info.message_count += 1
-                store = get_session_store()
-                store.update_message_count(session_id, delta=1)
-    except asyncio.CancelledError:
-        logger.info("[chat_stream] 客户端断开，后台任务继续 | session=%s", session_id)
-    finally:
-        task_mgr = get_task_manager()
-        info = task_mgr.get_task_info(session_id)
-        if info and info.status.value in ("completed", "cancelled", "error"):
-            task_mgr.cleanup_task(session_id)
-
-
-async def _consume_queue_with_history(session_id: str, queue: asyncio.Queue, session_info, history: list, pending_input: str = None):
-    """从事件队列消费并生成 SSE 事件（先发送历史事件和待处理输入）"""
-    try:
-        if pending_input and not history:
-            yield f"data: {json.dumps({'type': 'message_received', 'session_id': session_id, 'message': pending_input}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)
-
-        for event in history:
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)
-
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)
-            if event.get("type") in ("done", "stopped"):
-                session_info.message_count += 1
-                store = get_session_store()
-                store.update_message_count(session_id, delta=1)
-    except asyncio.CancelledError:
-        logger.info("[chat_stream] 客户端断开，后台任务继续 | session=%s", session_id)
-    finally:
-        task_mgr = get_task_manager()
-        info = task_mgr.get_task_info(session_id)
-        if info and info.status.value in ("completed", "cancelled", "error"):
-            task_mgr.cleanup_task(session_id)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -214,46 +154,38 @@ async def chat(request: ChatRequest):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest, http_request: Request):
     """
-    流式聊天接口（SSE）
+    启动聊天任务（WebSocket 推送事件）
 
-    特性：
-      - 后台任务模式：页面刷新不会中断 agent 循环
-      - 支持重新连接：刷新后可继续看到实时进度
+    POST 只负责启动任务，事件通过 WebSocket 实时推送
     """
     session_id = request.session_id or "default"
     agent_loop = _get_agent_loop()
     task_mgr = get_task_manager()
 
     if agent_loop is None:
-        async def _error_gen():
-            yield f"data: {json.dumps({'type': 'error', 'error': 'Agent 未初始化'}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(_error_gen(), media_type="text/event-stream")
+        return {"status": "error", "error": "Agent 未初始化", "session_id": session_id}
 
     session_mgr = get_session_manager()
     session_info = session_mgr.get_or_create(session_id)
     session_memory = session_info.memory
 
-    # 检查是否已有运行中的任务（重新连接）
     if task_mgr.has_running_task(session_id):
         history = task_mgr.get_event_history(session_id, after_event_id=request.last_event_id)
         logger.info("[chat_stream] 重新连接到运行中的任务 | session=%s | replay_from=%d | replay_count=%d",
                    session_id, request.last_event_id, len(history))
         pending_input = task_mgr.get_pending_input(session_id)
-        queue = task_mgr.get_queue(session_id)
-        if queue:
-            return StreamingResponse(
-                _consume_queue_with_history(session_id, queue, session_info, history, pending_input),
-                media_type="text/event-stream; charset=utf-8",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
 
-    # 如果消息为空且没有运行中的任务，返回错误
+        from app.server.routes.ws_event_manager import ws_publish_event
+        if pending_input:
+            ws_publish_event("chat_event", {"type": "message_received", "session_id": session_id, "message": pending_input}, session_id=session_id)
+        for event in history:
+            ws_publish_event("chat_event", event, session_id=session_id)
+
+        return {"status": "reconnecting", "session_id": session_id, "history_count": len(history)}
+
     if not request.message or not request.message.strip():
-        async def _error_gen():
-            yield f"data: {json.dumps({'type': 'error', 'error': '没有运行中的任务'}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(_error_gen(), media_type="text/event-stream")
+        return {"status": "error", "error": "没有运行中的任务", "session_id": session_id}
 
-    # 启动新的后台任务
     started = await task_mgr.start_task(
         session_id=session_id,
         agent_loop=agent_loop,
@@ -262,16 +194,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     )
 
     if not started:
-        async def _error_gen():
-            yield f"data: {json.dumps({'type': 'error', 'error': '无法启动任务'}, ensure_ascii=False)}\n\n"
-        return StreamingResponse(_error_gen(), media_type="text/event-stream")
+        return {"status": "error", "error": "无法启动任务", "session_id": session_id}
 
-    queue = task_mgr.get_queue(session_id)
-    return StreamingResponse(
-        _consume_queue(session_id, queue, session_info),
-        media_type="text/event-stream; charset=utf-8",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return {"status": "started", "session_id": session_id}
 
 
 @router.get("/chat/status")

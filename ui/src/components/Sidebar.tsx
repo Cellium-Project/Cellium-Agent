@@ -44,23 +44,37 @@ export const Sidebar: React.FC = () => {
   }, [fetchSessions]);
 
   useEffect(() => {
-    let eventSource: EventSource | null = null;
+    let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let isClosed = false;
 
     const connect = () => {
       if (isClosed) return;
 
-      eventSource = new EventSource('/api/session-events/events');
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/api/session-events/ws`;
 
-      eventSource.onopen = () => {
-        console.log('[SSE] Connected to session events');
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log('[WS] Connected to session events');
+        // 启动心跳
+        heartbeatTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 25000);
       };
 
-      eventSource.onmessage = (event) => {
+      ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === 'ping') return;
+          if (data.type === 'pong') return;
+          if (data.type === 'connected') {
+            console.log('[WS] Connected:', data.message);
+            return;
+          }
           if (data.type === 'session_created') {
             useAppStore.getState().fetchSessions();
           } else if (data.type === 'session_updated') {
@@ -73,13 +87,20 @@ export const Sidebar: React.FC = () => {
             useAppStore.getState().removeSession(data.data.session_id);
           }
         } catch (e) {
-          console.error('[SSE] parse error:', e);
+          console.error('[WS] parse error:', e);
         }
       };
 
-      eventSource.onerror = () => {
-        eventSource?.close();
-        eventSource = null;
+      ws.onerror = () => {
+        console.warn('[WS] Error, will reconnect...');
+      };
+
+      ws.onclose = () => {
+        console.log('[WS] Disconnected');
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
         if (!isClosed) {
           reconnectTimer = setTimeout(connect, 3000);
         }
@@ -91,7 +112,8 @@ export const Sidebar: React.FC = () => {
     return () => {
       isClosed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      eventSource?.close();
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      ws?.close();
     };
   }, []);
 
@@ -171,15 +193,13 @@ const SessionItem: React.FC<SessionItemProps> = ({
 
   const timeLabel = formatTimeAgo(session.last_active || session.created_at);
 
-  // 进入编辑模式
   const startEdit = (e: React.MouseEvent) => {
-    e.stopPropagation(); // 阻止触发切换会话
+    e.stopPropagation();
     setEditing(true);
     setEditValue(session.title || '');
     setTimeout(() => inputRef.current?.select(), 50);
   };
 
-  // 确认重命名
   const confirmRename = async (e?: React.KeyboardEvent) => {
     if (e && e.key !== 'Enter') return;
     const trimmed = editValue.trim();
@@ -194,7 +214,6 @@ const SessionItem: React.FC<SessionItemProps> = ({
     setEditing(false);
   };
 
-  // 取消编辑
   const cancelEdit = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') setEditing(false);
   };

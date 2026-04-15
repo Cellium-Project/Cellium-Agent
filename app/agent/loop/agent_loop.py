@@ -136,6 +136,7 @@ class AgentLoop:
             tool_call_threshold=session_config.get("tool_call_threshold", 10),
             keep_recent_messages=session_config.get("keep_recent_messages", 10),
             max_notes_length=session_config.get("max_notes_length", 2000),
+            repository=three_layer_memory.repository if three_layer_memory else None,
         )
 
         # 循环控制器
@@ -577,6 +578,27 @@ class AgentLoop:
             _pending_system_injection = system_injection  # 外部平台注入的引导文本
 
             while True:
+                # === 检查并注入补充消息 ===
+                try:
+                    from app.server.task_manager import get_task_manager
+                    task_mgr = get_task_manager()
+                    supplements = task_mgr.drain_supplement_messages(effective_session)
+                    for sup in supplements:
+                        sup_content = sup.get("content", "")
+                        if sup_content:
+                            logger.info(f"[AgentLoop] 注入补充消息 | content={sup_content[:50]}...")
+                            if not self.flash_mode:
+                                effective_memory.add_user_message(sup_content)
+                            supplement_event = {
+                                "type": "supplement_injected",
+                                "content": sup_content,
+                                "source": sup.get("source", "unknown"),
+                            }
+                            logger.info(f"[AgentLoop] yield supplement_injected | content={sup_content[:30]}")
+                            yield supplement_event
+                except Exception as e:
+                    logger.warning(f"[AgentLoop] 注入补充消息失败: {e}")
+
                 # === 在迭代开始前执行待处理的压缩 ===
                 if not self.flash_mode and self._session_compactor.has_pending_compact():
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
@@ -817,12 +839,13 @@ class AgentLoop:
                     self._tool_call_count_in_round += len(response.tool_calls)
                     self._session_compactor.track_tool_call()
 
+                    # LLM 在工具调用前输出的文本内容（interim content）
                     interim_content = (response.content or "").strip()
                     if interim_content:
                         yield {"type": "content_chunk", "content": interim_content}
+                        # ★ 保存到 memory，确保 archive 可恢复
                         if not self.flash_mode:
-                            if not response.tool_calls:
-                                effective_memory.add_assistant_message(interim_content)
+                            effective_memory.add_assistant_message(interim_content)
 
                     tool_calls_info: List[Dict[str, Any]] = []
                     for tool_call in response.tool_calls:
@@ -863,7 +886,8 @@ class AgentLoop:
 
                     await asyncio.sleep(0.05)
 
-                    tool_traces = []
+                    # 收集本轮迭代的工具调用结果（append 到外层 tool_traces）
+                    iteration_traces = []
                     async for event in self._execute_tools_parallel(
                         tool_calls_info, effective_session, iteration, effective_memory
                     ):
@@ -872,7 +896,7 @@ class AgentLoop:
                             arguments = event["arguments"]
                             result = event["result"]
                             duration_ms = event["duration_ms"]
-                            tool_traces.append({
+                            trace_item = {
                                 "tool": tool_name,
                                 "arguments": arguments,
                                 "result": result,
@@ -880,7 +904,9 @@ class AgentLoop:
                                 "success": not isinstance(result, dict) or (
                                     result.get("success") is not False and result.get("error") is None
                                 ),
-                            })
+                            }
+                            iteration_traces.append(trace_item)
+                            tool_traces.append(trace_item)  # 同时添加到累积的 traces
                         yield event
 
                     if self._loop_state:
@@ -888,14 +914,14 @@ class AgentLoop:
 
                     # Control Loop: 每轮结束，更新 Bandit
                     if self.control_loop and self._loop_state:
-                        self._loop_state.last_tool_result = tool_traces[-1].get("result") if tool_traces else None
+                        self._loop_state.last_tool_result = iteration_traces[-1].get("result") if iteration_traces else None
                         reward = self.control_loop.end_round(self._loop_state)
                         logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
 
                     # Learning: 迭代级别反馈更新
                     if self.learning and self._loop_state:
                         stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state.features else 0
-                        tool_count = len([t for t in tool_traces if t.get("tool")])
+                        tool_count = len(iteration_traces)  # 本轮工具调用数量
                         self.learning.update_round(
                             iteration=self._loop_state.iteration,
                             max_iterations=self._loop_state.max_iterations,
@@ -1106,7 +1132,7 @@ class AgentLoop:
         sid = session_id or self.session_id
         if not self.has_long_term_memory:
             return
-        # 即使 response_content 为空也尝试保存（快速停止时可能还没内容）
+        # 即使 response_content 为空也尝试保存
         # 但如果有 messages，可以从 messages 构建完整归档
         try:
             all_messages = memory.get_messages() if memory else None

@@ -49,13 +49,16 @@ class WebFetch(BaseCell):
         'clearfix', 'float-left', 'float-right', 'd-none', 'd-block', 'd-inline'
     }
 
+    MAX_HTTP_CACHE_SIZE = 5 * 1024 * 1024  # 5MB
+
     def __init__(self):
         super().__init__()
         self._page = None
-        self._browser = None  # 保存浏览器对象（CDP 模式）
-        self._headless = True  # 默认 headless 模式
-        self._current_url = None  # 当前缓存的URL
+        self._browser = None
+        self._headless = True
+        self._current_url = None
         self._working_browser_path: Optional[str] = None
+        self._http_content_cache: Optional[Dict[str, Any]] = None
         self._working_browser_name: Optional[str] = None
         self._browser_probe_failed = False
 
@@ -195,16 +198,41 @@ class WebFetch(BaseCell):
 
             body_match = re.search(r'<body[^>]*>(.*?)</body>', html, flags=re.IGNORECASE | re.DOTALL)
             body_html = body_match.group(1) if body_match else html
-            text = self._clean_text(body_html)[:2000]
+            full_text = self._clean_text(body_html)
 
-            return {
-                "success": True,
-                "url": str(response.url),
-                "title": title,
-                "text": text,
-                "mode": "http_fallback",
-                "hint": "当前已降级为 HTTP 模式，scroll/find/structure/screenshot 等浏览器交互能力可能不可用",
-            }
+            chunks = [full_text[i:i+1500] for i in range(0, len(full_text), 1500)]
+            total_pages = len(chunks)
+            total_size = sum(len(c.encode('utf-8')) for c in chunks)
+
+            if total_size > self.MAX_HTTP_CACHE_SIZE:
+                logger.warning(f"[WebFetch] HTTP 内容过大 ({total_size/1024/1024:.1f}MB > {self.MAX_HTTP_CACHE_SIZE/1024/1024:.0f}MB)，跳过缓存")
+                self._http_content_cache = None
+                return {
+                    "success": True,
+                    "url": str(response.url),
+                    "title": title,
+                    "text": full_text[:2000],
+                    "mode": "http",
+                    "truncated": True,
+                    "hint": f"内容过大 ({total_size/1024/1024:.1f}MB)，仅返回前 2000 字符",
+                }
+            else:
+                self._http_content_cache = {
+                    "url": str(response.url),
+                    "title": title,
+                    "chunks": chunks,
+                    "current_page": 0,
+                }
+                return {
+                    "success": True,
+                    "url": str(response.url),
+                    "title": title,
+                    "text": chunks[0] if chunks else "",
+                    "mode": "http",
+                    "current_page": 0,
+                    "total_pages": total_pages,
+                    "hint": f"共 {total_pages} 页，当前第 1 页 | fetch(action='next') 下一页 | fetch(action='goto', page=N) 跳转",
+                }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -386,21 +414,35 @@ class WebFetch(BaseCell):
                 else:
                     browser_path = self._get_working_browser_path()
                     if not browser_path:
-                        return self._http_fetch_text(url)
+                        return {
+                            "success": False,
+                            "error": "浏览器不可用，请使用 fetch 命令（HTTP 模式）获取页面内容",
+                            "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
+                            "url": url,
+                        }
                     try:
                         page = self._get_page()
                         if page is None:
-                            logger.warning("[WebFetch] 浏览器页面获取失败，降级到 HTTP 模式")
-                            return self._http_fetch_text(url)
+                            logger.warning("[WebFetch] 浏览器页面获取失败")
+                            return {
+                                "success": False,
+                                "error": "浏览器启动失败，请使用 fetch 命令（HTTP 模式）获取页面内容",
+                                "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
+                                "url": url,
+                            }
                         page.get(url, timeout=30)
                         page.wait(wait_time)
                         self._current_url = url
                         self._cache_page(url, page)
                     except Exception as e:
                         logger.error(f"[WebFetch] 浏览器操作失败: {e}")
-                        # 清理失败的浏览器状态
                         self._close_page()
-                        return self._http_fetch_text(url)
+                        return {
+                            "success": False,
+                            "error": f"浏览器操作失败: {e}，请使用 fetch 命令（HTTP 模式）",
+                            "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
+                            "url": url,
+                        }
 
                 # 返回摘要
                 body = page.ele('tag:body', timeout=2)
@@ -500,9 +542,104 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_fetch(self, url: str, wait_time: int = 3) -> dict:
-        """fetch 命令兼容层，实际调用 read"""
-        return self._cmd_read(url=url, action="open", wait_time=wait_time)
+    def _cmd_fetch(self, url: str = None, action: str = "open", page: int = None, keyword: str = None, wait_time: int = 3) -> dict:
+        """fetch 命令 - HTTP 模式获取页面内容"""
+        if action == "open":
+            if not url:
+                return {"success": False, "error": "fetch 需要提供 url"}
+            url = url.strip().strip('`"\'')
+            if not url.startswith('http'):
+                return {"success": False, "error": f"无效URL: {url}"}
+            return self._http_fetch_text(url)
+
+        cache = self._http_content_cache
+        if not cache:
+            return {"success": False, "error": "没有缓存的 HTTP 内容，请先使用 fetch(url='...') 获取页面"}
+
+        total_pages = len(cache["chunks"])
+
+        if action == "next":
+            next_page = cache["current_page"] + 1
+            if next_page >= total_pages:
+                return {"success": False, "error": "已是最后一页", "current_page": cache["current_page"], "total_pages": total_pages}
+            cache["current_page"] = next_page
+            return {
+                "success": True,
+                "url": cache["url"],
+                "title": cache["title"],
+                "text": cache["chunks"][next_page],
+                "mode": "http",
+                "current_page": next_page,
+                "total_pages": total_pages,
+                "hint": f"共 {total_pages} 页，当前第 {next_page + 1} 页 | fetch(action='next') 下一页 | fetch(action='prev') 上一页 | fetch(action='goto', page=N) 跳转",
+            }
+
+        elif action == "prev":
+            prev_page = cache["current_page"] - 1
+            if prev_page < 0:
+                return {"success": False, "error": "已是第一页", "current_page": cache["current_page"], "total_pages": total_pages}
+            cache["current_page"] = prev_page
+            return {
+                "success": True,
+                "url": cache["url"],
+                "title": cache["title"],
+                "text": cache["chunks"][prev_page],
+                "mode": "http",
+                "current_page": prev_page,
+                "total_pages": total_pages,
+                "hint": f"共 {total_pages} 页，当前第 {prev_page + 1} 页 | fetch(action='next') 下一页 | fetch(action='prev') 上一页 | fetch(action='goto', page=N) 跳转",
+            }
+
+        elif action == "goto":
+            if page is None:
+                return {"success": False, "error": "goto 操作需要提供 page 参数"}
+            target = page - 1
+            if target < 0 or target >= total_pages:
+                return {"success": False, "error": f"页码超出范围 (1-{total_pages})", "current_page": cache["current_page"], "total_pages": total_pages}
+            cache["current_page"] = target
+            return {
+                "success": True,
+                "url": cache["url"],
+                "title": cache["title"],
+                "text": cache["chunks"][target],
+                "mode": "http",
+                "current_page": target,
+                "total_pages": total_pages,
+                "hint": f"共 {total_pages} 页，当前第 {page} 页 | fetch(action='next') 下一页 | fetch(action='prev') 上一页 | fetch(action='goto', page=N) 跳转",
+            }
+
+        elif action == "search":
+            if not keyword:
+                return {"success": False, "error": "search 操作需要提供 keyword 参数"}
+            matches = []
+            for i, chunk in enumerate(cache["chunks"]):
+                if keyword.lower() in chunk.lower():
+                    pos = chunk.lower().find(keyword.lower())
+                    context_start = max(0, pos - 50)
+                    context_end = min(len(chunk), pos + len(keyword) + 50)
+                    matches.append({
+                        "page": i + 1,
+                        "preview": "..." + chunk[context_start:context_end] + "...",
+                    })
+            if not matches:
+                return {
+                    "success": True,
+                    "found": False,
+                    "keyword": keyword,
+                    "total_pages": total_pages,
+                    "hint": f"未找到 '{keyword}'，共 {total_pages} 页 | fetch(action='next') 下一页 | fetch(action='goto', page=N) 跳转",
+                }
+            return {
+                "success": True,
+                "found": True,
+                "keyword": keyword,
+                "match_count": len(matches),
+                "matches": matches,
+                "hint": f"在 {len(matches)} 页中找到 '{keyword}' | 使用 fetch(action='goto', page=N) 跳转到对应页面",
+            }
+
+        else:
+            return {"success": False, "error": f"未知操作: {action}，支持: open/next/prev/goto/search"}
 
     def _cmd_fetch_many(self, urls: list, wait_time: int = 3, max_workers: int = 3) -> dict:
         """
@@ -1258,13 +1395,15 @@ class WebFetch(BaseCell):
         """
         try:
             result = page.run_js(js_code)
+            if result is None:
+                return {"success": False, "error": f"JS 执行返回空结果，元素可能不存在: {selector}"}
             if result.get('success'):
                 page.wait(wait_after)
                 return {"success": True, "result": result, "hint": f"已点击: {result.get('tag')} - {result.get('text', '')[:30]}"}
             else:
-                return {"success": False, "error": result.get('error', '点击失败')}
+                return {"success": False, "error": result.get('error', '点击失败'), "selector": selector}
         except Exception as e:
-            return {"success": False, "error": f"JS 点击异常: {e}"}
+            return {"success": False, "error": f"JS 点击异常: {e}", "selector": selector}
 
     def _js_input(self, page, selector: str, value: str, wait_after: float) -> dict:
         """纯 JS 输入文本"""
@@ -1901,10 +2040,11 @@ class WebFetch(BaseCell):
                     page.click((x, y))
             elif action == 'input':
                 if selector:
-                    elem = page.ele(selector)
-                    if not elem:
-                        return {"success": False, "error": f"Element not found: {selector}"}
-                    elem.input(value)
+                    # 使用 JS 实现（更可靠，支持 CSS/XPath/文本）
+                    result = self._js_input(page, selector, value, wait_after)
+                    if not result.get('success'):
+                        result['hint'] = "建议先调用 find_button 查找正确的选择器，或使用 execute_script 执行自定义 JS"
+                    return result
             elif action == 'scroll_down':
                 page.scroll.down(600)
             elif action == 'scroll_up':

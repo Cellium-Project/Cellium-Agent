@@ -46,7 +46,6 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
-      // 检查点击是否在 dropdown 或 menu 内
       const inDropdown = dropdownRef.current?.contains(target);
       const inMenu = menuRef.current?.contains(target);
       if (!inDropdown && !inMenu) {

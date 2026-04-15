@@ -11,6 +11,7 @@ import inspect
 import logging
 import fnmatch
 import re
+import threading
 from typing import Callable, Dict, List, Any, Optional, Type, Set, Tuple
 from functools import wraps
 from .events import EventType
@@ -18,11 +19,13 @@ from .event_models import BaseEvent, AlertEvent, JsQueryEvent, FadeOutEvent, Nav
 
 logger = logging.getLogger(__name__)
 
-_EVENT_HANDLERS_REGISTRY: Dict[str, Set[Callable]] = {}
+# 模块级全局变量 - 添加线程锁保护
+_EVENT_HANDLERS_REGISTRY: Dict[str, Set[Tuple[Callable, int, Tuple]]] = {}
 _ONCE_HANDLERS_REGISTRY: Dict[str, Set[Callable]] = {}
 _WILDCARD_HANDLERS: Dict[str, List[Tuple[Callable, int]]] = {}
 _WILDCARD_HANDLER_FUNCTIONS: List[Callable] = []
 _EVENT_NAMESPACE: str = ""
+_REGISTRY_LOCK = threading.Lock()  # 保护全局注册表的锁
 
 
 class EventPriority:
@@ -66,26 +69,28 @@ class EventBus:
             
         if handler not in self._subscribers[event_name]:
             self._subscribers[event_name].append(handler)
-        
+
         logger.debug(f"[EVENT] 已订阅事件: {event_name} (优先级: {priority}) -> {handler.__name__}")
-    
+
     def subscribe_wildcard(self, handler: Callable, priority: int = EventPriority.NORMAL):
         pattern = "*"
-        if pattern not in _WILDCARD_HANDLERS:
-            _WILDCARD_HANDLERS[pattern] = []
-        
-        if (handler, priority) not in [(h, p) for h, p in _WILDCARD_HANDLERS[pattern]]:
-            _WILDCARD_HANDLERS[pattern].append((handler, priority))
-            _WILDCARD_HANDLERS[pattern].sort(key=lambda x: x[1], reverse=True)
+        with _REGISTRY_LOCK:
+            if pattern not in _WILDCARD_HANDLERS:
+                _WILDCARD_HANDLERS[pattern] = []
+
+            if (handler, priority) not in [(h, p) for h, p in _WILDCARD_HANDLERS[pattern]]:
+                _WILDCARD_HANDLERS[pattern].append((handler, priority))
+                _WILDCARD_HANDLERS[pattern].sort(key=lambda x: x[1], reverse=True)
         logger.debug(f"[EVENT] 已订阅通配符事件 (优先级: {priority}) -> {handler.__name__}")
-    
+
     def subscribe_pattern(self, pattern: str, handler: Callable, priority: int = EventPriority.NORMAL):
-        if pattern not in _WILDCARD_HANDLERS:
-            _WILDCARD_HANDLERS[pattern] = []
-        
-        if (handler, priority) not in [(h, p) for h, p in _WILDCARD_HANDLERS[pattern]]:
-            _WILDCARD_HANDLERS[pattern].append((handler, priority))
-            _WILDCARD_HANDLERS[pattern].sort(key=lambda x: x[1], reverse=True)
+        with _REGISTRY_LOCK:
+            if pattern not in _WILDCARD_HANDLERS:
+                _WILDCARD_HANDLERS[pattern] = []
+
+            if (handler, priority) not in [(h, p) for h, p in _WILDCARD_HANDLERS[pattern]]:
+                _WILDCARD_HANDLERS[pattern].append((handler, priority))
+                _WILDCARD_HANDLERS[pattern].sort(key=lambda x: x[1], reverse=True)
         logger.debug(f"[EVENT] 已订阅模式事件: {pattern} (优先级: {priority}) -> {handler.__name__}")
     
     def subscribe_once(self, event_type: EventType, handler: Callable):
@@ -259,15 +264,17 @@ class EventBus:
                 self._subscribers.pop(key, None)
                 self._subscriber_priority.pop(key, None)
                 self._once_subscribers.pop(key, None)
-            _WILDCARD_HANDLERS.clear()
-            _WILDCARD_HANDLER_FUNCTIONS.clear()
+            with _REGISTRY_LOCK:
+                _WILDCARD_HANDLERS.clear()
+                _WILDCARD_HANDLER_FUNCTIONS.clear()
             logger.info(f"已清空命名空间 '{namespace}' 的所有事件订阅")
         else:
             self._subscribers.clear()
             self._subscriber_priority.clear()
             self._once_subscribers.clear()
-            _WILDCARD_HANDLERS.clear()
-            _WILDCARD_HANDLER_FUNCTIONS.clear()
+            with _REGISTRY_LOCK:
+                _WILDCARD_HANDLERS.clear()
+                _WILDCARD_HANDLER_FUNCTIONS.clear()
             logger.info("已清空所有事件订阅")
     
     def get_subscribers_count(self, event_type: EventType) -> int:
@@ -290,15 +297,16 @@ def event(event_type: str, priority: int = EventPriority.NORMAL):
         @wraps(func)
         def wrapper(event_name, *args, **kwargs):
             return func(event_name, *args, **kwargs)
-        
+
         full_event_type = event_type
         if _EVENT_NAMESPACE and not event_type.startswith(_EVENT_NAMESPACE + "."):
             full_event_type = f"{_EVENT_NAMESPACE}.{event_type}"
-        
+
         handler_key = (func.__qualname__, func.__module__)
-        if full_event_type not in _EVENT_HANDLERS_REGISTRY:
-            _EVENT_HANDLERS_REGISTRY[full_event_type] = set()
-        _EVENT_HANDLERS_REGISTRY[full_event_type].add((wrapper, priority, handler_key))
+        with _REGISTRY_LOCK:
+            if full_event_type not in _EVENT_HANDLERS_REGISTRY:
+                _EVENT_HANDLERS_REGISTRY[full_event_type] = set()
+            _EVENT_HANDLERS_REGISTRY[full_event_type].add((wrapper, priority, handler_key))
         logger.debug(f"[EVENT] 已注册事件处理器: {full_event_type} (优先级: {priority}) -> {func.__name__}")
         return wrapper
     return decorator
@@ -309,14 +317,15 @@ def event_once(event_type: str, priority: int = EventPriority.NORMAL):
         @wraps(func)
         def wrapper(event_name, *args, **kwargs):
             return func(event_name, *args, **kwargs)
-        
+
         full_event_type = event_type
         if _EVENT_NAMESPACE and not event_type.startswith(_EVENT_NAMESPACE + "."):
             full_event_type = f"{_EVENT_NAMESPACE}.{event_type}"
-        
-        if full_event_type not in _ONCE_HANDLERS_REGISTRY:
-            _ONCE_HANDLERS_REGISTRY[full_event_type] = set()
-        _ONCE_HANDLERS_REGISTRY[full_event_type].add((wrapper, priority))
+
+        with _REGISTRY_LOCK:
+            if full_event_type not in _ONCE_HANDLERS_REGISTRY:
+                _ONCE_HANDLERS_REGISTRY[full_event_type] = set()
+            _ONCE_HANDLERS_REGISTRY[full_event_type].add((wrapper, priority))
         logger.debug(f"[EVENT] 已注册一次性事件处理器: {full_event_type} -> {func.__name__}")
         return wrapper
     return decorator
@@ -327,12 +336,13 @@ def event_pattern(pattern: str, priority: int = EventPriority.NORMAL):
         @wraps(func)
         def wrapper(event_name, *args, **kwargs):
             return func(event_name, *args, **kwargs)
-        
+
         if not hasattr(wrapper, '_event_patterns'):
             wrapper._event_patterns = []
         wrapper._event_patterns.append((pattern, priority))
-        if wrapper not in _WILDCARD_HANDLER_FUNCTIONS:
-            _WILDCARD_HANDLER_FUNCTIONS.append(wrapper)
+        with _REGISTRY_LOCK:
+            if wrapper not in _WILDCARD_HANDLER_FUNCTIONS:
+                _WILDCARD_HANDLER_FUNCTIONS.append(wrapper)
         logger.debug(f"[EVENT] 已注册模式事件处理器: {pattern} (优先级: {priority}) -> {func.__name__}")
         return wrapper
     return decorator
@@ -343,12 +353,13 @@ def event_wildcard(priority: int = EventPriority.NORMAL):
         @wraps(func)
         def wrapper(*args, **kwargs):
             return func(*args, **kwargs)
-        
+
         if not hasattr(wrapper, '_event_patterns'):
             wrapper._event_patterns = []
         wrapper._event_patterns.append(('*', priority))
-        if wrapper not in _WILDCARD_HANDLER_FUNCTIONS:
-            _WILDCARD_HANDLER_FUNCTIONS.append(wrapper)
+        with _REGISTRY_LOCK:
+            if wrapper not in _WILDCARD_HANDLER_FUNCTIONS:
+                _WILDCARD_HANDLER_FUNCTIONS.append(wrapper)
         logger.debug(f"[EVENT] 已注册通配符事件处理器 (优先级: {priority}) -> {func.__name__}")
         return wrapper
     return decorator

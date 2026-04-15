@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import threading
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from datetime import datetime
 
 from app.agent.loop.memory import MemoryManager
@@ -73,6 +73,9 @@ class SessionManager:
 
     def get_or_create(self, session_id: str) -> SessionInfo:
         """获取或创建会话（冷启动时自动从归档恢复历史消息）"""
+        evicted_info = None  # 用于保存被淘汰的会话信息
+        info = None
+
         with self._lock:
             if session_id in self._sessions:
                 info = self._sessions[session_id]
@@ -83,29 +86,34 @@ class SessionManager:
                     )
                     self._restore_from_archive(session_id, info.memory)
                 info.touch()
-                return info
+                # 不在这里返回，让锁外有机会执行持久化
+            else:
+                if len(self._sessions) >= self._max_sessions:
+                    evicted_info = self._evict_oldest()  # 返回被淘汰的会话信息
 
-            if len(self._sessions) >= self._max_sessions:
-                self._evict_oldest()
+                from app.core.util.agent_config import get_config
+                _cfg = get_config()
+                memory_cfg = _cfg.get_section("memory") or {}
+                short_term = memory_cfg.get("short_term", {})
 
-            from app.core.util.agent_config import get_config
-            _cfg = get_config()
-            memory_cfg = _cfg.get_section("memory") or {}
-            short_term = memory_cfg.get("short_term", {})
+                info = SessionInfo(
+                    session_id,
+                    max_history=short_term.get("max_history", 200),
+                    max_tool_results=short_term.get("max_tool_results", 10),
+                    max_tool_result_length=short_term.get("max_tool_result_length", 500),
+                    auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
+                )
 
-            info = SessionInfo(
-                session_id,
-                max_history=short_term.get("max_history", 200),
-                max_tool_results=short_term.get("max_tool_results", 10),
-                max_tool_result_length=short_term.get("max_tool_result_length", 500),
-                auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
-            )
+                # 冷启动：从归档恢复历史对话到 MemoryManager
+                self._restore_from_archive(session_id, info.memory)
 
-            # 冷启动：从归档恢复历史对话到 MemoryManager
-            self._restore_from_archive(session_id, info.memory)
+                self._sessions[session_id] = info
 
-            self._sessions[session_id] = info
-            return info
+        # 在锁外执行持久化（IO 操作）
+        if evicted_info:
+            self._persist_session_snapshot(evicted_info[0], evicted_info[1])
+
+        return info
 
     def get(self, session_id: str) -> Optional[SessionInfo]:
         """获取已有会话（不存在返回 None）"""
@@ -311,14 +319,16 @@ class SessionManager:
             self._persist_session_snapshot(sid, info)
         return len(expired_infos)
 
-    def _evict_oldest(self):
-        """淘汰最老的不活跃会话"""
+    def _evict_oldest(self) -> Optional[Tuple[str, SessionInfo]]:
+        """淘汰最老的不活跃会话（仅从内存移除，返回被移除的会话信息供锁外持久化）"""
+        if not self._sessions:
+            return None
         oldest_sid = min(
             self._sessions.keys(),
             key=lambda sid: self._sessions[sid].last_active,
         )
         info = self._sessions.pop(oldest_sid)
-        self._persist_session_snapshot(oldest_sid, info)
+        return (oldest_sid, info)
 
 
     @property

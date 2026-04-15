@@ -34,6 +34,12 @@ class WebSearch(BaseCell):
             'name': 'Bing',
             'url_template': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez2%22',
             'url_template_no_filter': 'https://www.bing.com/search?q={query}',
+            'url_template_recent': {
+                'hour': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez5%22',  # 1小时内
+                'day': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez4%22',   # 24小时内
+                'week': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez3%22',  # 7天内
+                'month': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez6%22', # 1个月内
+            },
             'result_selector': '#b_results > li.b_algo',
             'title_selector': 'css:h2',
             'link_selector': 'css:a',
@@ -43,6 +49,12 @@ class WebSearch(BaseCell):
         'baidu': {
             'name': '百度',
             'url_template': 'https://www.baidu.com/s?wd={query}&rn=20',
+            'url_template_recent': {
+                'hour': 'https://www.baidu.com/s?wd={query}&rn=20&lm=1',     # 1小时内
+                'day': 'https://www.baidu.com/s?wd={query}&rn=20&lm=7',     # 7天内
+                'week': 'https://www.baidu.com/s?wd={query}&rn=20&lm=30',    # 30天内
+                'month': 'https://www.baidu.com/s?wd={query}&rn=20&lm=183',  # 6个月内
+            },
             'result_selector': '#content_left .c-container',
             'title_selector': 'css:h3',
             'link_selector': 'css:a',
@@ -543,7 +555,7 @@ class WebSearch(BaseCell):
                 pass
             return short_url
 
-    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, **kwargs) -> dict:
+    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", **kwargs) -> dict:
         """
         用搜索引擎搜索关键词，返回链接列表
 
@@ -551,6 +563,11 @@ class WebSearch(BaseCell):
             keywords: 搜索关键词（必填）
             max_results: 最大结果数（默认 10）
             wait_time: 等待秒数（默认 1）
+            time_range: 时间范围筛选（可选）
+                        - hour: 1小时内
+                        - day: 24小时内
+                        - week: 7天内
+                        - month: 1个月内
 
         Returns:
             {"success": bool, "results": [...]}
@@ -589,7 +606,11 @@ class WebSearch(BaseCell):
             search_query = clean_keywords
             encoded_query = urllib.parse.quote(search_query)
 
-            if engine == 'bing':
+            recent_templates = engine_config.get('url_template_recent', {})
+            if time_range and time_range in recent_templates:
+                url = recent_templates[time_range].format(query=encoded_query)
+                logger.info(f"[WebSearch:{engine}] 使用时间筛选: {time_range}")
+            elif engine == 'bing':
                 if re.search(r'\b(20\d{2})\b', search_query) or re.search(r'\b(20\d{2})年\b', search_query):
                     url = f"https://www.bing.com/search?q={encoded_query}"
                 else:
@@ -731,6 +752,8 @@ class WebSearch(BaseCell):
             result = {
                 "success": True,
                 "results": results,
+                "time_range": time_range,
+                "engine": engine,
                 "hint": "选择相关链接，用 web_fetch.read(url='...', action='open') 获取内容"
             }
             self._set_cached_result(keywords, engine, result)

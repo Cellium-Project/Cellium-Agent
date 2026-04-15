@@ -4,10 +4,8 @@ import DOMPurify from 'dompurify';
 import type { Message, TimelineSegment } from '../types';
 import { Icons } from './Icons';
 
-// 启用 GFM 以支持表格等扩展语法
 marked.setOptions({ gfm: true });
 
-// 安全渲染 Markdown（防止 XSS）
 function safeRenderMarkdown(content: string): string {
   if (!content) return '';
   const rawHtml = marked.parse(content) as string;
@@ -39,9 +37,7 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
   );
 });
 
-/**按时间顺序渲染时间线片段（文本 + 工具调用交错显示） */
 function renderTimeline(message: Message): React.ReactNode {
-  // 如果有 timeline，按顺序渲染每个片段
   if (message.timeline && message.timeline.length > 0) {
     return (
       <>
@@ -52,7 +48,6 @@ function renderTimeline(message: Message): React.ReactNode {
     );
   }
 
-  // 兼容旧格式：没有 timeline 时用 content + toolTraces（仅在 assistant 消息时调用）
   return (
     <>
       {message.toolTraces && message.toolTraces.length > 0 && (
@@ -72,7 +67,6 @@ function renderTimeline(message: Message): React.ReactNode {
   );
 }
 
-/** 单个时间线片段渲染 */
 function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNode {
   if (segment.kind === 'text') {
     return (
@@ -85,7 +79,6 @@ function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNod
     );
   }
 
-  // kind === 'tool'
   return (
     <ToolTraceCard
       trace={{
@@ -112,11 +105,9 @@ interface ToolTraceCardProps {
 }
 
 const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
-  // 防御性处理
   const argsStr = JSON.stringify(trace.arguments || {}, null, 2);
   const resultPreview = makeResultPreview(trace.result);
   
-  // 安全获取命令预览
   const cmdPreview = (() => {
     try {
       if (trace.arguments?.command) {
@@ -133,7 +124,6 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
     }
   })();
   
-  // 实时计时器（带清理）
   const [elapsedMs, setElapsedMs] = useState(0);
   const startTimeRef = useRef(Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -151,7 +141,6 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
         }
       };
     } else {
-      // 清理计时器
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -229,7 +218,6 @@ function makeResultPreview(result: any): React.ReactNode {
   );
 }
 
-//使用更高效的 HTML 转义方式（避免每次创建 DOM 元素）
 const HTML_ESCAPE_MAP: Record<string, string> = {
   '&': '&amp;',
   '<': '&lt;',

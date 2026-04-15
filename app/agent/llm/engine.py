@@ -279,6 +279,15 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         """实际生效的 max_tokens（考虑上下文剩余空间）"""
         return self._model_info.max_output_tokens
 
+    def estimate_tokens_calibrated(self, messages: List[Dict], tools: List = None) -> int:
+        """估算 token 数"""
+        est = _estimate_messages_tokens(messages)
+        if tools:
+            est += len(tools) * 150
+        if self._actual_token_ratio and self._actual_token_ratio > 0:
+            est = int(est * self._actual_token_ratio)
+        return est
+
     @property
     def max_tokens(self) -> int:
         return self._model_info.max_output_tokens
@@ -506,10 +515,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
           2. 否则用模型默认值
           3. 但不能超过 (上下文窗口 - 已用输入 tokens)
         """
-        input_estimate = _estimate_messages_tokens(messages)
-
-        if tools:
-            input_estimate += len(tools) * 150
+        input_estimate = self.estimate_tokens_calibrated(messages, tools)
 
         safety_margin = 512
 

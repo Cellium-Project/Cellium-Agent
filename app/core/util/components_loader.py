@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 _cell_registry: Dict[str, ICell] = {}          # cell_name → instance
 _component_classes: Dict[str, type] = {}        # class_name → class (原始类引用)
 _loaded_files: Set[str] = set()                 # 已加载的文件路径集合
+_file_mtimes: Dict[str, float] = {}              # 文件路径 → mtime（用于检测变更）
 
 
 def get_all_cells() -> Dict[str, ICell]:
@@ -445,8 +446,9 @@ def load_components(
             source_file = info.get("source_file")
             if source_file:
                 _loaded_files.add(source_file)
+                _file_mtimes[source_file] = os.path.getmtime(source_file)
                 instance._source_file = source_file
-            
+
             # 调用加载钩子
             if hasattr(instance, "on_load"):
                 instance.on_load()
@@ -557,8 +559,37 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 logger.error(f"[HotReload] 加载新组件失败 {item['class_name']}: {e}")
         else:
             # 已存在的组件 — 检查是否有变更（mtime）
-            mtime = os.path.getmtime(file_path)
-            # TODO: 可以在这里做更细粒度的变更检测和单组件重载
+            try:
+                current_mtime = os.path.getmtime(file_path)
+                if file_path in _file_mtimes and _file_mtimes[file_path] != current_mtime:
+                    logger.info(f"[HotReload] 检测到组件更新: {item['class_name']} (mtime changed)")
+                    try:
+                        old_instance = None
+                        for name, cell in list(_cell_registry.items()):
+                            if getattr(cell, '_source_file', '') == file_path:
+                                old_instance = cell
+                                break
+                        if old_instance and hasattr(old_instance, "on_unload"):
+                            old_instance.on_unload()
+
+                        instance, info = _instantiate_component(item["module_path"])
+                        register_cell(instance)
+                        _loaded_files.add(file_path)
+                        _file_mtimes[file_path] = current_mtime
+                        instance._source_file = file_path
+
+                        if hasattr(instance, "on_load"):
+                            instance.on_load()
+
+                        if container:
+                            container.register(type(instance), instance)
+
+                        report["updated"].append({"name": instance.cell_name, "class": item["class_name"]})
+                        logger.info(f"[HotReload] 已更新: {instance.cell_name} ({item['class_name']})")
+                    except Exception as e:
+                        logger.error(f"[HotReload] 更新组件失败 {item['class_name']}: {e}")
+            except OSError:
+                pass
     
     # 检测被删除的文件
     removed_files = _loaded_files - current_files

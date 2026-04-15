@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 class DIContainer:
     """依赖注入容器"""
-    
+
     _instance: Optional['DIContainer'] = None
     _lock: threading.Lock = threading.Lock()
-    
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
@@ -25,26 +25,27 @@ class DIContainer:
                     cls._instance = super().__new__(cls)
                     cls._instance._services: Dict[str, Any] = {}
                     cls._instance._singletons: Dict[str, Any] = {}
+                    cls._instance._resolve_lock = threading.Lock()  # 用于 resolve 的锁
         return cls._instance
-    
+
     def register(self, service_type: Type, instance: Any, singleton: bool = True):
         """注册服务
-        
+
         Args:
             service_type: 服务类型（类或协议）
             instance: 预配置实例
             singleton: 是否单例模式
         """
         key = f"{service_type.__module__}.{service_type.__name__}"
-        
+
         self._services[key] = (instance, singleton)
         if singleton:
             self._singletons[key] = instance
         logger.info(f"已注册服务: {service_type.__name__} (singleton={singleton})")
-    
+
     def register_factory(self, service_type: Type, factory: Callable):
         """注册工厂函数
-        
+
         Args:
             service_type: 服务类型
             factory: 创建实例的工厂函数
@@ -52,34 +53,47 @@ class DIContainer:
         key = f"{service_type.__module__}.{service_type.__name__}"
         self._services[key] = (factory, False)
         logger.info(f"[DI] 已注册工厂: {service_type.__name__}")
-    
+
     def resolve(self, service_type: Type) -> Any:
         """解析服务实例
-        
+
         Args:
             service_type: 服务类型
-            
+
         Returns:
             Any: 服务实例
         """
         key = f"{service_type.__module__}.{service_type.__name__}"
-        
+
         if key not in self._services:
             raise ValueError(f"[DI] 服务未注册: {service_type.__name__}")
-        
+
         instance_or_factory, is_singleton = self._services[key]
-        
-        if is_singleton and key in self._singletons:
-            return self._singletons[key]
-        
+
+        # 单例模式：双重检查锁定
+        if is_singleton:
+            if key in self._singletons:
+                return self._singletons[key]
+
+            with self._resolve_lock:
+                # 再次检查，防止其他线程已经创建
+                if key in self._singletons:
+                    return self._singletons[key]
+
+                if callable(instance_or_factory) and not isinstance(instance_or_factory, type):
+                    instance = instance_or_factory()
+                else:
+                    instance = instance_or_factory
+
+                self._singletons[key] = instance
+                return instance
+
+        # 非单例模式：每次创建新实例
         if callable(instance_or_factory) and not isinstance(instance_or_factory, type):
             instance = instance_or_factory()
         else:
             instance = instance_or_factory
-        
-        if is_singleton:
-            self._singletons[key] = instance
-        
+
         return instance
     
     def clear(self):

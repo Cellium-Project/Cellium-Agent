@@ -4,7 +4,6 @@ import { useAppStore } from '../stores/appStore';
 import { Icons } from './Icons';
 import { ChatMessage } from './ChatMessage';
 
-/* ── 消息列表区 ── */
 const MessageList = memo(({
   messages, streamingMessage,
   messagesEndRef, messagesContainerRef,
@@ -29,10 +28,6 @@ const MessageList = memo(({
     prevMessagesCountRef.current = messages.length;
     wasEmptyRef.current = messages.length === 0;
 
-    // 滚动到底部的条件：
-    // 1. 消息增量小于50（新增少量消息）
-    // 2. ★ 从空变为有内容（首次加载历史）
-    // 注意：流式输出时不自动滚动，等待最终回复完成后再滚动
     if ((messages.length > prevCount && messages.length - prevCount < 50) || (wasEmpty && messages.length > 0)) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }
@@ -71,7 +66,6 @@ export const ChatView: React.FC = () => {
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming } = useChat();
   const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages } = useAppStore();
 
-  // Handle send
   const handleSend = () => {
     if (!inputValue.trim()) return;
     sendMessage(inputValue.trim());

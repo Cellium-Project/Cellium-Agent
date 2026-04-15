@@ -17,6 +17,11 @@ from enum import Enum
 from typing import Dict, Optional, Any, List, Tuple
 from datetime import datetime
 
+try:
+    from app.server.routes.ws_event_manager import ws_publish_event
+except ImportError:
+    ws_publish_event = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +122,8 @@ class BackgroundTaskManager:
     def _enqueue_event(self, queue: asyncio.Queue, event: Dict[str, Any]):
         try:
             queue.put_nowait(event)
+            if ws_publish_event:
+                ws_publish_event("chat_event", event, session_id=event.get("session_id"))
             return
         except asyncio.QueueFull:
             pass
@@ -144,6 +151,8 @@ class BackgroundTaskManager:
 
         for item in retained[-queue.maxsize:]:
             queue.put_nowait(item)
+            if ws_publish_event:
+                ws_publish_event("chat_event", item, session_id=item.get("session_id"))
 
     def _apply_terminal_status(self, info: TaskInfo, event_type: Optional[str], *, error_message: Optional[str] = None):
         info.last_event_type = event_type
@@ -325,6 +334,16 @@ class BackgroundTaskManager:
         finally:
             await queue.put(None)
             self._pending_inputs.pop(session_id, None)
+            task_mgr = get_task_manager()
+            info = task_mgr.get_task_info(session_id)
+            if info and info.status.value in ("completed", "cancelled", "error"):
+                from app.agent.loop.session_manager import get_session_manager
+                session_mgr = get_session_manager()
+                session_info = session_mgr.get_or_create(session_id)
+                session_info.message_count += 1
+                from app.agent.loop.session_store import get_session_store
+                store = get_session_store()
+                store.update_message_count(session_id, delta=1)
 
     def cancel_task(self, session_id: str) -> bool:
         """

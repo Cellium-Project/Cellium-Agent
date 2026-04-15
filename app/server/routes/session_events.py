@@ -1,108 +1,120 @@
 # -*- coding: utf-8 -*-
 """
-Session 事件广播器 - 使用 SSE 推送会话更新到前端
+Session 事件路由 - WebSocket 推送
 """
 
 import asyncio
-import logging
-from typing import Dict, Set, Optional
-from fastapi import APIRouter, Request
-from starlette.responses import StreamingResponse
 import json
+import logging
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/session-events", tags=["sessions"])
 
-_active_subscribers: Set[asyncio.Queue] = set()
-_broadcast_queue: asyncio.Queue = asyncio.Queue()
-_broadcaster_task: Optional[asyncio.Task] = None
-_broadcast_lock: asyncio.Lock = asyncio.Lock()
+
+@router.websocket("/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    client_id: Optional[str] = Query(None),  # 忽略，由服务端生成
+    session_id: Optional[str] = Query(None),
+):
+    """
+    WebSocket 事件端点
+
+    连接参数（query string）:
+    - client_id: 客户端标识（已忽略，由服务端自动生成）
+    - session_id: 关联的会话 ID（可选，用于定向推送）
+
+    消息格式（发送给你的服务）:
+    - {"type": "ping"} - 心跳检测
+
+    消息格式（你收到的消息）:
+    - {"type": "session_update", "session_id": "xxx", "data": {...}}
+    - {"type": "task_result", "session_id": "xxx", "data": {...}}
+    - {"type": "error", "message": "..."}
+    """
+    from app.server.routes.ws_event_manager import WSConnectionManager, ws_publish_event
+
+    manager = await WSConnectionManager.get_instance()
+
+    await websocket.accept()
+
+    # 忽略客户端传入的 client_id，强制由服务端生成
+    ws_client_id = await manager.add_client(websocket, client_id=None, session_id=session_id)
+
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "client_id": ws_client_id,
+            "message": "WebSocket 连接已建立"
+        })
+
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+
+                msg_type = message.get("type")
+
+                if msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+                elif msg_type == "session_update":
+                    target_session = message.get("session_id")
+                    event_data = message.get("data", {})
+                    if target_session:
+                        ws_publish_event("session_updated", event_data, session_id=target_session)
+                    else:
+                        ws_publish_event("session_updated", event_data)
+
+                elif msg_type == "subscribe":
+                    target_session = message.get("session_id")
+                    if target_session:
+                        await manager.update_session(ws_client_id, target_session)
+                        await websocket.send_json({
+                            "type": "subscribed",
+                            "session_id": target_session
+                        })
+
+                elif msg_type == "unsubscribe":
+                    await manager.update_session(ws_client_id, "")
+                    await websocket.send_json({"type": "unsubscribed"})
+
+                else:
+                    logger.debug(f"[WS] 收到未知消息类型: {msg_type}")
+
+            except json.JSONDecodeError:
+                logger.warning(f"[WS] 收到无效 JSON: {data[:100]}")
+            except WebSocketDisconnect:
+                logger.info(f"[WS] 客户端断开: {ws_client_id}")
+                break
+
+    except WebSocketDisconnect:
+        logger.info(f"[WS] WebSocket 断开: {ws_client_id}")
+    except Exception as e:
+        logger.error(f"[WS] 连接异常: {e}")
+    finally:
+        await manager.remove_client(ws_client_id)
 
 
-async def _broadcaster():
-    """广播协调器（确保并发安全）"""
-    while True:
-        try:
-            event_type, payload = await _broadcast_queue.get()
-            async with _broadcast_lock:
-                if not _active_subscribers:
-                    logger.debug(f"[SessionEvents] 无订阅者，跳过事件: {event_type}")
-                    continue
-
-                logger.info(f"[SessionEvents] 推送事件: {event_type} 到 {len(_active_subscribers)} 个订阅者")
-                for queue in _active_subscribers:
-                    try:
-                        queue.put_nowait(payload)
-                    except Exception as e:
-                        logger.warning(f"[SessionEvents] 发送事件失败: {e}")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"[SessionEvents] Broadcaster error: {e}")
-
-
-async def _start_broadcaster():
-    """启动广播协调器"""
-    global _broadcaster_task
-    if _broadcaster_task is None or _broadcaster_task.done():
-        _broadcaster_task = asyncio.create_task(_broadcaster())
-        logger.info("[SessionEvents] Broadcaster started")
-
-
-def publish_session_event(event_type: str, data: Dict):
-    """发布会话事件到所有订阅者"""
-    event = {
-        "type": event_type,
-        "data": data,
+@router.get("/status")
+async def get_status():
+    """获取 WebSocket 连接状态"""
+    from app.server.routes.ws_event_manager import WSConnectionManager
+    manager = await WSConnectionManager.get_instance()
+    return {
+        "connected_clients": manager.get_client_count(),
+        "active_sessions": manager.get_session_count(),
+        "transport": "websocket"
     }
-    payload = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-    _broadcast_queue.put_nowait((event_type, payload))
 
 
-@router.get("/events")
-async def session_events(request: Request):
+def publish_session_event(event_type: str, data: dict, session_id: Optional[str] = None):
     """
-    Session 事件流（SSE）
+    兼容旧 SSE 接口的发布会话事件函数
 
-    前端可通过 EventSource 订阅此端点，实时接收会话更新：
-    - session_created: 新会话创建
-    - session_updated: 会话更新（消息数、活跃时间等）
-    - session_deleted: 会话删除
+    内部已改为 WebSocket 推送
     """
-    if not _broadcaster_task or _broadcaster_task.done():
-        await _start_broadcaster()
-
-    queue = asyncio.Queue()
-    _active_subscribers.add(queue)
-    logger.info(f"[SessionEvents] 新订阅者接入，当前订阅数: {len(_active_subscribers)}")
-
-    async def event_generator():
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield payload
-                except asyncio.TimeoutError:
-                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.warning(f"[SessionEvents] 订阅者断开: {e}")
-        finally:
-            _active_subscribers.discard(queue)
-            logger.info(f"[SessionEvents] 订阅者断开，剩余: {len(_active_subscribers)}")
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-def get_subscriber_count() -> int:
-    """获取当前订阅者数量（用于调试）"""
-    return len(_active_subscribers)
+    from app.server.routes.ws_event_manager import ws_publish_event
+    ws_publish_event(event_type, data, session_id=session_id)

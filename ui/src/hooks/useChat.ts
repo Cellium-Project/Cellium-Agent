@@ -4,9 +4,13 @@ import { API, postJSON } from '../utils/api';
 import type { SSEEvent, Message, ToolTrace, TimelineSegment } from '../types';
 
 export function useChat() {
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const connectionIdRef = useRef(0);
   const lastEventIdBySessionRef = useRef<Record<string, number>>({});
+  const isManualCloseRef = useRef(false);
   const {
     currentSessionId,
     messages,
@@ -22,106 +26,18 @@ export function useChat() {
     stopTask,
   } = useAppStore();
 
-  // Build streaming message context — 使用有序时间线
-  const buildStreamingContext = useCallback(() => ({
-    timeline: [] as TimelineSegment[],
-    traces: [] as ToolTrace[],
-    lastEventId: 0,
-    finalized: false,
-    stopRequested: false,
-    stoppedByServer: false,
-    sawDone: false,
-  }), []);
+  function buildStreamingContext() {
+    return {
+      timeline: [] as TimelineSegment[],
+      traces: [] as ToolTrace[],
+      lastEventId: 0,
+      finalized: false,
+      stopRequested: false,
+      stoppedByServer: false,
+      sawDone: false,
+    };
+  }
 
-  // ★ 连接到正在运行的任务（重新连接）
-  const reconnectToTask = useCallback(async (sessionId: string) => {
-    // 防止重复连接
-    if (abortControllerRef.current) {
-      if (import.meta.env.DEV) {
-        console.log('[reconnectToTask] 已经在连接中，跳过');
-      }
-      return;
-    }
-
-    const ctx = buildStreamingContext();
-    ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
-    if (streamingMessage?.timeline?.length) {
-      ctx.timeline = [...streamingMessage.timeline];
-    }
-    if (streamingMessage?.toolTraces?.length) {
-      ctx.traces = [...streamingMessage.toolTraces];
-    }
-    const connectionId = ++connectionIdRef.current;
-    if (!streamingMessage) {
-      updateStreamingMessage({
-        role: 'assistant',
-        content: '',
-        toolTraces: [],
-        timeline: [],
-      });
-    }
-    setIsStreaming(true);
-
-    abortControllerRef.current = new AbortController();
-
-    try {
-      const response = await fetch(API.stream, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: '', session_id: sessionId, last_event_id: ctx.lastEventId }),  // 空消息表示重新连接
-        signal: abortControllerRef.current.signal,
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No reader available');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const raw = line.slice(6);
-          if (!raw || raw === '[DONE]') continue;
-
-          try {
-            const event: SSEEvent = JSON.parse(raw);
-            handleSSEEvent(event, ctx, sessionId, connectionId);
-          } catch (e) {
-            if (import.meta.env.DEV) {
-              console.warn('Failed to parse SSE event:', raw);
-            }
-          }
-        }
-      }
-
-      // Finalize message
-      finalizeMessage(ctx, connectionId);
-      fetchSessions();
-    } catch (error: any) {
-      if (error.name !== 'AbortError') {
-        if (import.meta.env.DEV) {
-          console.error('Reconnect error:', error);
-        }
-        updateStreamingMessage(null);
-      }
-    } finally {
-      setIsStreaming(false);
-      setHasRunningTask(await checkTaskStatus(sessionId));
-      abortControllerRef.current = null;
-    }
-  }, [buildStreamingContext, updateStreamingMessage, setIsStreaming, setHasRunningTask, fetchSessions, checkTaskStatus, streamingMessage]);
-
-  // Finalize message helper
   const finalizeMessage = useCallback((ctx: ReturnType<typeof buildStreamingContext>, connectionId?: number) => {
     if (ctx.finalized) {
       updateStreamingMessage(null);
@@ -154,99 +70,7 @@ export function useChat() {
     updateStreamingMessage(null);
   }, [addMessage, updateStreamingMessage]);
 
-  // Send message — 发送消息并处理流式响应
-  const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim()) return;
-
-    const sessionId = currentSessionId || 'default';
-
-    if (isStreaming) {
-      addMessage({ role: 'user', content: content.trim() });
-      try {
-        await postJSON(API.supplement, { message: content.trim(), session_id: sessionId });
-      } catch (error: any) {
-        addMessage({ role: 'assistant', content: `补充消息发送失败: ${error.message}` });
-      }
-      return;
-    }
-
-    // Add user message
-    addMessage({ role: 'user', content: content.trim() });
-    setIsStreaming(true);
-    setHasRunningTask(true);
-
-    // Create streaming message placeholder
-    const ctx = buildStreamingContext();
-    lastEventIdBySessionRef.current[sessionId] = 0;
-    const connectionId = ++connectionIdRef.current;
-    updateStreamingMessage({
-      role: 'assistant',
-      content: '',
-      toolTraces: [],
-      timeline: [],
-    });
-
-    abortControllerRef.current = new AbortController();
-
-    try {
-      const response = await fetch(API.stream, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content.trim(), session_id: sessionId, last_event_id: 0 }),
-        signal: abortControllerRef.current.signal,
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No reader available');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const raw = line.slice(6);
-          if (!raw || raw === '[DONE]') continue;
-
-          try {
-            const event: SSEEvent = JSON.parse(raw);
-            handleSSEEvent(event, ctx, sessionId, connectionId);
-          } catch (e) {
-            if (import.meta.env.DEV) {
-              console.warn('Failed to parse SSE event:', raw);
-            }
-          }
-        }
-      }
-
-      // Finalize message
-      finalizeMessage(ctx, connectionId);
-
-      // Refresh session list
-      fetchSessions();
-    } catch (error: any) {
-      if (error.name !== 'AbortError') {
-        addMessage({ role: 'assistant', content: `错误: ${error.message}` });
-        updateStreamingMessage(null);
-      }
-    } finally {
-      setIsStreaming(false);
-      setHasRunningTask(await checkTaskStatus(sessionId));
-      abortControllerRef.current = null;
-    }
-  }, [currentSessionId, isStreaming, addMessage, setIsStreaming, setHasRunningTask, updateStreamingMessage, buildStreamingContext, fetchSessions, finalizeMessage, checkTaskStatus]);
-
-  // Handle SSE event — 按时间顺序构建时间线
-  const handleSSEEvent = useCallback((event: SSEEvent, ctx: ReturnType<typeof buildStreamingContext>, sessionId: string, connectionId: number) => {
+  const handleChatEvent = useCallback((event: SSEEvent, ctx: ReturnType<typeof buildStreamingContext>, sessionId: string, connectionId: number) => {
     if (connectionId !== connectionIdRef.current) return;
     if (event.session_id && event.session_id !== sessionId) return;
     if (event.event_id && event.event_id > ctx.lastEventId) {
@@ -265,7 +89,6 @@ export function useChat() {
 
       case 'tool_start': {
         if (event.tool && event.arguments) {
-          // 追加工具片段到时间线（保持顺序）
           const toolSeg: TimelineSegment = {
             kind: 'tool',
             tool: event.tool,
@@ -273,17 +96,16 @@ export function useChat() {
             duration_ms: 0,
             description: event.description,
             status: 'running',
-            call_id: event.call_id,  // 使用 call_id 唯一标识
+            call_id: event.call_id,
           };
           ctx.timeline.push(toolSeg);
 
-          // 同时维护 traces 数组用于快速查找
           ctx.traces.push({
             tool: event.tool,
             arguments: event.arguments,
             duration_ms: 0,
             description: event.description,
-            call_id: event.call_id,  // ★ 使用 call_id 唯一标识
+            call_id: event.call_id,
           });
 
           updateStreamingMessage({
@@ -297,10 +119,8 @@ export function useChat() {
       }
 
       case 'tool_result': {
-        // ★ 使用 call_id 精确匹配 tool_start 和 tool_result
         const targetCallId = event.call_id;
         if (targetCallId && ctx.traces.length > 0) {
-          // 找到匹配的 tool segment（通过 call_id）
           for (let i = ctx.timeline.length - 1; i >= 0; i--) {
             const seg = ctx.timeline[i];
             if (seg.kind === 'tool' && seg.call_id === targetCallId && seg.status === 'running') {
@@ -310,8 +130,6 @@ export function useChat() {
               break;
             }
           }
-
-          // 同步更新 traces
           for (let i = ctx.traces.length - 1; i >= 0; i--) {
             if (ctx.traces[i].call_id === targetCallId) {
               ctx.traces[i] = {
@@ -322,7 +140,6 @@ export function useChat() {
               break;
             }
           }
-
           updateStreamingMessage({
             role: 'assistant',
             content: '',
@@ -330,7 +147,6 @@ export function useChat() {
             timeline: [...ctx.timeline],
           });
         } else if (event.tool && ctx.traces.length > 0) {
-          // 降级：如果没有 call_id，使用工具名匹配（兼容旧版本）
           for (let i = ctx.timeline.length - 1; i >= 0; i--) {
             const seg = ctx.timeline[i];
             if (seg.kind === 'tool' && seg.tool === event.tool && seg.status === 'running') {
@@ -362,15 +178,12 @@ export function useChat() {
 
       case 'content_chunk': {
         const rawChunk = event.content || '';
-        // ★ 不要 trim()，保留原始格式（包括换行和缩进）
-        // 只过滤掉完全空的 chunk
         if (import.meta.env.DEV) {
           console.log('[content_chunk] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
         }
         if (rawChunk.length > 0) {
           ctx.timeline.push({ kind: 'text', content: rawChunk });
         }
-
         updateStreamingMessage({
           role: 'assistant',
           content: '',
@@ -432,13 +245,280 @@ export function useChat() {
         finalizeMessage(ctx, connectionId);
         break;
       }
-    }
-  }, [updateStreamingMessage, finalizeMessage]);
 
-  // Stop streaming — ★ 改为调用后端停止接口
+      case 'message_received': {
+        if (event.message && !streamingMessage) {
+          updateStreamingMessage({
+            role: 'assistant',
+            content: '',
+            toolTraces: [],
+            timeline: [],
+          });
+        }
+        break;
+      }
+
+      case 'supplement_injected': {
+        ctx.timeline.push({
+          kind: 'text',
+          content: `[补充信息已注入: ${(event.content || '').slice(0, 30)}...]`,
+        });
+        updateStreamingMessage({
+          role: 'assistant',
+          content: '[正在根据补充信息继续...]',
+          toolTraces: ctx.traces,
+          timeline: [...ctx.timeline],
+        });
+        break;
+      }
+    }
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage]);
+
+  // 创建新 WebSocket 连接的核心函数
+  const createNewConnection = useCallback((
+    sessionId: string,
+    ctx: ReturnType<typeof buildStreamingContext>,
+    connectionId: number,
+    connectingKey: string
+  ) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/session-events/ws?session_id=${encodeURIComponent(sessionId)}`;
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+    isManualCloseRef.current = false;
+
+    ws.onopen = () => {
+      console.log('[WS] Connected for chat');
+      (window as any)[connectingKey] = false;
+
+      heartbeatTimerRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 25000);
+
+      ws.send(JSON.stringify({
+        type: 'subscribe',
+        session_id: sessionId,
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'pong') return;
+        if (msg.type === 'subscribed') return;
+        if (msg.type === 'connected') return;
+
+        console.log('[WS] 收到消息:', msg.type, msg.data?.type);
+
+        if (msg.type === 'chat_event' && msg.data) {
+          handleChatEvent(msg.data as SSEEvent, ctx, sessionId, connectionId);
+        }
+      } catch (e) {
+        console.error('[WS] parse error:', e);
+      }
+    };
+
+    ws.onerror = () => {
+      console.warn('[WS] Error');
+      (window as any)[connectingKey] = false;
+    };
+
+    ws.onclose = () => {
+      console.log('[WS] Disconnected');
+      (window as any)[connectingKey] = false;
+
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
+
+      if (connectionId !== connectionIdRef.current) {
+        console.log('[WS] Stale connection closed, ignoring');
+        return;
+      }
+
+      if (!(ws as any).isManualClose && !ctx.finalized) {
+        reconnectTimerRef.current = setTimeout(() => {
+          // 重置连接标记并重新创建连接
+          const newConnectingKey = `ws_connecting_${sessionId}`;
+          (window as any)[newConnectingKey] = false;
+          const newConnectionId = ++connectionIdRef.current;
+          createNewConnection(sessionId, ctx, newConnectionId, newConnectingKey);
+        }, 3000);
+      }
+    };
+  }, [handleChatEvent]);
+
+  // 连接 WebSocket（处理旧连接关闭）
+  const connectWebSocket = useCallback((sessionId: string, ctx: ReturnType<typeof buildStreamingContext>, isReconnect: boolean) => {
+    const connectingKey = `ws_connecting_${sessionId}`;
+    if ((window as any)[connectingKey]) {
+      console.log('[WS] Already connecting, skipping');
+      return;
+    }
+    (window as any)[connectingKey] = true;
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    const currentConnectionId = ++connectionIdRef.current;
+
+    // 先关闭旧连接并等待其完成
+    const oldWs = wsRef.current;
+    if (oldWs) {
+      (oldWs as any).isManualClose = true;
+      if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CONNECTING) {
+        oldWs.close();
+        // 等待旧连接关闭后再创建新连接
+        const checkAndConnect = () => {
+          if (oldWs.readyState === WebSocket.CLOSED) {
+            createNewConnection(sessionId, ctx, currentConnectionId, connectingKey);
+          } else {
+            setTimeout(checkAndConnect, 50);
+          }
+        };
+        checkAndConnect();
+        return;
+      }
+    }
+
+    // 无旧连接，直接创建
+    createNewConnection(sessionId, ctx, currentConnectionId, connectingKey);
+  }, [createNewConnection]);
+
+  const disconnectWebSocket = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      (wsRef.current as any).isManualClose = true;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+  }, []);
+
+  const reconnectToTask = useCallback(async (sessionId: string) => {
+    if (abortControllerRef.current) {
+      if (import.meta.env.DEV) {
+        console.log('[reconnectToTask] 已经在连接中，跳过');
+      }
+      return;
+    }
+
+    const ctx = buildStreamingContext();
+    ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
+    if (streamingMessage?.timeline?.length) {
+      ctx.timeline = [...streamingMessage.timeline];
+    }
+    if (streamingMessage?.toolTraces?.length) {
+      ctx.traces = [...streamingMessage.toolTraces];
+    }
+
+    if (!streamingMessage) {
+      updateStreamingMessage({
+        role: 'assistant',
+        content: '',
+        toolTraces: [],
+        timeline: [],
+      });
+    }
+    setIsStreaming(true);
+    abortControllerRef.current = new AbortController();
+
+    try {
+      const hasTask = await checkTaskStatus(sessionId);
+      if (hasTask) {
+        connectWebSocket(sessionId, ctx, true);
+      } else {
+        updateStreamingMessage(null);
+        setIsStreaming(false);
+        setHasRunningTask(false);
+      }
+    } catch (error: any) {
+      if (import.meta.env.DEV) {
+        console.error('Reconnect error:', error);
+      }
+      updateStreamingMessage(null);
+      setIsStreaming(false);
+    } finally {
+      abortControllerRef.current = null;
+    }
+  }, [buildStreamingContext, updateStreamingMessage, setIsStreaming, setHasRunningTask, fetchSessions, checkTaskStatus, streamingMessage, connectWebSocket]);
+
+  const sendMessage = useCallback(async (content: string) => {
+    if (!content.trim()) return;
+
+    const sessionId = currentSessionId || 'default';
+
+    if (isStreaming) {
+      addMessage({ role: 'user', content: content.trim() });
+      try {
+        await postJSON(API.supplement, { message: content.trim(), session_id: sessionId });
+      } catch (error: any) {
+        addMessage({ role: 'assistant', content: `补充消息发送失败: ${error.message}` });
+      }
+      return;
+    }
+
+    addMessage({ role: 'user', content: content.trim() });
+    setIsStreaming(true);
+    setHasRunningTask(true);
+
+    const ctx = buildStreamingContext();
+    lastEventIdBySessionRef.current[sessionId] = 0;
+    const connectionId = ++connectionIdRef.current;
+    updateStreamingMessage({
+      role: 'assistant',
+      content: '',
+      toolTraces: [],
+      timeline: [],
+    });
+
+    abortControllerRef.current = new AbortController();
+
+    try {
+      connectWebSocket(sessionId, ctx, false);
+
+      const response = await fetch(API.stream, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content.trim(), session_id: sessionId, last_event_id: 0 }),
+        signal: abortControllerRef.current.signal,
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const result = await response.json();
+
+      if (result.status === 'error') {
+        throw new Error(result.error);
+      }
+
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        addMessage({ role: 'assistant', content: `错误: ${error.message}` });
+        updateStreamingMessage(null);
+      }
+    } finally {
+      setIsStreaming(false);
+      setHasRunningTask(await checkTaskStatus(sessionId));
+      abortControllerRef.current = null;
+    }
+  }, [currentSessionId, isStreaming, addMessage, setIsStreaming, setHasRunningTask, updateStreamingMessage, buildStreamingContext, fetchSessions, finalizeMessage, checkTaskStatus, handleChatEvent, connectWebSocket]);
+
   const stopStreaming = useCallback(async () => {
     const sessionId = currentSessionId || 'default';
-    
+
     if (streamingMessage) {
       updateStreamingMessage({
         ...streamingMessage,
@@ -446,32 +526,72 @@ export function useChat() {
       });
     }
 
-    // 调用后端停止任务
+    disconnectWebSocket();
     await stopTask(sessionId);
-  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage]);
+  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage, disconnectWebSocket]);
 
-  // ★ 页面加载时检查是否有运行中的任务
+  // 使用 ref 跟踪 session，避免 useEffect 依赖不稳定
+  const currentSessionIdRef = useRef(currentSessionId);
+  const hasReconnectedRef = useRef(false);
+  const prevSessionIdRef = useRef(currentSessionId);
+
+  // session 切换时断开旧连接并重置状态
   useEffect(() => {
+    if (prevSessionIdRef.current && prevSessionIdRef.current !== currentSessionId) {
+      console.log('[WS] Session changed, disconnecting old connection');
+      disconnectWebSocket();
+      hasReconnectedRef.current = false;
+    }
+    prevSessionIdRef.current = currentSessionId;
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId, disconnectWebSocket]);
+
+  useEffect(() => {
+    let mounted = true;
+
     const checkAndReconnect = async () => {
-      if (!currentSessionId) return;
-      
-      const hasTask = await checkTaskStatus(currentSessionId);
-      if (hasTask) {
-        // 有运行中的任务，自动重新连接
-        reconnectToTask(currentSessionId);
-      }
+      const sessionId = currentSessionIdRef.current;
+      if (!sessionId || hasReconnectedRef.current) return;
+
+      const hasTask = await checkTaskStatus(sessionId);
+      if (!mounted || !hasTask) return;
+
+      // 标记已尝试重连，避免重复
+      hasReconnectedRef.current = true;
+
+      const ctx = buildStreamingContext();
+      ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
+
+      updateStreamingMessage({
+        role: 'assistant',
+        content: '',
+        toolTraces: [],
+        timeline: [],
+      });
+      setIsStreaming(true);
+
+      connectWebSocket(sessionId, ctx, true);
     };
 
     checkAndReconnect();
-  }, [currentSessionId, checkTaskStatus, reconnectToTask]);
 
-  // Cleanup on unmount
+    return () => {
+      mounted = false;
+    };
+    // 只依赖 currentSessionId，其他函数通过 ref 或直接调用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId]);
+
+  // 只在组件卸载时清理
   useEffect(() => {
     return () => {
+      disconnectWebSocket();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
     };
+    // 空依赖，只在卸载时执行
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return {

@@ -50,13 +50,16 @@ export type SSEEventType =
   | 'done'
   | 'error'
   | 'stopped'
-  | 'heuristic_redirect';
+  | 'heuristic_redirect'
+  | 'message_received'
+  | 'supplement_injected';
 
 export interface SSEEvent {
   type: SSEEventType;
   event_id?: number;
   session_id?: string;
   content?: string;
+  message?: string;
   tool?: string;
   arguments?: Record<string, any>;
   result?: any;
