@@ -46,7 +46,7 @@ python main.py
 - FastAPI + Uvicorn（Web 框架）
 - PyYAML（配置解析）
 - Jieba（中文分词）
-- DrissionPage（无头浏览器，用于网页搜索和操作浏览器）
+- DrissionPage（用于网页搜索和操作浏览器）
 - openai（OpenAI API 客户端）
 
 ### 配置模型
