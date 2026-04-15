@@ -86,7 +86,7 @@
 | 命令 | 参数 | 说明 |
 |-----|------|-----|
 | `read` | `url`, `action`, `keyword`, `wait_time` | 统一阅读命令 |
-| `control` | `action`, `selector`, `value` | 页面操控（点击、输入、滚动、find_qrcode、find_button） |
+| `control` | `action`, `selector`, `value` | 页面操控（js_action、input、scroll_to、find_qrcode、find_button） |
 | `set_mode` | `headless` | 设置模式：`true`=后台，`false`=可视化（扫码用） |
 | `get_screenshot` | `full_page`, `selector` | 截图，支持元素截图（selector） |
 | `close` | - | 关闭浏览器 |
@@ -95,21 +95,29 @@
 {"command": "read", "url": "https://example.com", "action": "open", "_intent": "正在打开页面"}
 {"command": "read", "action": "scroll", "_intent": "正在滚动页面"}
 {"command": "read", "action": "find", "keyword": "关键词", "_intent": "正在搜索关键词"}
-{"command": "control", "action": "click", "selector": "#button", "_intent": "正在点击按钮"}
+{"command": "control", "action": "js_action", "selector": "#button", "value": "click", "_intent": "正在点击按钮"}
+{"command": "control", "action": "js_action", "selector": "input[name='username']", "value": "input", "wait_after": 1, "_intent": "正在输入用户名"}
 {"command": "control", "action": "find_qrcode", "_intent": "正在查找二维码"}
 {"command": "control", "action": "find_button", "value": "扫码", "_intent": "正在查找扫码按钮"}
 {"command": "set_mode", "headless": false, "_intent": "切换到可视化模式"}
 {"command": "get_screenshot", "selector": ".qrcode", "_intent": "正在截取二维码"}
 ```
 
+**js_action 支持的操作**:
+- `click`: 点击元素（selector 支持 CSS/XPath/文本）
+- `input`: 向输入框输入文本
+- `scroll_to`: 滚动到元素
+- `get_text`: 获取元素文本
+- `get_attribute`: 获取元素属性
+
 **选择器格式说明**:
 - CSS 选择器: `#id`, `.class`, `div > button`
 - XPath: `//button[contains(text(),'微信')]`, `//a[@href='/login']`
-- 推荐: 先用 `find_button` 获取正确的选择器，再点击
+- 文本: 直接写元素包含的文本，如 `Submit order`
 
 **典型工作流**:
 - 阅读: `web_search.search` → `web_fetch.read(url='...', action='open')` → `read(action='scroll/find')`
-- 扫码登录: `set_mode(headless=false)` → `read(url='登录页')` → `control(action='find_button', value='扫码')` → `control(action='click', selector='...')` → `control(action='find_qrcode')` → `get_screenshot(selector='...')`
+- 扫码登录: `set_mode(headless=false)` → `read(url='登录页')` → `control(action='find_button', value='扫码')` → `control(action='js_action', selector='...', value='click')` → `control(action='find_qrcode')` → `get_screenshot(selector='...')`
 
 ---
 

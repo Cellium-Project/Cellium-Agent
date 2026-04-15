@@ -1045,7 +1045,6 @@ class WebFetch(BaseCell):
             page = self._get_page()
             found_elements = []
 
-            # 优化策略1：先用 JavaScript 批量获取所有图片信息（一次 DOM 查询）
             try:
                 js_result = page.run_js("""
                     return Array.from(document.querySelectorAll('img, canvas')).map(el => {
@@ -1064,23 +1063,19 @@ class WebFetch(BaseCell):
                     }).filter(item => item.visible && item.width > 50 && item.height > 50);
                 """)
 
-                # 优化策略2：在内存中筛选，减少 DOM 操作
                 for item in js_result:
                     w, h = item['width'], item['height']
                     src, alt, cls, id = item['src'], item['alt'], item['className'], item['id']
 
-                    # 检查是否是二维码（多种特征匹配）
                     is_qr = False
                     selector = None
 
-                    # 特征1：URL/alt/class/id 包含 qr 相关关键词
                     qr_keywords = ['qr', 'qrcode', '二维码', '扫码', 'login']
                     text_to_check = f"{src} {alt} {cls} {id}".lower()
                     if any(kw in text_to_check for kw in qr_keywords):
                         is_qr = True
                         selector = f".{cls.split()[0]}" if cls else (f"#{id}" if id else f"img[src*='{src[:30]}']")
 
-                    # 特征2：正方形且尺寸合适（100-400px）
                     elif w > 100 and h > 100 and abs(w - h) < 30:
                         is_qr = True
                         selector = f"img[src*='{src[:30]}']" if src else f"{item['tag']}"
@@ -1099,7 +1094,6 @@ class WebFetch(BaseCell):
 
             except Exception as e:
                 logger.debug(f"[WebFetch] JS 查询失败，回退到传统方式: {e}")
-                # 回退：简化版的选择器查询
                 try:
                     elements = page.eles('css:.qrcode, #qrcode, img[src*="qr"], img[alt*="二维码"]')
                     for el in elements:
@@ -1117,7 +1111,6 @@ class WebFetch(BaseCell):
                 except Exception:
                     pass
 
-            # 如果没找到，提供建议
             if not found_elements:
                 return {
                     "success": True,
@@ -1133,11 +1126,10 @@ class WebFetch(BaseCell):
                 "hint": "使用 get_screenshot(selector='选择器') 截取二维码"
             }
 
-        # 使用线程池执行，防止浏览器卡死导致主线程阻塞
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_do_find)
-                return future.result(timeout=10)  # 缩短到10秒超时
+                return future.result(timeout=10)
         except concurrent.futures.TimeoutError:
             logger.error("[WebFetch] 查找二维码超时，浏览器可能无响应")
             self._close_page()
@@ -1150,7 +1142,7 @@ class WebFetch(BaseCell):
         浏览器页面操控命令（点击、输入、滚动等）
 
         Args:
-            action: 'click' | 'input' | 'scroll_up' | 'scroll_down' | 'move_to' | 'find_qrcode' | 'find_button'
+            action: 'click' | 'input' | 'scroll_up' | 'scroll_down' | 'move_to' | 'find_qrcode' | 'find_button' | 'execute_script'
             selector: CSS 选择器或 xpath（click/input 时必填）
             value: 输入值（input 时必填）或按钮关键词（find_button 时）
             x, y: 坐标（可选）
@@ -1163,7 +1155,299 @@ class WebFetch(BaseCell):
             return self._cmd_find_qrcode()
         if action == 'find_button':
             return self._cmd_find_button(keyword=value)
+        if action == 'execute_script':
+            return self._cmd_execute_script(value, wait_after)
+        if action == 'js_action':
+            return self._cmd_js_action(selector, action=value, wait_after=wait_after)
         return self._control_action(action, selector, value, x, y, wait_after)
+
+    def _cmd_js_action(self, selector: str = None, action: str = None, wait_after: float = 1.0) -> dict:
+        """
+        统一的 JS 操作命令（纯 JS 实现，最可靠）
+
+        Args:
+            selector: CSS 选择器、XPath 或元素文本
+            action: 'click' | 'input' | 'scroll_to' | 'get_text' | 'get_attribute'
+            value: input 时要输入的值，或 get_attribute 的属性名
+            wait_after: 操作后等待秒数
+
+        Returns:
+            {"success": bool, "result": Any, "error": str}
+        """
+        if not selector:
+            return {"success": False, "error": "需要提供 selector 参数"}
+        if not action:
+            return {"success": False, "error": "需要提供 action 参数"}
+
+        try:
+            page = self._get_page()
+
+            if action == 'click':
+                return self._js_click(page, selector, wait_after)
+            elif action == 'input':
+                if not value:
+                    return {"success": False, "error": "input 操作需要提供 value 参数"}
+                return self._js_input(page, selector, value, wait_after)
+            elif action == 'scroll_to':
+                return self._js_scroll_to(page, selector, wait_after)
+            elif action == 'get_text':
+                return self._js_get_text(page, selector)
+            elif action == 'get_attribute':
+                if not value:
+                    return {"success": False, "error": "get_attribute 操作需要提供 value 参数（属性名）"}
+                return self._js_get_attribute(page, selector, value)
+            else:
+                return {"success": False, "error": f"不支持的 action: {action}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _js_click(self, page, selector: str, wait_after: float) -> dict:
+        """纯 JS 点击元素"""
+        # 构建 JS 代码：查找元素并点击
+        js_code = f"""
+        (function() {{
+            var selector = '{selector.replace("'", "\\'")}';
+            var el = null;
+
+            // 1. 尝试 CSS 选择器
+            try {{
+                el = document.querySelector(selector);
+            }} catch(e) {{}}
+
+            // 2. 如果是 XPath，尝试 XPath 查询
+            if (!el && (selector.startsWith('//') || selector.startsWith('(//'))) {{
+                try {{
+                    var result = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                    el = result.singleNodeValue;
+                }} catch(e) {{}}
+            }}
+
+            // 3. 如果是纯文本，查找包含该文本的元素
+            if (!el) {{
+                var allElements = document.querySelectorAll('*');
+                for (var i = 0; i < allElements.length; i++) {{
+                    var text = (allElements[i].innerText || allElements[i].value || '').trim();
+                    if (text.includes(selector)) {{
+                        el = allElements[i];
+                        break;
+                    }}
+                }}
+            }}
+
+            if (!el) {{
+                return {{success: false, error: 'Element not found: ' + selector}};
+            }}
+
+            // 滚动到视口中心
+            el.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+
+            // 点击元素中心（使用 elementFromPoint 确保点击到目标）
+            var rect = el.getBoundingClientRect();
+            var x = rect.left + rect.width / 2;
+            var y = rect.top + rect.height / 2;
+            var clickedEl = document.elementFromPoint(x, y);
+
+            if (clickedEl && (clickedEl === el || el.contains(clickedEl))) {{
+                clickedEl.click();
+            }} else {{
+                el.click();
+            }}
+
+            return {{success: true, tag: el.tagName, text: el.innerText || el.value || '', x: x, y: y}};
+        }})();
+        """
+        try:
+            result = page.run_js(js_code)
+            if result.get('success'):
+                page.wait(wait_after)
+                return {"success": True, "result": result, "hint": f"已点击: {result.get('tag')} - {result.get('text', '')[:30]}"}
+            else:
+                return {"success": False, "error": result.get('error', '点击失败')}
+        except Exception as e:
+            return {"success": False, "error": f"JS 点击异常: {e}"}
+
+    def _js_input(self, page, selector: str, value: str, wait_after: float) -> dict:
+        """纯 JS 输入文本"""
+        js_code = f"""
+        (function() {{
+            var selector = '{selector.replace("'", "\\'")}';
+            var value = `{value.replace("`", "\\`")}`;
+            var el = null;
+
+            // 查找元素（支持选择器和文本）
+            try {{
+                el = document.querySelector(selector);
+            }} catch(e) {{}}
+
+            if (!el && (selector.startsWith('//') || selector.startsWith('(//'))) {{
+                try {{
+                    var result = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                    el = result.singleNodeValue;
+                }} catch(e) {{}}
+            }}
+
+            if (!el) {{
+                var allElements = document.querySelectorAll('input, textarea, [contenteditable]');
+                for (var i = 0; i < allElements.length; i++) {{
+                    var placeholder = allElements[i].placeholder || '';
+                    var name = allElements[i].name || '';
+                    if (placeholder.includes(selector) || name.includes(selector)) {{
+                        el = allElements[i];
+                        break;
+                    }}
+                }}
+            }}
+
+            if (!el) {{
+                return {{success: false, error: 'Element not found: ' + selector}};
+            }}
+
+            el.scrollIntoView({{block: 'center'}});
+
+            // 聚焦并清空后输入
+            el.focus();
+            el.value = '';
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+
+            // 模拟键盘输入
+            for (var i = 0; i < value.length; i++) {{
+                var char = value[i];
+                var event = new KeyboardEvent('keypress', {{
+                    key: char,
+                    char: char,
+                    bubbles: true
+                }});
+                el.dispatchEvent(event);
+            }}
+
+            el.value = value;
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+
+            return {{success: true, tag: el.tagName, value: el.value}};
+        }})();
+        """
+        try:
+            result = page.run_js(js_code)
+            if result.get('success'):
+                page.wait(wait_after)
+                return {"success": True, "result": result, "hint": f"已输入: {result.get('value', '')[:20]}..."}
+            else:
+                return {"success": False, "error": result.get('error', '输入失败')}
+        except Exception as e:
+            return {"success": False, "error": f"JS 输入异常: {e}"}
+
+    def _js_scroll_to(self, page, selector: str, wait_after: float) -> dict:
+        """纯 JS 滚动到元素"""
+        js_code = f"""
+        (function() {{
+            var selector = '{selector.replace("'", "\\'")}';
+            var el = null;
+
+            try {{ el = document.querySelector(selector); }} catch(e) {{}}
+            if (!el && (selector.startsWith('//'))) {{
+                try {{ var r = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r.singleNodeValue; }} catch(e) {{}}
+            }}
+            if (!el) {{
+                var all = document.querySelectorAll('*');
+                for (var i = 0; i < all.length; i++) {{
+                    if ((all[i].innerText || '').trim().includes(selector)) {{ el = all[i]; break; }}
+                }}
+            }}
+
+            if (!el) return {{success: false, error: 'Element not found'}};
+            el.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+            return {{success: true, tag: el.tagName}};
+        }})();
+        """
+        try:
+            result = page.run_js(js_code)
+            if result.get('success'):
+                page.wait(wait_after)
+                return {"success": True, "result": result}
+            else:
+                return {"success": False, "error": result.get('error', '滚动失败')}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _js_get_text(self, page, selector: str) -> dict:
+        """纯 JS 获取元素文本"""
+        js_code = f"""
+        (function() {{
+            var selector = '{selector.replace("'", "\\'")}';
+            var el = null;
+            try {{ el = document.querySelector(selector); }} catch(e) {{}}
+            if (!el && selector.startsWith('//')) {{
+                try {{ var r = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r.singleNodeValue; }} catch(e) {{}}
+            }}
+            if (!el) {{
+                var all = document.querySelectorAll('*');
+                for (var i = 0; i < all.length; i++) {{
+                    if ((all[i].innerText || '').trim().includes(selector)) {{ el = all[i]; break; }}
+                }}
+            }}
+            if (!el) return {{success: false, error: 'Element not found'}};
+            return {{success: true, text: el.innerText || el.value || '', tag: el.tagName}};
+        }})();
+        """
+        try:
+            result = page.run_js(js_code)
+            if result.get('success'):
+                return {"success": True, "text": result.get('text', ''), "tag": result.get('tag', '')}
+            else:
+                return {"success": False, "error": result.get('error', '获取文本失败')}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _js_get_attribute(self, page, selector: str, attr: str) -> dict:
+        """纯 JS 获取元素属性"""
+        js_code = f"""
+        (function() {{
+            var selector = '{selector.replace("'", "\\'")}';
+            var attr = '{attr}';
+            var el = null;
+            try {{ el = document.querySelector(selector); }} catch(e) {{}}
+            if (!el && selector.startsWith('//')) {{
+                try {{ var r = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r.singleNodeValue; }} catch(e) {{}}
+            }}
+            if (!el) return {{success: false, error: 'Element not found'}};
+            return {{success: true, value: el.getAttribute(attr) || el[attr], tag: el.tagName}};
+        }})();
+        """
+        try:
+            result = page.run_js(js_code)
+            if result.get('success'):
+                return {"success": True, "value": result.get('value', ''), "tag": result.get('tag', '')}
+            else:
+                return {"success": False, "error": result.get('error', '获取属性失败')}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_execute_script(self, script: str = None, wait_after: float = 1.0) -> dict:
+        """
+        执行 JavaScript 代码
+
+        Args:
+            script: JavaScript 代码
+            wait_after: 执行后等待秒数
+
+        Returns:
+            {"success": bool, "result": Any, "error": str}
+        """
+        if not script:
+            return {"success": False, "error": "需要提供 script 参数"}
+
+        try:
+            page = self._get_page()
+            result = page.run_js(script)
+            page.wait(wait_after)
+            return {
+                "success": True,
+                "result": result,
+                "hint": f"JS 已执行，等待 {wait_after}s"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def _cmd_find_button(self, keyword: str = None) -> dict:
         """
@@ -1181,25 +1465,90 @@ class WebFetch(BaseCell):
             page = self._get_page()
             buttons = []
 
-            # 用 JS 批量获取所有可点击元素
             js_code = """
                 const results = [];
-                const elements = document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"], .btn, [class*="button"], [class*="btn"]');
-                elements.forEach(el => {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0) {
+                const seen = new Set();
+
+                // 遍历 Shadow DOM 的递归函数
+                function traverseShadowRoot(root, depth) {
+                    if (depth > 5) return;  // 防止无限递归
+                    try {
+                        // 获取 shadow root 中的所有可点击元素
+                        const selectors = [
+                            'button', 'a', 'input', '[role="button"]', '[role="tab"]',
+                            '[role="menuitem"]', '[role="link"]', 'div', 'span', 'li', 'label'
+                        ];
+                        selectors.forEach(sel => {
+                            try {
+                                root.querySelectorAll(sel).forEach(el => processElement(el, depth));
+                            } catch(e) {}
+                        });
+                        // 递归遍历子 shadow roots
+                        try {
+                            root.querySelectorAll('*').forEach(el => {
+                                if (el.shadowRoot) {
+                                    traverseShadowRoot(el.shadowRoot, depth + 1);
+                                }
+                            });
+                        } catch(e) {}
+                    } catch(e) {}
+                }
+
+                // 处理单个元素
+                function processElement(el, depth) {
+                    try {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) return;
+                        if (rect.top >= window.innerHeight || rect.bottom <= 0) return;
+
+                        const style = window.getComputedStyle(el);
+                        const cursor = style.cursor;
                         const text = (el.innerText || el.value || el.alt || el.title || '').trim();
-                        if (text || el.id || el.className) {
-                            results.push({
-                                tag: el.tagName.toLowerCase(),
-                                text: text.slice(0, 100),
-                                id: el.id,
-                                className: el.className,
-                                href: el.href || ''
+                        const tag = el.tagName.toLowerCase();
+
+                        // 只要有文本内容或者是可点击的，就收集
+                        if (!text && cursor !== 'pointer' && !el.onclick && !el.getAttribute('href') && !el.getAttribute('role')) return;
+
+                        const elemId = el.id || '';
+                        const cls = el.className || '';
+                        const key = tag + '|' + cls + '|' + elemId + '|' + text.slice(0, 20);
+                        if (seen.has(key)) return;
+                        seen.add(key);
+
+                        results.push({
+                            tag: tag,
+                            text: text.slice(0, 100),
+                            id: elemId,
+                            className: cls,
+                            href: el.href || '',
+                            cursor: cursor,
+                            hasOnclick: !!el.onclick,
+                            role: el.getAttribute('role') || '',
+                            inShadowDOM: depth > 0
+                        });
+                    } catch(e) {}
+                }
+
+                // 1. 先处理主文档
+                document.querySelectorAll('button, a, input, [role], div, span, li, label').forEach(el => processElement(el, 0));
+
+                // 2. 遍历 Shadow DOM
+                traverseShadowRoot(document, 0);
+
+                // 3. 遍历 iframes
+                document.querySelectorAll('iframe').forEach(iframe => {
+                    try {
+                        const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                        if (iframeDoc) {
+                            iframeDoc.querySelectorAll('button, a, input, [role], div, span, li, label').forEach(el => {
+                                processElement(el, 0);
+                                // 如果 iframe 内有 shadow DOM，也遍历
+                                if (el.shadowRoot) traverseShadowRoot(el.shadowRoot, 1);
                             });
                         }
-                    }
+                    } catch(e) {}  // 跨域 iframe 可能访问失败
                 });
+
                 return results;
             """
 
@@ -1207,54 +1556,109 @@ class WebFetch(BaseCell):
                 elements = page.run_js(js_code)
                 keyword_lower = (keyword or '').lower()
 
-                # 收集所有候选按钮并打分
+                # 如果有关键词，先深度搜索包含关键词的元素
+                keyword_elements = []
+                if keyword_lower:
+                    keyword_elements = page.run_js("""
+                        const results = [];
+                        const keyword = arguments[0];
+                        if (!keyword) return results;
+
+                        function deepSearch(root) {
+                            try {
+                                const allElements = root.querySelectorAll('*');
+                                allElements.forEach(el => {
+                                    try {
+                                        const text = (el.innerText || el.value || '').trim();
+                                        if (text && text.toLowerCase().includes(keyword.toLowerCase())) {
+                                            const rect = el.getBoundingClientRect();
+                                            if (rect.width > 0 && rect.height > 0 &&
+                                                rect.top < window.innerHeight && rect.bottom > 0) {
+                                                const style = window.getComputedStyle(el);
+                                                const tag = el.tagName.toLowerCase();
+                                                results.push({
+                                                    tag: tag,
+                                                    text: text.slice(0, 100),
+                                                    id: el.id || '',
+                                                    className: el.className || '',
+                                                    href: el.href || '',
+                                                    cursor: style.cursor,
+                                                    hasOnclick: !!el.onclick,
+                                                    role: el.getAttribute('role') || '',
+                                                    inShadowDOM: false,
+                                                    foundByText: true
+                                                });
+                                            }
+                                        }
+                                    } catch(e) {}
+                                });
+                            } catch(e) {}
+                        }
+
+                        deepSearch(document);
+                        document.querySelectorAll('iframe').forEach(iframe => {
+                            try {
+                                const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                                if (iframeDoc) deepSearch(iframeDoc);
+                            } catch(e) {}
+                        });
+
+                        return results;
+                    """, keyword_lower)
+
                 candidates = []
-                for el in elements:
+                seen = set()
+
+                def add_candidate(el, found_by_text=False):
+                    nonlocal candidates, seen
                     text = el.get('text', '')
                     cls = el.get('className', '')
                     elem_id = el.get('id', '')
                     tag = el.get('tag', 'button')
                     href = el.get('href', '')
+                    key = f"{tag}|{cls}|{elem_id}|{text[:20]}"
+                    if key in seen:
+                        return
+                    seen.add(key)
 
-                    # 构建选择器（优先级：id > 特定类名 > 文本 xpath）
                     if elem_id:
                         selector = f"#{elem_id}"
-                        selector_quality = 3  # ID 选择器最可靠
+                        selector_quality = 3
                     elif cls:
-                        # 过滤掉通用的类名，选择更具体的
                         class_list = cls.split()
                         specific_classes = [c for c in class_list if not self._is_generic_class(c)]
                         if specific_classes:
                             selector = f".{specific_classes[0]}"
                             selector_quality = 2
                         else:
-                            # 使用 tag + 类名组合
-                            selector = f"{tag}.{class_list[0]}"
+                            selector = f"{tag}.{class_list[0]}" if class_list else tag
                             selector_quality = 1
                     else:
-                        # 用文本内容构建 xpath（最不可靠）
                         safe_text = text[:20].replace("'", "\\'")
                         selector = f"//{tag}[contains(text(), '{safe_text}')]"
                         selector_quality = 0
 
-                    # 计算匹配分数
                     score = selector_quality * 10
-                    if keyword_lower:
+                    cursor = el.get('cursor', '')
+                    has_onclick = el.get('hasOnclick', False)
+                    role = el.get('role', '')
+
+                    # cursor: pointer 或有 onclick 的元素优先级更高
+                    if cursor == 'pointer' or has_onclick:
+                        score += 30
+                    # role 属性如果是 tab、button 等，加分
+                    if role in ['tab', 'button', 'menuitem', 'link']:
+                        score += 15
+                    # Shadow DOM 内的元素优先级降低
+                    if el.get('inShadowDOM', False):
+                        score -= 10
+                    # 通过文本搜索找到的，如果关键词完全匹配，加最高分
+                    if found_by_text and keyword_lower:
                         text_lower = text.lower()
-                        cls_lower = cls.lower()
-                        # 完全匹配关键词加分
                         if keyword_lower == text_lower:
-                            score += 100
+                            score += 200
                         elif keyword_lower in text_lower:
-                            score += 50
-                        elif keyword_lower in cls_lower:
-                            score += 20
-                        # 按钮类标签加分
-                        if tag in ['button', 'input']:
-                            score += 10
-                        # 有 href 的链接加分（如果是搜索相关）
-                        if href and any(k in href.lower() for k in ['search', 'query', 'submit']):
-                            score += 5
+                            score += 100
 
                     candidates.append({
                         "text": text,
@@ -1264,14 +1668,19 @@ class WebFetch(BaseCell):
                         "selector_quality": selector_quality
                     })
 
+                # 先添加通过关键词深度搜索找到的元素（优先）
+                for el in keyword_elements:
+                    add_candidate(el, found_by_text=True)
+
+                # 再添加常规搜索到的元素
+                for el in elements:
+                    if el not in keyword_elements:
+                        add_candidate(el)
+
                 # 按分数排序
                 candidates.sort(key=lambda x: x["score"], reverse=True)
 
-                # 如果有关键词，只返回匹配的
-                if keyword_lower:
-                    buttons = [c for c in candidates if keyword_lower in c["text"].lower() or keyword_lower in c.get("selector", "").lower()][:10]
-                else:
-                    buttons = candidates[:10]
+                buttons = candidates[:10]
 
             except Exception as e:
                 logger.debug(f"[WebFetch] 查找按钮失败: {e}")
@@ -1286,7 +1695,7 @@ class WebFetch(BaseCell):
             return {
                 "success": True,
                 "buttons": buttons,
-                "hint": "使用 control(action='click', selector='选择器') 点击按钮"
+                "hint": "使用 control(action='js_action', selector='选择器', value='click') 点击按钮"
             }
 
         try:
@@ -1304,18 +1713,50 @@ class WebFetch(BaseCell):
             page = self._get_page()
             if action == 'click':
                 if selector:
-                    # 先尝试等待元素出现（处理动态加载）
+                    element = None
+                    selector_tried = []
+
+                    # 尝试多种选择器查找方式
+                    # 1. 直接用 DrissionPage ele()
                     try:
                         page.wait.ele_displayed(selector, timeout=3)
-                    except:
-                        pass  # 继续尝试查找
-                    
-                    element = page.ele(selector, timeout=5)
+                        element = page.ele(selector, timeout=5)
+                        if element:
+                            selector_tried.append(f"Drission ele()")
+                    except Exception as e:
+                        selector_tried.append(f"Drission ele(): {e}")
+
+                    # 2. 如果是 XPath，尝试用 JS 查找
+                    if not element and (selector.startswith('//') or selector.startswith('(//')):
+                        try:
+                            js_result = page.run_js(f"""
+                                var result = document.evaluate('{selector}', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                                return result.singleNodeValue;
+                            """)
+                            if js_result:
+                                # 包装成 Drission 元素
+                                from DrissionPage import ChromiumPage
+                                element = page.ele(f'xpath:{selector}', timeout=1)
+                                selector_tried.append("JS + XPath")
+                        except Exception as e:
+                            selector_tried.append(f"JS XPath: {e}")
+
+                    # 3. 如果还是找不到，尝试纯 JS 查找文本
+                    if not element:
+                        try:
+                            # 搜索包含目标文本的元素
+                            safe_selector = selector.replace("'", "\\'")
+                            element = page.ele(f'text:{selector}', timeout=1)
+                            selector_tried.append(f"text search")
+                        except:
+                            pass
+
                     if not element:
                         return {
                             "success": False,
                             "error": f"Element not found: {selector}",
-                            "hint": "选择器格式错误或不支持。建议：1) 先用 find_button 查找按钮获取正确的选择器 2) 使用 CSS 选择器如 #id 或 .class 3) 或使用 XPath 如 //button[contains(text(),'文本')]"
+                            "detail": f"尝试的方式: {' | '.join(selector_tried)}",
+                            "hint": "推荐使用 js_action 命令（纯JS实现，更可靠）：control(action='js_action', selector='选择器', value='click')"
                         }
                     
                     # 检查元素是否可见
@@ -1325,45 +1766,137 @@ class WebFetch(BaseCell):
                     except:
                         pass  # 某些元素可能没有 states 属性
                     
-                    # 滚动到元素（优先使用 JS，更可靠）
+                    # 滚动到元素
                     try:
                         page.run_js("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
-                        page.wait(0.3)  # 等待滚动完成
+                        page.wait(0.3)
                     except:
                         try:
                             element.scroll.to_see()
                         except:
-                            pass  # 如果滚动失败也继续尝试点击
-                    
-                    # 使用多种点击方式
+                            pass
+
                     click_success = False
-                    
+                    error_messages = []
+
+                    def get_element_center(el):
+                        return page.run_js("""
+                            const rect = arguments[0].getBoundingClientRect();
+                            return {
+                                x: rect.left + rect.width / 2,
+                                y: rect.top + rect.height / 2
+                            };
+                        """, el)
+
+                    def check_occlusion(x, y, target_el):
+                        return page.run_js("""
+                            var el = document.elementFromPoint(arguments[0], arguments[1]);
+                            return el === arguments[2] || arguments[2].contains(el);
+                        """, x, y, target_el)
+
                     # 方式1：DrissionPage 原生点击
                     try:
                         element.click()
                         click_success = True
-                    except Exception as click_err:
-                        logger.debug(f"[WebFetch] 原生点击失败: {click_err}")
-                    
-                    # 方式2：JS 点击（备用）
+                        logger.info("[WebFetch] 原生点击成功")
+                    except Exception as e:
+                        error_messages.append(f"原生: {e}")
+                        logger.debug(f"[WebFetch] 原生点击失败: {e}")
+
+                    # 方式2：JS element.click()
                     if not click_success:
                         try:
-                            # 尝试通过元素直接点击
                             page.run_js("arguments[0].click();", element)
                             click_success = True
-                        except Exception as js_click_err:
-                            logger.debug(f"[WebFetch] JS 元素点击失败: {js_click_err}")
-                    
-                    # 方式3：通过选择器点击（最后备用）
+                            logger.info("[WebFetch] JS click() 成功")
+                        except Exception as e:
+                            error_messages.append(f"JS click: {e}")
+                            logger.debug(f"[WebFetch] JS click 失败: {e}")
+
+                    # 方式3：dispatchEvent MouseEvent
                     if not click_success:
                         try:
-                            # 转换选择器用于 JS（简单处理）
-                            js_selector = selector.replace("'", "\\'")
-                            page.run_js(f"document.querySelector('{js_selector}').click();")
+                            page.run_js("""
+                                var el = arguments[0];
+                                var evt = new MouseEvent('click', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window
+                                });
+                                el.dispatchEvent(evt);
+                            """, element)
                             click_success = True
-                        except Exception as selector_click_err:
-                            logger.debug(f"[WebFetch] JS 选择器点击失败: {selector_click_err}")
-                            raise Exception(f"点击失败，已尝试多种方式: {selector}")
+                            logger.info("[WebFetch] dispatchEvent 成功")
+                        except Exception as e:
+                            error_messages.append(f"dispatch: {e}")
+                            logger.debug(f"[WebFetch] dispatchEvent 失败: {e}")
+
+                    # 方式4：坐标 + elementFromPoint
+                    if not click_success:
+                        try:
+                            center = get_element_center(element)
+                            x, y = center['x'], center['y']
+                            page.run_js(f"""
+                                var el = document.elementFromPoint({x}, {y});
+                                if (el) el.click();
+                            """)
+                            click_success = True
+                            logger.info(f"[WebFetch] 坐标点击成功: ({x}, {y})")
+                        except Exception as e:
+                            error_messages.append(f"坐标: {e}")
+                            logger.debug(f"[WebFetch] 坐标点击失败: {e}")
+
+                    # 方式5：检测遮挡 + 移除遮挡 + 点击
+                    if not click_success:
+                        try:
+                            center = get_element_center(element)
+                            x, y = center['x'], center['y']
+                            blocking = page.run_js("""
+                                var el = document.elementFromPoint(arguments[0], arguments[1]);
+                                if (el && el !== arguments[2] && !arguments[2].contains(el)) {
+                                    return {
+                                        exists: true,
+                                        tag: el.tagName,
+                                        text: el.innerText || '',
+                                        className: el.className
+                                    };
+                                }
+                                return {exists: false};
+                            """, x, y, element)
+                            if blocking.get('exists'):
+                                logger.info(f"[WebFetch] 检测到遮挡元素: {blocking['tag']} - {blocking.get('text', '')[:20]}")
+                                # 尝试隐藏遮挡元素
+                                page.run_js("""
+                                    var el = document.elementFromPoint(arguments[0], arguments[1]);
+                                    if (el && el !== arguments[2] && !arguments[2].contains(el)) {
+                                        el.style.display = 'none';
+                                    }
+                                """, x, y, element)
+                                page.wait(0.2)
+                                # 再试点击
+                                page.run_js("arguments[0].click();", element)
+                                click_success = True
+                                logger.info("[WebFetch] 移除遮挡后点击成功")
+                        except Exception as e:
+                            error_messages.append(f"去遮挡: {e}")
+                            logger.debug(f"[WebFetch] 去除遮挡失败: {e}")
+
+                    # 方式6：滚动 + 重新获取元素 + 点击
+                    if not click_success:
+                        try:
+                            page.scroll.down(100)
+                            page.wait(0.3)
+                            page.run_js("arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});", element)
+                            page.wait(0.3)
+                            page.run_js("arguments[0].click();", element)
+                            click_success = True
+                            logger.info("[WebFetch] 滚动后再点击成功")
+                        except Exception as e:
+                            error_messages.append(f"滚动重试: {e}")
+                            logger.debug(f"[WebFetch] 滚动重试失败: {e}")
+
+                    if not click_success:
+                        raise Exception(f"点击失败，已尝试: {' | '.join(error_messages)}")
                 elif x is not None and y is not None:
                     page.click((x, y))
             elif action == 'input':
