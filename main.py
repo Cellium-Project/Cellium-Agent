@@ -62,6 +62,18 @@ class MainApplication(LogMixin):
         self.logger.info("API 文档: http://%s:%d/docs", _host, _port)
         self.logger.info("=" * 50)
 
+        import threading
+
+        def open_browser():
+            import webbrowser
+            try:
+                webbrowser.open(f"http://{_host}:{_port}")
+            except Exception:
+                pass
+
+        if sys.platform == "win32" or sys.platform == "darwin" or os.environ.get("DISPLAY"):
+            threading.Thread(target=open_browser, daemon=True).start()
+
         uvicorn.run(self.app, host=_host, port=_port, log_config=setup_uvicorn_logging())
 
     def _ensure_available_port(self, host: str, preferred_port: int) -> int:
