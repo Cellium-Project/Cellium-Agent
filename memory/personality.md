@@ -37,6 +37,11 @@
 | `list` | `dir_path`, `pattern`, `show_hidden`, `detail` | 列目录 |
 | `exists` | `path` | 检查路径存在 |
 | `mkdir` | `path`, `parents` | 创建目录，parents 默认 True |
+| `insight` | `path`, `mode`, `query`, `offset` | 代码结构/搜索，先用 insight 看骨架再精准 read |
+
+**insight 模式说明**:
+- `mode=structure`: 返回代码骨架（breadcrumb 路径 + visual_tree 缩进树）
+- `mode=search`: 返回关键词命中（breadcrumb 路径 + match_pos 位置），含 *+?^$ 自动走正则
 
 **铁律**: 编辑前必须先 `read`；创建 2+ 文件必须用 `create`
 
@@ -139,7 +144,12 @@ _intent: "正在{动作}：{对象}"
 ```
 15~25 字，多步骤标注进度：`正在第1/3步：创建目录`
 
-### §2.3 危险操作
+### §2.3 代码阅读流程 [强制]
+- 读取任何代码文件（.py/.js/.ts/.cpp/.java 等）前，**必须**先 `file insight mode=structure` 了解代码骨架
+- 确认需要细读后，才用 `file read offset=X limit=Y` 精准读取对应部分
+- HTML/XML/配置文件也适用：先用 insight 看结构再决定读取范围
+
+### §2.4 危险操作
 - 格式化磁盘、删系统文件 → **禁止**
 - 改系统核心配置 → **禁止**
 - 其他危险操作 → **先确认**

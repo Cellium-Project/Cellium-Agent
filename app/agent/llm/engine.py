@@ -43,85 +43,70 @@ class ChatResponse:
         return len(self.tool_calls) > 0
 
 
-# 格式: "model_name" → ModelInfo(context_window, max_output, supports_tools)
-_MODEL_REGISTRY: Dict[str, ModelInfo] = {
-    # ---- OpenAI ----
-    "gpt-4o":            ModelInfo(128000, 16384, True),
-    "gpt-4o-mini":       ModelInfo(128000, 16384, True),
-    "gpt-4-turbo":       ModelInfo(128000, 4096, True),
-    "gpt-4":             ModelInfo(8192, 8192, True),
-    "gpt-4-32k":         ModelInfo(32768, 8192, True),
-    "gpt-3.5-turbo":     ModelInfo(16385, 4096, True),
-    "o1":                ModelInfo(200000, 100000, False),  # 推理模型，tool 支持有限
-    "o1-mini":            ModelInfo(128000, 65536, False),
-    "o3-mini":            ModelInfo(200000, 100000, False),
-
-    # ---- 阶跃星辰 (StepFun) ----
-    "step-1v":            ModelInfo(256000, 8000, True),
-    "step-1-flash":       ModelInfo(256000, 8000, True),
-    "step-1.5v":          ModelInfo(256000, 16000, True),
-    "step-1.5-flash":     ModelInfo(256000, 16000, True),
-    "step-2-16k":         ModelInfo(16000, 8192, True),
-    "step-2-medium":      ModelInfo(32000, 8192, True),
-    "step-2-turbo":       ModelInfo(128000, 8192, True),
-    "step-3":             ModelInfo(256000, 16000, True),
-    "step-3-flash":       ModelInfo(131072, 8192, True),
-    "step-3.5-flash-260307": ModelInfo(131072, 8192, True),  # 2026-03 版本
-
-    # ---- DeepSeek ----
-    "deepseek-chat":      ModelInfo(128000, 8192, True),      # 128K 上下文，默认 4K，最大 8K
-    "deepseek-reasoner":  ModelInfo(128000, 65536, True),     # 128K 上下文，支持 tool_use
-
-    # ---- 通义千问 (Qwen) via OpenAI 兼容接口 ----
-    "qwen-turbo":         ModelInfo(8192, 2048, True),
-    "qwen-plus":          ModelInfo(32768, 8192, True),
-    "qwen-max":           ModelInfo(32768, 8192, True),
-    "qwen-long":          ModelInfo(1000000, 8192, True),  # 百万上下文
-    "qwq-32b":            ModelInfo(32768, 16384, False),  # 推理模型
-
-    # ---- Ollama 常见模型 (本地) ----
-    "llama3:latest":      ModelInfo(128000, 4096, True),
-    "llama3.1:latest":    ModelInfo(128000, 4096, True),
-    "llama3.2:latest":    ModelInfo(128000, 4096, True),
-    "llama3.3:latest":    ModelInfo(128000, 4096, True),
-    "qwen2:7b":           ModelInfo(32768, 2048, True),
-    "qwen2:72b":          ModelInfo(32768, 2048, True),
-    "qwen2.5:7b":         ModelInfo(32768, 2048, True),
-    "qwen2.5:72b":        ModelInfo(32768, 2048, True),
-    "qwen3:latest":       ModelInfo(32768, 2048, True),
-    "mistral:latest":     ModelInfo(32768, 4096, True),
-    "codellama:latest":   ModelInfo(16384, 4096, True),
-    "phi3:latest":        ModelInfo(128000, 4096, True),
-    "gemma2:latest":      ModelInfo(8192, 4096, True),
-    "command-r:latest":   ModelInfo(128000, 4096, True),
-    "deepseek-v2:16b":    ModelInfo(32768, 4096, True),
-
-    # ---- Claude (via OpenAI 兼容代理) ----
-    "claude-3-5-sonnet":  ModelInfo(200000, 8192, True),
-    "claude-3-opus":      ModelInfo(200000, 4096, True),
-    "claude-3-haiku":     ModelInfo(200000, 4096, True),
-
-    # ---- 通用兜底 ----
+# ---- 默认模型注册表（内置兜底）----
+_DEFAULT_MODEL_REGISTRY: Dict[str, ModelInfo] = {
+    "default": ModelInfo(8192, 4096, True),
 }
 
 
-def _match_model(model_name: str) -> Optional[ModelInfo]:
+def _load_model_registry() -> Dict[str, ModelInfo]:
+    """从配置文件加载模型注册表，失败时使用内置默认值"""
+    import yaml
+    from pathlib import Path
 
+    registry_path = Path(__file__).resolve().parent.parent.parent.parent / "config" / "agent" / "model_registry.yaml"
+
+    try:
+        if registry_path.exists():
+            with open(registry_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            models = data.get("models", {}) or {}
+            result = {}
+            for name, values in models.items():
+                if isinstance(values, (list, tuple)) and len(values) >= 3:
+                    result[str(name)] = ModelInfo(
+                        context_window=int(values[0]),
+                        max_output_tokens=int(values[1]),
+                        supports_tools=bool(values[2]),
+                    )
+            if result:
+                logger.info("[LLM] 从 %s 加载了 %d 个模型", registry_path, len(result))
+                return result
+    except Exception as e:
+        logger.warning("[LLM] 加载模型注册表失败，使用内置默认值: %s", e)
+
+    return dict(_DEFAULT_MODEL_REGISTRY)
+
+
+# 全局缓存（进程内只加载一次）
+_MODEL_REGISTRY: Optional[Dict[str, ModelInfo]] = None
+
+
+def _get_model_registry() -> Dict[str, ModelInfo]:
+    global _MODEL_REGISTRY
+    if _MODEL_REGISTRY is None:
+        _MODEL_REGISTRY = _load_model_registry()
+    return _MODEL_REGISTRY
+
+
+def _match_model(model_name: str) -> Optional[ModelInfo]:
     if not model_name:
         return None
 
+    registry = _get_model_registry()
     key = model_name.strip().lower()
 
-    if key in _MODEL_REGISTRY:
-        return _MODEL_REGISTRY[key]
+    if key in registry:
+        return registry[key]
 
-    for reg_key, info in _MODEL_REGISTRY.items():
+    for reg_key, info in registry.items():
         if key.startswith(reg_key):
             logger.info("[LLM] 模型 '%s' 前缀匹配到注册项 '%s'", model_name, reg_key)
             return info
 
     base = key.split(":")[0]
-    for reg_key, info in _MODEL_REGISTRY.items():
+    for reg_key, info in registry.items():
         reg_base = reg_key.split(":")[0]
         if base == reg_base or reg_key.startswith(base + ":"):
             logger.info("[LLM] 模型 '%s' Ollama-tag 匹配到 '%s'", model_name, reg_key)
@@ -129,7 +114,7 @@ def _match_model(model_name: str) -> Optional[ModelInfo]:
 
     logger.warning(
         "[LLM] 模型 '%s' 不在内置数据库中，使用保守默认值 "
-        "(context=8192, max_output=4096)。如需精确值请配置或提交 issue。",
+        "(context=8192, max_output=4096)。如需精确值请在 config/agent/model_registry.yaml 中配置。",
         model_name,
     )
     return None
@@ -1064,7 +1049,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
 
 def list_supported_models() -> Dict[str, ModelInfo]:
     """列出所有内置支持的模型及其能力"""
-    return dict(_MODEL_REGISTRY)
+    return dict(_get_model_registry())
 
 
 def query_model_capability(model_name: str) -> Optional[ModelInfo]:

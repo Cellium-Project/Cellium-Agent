@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-文件操作工具 — 读写删查，替代不可靠的 shell 文件命令
+文件操作工具 — 读写删查
 
 设计原则：
   - 所有文件操作走 Python 原生 IO，避免 PowerShell 转义/编码问题
@@ -18,7 +18,7 @@ import tempfile
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from .base_tool import BaseTool
 
@@ -28,6 +28,26 @@ logger = logging.getLogger(__name__)
 _MAX_FILE_SIZE = 2 * 1024 * 1024   # 单次读取最大 2MB
 _MAX_LIST_ENTRIES = 200            # 列目录最多返回 200 条
 _ALLOWED_ROOTS = None              # 允许的根目录列表（None=不限制）
+
+_STRUCTURE_PATTERNS = {
+    '.py': re.compile(r'^\s*(class|def|async\s+def)\s+(?P<name>[\w\.]+)'),
+    '.cpp': re.compile(r'^\s*(?:[\w\d<>*&:]+\s+)?(?P<name>[\w\d_:]+(?:<[\w\d\s,:]+>)?(?:::[\w\d_:]+)*)\s*(?:\{|:)'),
+    '.h': re.compile(r'^\s*(class|struct|namespace|enum|typedef|using)\s+(?P<name>[\w\d_:]+(?:<.*>)?)'),
+    '.c': re.compile(r'^\s*(struct|class|enum|namespace|typedef|union)\s+(?P<name>[\w\d_]+)'),
+    '.cs': re.compile(r'^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:internal\s+)?(?:static\s+)?(?:abstract\s+)?(?:sealed\s+)?(?:partial\s+)?(?:override\s+)?(?:virtual\s+)?(?:async\s+)?(?:[\w\d<>\[\]]+\s+)?(?:class\s+|struct\s+|interface\s+|namespace\s+|enum\s+|record\s+|delegate\s+|void\s+|[\w\d<>\[\]]+\s+)(?P<name>[\w\d_]+)'),
+    '.java': re.compile(r'^\s*(?:public\s+)?(class|interface|enum|record)\s+(?P<name>[\w\d_]+)|^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:static\s+)?(?:abstract\s+)?(?:final\s+)?(?:synchronized\s+)?(?:[\w\d<>\[\]]+\s+)?(?P<name2>[\w\d_]+)\s*\('),
+    '.js': re.compile(r'^\s*(export\s+(default\s+)?)?(class|function|const|async)\s+(?P<name>\w+)'),
+    '.ts': re.compile(r'^\s*(export\s+)?(interface|type|class|function)\s+(?P<name>\w+)'),
+    '.go': re.compile(r'^\s*(func(?:\s+\([^)]+\))?|type|const|var|interface)\s+(?P<name>[\w\d_]+)'),
+    '.rs': re.compile(r'^\s*(pub\s+)?(struct|enum|(?:async\s+)?fn|impl|trait|const|static(?:\s+mut)?)\s+(?P<name>[\w\d_]+)'),
+    '.php': re.compile(r'^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:static\s+)?(?:abstract\s+)?(?:final\s+)?(?:const\s+|class\s+|interface\s+|trait\s+|enum\s+|function\s+)(?P<name>[\w\d_]+)'),
+    '.rb': re.compile(r'^\s*(class|module|def|attr_accessor|attr_reader|attr_writer|include|extend|prepend)\s+(?P<name>[\w\d_:]+)'),
+    '.kt': re.compile(r'^\s*(class|interface|sealed\s+class|enum\s+class|object|fun|data\s+class)\s+(?P<name>[\w\d_]+)'),
+    '.css': re.compile(r'^\s*(?P<name>(?:@media|@keyframes|@font-face|@supports)[\s\S]*?|[@:.]?[\w.-]+)\s*(?:\{|$)'),
+    '.html': re.compile(r'^\s*<(?P<name>[a-z]+)(?:\s|>)'),
+    '.md': re.compile(r'^(#{1,6})\s+(?P<name>.+)'),
+}
+_DEFAULT_PATTERN = re.compile(r'^\s*(class|def|struct|function|namespace)\s+(?P<name>[\w\d_:]+)')
 
 
 @dataclass
@@ -41,13 +61,6 @@ class FileState:
 
 
 class FileTool(BaseTool):
-    """
-    文件操作工具（多子命令模式）
-
-    与 ShellTool 的区别：
-      - ShellTool: 通用命令执行，适合进程/网络/系统管理
-      - FileTool:   专用文件IO，Python原生，编码可靠
-    """
 
     name = "file"
     description = (
@@ -62,7 +75,10 @@ class FileTool(BaseTool):
         "| list | 列目录 | pattern 支持 glob 如 *.py |\n"
         "| exists | 检查路径存在 | - |\n"
         "| mkdir | 创建目录 | parents=True 自动建父目录 |\n"
-        "| insight | 搜索/结构/摘要 | 大文件先 insight 再 read |"
+        "| insight | 搜索/结构/摘要 | 先用 insight 看骨架再精准 read |\n"
+        "\n\n"
+        "**insight**: structure 返回骨架（breadcrumb/visual_tree），search 返回命中（breadcrumb/match_pos）\n"
+        "**read**: 默认 offset=0, limit=500，建议先用 insight 看结构再精准读取"
     )
 
     def __init__(self, allowed_roots=None):
@@ -558,7 +574,7 @@ class FileTool(BaseTool):
             **({"errors": failed} if failed else {}),
         }
 
-    def _cmd_insight(self, path: str, mode: str = "auto", query: str = None) -> Dict[str, Any]:
+    def _cmd_insight(self, path: str, mode: str = "auto", query: str = None, offset: int = 0) -> Dict[str, Any]:
         """
         理解层工具：返回文件大纲或搜索索引。
         原则：绝不返回超过 2KB 的数据，强制 Agent 进行分层阅读。
@@ -572,7 +588,7 @@ class FileTool(BaseTool):
         encoding = self._detect_encoding(abs_path)
 
         if mode == "auto":
-            if ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c']:
+            if ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.h', '.cs', '.rs', '.php', '.rb', '.kt', '.css', '.html', '.md']:
                 mode = "structure"
             elif query or ext in ['.log', '.txt']:
                 mode = "search"
@@ -584,78 +600,200 @@ class FileTool(BaseTool):
                 if mode == "structure":
                     return self._extract_structure(f, ext)
                 elif mode == "search":
-                    return self._stream_search(f, query)
+                    return self._stream_search(f, query, ext=ext, offset=offset)
                 else:
                     return self._file_summary(f, abs_path, file_size)
         except Exception as e:
             return {"success": False, "error": f"Insight failed: {str(e)}"}
 
     # ================================================================
-    # 理解层私有实现
+    #  理解层私有实现
     # ================================================================
 
     def _extract_structure(self, f, ext: str) -> Dict[str, Any]:
-        """模式1：提取代码骨架（Classes, Functions, Imports）"""
-        patterns = {
-            '.py': r'^\s*(class\s+|def\s+|import\s+|from\s+)(?P<name>[\w\.]+)',
-            '.js': r'^\s*(export\s+)?(function|class|const|async)\s+(?P<name>\w+)',
-            '.ts': r'^\s*(export\s+)?(interface|type|class|function)\s+(?P<name>\w+)'
-        }
-        regex = patterns.get(ext, r'^\s*(class|function|def|struct|interface)\s+(?P<name>\w+)')
+        regex = _STRUCTURE_PATTERNS.get(ext, _DEFAULT_PATTERN)
+        is_markdown = (ext == '.md')
 
-        raw_symbols = []
+        _CONTROL_FLOW = {"if", "for", "while", "switch", "elif", "else", "try", "except", "finally"}
+        _ACCESS_SPECIFIERS = {"public:", "private:", "protected:"}
+        _CLASS_KEYWORDS = {"class", "struct", "interface"}
+
+        symbols = []
+        stack = []
+        current_access = ""
+
         f.seek(0)
         for i, line in enumerate(f):
-            match = re.search(regex, line)
-            if match:
-                raw_symbols.append({
+            stripped = line.strip()
+            if not stripped or stripped.startswith(('/', '*')):
+                continue
+
+            if is_markdown:
+                match = _STRUCTURE_PATTERNS['.md'].match(stripped)
+                if not match:
+                    continue
+                level = len(match.group(1))
+                name = match.group("name").strip()
+                breadcrumb = " > ".join([s["name"] for s in stack])
+                symbols.append({
                     "line": i + 1,
-                    "type": match.group(1).strip() if match.groups() else "symbol",
-                    "name": match.group("name"),
-                    "raw": line.strip()[:100]
+                    "level": level,
+                    "breadcrumb": breadcrumb,
+                    "name": name,
+                    "indent": (level - 1) * 4,
                 })
-            if len(raw_symbols) >= 150:
-                break  
+                stack = stack[:level - 1]
+                stack.append({"name": name})
+                continue
 
-        results = []
-        for idx, sym in enumerate(raw_symbols):
-            end_line = raw_symbols[idx + 1]["line"] - 1 if idx + 1 < len(raw_symbols) else None
-            results.append({
-                **sym,
-                "end_line": end_line,
-                "_range_hint": f"L{sym['line']}-{end_line}" if end_line else f"L{sym['line']}+"
-            })
+            indent = self._normalize_indent(line)
 
-        return {"success": True, "type": "structure", "language": ext, "symbols": results, "total_symbols": len(results)}
+            while stack and indent <= stack[-1]['indent']:
+                stack.pop()
+                if not stack:
+                    current_access = ""
 
-    def _stream_search(self, f, query: str) -> Dict[str, Any]:
-        """模式2：流式关键词定位（替代全量 read 后的检索）"""
+            first_word = stripped.split()[0].split('(')[0] if stripped else ""
+
+            if first_word in _ACCESS_SPECIFIERS:
+                current_access = first_word.rstrip(':')
+                continue
+
+            match = regex.search(line)
+            if match:
+                name = match.group("name") or match.group("name2") or match.group("name3") or ""
+                if not name:
+                    continue
+                should_push = (first_word not in _CONTROL_FLOW) and (first_word not in _ACCESS_SPECIFIERS)
+
+                breadcrumb = " > ".join([node['name'] for node in stack])
+                display_name = f"[{current_access}] {name}" if current_access else name
+
+                symbols.append({
+                    "line": i + 1,
+                    "breadcrumb": breadcrumb,
+                    "name": display_name,
+                    "indent": indent,
+                    "raw": stripped[:60],
+                })
+
+                if should_push and stripped.endswith((':', '{', '[')):
+                    if any(kw in stripped for kw in _CLASS_KEYWORDS):
+                        current_access = ""
+                    stack.append({"indent": indent, "name": name})
+
+            if len(symbols) >= 150:
+                break
+
+        return {
+            "success": True,
+            "type": "structure",
+            "language": ext,
+            "visual_tree": self._render_visual_tree(symbols),
+            "symbols": symbols,
+            "total_symbols": len(symbols),
+        }
+
+    def _normalize_indent(self, line: str, tab_size: int = 4) -> int:
+        leading = line[:len(line) - len(line.lstrip())]
+        return len(leading.replace('\t', ' ' * tab_size))
+
+    def _render_visual_tree(self, symbols: List[Dict], max_length: int = 2000) -> str:
+        parts = []
+        for sym in symbols[:60]:
+            ctx = f"{sym['breadcrumb']} > " if sym['breadcrumb'] else ""
+            part = f"{ctx}{sym['name']}:{sym['line']}"
+            parts.append(part)
+        
+        result = " | ".join(parts)
+        if len(result) > max_length:
+            result = result[:max_length] + "..."
+        return result
+
+    def _stream_search(self, f, query: str, ext: str = None, offset: int = 0) -> Dict[str, Any]:
         if not query:
             return {"success": False, "error": "Search 模式必须提供 query 参数"}
 
+        _CONTROL_FLOW = {"if", "for", "while", "switch", "elif", "else", "try", "except", "finally"}
+        _ACCESS_SPECIFIERS = {"public:", "private:", "protected:"}
+        _CLASS_KEYWORDS = {"class", "struct", "namespace", "interface", "def", "void", "int", "auto"}
+
         hits = []
-        target = query.lower()
+        stack = []
+        current_access = ""
+
+        def _is_regex(q: str) -> bool:
+            return bool(set(q) & set('*+?^$[\\]|().{}'))
+
+        use_regex = _is_regex(query)
         f.seek(0)
 
         for i, line in enumerate(f):
-            if target in line.lower():
-                hits.append({"line": i + 1, "content": line.strip()})
-            if len(hits) >= 20:
-                break 
+            stripped = line.strip()
+            if not stripped:
+                continue
 
-        return {"success": True, "type": "search", "hits": hits, "query": query}
+            indent = self._normalize_indent(line)
+            while stack and indent <= stack[-1]['indent']:
+                stack.pop()
+                if not stack:
+                    current_access = ""
+
+            first_word = stripped.split('(')[0].split()[0] if stripped else ""
+            if first_word in _ACCESS_SPECIFIERS:
+                current_access = first_word.rstrip(':')
+
+            if any(k in stripped for k in _CLASS_KEYWORDS) and stripped.endswith((':', '{')):
+                if first_word not in _CONTROL_FLOW:
+                    name_hint = stripped.split('(')[0].split('{')[0].split()[-1]
+                    stack.append({"indent": indent, "name": name_hint})
+
+            if use_regex:
+                matched = re.search(query, line, re.IGNORECASE)
+            else:
+                matched = query.lower() in line.lower()
+
+            if matched:
+                breadcrumb = " > ".join([node['name'] for node in stack])
+                match_start = line.lower().find(query.lower()) if not use_regex else (matched.start() if matched else 0)
+                hits.append({
+                    "line": i + 1,
+                    "breadcrumb": breadcrumb,
+                    "access": current_access,
+                    "content": stripped,
+                    "match_pos": match_start,
+                })
+
+        total = len(hits)
+        page = hits[offset:offset + 20]
+
+        return {
+            "success": True,
+            "type": "search_with_context",
+            "query": query,
+            "hits": page,
+            "total": total,
+            "offset": offset,
+            "has_more": offset + 20 < total,
+        }
 
     def _file_summary(self, f, path: str, size: int) -> Dict[str, Any]:
         """模式3：快速摘要（适用于配置和文档）"""
         f.seek(0)
-        head = [next(f, "").strip() for _ in range(5)]  # 只看前5行
+        lines = f.readlines()
+        head = [line.strip() for line in lines[:5] if line.strip()]
+        total_lines = len(lines)
+        hint = f"文件共 {total_lines} 行，建议使用 search 模式定位关键内容"
+        if total_lines <= 5:
+            hint = "文件较短，可直接 read"
         return {
             "success": True,
             "type": "summary",
             "path": path,
             "size_kb": round(size / 1024, 2),
             "head": head,
-            "hint": "文件较长，建议使用 search 模式定位具体配置项"
+            "total_lines": total_lines,
+            "hint": hint,
         }
 
     # ================================================================

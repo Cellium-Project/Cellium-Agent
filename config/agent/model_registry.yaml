@@ -1,0 +1,68 @@
+# LLM 模型注册表
+# 格式: "model_name": [context_window, max_output_tokens, supports_tools]
+# supports_tools: true/false
+
+models:
+
+  # ---- OpenAI  ----
+  gpt-4o:           [128000, 16384, true]
+  gpt-4o-mini:      [128000, 16384, true]
+  gpt-4-turbo:      [128000, 4096, true]
+  gpt-3.5-turbo:    [16385, 4096, true]
+  o3-mini:          [200000, 100000, true]
+  gpt-5.4:          [1050000, 128000, true]  
+  gpt-5.4-mini:     [400000, 128000, true]
+  gpt-4.1:          [1048576, 32768, true]  
+
+  # ---- 阶跃星辰 (StepFun) ----
+  step-3.5-flash-260307: [256000, 18192, true]
+  step-3.5-flash:   [256000, 18192, true]
+
+  # ---- DeepSeek ----
+  deepseek-chat:     [128000, 8192, true]
+  deepseek-reasoner: [128000, 65536, true]
+
+  # ---- 通义千问 (Qwen) ----
+  qwen-turbo:       [131072, 8192, true]
+  qwen-plus:        [131072, 8192, true]
+  qwen-max:         [262144, 8192, true]
+  qwen-long:        [1000000, 8192, true]
+
+  # Qwen 2026
+  qwen3.6-plus:     [1000000, 65536, true]
+  qwen3.5-plus:     [1000000, 65536, true]
+  qwen3.5-omni-plus: [262144, 65536, true]
+
+  # ---- Ollama 本地模型 ----
+  llama3.1:latest:  [128000, 4096, true]
+  llama3.2:latest:  [128000, 4096, true]
+  llama3.3:latest:  [128000, 4096, true]
+  qwen2.5:7b:       [128000, 8192, true]
+  qwen2.5:72b:      [128000, 8192, true]
+  qwen3:latest:     [128000, 8192, true]
+  mistral:latest:   [32768, 4096, true]
+  phi3:latest:      [128000, 4096, true]
+  command-r:latest: [128000, 4096, true]
+
+  # Ollama 2026
+  gemma4:latest:    [128000, 8192, true]
+  llama4:latest:    [1000000, 8192, true]
+  qwen3.5:latest:   [256000, 8192, true]
+
+  # ---- Google Gemini ----
+  gemini-3.1-pro:   [1000000, 65536, true]
+  gemini-2.5-flash:  [1000000, 65536, true]
+
+  # ---- 智谱 AI (GLM) ----
+  glm-4:            [128000, 4096, true]
+  glm-4-plus:       [128000, 4096, true]
+  glm-4-flash:      [128000, 4096, true]
+  glm-4-long:       [1000000, 4096, true]
+  glm-4.5:          [128000, 18192, true]
+  glm-4.7:          [128000, 18192, true]
+  glm-5:            [200000, 131072, true]
+  glm-5.1:          [200000, 131072, true]
+  glm-5-code:       [200000, 131072, true]
+
+  # ---- 通用兜底 ----
+  default:          [32768, 18096, true]
