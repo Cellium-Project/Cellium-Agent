@@ -63,15 +63,18 @@ class WSConnectionManager:
     - 全局广播（所有连接）
     - 按 session_id 定向推送
     - 客户端分组
+    - 事件去重（同一 event_id 只推送一次）
     """
     _instance: Optional["WSConnectionManager"] = None
     _lock: Optional[asyncio.Lock] = None  # 延迟创建，避免无事件循环时初始化
 
     def __init__(self):
         self._clients: Dict[str, WSClient] = {}
-        self._session_clients: Dict[str, Set[str]] = {}  # session_id -> set of client_ids
+        self._session_clients: Dict[str, Set[str]] = {}  # session_id -> set of clientids
         self._client_counter = 0
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._published_event_ids: set = set()
+        self._max_published_ids: int = 10000
 
     @classmethod
     def _get_lock(cls) -> asyncio.Lock:
@@ -175,6 +178,10 @@ class WSConnectionManager:
 
     async def broadcast(self, message: WSMessage):
         """广播到所有客户端"""
+        if self._is_duplicate_event(message.data):
+            logger.debug(f"[WSManager] 事件已推送过，跳过广播 | event_id={message.data.get('event_id')}")
+            return
+
         if not self._clients:
             logger.debug("[WSManager] 无客户端，跳过广播")
             return
@@ -192,8 +199,27 @@ class WSConnectionManager:
 
         logger.debug(f"[WSManager] 广播完成: {message.type}, 客户端数: {len(self._clients)}")
 
+    def _is_duplicate_event(self, event_data: Dict[str, Any]) -> bool:
+        """检查事件是否已经推送过（去重）"""
+        event_id = event_data.get("event_id")
+        if event_id is None:
+            return False
+
+        event_key = f"{event_data.get('session_id', 'global')}:{event_id}"
+        if event_key in self._published_event_ids:
+            return True
+
+        self._published_event_ids.add(event_key)
+        if len(self._published_event_ids) > self._max_published_ids:
+            self._published_event_ids = set(list(self._published_event_ids)[-self._max_published_ids:])
+        return False
+
     async def send_to_session(self, session_id: str, message: WSMessage):
         """发送到特定 session 的所有客户端"""
+        if self._is_duplicate_event(message.data):
+            logger.debug(f"[WSManager] 事件已推送过，跳过 | session={session_id} | event_id={message.data.get('event_id')}")
+            return
+
         if session_id not in self._session_clients:
             logger.debug(f"[WSManager] session {session_id} 无关联客户端")
             return
@@ -245,12 +271,11 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
 
     async def _do_publish():
         manager = WSConnectionManager.get_instance_sync()
-        logger.info("[WSManager] 推送事件 | type=%s | session=%s | clients=%d",
-                    event_type, session_id, manager.get_client_count())
         if session_id:
             await manager.send_to_session(session_id, message)
         else:
             await manager.broadcast(message)
+        logger.debug("[WSManager] 推送事件 | type=%s | session=%s", event_type, session_id)
 
     try:
         loop = asyncio.get_event_loop()

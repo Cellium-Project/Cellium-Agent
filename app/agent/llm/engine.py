@@ -353,7 +353,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if kwargs:
             params.update(kwargs)
 
-        req_tokens = _estimate_messages_tokens(effective_messages)
+        req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
         logger.info(
             "[LLM] >>> 调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%d | tools=%d | temperature=%s",
@@ -736,7 +736,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         stream = await self._async_client.chat.completions.create(**params)
 
-        req_tokens = _estimate_messages_tokens(effective_messages)
+        req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
         logger.info(
             "[LLM] >>> 流式调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%d | tools=%d | temperature=%s",
@@ -930,30 +930,14 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._calibrated = True
 
         if 0.8 <= ratio <= 1.3:
-            level = "info" 
-            msg = "准确"
+            logger.debug("[LLM] Token 校准完成 | 估算=%d | 实际=%d | 比值=%.2fx",
+                        estimated_input, prompt_tokens, ratio)
         elif 0.5 <= ratio <= 2.0:
-            level = "warning"  
-            msg = f"偏差 {ratio:.1f}x"
+            logger.info("[LLM] Token 校准完成 | 估算=%d | 实际=%d | 比值=%.2fx | 已自动校准",
+                        estimated_input, prompt_tokens, ratio)
         else:
-            level = "error"  
-            msg = f"严重偏差 {ratio:.1f}x！建议手动配置 context_window"
-
-        getattr(logger, level)(
-            "[LLM] Token 校准完成 | 估算=%d | 实际=%d | 比值=%.2fx | %s",
-            estimated_input, prompt_tokens, ratio, msg,
-        )
-
-        if abs(ratio - 1.0) > 0.3:
-            logger.warning(
-                "[LLM] 如需更精确，可在 llm.yaml 中显式配置:\n"
-                "     llm:\n"
-                "       openai:\n"
-                "         model: \"%s\"\n"
-                "         context_window: <实际值>  # 根据厂商文档\n"
-                "         max_tokens: <实际值>",
-                self.model,
-            )
+            logger.warning("[LLM] Token 校准完成 | 估算=%d | 实际=%d | 比值=%.2fx | 偏差较大，建议检查 model 配置",
+                        estimated_input, prompt_tokens, ratio)
 
 
 # ============================================================

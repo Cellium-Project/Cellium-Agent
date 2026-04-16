@@ -16,8 +16,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 import httpx
 import websockets
-import aiohttp
-import aiofiles
 
 from .base import ChannelAdapter, UnifiedMessage
 
@@ -161,6 +159,13 @@ def _clear_session(app_id: str):
         path.unlink()
 
 
+    def _read_file_part(self, file_path: str, offset: int, length: int) -> bytes:
+        """同步读取文件指定部分（用于 asyncio.to_thread）"""
+        with open(file_path, "rb") as f:
+            f.seek(offset)
+            return f.read(length)
+
+
 async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str, str]:
     """
     计算文件哈希值（MD5、SHA1、MD5_10M）
@@ -179,9 +184,9 @@ async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str
     bytes_read = 0
     need_10m = file_size > 10 * 1024 * 1024
 
-    async with aiofiles.open(file_path, "rb") as f:
+    with open(file_path, "rb") as f:
         while True:
-            chunk = await f.read(64 * 1024)  # 64KB chunks
+            chunk = f.read(64 * 1024)  # 64KB chunks
             if not chunk:
                 break
 
@@ -200,25 +205,25 @@ async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str
 
 
 async def _upload_with_retry(
-    session: aiohttp.ClientSession,
+    client: httpx.AsyncClient,
     url: str,
     headers: Dict[str, str],
-    data: aiohttp.FormData,
+    data: Dict[str, Any],
     max_retries: int = PART_UPLOAD_MAX_RETRIES
 ) -> Dict[str, Any]:
     """带重试的文件上传"""
     for attempt in range(max_retries + 1):
         try:
-            async with session.post(url, headers=headers, data=data, timeout=PART_UPLOAD_TIMEOUT) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                text = await resp.text()
-                if attempt < max_retries:
-                    logger.warning(f"[QQAdapter] 上传失败，重试 {attempt + 1}/{max_retries}: HTTP {resp.status}")
-                    await asyncio.sleep(1 * (attempt + 1))  # 指数退避
-                else:
-                    return {"error": f"上传失败: HTTP {resp.status}, {text}"}
-        except asyncio.TimeoutError:
+            resp = await client.post(url, headers=headers, data=data, timeout=PART_UPLOAD_TIMEOUT)
+            if resp.status_code == 200:
+                return resp.json()
+            text = resp.text
+            if attempt < max_retries:
+                logger.warning(f"[QQAdapter] 上传失败，重试 {attempt + 1}/{max_retries}: HTTP {resp.status_code}")
+                await asyncio.sleep(1 * (attempt + 1))
+            else:
+                return {"error": f"上传失败: HTTP {resp.status_code}, {text}"}
+        except httpx.TimeoutException:
             if attempt < max_retries:
                 logger.warning(f"[QQAdapter] 上传超时，重试 {attempt + 1}/{max_retries}")
                 await asyncio.sleep(1 * (attempt + 1))
@@ -750,8 +755,7 @@ class QQAdapter(ChannelAdapter):
         """上传小文件（<20MB）- 使用 base64 编码"""
         import base64
         
-        async with aiohttp.ClientSession() as session:
-            # 读取文件并 base64 编码
+        async with httpx.AsyncClient() as client:
             with open(file_path, "rb") as f:
                 file_data = base64.b64encode(f.read()).decode("utf-8")
             
@@ -766,12 +770,11 @@ class QQAdapter(ChannelAdapter):
                 "Content-Type": "application/json"
             }
             
-            async with session.post(url, headers=headers, json=body, timeout=120) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                else:
-                    text = await resp.text()
-                    return {"error": f"上传失败: HTTP {resp.status}, {text}"}
+            resp = await client.post(url, headers=headers, json=body, timeout=120)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                return {"error": f"上传失败: HTTP {resp.status_code}, {resp.text}"}
 
     async def _upload_large_file(
         self,
@@ -793,7 +796,7 @@ class QQAdapter(ChannelAdapter):
 
         uploaded_parts = []
 
-        async with aiohttp.ClientSession() as session:
+        async with httpx.AsyncClient() as client:
             semaphore = asyncio.Semaphore(DEFAULT_CONCURRENT_PARTS)
 
             async def upload_part(part_index: int) -> Dict[str, Any]:
@@ -801,17 +804,16 @@ class QQAdapter(ChannelAdapter):
                     offset = part_index * PART_SIZE
                     length = min(PART_SIZE, file_size - offset)
 
-                    async with aiofiles.open(file_path, "rb") as f:
-                        await f.seek(offset)
-                        part_data = await f.read(length)
+                    part_data = await asyncio.to_thread(self._read_file_part, file_path, offset, length)
 
-                    form_data = aiohttp.FormData()
-                    form_data.add_field("file", part_data, filename=f"{file_name}.part{part_index}")
-                    form_data.add_field("file_type", str(file_type))
-                    form_data.add_field("part_index", str(part_index))
-                    form_data.add_field("total_parts", str(total_parts))
+                    form_data = {
+                        "file": (f"{file_name}.part{part_index}", part_data, "application/octet-stream"),
+                        "file_type": str(file_type),
+                        "part_index": str(part_index),
+                        "total_parts": str(total_parts),
+                    }
 
-                    result = await _upload_with_retry(session, url, {"Authorization": f"QQBot {token}"}, form_data)
+                    result = await _upload_with_retry(client, url, {"Authorization": f"QQBot {token}"}, form_data)
 
                     if "file_info" in result:
                         logger.info(f"[QQAdapter] 分片 {part_index + 1}/{total_parts} 上传成功")

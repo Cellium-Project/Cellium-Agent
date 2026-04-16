@@ -23,6 +23,9 @@ openai>=1.0.0
 # QQ Bot WebSocket 客户端
 websockets>=12.0
 
+# HTTP 客户端（用于 QQ 文件上传）
+httpx>=0.25.0
+
 # 注意：其他功能使用 Python 标准库，无需额外依赖
 # - sqlite3: FTS5 全文检索（Python 标准库）
 # - subprocess: 命令执行（Python 标准库）

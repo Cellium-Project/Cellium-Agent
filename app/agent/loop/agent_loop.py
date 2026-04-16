@@ -570,7 +570,6 @@ class AgentLoop:
                     available_tools=list(self.tools.keys()),
                 )
                 self.control_loop.start_session(self._loop_state)
-                logger.info("[ControlLoop] 会话开始 | session=%s", effective_session)
 
             yield {"type": "thinking", "content": "正在思考..."}
 

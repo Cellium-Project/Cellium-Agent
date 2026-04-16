@@ -58,9 +58,10 @@ _logger = logging.getLogger(__name__)
 
 
 class RuntimeStatus:
-    """Agent 运行时状态摘要（精简版，供 Agent 自我感知）"""
+    """Agent 运行时状态摘要"""
 
     def __init__(self):
+        self.current_time: str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.iteration: int = 0
         self.max_iterations: int = 10
         self.tokens_used: int = 0
@@ -100,6 +101,7 @@ class RuntimeStatus:
     def to_summary(self) -> str:
         elapsed_s = "∞" if self.elapsed_ms == float('inf') else f"{self.elapsed_ms}ms"
         lines = [
+            f"[时间] {self.current_time}",
             f"[运行状态] 迭代:{self.progress} | Token:{self.tokens_used:,}/{self.token_budget:,} ({self.token_pct}%) | 耗时:{elapsed_s}",
         ]
         if self.recent_tools_summary != "无":
@@ -117,6 +119,7 @@ class RuntimeStatus:
     def to_dict(self) -> Dict[str, Any]:
         elapsed_ms = None if self.elapsed_ms == float('inf') else self.elapsed_ms
         return {
+            "current_time": self.current_time,
             "iteration": self.iteration,
             "max_iterations": None if self.max_iterations == float('inf') else self.max_iterations,
             "progress": self.progress,
@@ -146,6 +149,7 @@ def set_runtime_status(state: "LoopState") -> None:
     current_iter = _runtime_status.iteration
     if current_iter > 0:
         snapshot = RuntimeStatus()
+        snapshot.current_time = _runtime_status.current_time
         snapshot.iteration = _runtime_status.iteration
         snapshot.max_iterations = _runtime_status.max_iterations
         snapshot.tokens_used = _runtime_status.tokens_used
@@ -166,6 +170,7 @@ def set_runtime_status(state: "LoopState") -> None:
                 _status_history.pop(0)
 
     rs = _runtime_status
+    rs.current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rs.iteration = state.iteration
     rs.max_iterations = state.max_iterations
     rs.tokens_used = state.tokens_used

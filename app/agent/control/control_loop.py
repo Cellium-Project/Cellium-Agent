@@ -40,7 +40,7 @@ class ControlLoop:
         self.heuristics.reset()
 
         logger.info(
-            "[ControlLoop] 会话开始 | session=%s | max_iter=%s",
+            "[ControlLoop] 会话 | session=%s | max_iter=%s",
             state.session_id,
             "∞" if state.max_iterations == float('inf') else str(state.max_iterations)
         )
