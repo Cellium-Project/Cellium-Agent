@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class FTS5MemorySearcher:
-    """基于 SQLite FTS5 的全文检索搜索器"""
+    """SQLite FTS5 搜索器"""
 
     def __init__(self, memory_dir: str = "memory", db_name: str = "memory_index.db"):
         self.memory_dir = memory_dir
@@ -49,6 +49,7 @@ class FTS5MemorySearcher:
                 content,
                 tokens,
                 category UNINDEXED,
+                note_type UNINDEXED,
                 tags,
                 source_file UNINDEXED,
                 created_at UNINDEXED,
@@ -87,8 +88,14 @@ class FTS5MemorySearcher:
         try:
             self.cursor.execute("PRAGMA table_info(memory_index)")
             columns = [row[1] for row in self.cursor.fetchall()]
+            needs_rebuild = False
             if "tokens" not in columns:
-                logger.info("[FTS5] 检测到旧表结构，开始迁移...")
+                logger.info("[FTS5] 检测到旧表结构（缺少tokens列），需要迁移...")
+                needs_rebuild = True
+            if "note_type" not in columns:
+                logger.info("[FTS5] 检测到旧表结构（缺少note_type列），需要迁移...")
+                needs_rebuild = True
+            if needs_rebuild:
                 self._rebuild_with_tokens()
         except Exception as e:
             logger.warning("[FTS5] 迁移检查失败: %s", e)
@@ -96,9 +103,18 @@ class FTS5MemorySearcher:
     def _rebuild_with_tokens(self):
         """重建表以添加分词字段"""
         try:
-            self.cursor.execute("SELECT rowid, title, content, category, tags, source_file, created_at FROM memory_index")
-            old_data = self.cursor.fetchall()
+            try:
+                self.cursor.execute("SELECT rowid, title, content, category, note_type, tags, source_file, created_at FROM memory_index")
+                old_data = self.cursor.fetchall()
+            except sqlite3.OperationalError:
+                self.cursor.execute("SELECT rowid, title, content, category, tags, source_file, created_at FROM memory_index")
+                old_data = self.cursor.fetchall()
+                old_data = [(row[0], row[1], row[2], row[3], "", row[4], row[5], row[6]) for row in old_data]
+            
             if not old_data:
+                self.cursor.execute("DROP TABLE IF EXISTS memory_index")
+                self._init_db()
+                self.conn.commit()
                 return
 
             logger.info("[FTS5] 迁移 %d 条记录", len(old_data))
@@ -106,14 +122,14 @@ class FTS5MemorySearcher:
             self._init_db()
 
             for row in old_data:
-                rowid, title, content, category, tags, source_file, created_at = row
+                rowid, title, content, category, note_type, tags, source_file, created_at = row
                 tokens = self.tokenizer.tokenize_for_search(f"{title} {content}")
                 self.cursor.execute(
                     '''
-                    INSERT INTO memory_index (rowid, title, content, tokens, category, tags, source_file, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO memory_index (rowid, title, content, tokens, category, note_type, tags, source_file, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
-                    (rowid, title, content, tokens, category, tags, source_file, created_at),
+                    (rowid, title, content, tokens, category, note_type, tags, source_file, created_at),
                 )
 
             self.conn.commit()
@@ -130,6 +146,7 @@ class FTS5MemorySearcher:
         title: str,
         content: str,
         category: str = "general",
+        note_type: str = "",
         tags: str = "",
         source_file: str = "",
         return_existing: bool = True,
@@ -155,10 +172,10 @@ class FTS5MemorySearcher:
         created_at = datetime.now().isoformat()
         self.cursor.execute(
             '''
-            INSERT INTO memory_index (title, content, tokens, category, tags, source_file, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memory_index (title, content, tokens, category, note_type, tags, source_file, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''',
-            (normalized_title, normalized_content, tokens, category, tags, source_file, created_at),
+            (normalized_title, normalized_content, tokens, category, note_type, tags, source_file, created_at),
         )
         fts_rowid = int(self.cursor.execute("SELECT last_insert_rowid()").fetchone()[0])
 
@@ -190,6 +207,7 @@ class FTS5MemorySearcher:
         title: str,
         content: str,
         category: str = "general",
+        note_type: str = "",
         tags: str = "",
         rowid: Optional[int] = None,
     ) -> bool:
@@ -212,10 +230,10 @@ class FTS5MemorySearcher:
         self.cursor.execute(
             '''
             INSERT OR REPLACE INTO memory_index
-            (rowid, title, content, tokens, category, tags, source_file, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM memory_index WHERE rowid = ?), ?))
+            (rowid, title, content, tokens, category, note_type, tags, source_file, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM memory_index WHERE rowid = ?), ?))
             ''',
-            (target_rowid, title, content, tokens, category, tags, source_file, target_rowid, datetime.now().isoformat()),
+            (target_rowid, title, content, tokens, category, note_type, tags, source_file, target_rowid, datetime.now().isoformat()),
         )
         self.cursor.execute(
             '''
@@ -286,6 +304,7 @@ class FTS5MemorySearcher:
         query: str,
         top_k: int = 3,
         category: str = None,
+        note_type: str = None,
         use_usage_boost: bool = True,
         use_time_decay: bool = True,
     ) -> List[Dict]:
@@ -295,7 +314,7 @@ class FTS5MemorySearcher:
         all_results = []
 
         for variant in query_variants:
-            results = self._fts5_search(variant, top_k, category, use_usage_boost, use_time_decay)
+            results = self._fts5_search(variant, top_k, category, note_type, use_usage_boost, use_time_decay)
             all_results.extend(results)
             if len(all_results) >= top_k:
                 break
@@ -335,16 +354,34 @@ class FTS5MemorySearcher:
                 variants.append(keyword)
         return variants[:5]
 
-    def _fts5_search(self, query: str, top_k: int, category: str, use_usage_boost: bool, use_time_decay: bool) -> List[Dict]:
+    def _fts5_search(self, query: str, top_k: int, category: str, note_type: str, use_usage_boost: bool, use_time_decay: bool) -> List[Dict]:
+        # 检查表结构，确定是否有note_type列
+        try:
+            self.cursor.execute("PRAGMA table_info(memory_index)")
+            columns = [row[1] for row in self.cursor.fetchall()]
+            has_note_type = "note_type" in columns
+        except Exception:
+            has_note_type = False
+        
         safe_query = self._escape_fts5(query)
-        sql = '''
-            SELECT m.rowid, m.title, m.content, m.category, m.tags, m.source_file,
-                   m.created_at,
-                   bm25(memory_index, 10.0, 5.0, 3.0, 1.0, 1.0) as bm25_rank,
-                   COALESCE(s.usage_count, 0) as usage_count,
-                   s.last_used_at,
-                   (-bm25(memory_index, 10.0, 5.0, 3.0, 1.0, 1.0))
-        '''
+        if has_note_type:
+            sql = '''
+                SELECT m.rowid, m.title, m.content, m.category, m.note_type, m.tags, m.source_file,
+                       m.created_at,
+                       bm25(memory_index, 10.0, 5.0, 3.0, 1.0, 1.0) as bm25_rank,
+                       COALESCE(s.usage_count, 0) as usage_count,
+                       s.last_used_at,
+                       (-bm25(memory_index, 10.0, 5.0, 3.0, 1.0, 1.0))
+            '''
+        else:
+            sql = '''
+                SELECT m.rowid, m.title, m.content, m.category, m.tags, m.source_file,
+                       m.created_at,
+                       bm25(memory_index, 10.0, 5.0, 3.0, 1.0, 1.0) as bm25_rank,
+                       COALESCE(s.usage_count, 0) as usage_count,
+                       s.last_used_at,
+                       (-bm25(memory_index, 10.0, 5.0, 3.0, 1.0, 1.0))
+            '''
         if use_usage_boost:
             sql += ' + (LOG10(COALESCE(s.usage_count, 0) + 1) * 2.0)'
         if use_time_decay:
@@ -365,6 +402,9 @@ class FTS5MemorySearcher:
         if category:
             sql += " AND category = ?"
             params.append(category)
+        if note_type and has_note_type:
+            sql += " AND note_type = ?"
+            params.append(note_type)
         sql += " ORDER BY final_score DESC LIMIT ?"
         params.append(top_k)
 
@@ -377,6 +417,7 @@ class FTS5MemorySearcher:
                     "title": row["title"],
                     "content": row["content"],
                     "category": row["category"],
+                    "note_type": row["note_type"] if has_note_type else "",
                     "tags": row["tags"],
                     "source_file": row["source_file"],
                     "created_at": row["created_at"],
@@ -394,18 +435,37 @@ class FTS5MemorySearcher:
             logger.warning("[FTS5] 搜索异常: %s", e)
             return []
 
-    def _fallback_search(self, query: str, top_k: int = 3, category: str = None) -> List[Dict]:
-        sql = '''
-            SELECT rowid, title, content, category, tags, source_file, created_at,
-                   1.0 as final_score, 0 as bm25_score, 0 as usage_count, NULL as last_used_at
-            FROM memory_index
-            WHERE title LIKE ? OR content LIKE ? OR tokens LIKE ?
-        '''
+    def _fallback_search(self, query: str, top_k: int = 3, category: str = None, note_type: str = None) -> List[Dict]:
+        # 检查表结构，确定是否有note_type列
+        try:
+            self.cursor.execute("PRAGMA table_info(memory_index)")
+            columns = [row[1] for row in self.cursor.fetchall()]
+            has_note_type = "note_type" in columns
+        except Exception:
+            has_note_type = False
+        
+        if has_note_type:
+            sql = '''
+                SELECT rowid, title, content, category, note_type, tags, source_file, created_at,
+                       1.0 as final_score, 0 as bm25_score, 0 as usage_count, NULL as last_used_at
+                FROM memory_index
+                WHERE title LIKE ? OR content LIKE ? OR tokens LIKE ?
+            '''
+        else:
+            sql = '''
+                SELECT rowid, title, content, category, tags, source_file, created_at,
+                       1.0 as final_score, 0 as bm25_score, 0 as usage_count, NULL as last_used_at
+                FROM memory_index
+                WHERE title LIKE ? OR content LIKE ? OR tokens LIKE ?
+            '''
         like_pattern = f"%{query}%"
         params: List[Any] = [like_pattern, like_pattern, like_pattern]
         if category:
             sql += " AND category = ?"
             params.append(category)
+        if note_type and has_note_type:
+            sql += " AND note_type = ?"
+            params.append(note_type)
         sql += " LIMIT ?"
         params.append(top_k)
 
@@ -418,6 +478,7 @@ class FTS5MemorySearcher:
                     "title": row["title"],
                     "content": row["content"],
                     "category": row["category"],
+                    "note_type": row["note_type"] if has_note_type else "",
                     "tags": row["tags"],
                     "source_file": row["source_file"],
                     "created_at": row["created_at"],

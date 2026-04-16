@@ -50,6 +50,7 @@
 | `list` | - | 查看记忆概况 |
 
 **category 可选值**: preference / code / troubleshooting / command / general / user_info / project
+**note_type 可选值**: goal_history / completed / finding / error / pending
 
 ---
 

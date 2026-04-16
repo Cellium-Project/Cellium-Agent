@@ -967,13 +967,16 @@ class AgentLoop:
                     yield {"type": "thinking", "content": "正在分析工具定义..."}
                     continue
 
-                # === 6. 最终回复（无工具调用）===
+                # === 6. 最终回复===
                 content = response.content or ""
 
-                # 循环检测
                 is_looping, repeated_output = self._loop_controller.check_output_loop(content)
                 if is_looping:
                     logger.warning("[AgentLoop] 检测到循环重复输出")
+                    if not self.flash_mode:
+                        effective_memory.add_assistant_message(content)
+                    if content:
+                        yield {"type": "content_chunk", "content": content}
                     async for event in self._emit_stop_and_finalize(
                         stop_event={
                             "type": "stopped",
@@ -987,6 +990,7 @@ class AgentLoop:
                         tool_traces=tool_traces,
                         iteration=iteration,
                         start_time=start_time,
+                        final_response_content=content,  
                     ):
                         yield event
                     return
@@ -997,7 +1001,7 @@ class AgentLoop:
 
                 # Control Loop: 每轮结束（无工具调用时也要更新 Bandit）
                 if self.control_loop and self._loop_state:
-                    self._loop_state.last_tool_result = None  # 无工具调用
+                    self._loop_state.last_tool_result = None  
                     reward = self.control_loop.end_round(self._loop_state)
                     logger.debug("[ControlLoop] 本轮结束（无工具调用）| reward=%.2f", reward)
 

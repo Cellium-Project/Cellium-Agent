@@ -136,6 +136,7 @@ class MemoryRepository:
         title: str,
         content: str,
         category: str = "general",
+        note_type: str = "",
         tags: str = "",
         source_file: Optional[str] = None,
         schema_type: str = "general",
@@ -225,6 +226,7 @@ class MemoryRepository:
             title=safe_title,
             content=safe_content,
             category=category or "general",
+            note_type=note_type,
             tags=tags or "",
             source_file=source_file,
             return_existing=True,
@@ -265,6 +267,7 @@ class MemoryRepository:
         *,
         top_k: int = 3,
         category: Optional[str] = None,
+        note_type: Optional[str] = None,
         schema_type: Optional[str] = None,
         include_sensitive: bool = False,
     ) -> List[Dict[str, Any]]:
@@ -276,7 +279,7 @@ class MemoryRepository:
 
         self._backfill_from_index()
         fetch_top_k = max(top_k * 4, 8)
-        fts_results = self.searcher.search(query, top_k=fetch_top_k, category=category)
+        fts_results = self.searcher.search(query, top_k=fetch_top_k, category=category, note_type=note_type)
         filtered_fts = []
         for result in fts_results:
             record = self._get_catalog_record(result.get("rowid"))

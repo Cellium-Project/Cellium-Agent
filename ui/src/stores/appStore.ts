@@ -197,11 +197,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       if (offset === 0) {
-        // Initial load - 直接替换消息
-        set({
-          messages: data.messages,
-          historyOffset: data.count,
-          hasMoreHistory: data.has_more,
+        // Initial load - 合并消息而不是直接替换，避免丢失未保存的本地消息
+        set((state) => {
+          // 如果 force=true，需要合并后端消息和本地消息
+          // 使用 message.id 或 content+role 作为唯一标识去重
+          const existingKeys = new Set(
+            data.messages.map((m: Message) => 
+              m.id || `${m.role}-${m.content?.slice(0, 50)}`
+            )
+          );
+          // 找出本地有但后端没有的消息（未保存的本地消息）
+          const localOnlyMessages = state.messages.filter((m: Message) => {
+            const key = m.id || `${m.role}-${m.content?.slice(0, 50)}`;
+            return !existingKeys.has(key);
+          });
+          return {
+            messages: [...data.messages, ...localOnlyMessages],
+            historyOffset: data.count,
+            hasMoreHistory: data.has_more,
+          };
         });
       } else {
         // Prepend older messages
@@ -235,11 +249,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  // ★ 新增：停止后台任务
   stopTask: async (sessionId: string) => {
     try {
       await postJSON(API.chatStop, { session_id: sessionId });
-      set({ hasRunningTask: false, isStreaming: false, streamingMessage: null });
+      set({ hasRunningTask: false });
     } catch (error) {
       console.error('Failed to stop task:', error);
     }

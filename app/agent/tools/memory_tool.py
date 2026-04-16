@@ -108,6 +108,7 @@ class MemoryTool(BaseTool):
                         "title": item.get("title", ""),
                         "score": round(float(item.get("score", 0)), 4),
                         "category": item.get("category", "?"),
+                        "note_type": item.get("note_type", ""),
                         "schema_type": item.get("schema_type", "general"),
                         "memory_key": item.get("memory_key", ""),
                         "tags": item.get("tags", ""),

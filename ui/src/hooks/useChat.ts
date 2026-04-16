@@ -204,6 +204,8 @@ export function useChat() {
           }
         }
         finalizeMessage(ctx, connectionId);
+        setIsStreaming(false);
+        setHasRunningTask(false);
         break;
 
       case 'error': {
@@ -243,6 +245,8 @@ export function useChat() {
           timeline: [...ctx.timeline],
         });
         finalizeMessage(ctx, connectionId);
+        setIsStreaming(false);
+        setHasRunningTask(false);
         break;
       }
 
@@ -272,7 +276,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((
@@ -342,15 +346,16 @@ export function useChat() {
 
       if (!(ws as any).isManualClose && !ctx.finalized) {
         reconnectTimerRef.current = setTimeout(() => {
-          // 重置连接标记并重新创建连接
           const newConnectingKey = `ws_connecting_${sessionId}`;
           (window as any)[newConnectingKey] = false;
           const newConnectionId = ++connectionIdRef.current;
           createNewConnection(sessionId, ctx, newConnectionId, newConnectingKey);
         }, 3000);
+      } else {
+        setIsStreaming(false);
       }
     };
-  }, [handleChatEvent]);
+  }, [handleChatEvent, setIsStreaming]);
 
   // 连接 WebSocket（处理旧连接关闭）
   const connectWebSocket = useCallback((sessionId: string, ctx: ReturnType<typeof buildStreamingContext>, isReconnect: boolean) => {
@@ -508,10 +513,9 @@ export function useChat() {
       if (error.name !== 'AbortError') {
         addMessage({ role: 'assistant', content: `错误: ${error.message}` });
         updateStreamingMessage(null);
+        setIsStreaming(false);
       }
     } finally {
-      setIsStreaming(false);
-      setHasRunningTask(await checkTaskStatus(sessionId));
       abortControllerRef.current = null;
     }
   }, [currentSessionId, isStreaming, addMessage, setIsStreaming, setHasRunningTask, updateStreamingMessage, buildStreamingContext, fetchSessions, finalizeMessage, checkTaskStatus, handleChatEvent, connectWebSocket]);

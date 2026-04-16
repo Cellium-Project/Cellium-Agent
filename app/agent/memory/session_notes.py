@@ -64,7 +64,6 @@ class SessionNotes:
         self._content: Dict[str, List[str]] = {}
         self._loaded = False
 
-        # 确保目录存在
         os.makedirs(self.notes_dir, exist_ok=True)
 
     def load(self) -> str:
@@ -87,7 +86,6 @@ class SessionNotes:
         current_section = None
 
         for line in content.split("\n"):
-            # 识别段落标题
             for key, header in self.SECTIONS.items():
                 if line.startswith(header.rstrip("\n")):
                     current_section = key
@@ -95,11 +93,9 @@ class SessionNotes:
                         self._content[key] = []
                     break
             else:
-                # 添加内容到当前段落（带去重）
                 if current_section and line.strip():
                     if current_section not in self._content:
                         self._content[current_section] = []
-                    # 使用去重逻辑，避免加载重复内容
                     if not self._is_duplicate(line, self._content[current_section]):
                         self._content[current_section].append(line)
 
@@ -116,10 +112,7 @@ class SessionNotes:
             return False
 
     def _normalize_content(self, content: str) -> str:
-        """标准化内容用于去重比较"""
-        # 去除多余空格、转小写、去除常见后缀词
         normalized = " ".join(content.split()).lower()
-        # 去除常见后缀词（如"文件"、"操作"等）以提高匹配率
         suffixes = ["文件", "操作", "目录", "配置", "功能"]
         for suffix in suffixes:
             if normalized.endswith(suffix):
@@ -127,19 +120,17 @@ class SessionNotes:
         return normalized
 
     def _is_duplicate(self, new_content: str, existing: List[str]) -> bool:
-        """检查内容是否与现有内容重复（支持模糊匹配）"""
+        """检查内容是否与现有内容重复"""
         new_normalized = self._normalize_content(new_content)
 
         for item in existing:
             existing_normalized = self._normalize_content(item)
 
-            # 精确匹配
             if new_normalized == existing_normalized:
                 return True
 
             # 短内容：检查是否一个包含另一个
             if len(new_normalized) <= 20 or len(existing_normalized) <= 20:
-                # 如果较短内容是较长内容的前缀，认为重复
                 shorter = min(new_normalized, existing_normalized, key=len)
                 longer = max(new_normalized, existing_normalized, key=len)
                 if longer.startswith(shorter.rstrip()) or shorter in longer:
@@ -149,7 +140,6 @@ class SessionNotes:
                 shorter = min(len(new_normalized), len(existing_normalized))
                 longer = max(len(new_normalized), len(existing_normalized))
                 if shorter / longer >= 0.7:
-                    # 检查是否有足够重叠
                     overlap = 0
                     for i in range(len(new_normalized) - 10):
                         if new_normalized[i:i+10] in existing_normalized:
@@ -174,7 +164,6 @@ class SessionNotes:
         if section not in self._content:
             self._content[section] = []
 
-        # 去重（支持模糊匹配）
         if not self._is_duplicate(content, self._content[section]):
             self._content[section].append(content)
 
@@ -189,11 +178,9 @@ class SessionNotes:
         current_goal = self.get_goal()
 
         if force:
-            # 强制更新时，将当前目标移到历史
             if current_goal and current_goal != goal:
                 if "goal_history" not in self._content:
                     self._content["goal_history"] = []
-                # 去重添加到历史
                 if not self._is_duplicate(current_goal, self._content.get("goal_history", [])):
                     self._content["goal_history"].append(f"- {current_goal}")
                 # 限制历史数量，保留最近 N 条
@@ -201,20 +188,12 @@ class SessionNotes:
                     self._content["goal_history"] = self._content["goal_history"][-self.MAX_GOAL_HISTORY:]
             self._content["goal"] = [goal]
         elif not current_goal:
-            # 目标为空时设置
             self._content["goal"] = [goal]
 
     def update_goal_from_summary(self, new_goal: str):
-        """
-        从 AI 总结更新目标（自动将旧目标移到历史）
-
-        Args:
-            new_goal: AI 总结的新目标
-        """
         current_goal = self.get_goal()
         
         if current_goal and current_goal != new_goal:
-            # 将当前目标移到历史
             if "goal_history" not in self._content:
                 self._content["goal_history"] = []
             if not self._is_duplicate(current_goal, self._content.get("goal_history", [])):
@@ -258,6 +237,10 @@ class SessionNotes:
             item += f" ({tool})"
         self.append("completed", item)
 
+    def set_completed(self, actions: List[str]):
+        """用新列表替换已完成操作"""
+        self._content["completed"] = [f"- {a}" for a in actions]
+
     def add_finding(self, finding: str):
         """添加关键发现"""
         self.append("findings", f"- {finding}")
@@ -291,7 +274,7 @@ class SessionNotes:
 
     def render_for_prompt(self, max_length: int = 2000) -> str:
         """
-        渲染为提示词格式（用于注入到 LLM）
+        渲染为提示词格式
 
         Args:
             max_length: 最大长度限制
