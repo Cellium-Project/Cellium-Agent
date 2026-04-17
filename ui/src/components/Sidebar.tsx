@@ -1,16 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../stores/appStore';
 import { API, patchJSON } from '../utils/api';
 import { Icons } from './Icons';
 import type { Session } from '../types';
 
-function formatTimeAgo(isoStr: string): string {
+function formatTimeAgo(isoStr: string, t: (key: string) => string): string {
   try {
     const d = new Date(isoStr);
     const sec = (Date.now() - d.getTime()) / 1000;
-    if (sec < 60) return '刚刚';
-    if (sec < 3600) return Math.floor(sec / 60) + '分钟前';
-    if (sec < 86400) return Math.floor(sec / 3600) + '小时前';
+    if (sec < 60) return t('common.justNow');
+    if (sec < 3600) return Math.floor(sec / 60) + t('common.minutesAgo');
+    if (sec < 86400) return Math.floor(sec / 3600) + t('common.hoursAgo');
     return d.toLocaleDateString();
   } catch {
     return '';
@@ -18,10 +19,10 @@ function formatTimeAgo(isoStr: string): string {
 }
 
 /** 根据元数据生成显示名称 */
-function getSessionTitle(session: Session): string {
+function getSessionTitle(session: Session, t: (key: string) => string): string {
   if (session.title && session.title.trim()) return session.title.trim();
-  if (session.session_id === 'default') return '默认会话';
-  return `对话 ${(session.message_count || 0)}条`;
+  if (session.session_id === 'default') return t('session.defaultSession');
+  return `${t('session.conversation')} ${(session.message_count || 0)}${t('session.messages')}`;
 }
 
 export const Sidebar: React.FC = () => {
@@ -117,6 +118,8 @@ export const Sidebar: React.FC = () => {
     };
   }, []);
 
+  const { t } = useTranslation();
+
   const handleNewChat = async () => {
     await createSession();
   };
@@ -132,19 +135,19 @@ export const Sidebar: React.FC = () => {
           <img src="/logo.png" alt="Cellium" />
           <h1>Cellium Agent</h1>
         </div>
-        <button className="sidebar-toggle" onClick={toggleSidebar} title="折叠侧边栏">
+        <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}>
           {sidebarCollapsed ? <Icons.Menu size={20} /> : <Icons.ChevronLeft size={20} />}
         </button>
       </div>
 
       <button className="btn-new-chat" onClick={handleNewChat}>
         <Icons.Plus size={18} />
-        <span className="text-label">新建对话</span>
+        <span className="text-label">{t('sidebar.newChat')}</span>
       </button>
 
       <div className="session-list">
         {sessions.length === 0 ? (
-          <div className="session-empty">暂无历史会话</div>
+          <div className="session-empty">{t('sidebar.emptySessions')}</div>
         ) : (
           sessions.map((session) => (
             <SessionItem
@@ -163,10 +166,10 @@ export const Sidebar: React.FC = () => {
       <button
         className={`sidebar-settings-btn ${showSettingsPage ? 'active' : ''}`}
         onClick={() => setShowSettingsPage(!showSettingsPage)}
-        title="设置"
+        title={t('sidebar.settings')}
       >
         <Icons.Settings size={18} />
-        <span className="text-label">设置</span>
+        <span className="text-label">{t('sidebar.settings')}</span>
       </button>
     </div>
   );
@@ -187,11 +190,12 @@ const SessionItem: React.FC<SessionItemProps> = ({
   onClick,
   onRenamed,
 }) => {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const timeLabel = formatTimeAgo(session.last_active || session.created_at);
+  const timeLabel = formatTimeAgo(session.last_active || session.created_at, t);
 
   const startEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -209,7 +213,7 @@ const SessionItem: React.FC<SessionItemProps> = ({
       await patchJSON(API.sessionRename(session.session_id), { title: trimmed });
       onRenamed();
     } catch (err) {
-      console.error('重命名失败:', err);
+      console.error(t('session.renameFailed'), err);
     }
     setEditing(false);
   };
@@ -241,7 +245,7 @@ const SessionItem: React.FC<SessionItemProps> = ({
       title={session.session_id}
     >
       <span className="session-title" onDoubleClick={startEdit}>
-        {getSessionTitle(session)}
+        {getSessionTitle(session, t)}
       </span>
       <span className="session-time">{timeLabel}</span>
     </div>

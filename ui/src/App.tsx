@@ -12,7 +12,13 @@ const App: React.FC = () => {
     fetchMessages,
     fetchSessions,
     showSettingsPage,
+    initTheme,
   } = useAppStore();
+
+  // Initialize theme and language
+  useEffect(() => {
+    initTheme();
+  }, [initTheme]);
 
   // Health check
   useEffect(() => {

@@ -14,7 +14,7 @@ jieba>=0.42.1
 # 中文拼音（用于向量检索增强，可选）
 pypinyin>=0.50.0
 
-# 无头浏览器（用于网页搜索和抓取）
+# 浏览器控制（用于网页搜索和抓取）
 DrissionPage>=4.1.0
 
 # OpenAI 兼容客户端（LLM 引擎依赖）
@@ -23,7 +23,7 @@ openai>=1.0.0
 # QQ Bot WebSocket 客户端
 websockets>=12.0
 
-# HTTP 客户端（用于 QQ 文件上传）
+# HTTP 客户端（用于 QQ 和 Telegram 文件上传）
 httpx>=0.25.0
 
 # 注意：其他功能使用 Python 标准库，无需额外依赖

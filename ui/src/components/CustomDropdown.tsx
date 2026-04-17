@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 
 interface DropdownItem {
@@ -19,10 +20,12 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   value,
   items,
   onChange,
-  placeholder = '请选择',
+  placeholder,
   disabled = false,
   className = '',
 }) => {
+  const { t } = useTranslation();
+  const defaultPlaceholder = placeholder || t('common.pleaseSelect');
   const [isOpen, setIsOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, width: 0 });
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -30,7 +33,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
 
   const selectedItem = items.find(item => item.value === value);
-  const displayText = selectedItem?.label || placeholder;
+  const displayText = selectedItem?.label || defaultPlaceholder;
 
   const updatePosition = useCallback(() => {
     if (triggerRef.current) {

@@ -33,7 +33,7 @@
 | 组件热插拔 | app/components/ 下文件 3 秒自动加载生效 |
 | 事件驱动架构 | 基于 EventBus 的发布-订阅模式，组件松耦合 |
 | Flash 模式 | 跳过记忆注入，加速简单任务 |
-| 多通道接入 | 支持 QQ 等外部平台（目前只支持qqbot），通过 ChannelManager 统一管理消息路由、文件传输与注入 |
+| 多通道接入 | 支持 QQ 等外部平台（目前只支持qqbot,telegram,持续更新中），通过 ChannelManager 统一管理消息路由、文件传输与注入 |
 
 ## 快速开始
 
@@ -48,6 +48,8 @@ python main.py
 - Jieba（中文分词）
 - DrissionPage（用于网页搜索和操作浏览器）
 - openai（OpenAI API 客户端）
+- websockets（QQ Bot WebSocket 客户端）
+- httpx（HTTP 客户端，用于外部平台文件上传）
 
 ### 配置模型
 
@@ -406,15 +408,17 @@ Cellium-Agent/
 │   │   ├── loop/               # Agent 主循环：AgentLoop、SessionManager、ToolExecutor
 │   │   ├── memory/             # 三层记忆：FTS5、Repository、ArchiveStore
 │   │   ├── tools/              # 工具基类与内置工具
-│   │   ├── prompt/             # Prompt 构建器（模块化拼图式）
+│   │   ├── prompt/             # Prompt 构建器
 │   │   ├── shell/              # Shell 交互
 │   │   ├── security/           # 安全策略
 │   │   └── di_config.py        # 依赖注入配置
 │   ├── channels/               # 通道适配层
 │   │   ├── base.py             # 通道基类 IChannelAdapter，支持文件消息抽象接口
 │   │   ├── channel_manager.py  # 通道管理器，消息路由、文件传输与注入
-│   │   ├── qq_adapter.py      # QQBot 配器（消息 + 文件传输）
-│   │   └── qq_channel_config.py # QQ 通道配置模型
+│   │   ├── qq_adapter.py       # QQBot 适配器（消息 + 文件传输）
+│   │   ├── qq_channel_config.py # QQ 通道配置模型
+│   │   ├── telegram_adapter.py # Telegram Bot 适配器（消息 + 文件传输）
+│   │   └── telegram_channel_config.py # Telegram 通道配置模型
 │   ├── core/                   # 核心基础设施
 │   │   ├── bus/                # 事件总线 EventBus
 │   │   ├── di/                 # 依赖注入容器
@@ -423,8 +427,17 @@ Cellium-Agent/
 │   │   └── util/               # 工具类：ComponentWatcher、Logger 等
 │   └── server/                 # FastAPI 服务层
 │       └── routes/             # API 路由：chat、memory、channels、session_events
+├── components/                 # 组件目录（热插拔）
+│   ├── _example_component.py   # 组件模板参考
+│   ├── component_builder.py    # 组件生成器（系统内置）
+│   ├── qq_files.py             # QQ 文件传输组件
+│   ├── telegram_files.py       # Telegram 文件传输组件
+│   ├── web_fetch.py            # 网页获取组件
+│   ├── web_search.py           # 网页搜索组件
+│   ├── skill_installer.py      # Skill 包管理器（待完善）
+│   └── skills/                 # Skill 安装目录
 ├── config/agent/               # 配置文件
-│   ├── channels.yaml           # 通道配置（QQ 等外部平台）
+│   ├── channels.yaml           # 通道配置（QQ、Telegram 等外部平台）
 │   └── llm.yaml                # LLM 模型配置
 ├── ui/                         # React 前端源码
 ├── html/                       # 前端构建输出

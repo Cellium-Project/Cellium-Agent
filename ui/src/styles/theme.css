@@ -1,0 +1,291 @@
+/* =========================================
+   CSS Variables for Theming
+   ========================================= */
+
+:root {
+  /* Background Colors */
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f8f9fa;
+  --bg-hover: #f1f3f4;
+  --bg-active: #e8f0fe;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --bg-tooltip: #3c4043;
+  
+  /* Text Colors */
+  --text-primary: #202124;
+  --text-secondary: #5f6368;
+  --text-tertiary: #9aa0a6;
+  --text-inverse: #ffffff;
+  --text-link: #1a73e8;
+  --text-error: #d93025;
+  --text-success: #188038;
+  --text-warning: #f9ab00;
+  
+  /* Border Colors */
+  --border-primary: #e0e0e0;
+  --border-secondary: #dadce0;
+  --border-focus: #1a73e8;
+  
+  /* Accent Colors */
+  --accent-primary: #1a73e8;
+  --accent-primary-hover: #1557b0;
+  --accent-primary-light: #e8f0fe;
+  --accent-secondary: #5f6368;
+  --accent-danger: #d93025;
+  --accent-danger-hover: #b31412;
+  --accent-success: #188038;
+  --accent-warning: #f9ab00;
+  
+  /* Shadow */
+  --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.1);
+  --shadow-md: 0 2px 6px rgba(60, 64, 67, 0.15);
+  --shadow-lg: 0 4px 12px rgba(60, 64, 67, 0.2);
+  --shadow-xl: 0 8px 24px rgba(60, 64, 67, 0.25);
+  
+  /* Code Block */
+  --code-bg: #f6f8fa;
+  --code-text: #24292f;
+  --code-border: #d0d7de;
+  
+  /* Scrollbar */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #c1c1c1;
+  --scrollbar-thumb-hover: #a8a8a8;
+  
+  /* Status Colors */
+  --status-online: #188038;
+  --status-offline: #5f6368;
+  --status-busy: #f9ab00;
+  
+  /* Input */
+  --input-bg: #ffffff;
+  --input-border: #dadce0;
+  --input-focus-border: #1a73e8;
+  --input-focus-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+  
+  /* Button */
+  --btn-primary-bg: #1a73e8;
+  --btn-primary-text: #ffffff;
+  --btn-primary-hover: #1557b0;
+  --btn-secondary-bg: #f1f3f4;
+  --btn-secondary-text: #5f6368;
+  --btn-secondary-hover: #e8eaed;
+  --btn-danger-bg: #d93025;
+  --btn-danger-text: #ffffff;
+  --btn-danger-hover: #b31412;
+  
+  /* Message Bubbles */
+  --msg-user-bg: #e8f0fe;
+  --msg-user-text: #202124;
+  --msg-assistant-bg: #ffffff;
+  --msg-assistant-text: #202124;
+  --msg-system-bg: #fef3e8;
+  --msg-system-text: #b06000;
+  
+  /* Syntax Highlighting (Light) */
+  --syntax-keyword: #d73a49;
+  --syntax-string: #032f62;
+  --syntax-comment: #6a737d;
+  --syntax-function: #6f42c1;
+  --syntax-number: #005cc5;
+  --syntax-operator: #d73a49;
+
+  /* Extended Colors */
+  --text-muted: #6b7280;
+  --text-muted-light: #9ca3af;
+  --text-muted-dark: #4b5563;
+  --text-disabled: #888888;
+  --text-code: #a8b1c2;
+
+  /* Background Extended */
+  --bg-code: #0f1117;
+  --bg-panel: #1a1a28;
+  --bg-badge-success: #e6f4ea;
+  --bg-badge-warning: #fef7e0;
+  --bg-badge-danger: rgba(239, 68, 68, 0.15);
+  --bg-badge-info: rgba(139, 92, 246, 0.15);
+
+  /* Border Extended */
+  --border-panel: #2a2a3e;
+  --border-dashed: #e0e0e0;
+
+  /* Status Extended */
+  --status-success-bright: #22c55e;
+  --status-danger-bright: #ef4444;
+  --status-warning-bright: #f59e0b;
+  --status-info: #8b5cf6;
+  --status-success-text: #137333;
+  --status-warning-text: #b06000;
+
+  /* Gray Scale */
+  --gray-100: #f8f9fa;
+  --gray-200: #e8eaed;
+  --gray-300: #dadce0;
+  --gray-400: #c1c1c1;
+  --gray-500: #9aa0a6;
+  --gray-600: #5f6368;
+  --gray-700: #3c4043;
+  --gray-800: #333333;
+  --gray-900: #202124;
+}
+
+/* Dark Theme  */
+[data-theme="dark"] {
+  /* Background Colors  */
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-hover: #30363d;
+  --bg-active: rgba(56, 139, 253, 0.15);
+  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --bg-tooltip: #484f58;
+
+  /* Text Colors  */
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-tertiary: #6e7681;
+  --text-inverse: #0d1117;
+  --text-link: #58a6ff;
+  --text-error: #f85149;
+  --text-success: #3fb950;
+  --text-warning: #d29922;
+
+  /* Border Colors */
+  --border-primary: #30363d;
+  --border-secondary: #21262d;
+  --border-focus: #58a6ff;
+
+  /* Accent Colors  */
+  --accent-primary: #58a6ff;
+  --accent-primary-hover: #79c0ff;
+  --accent-primary-light: rgba(56, 139, 253, 0.15);
+  --accent-secondary: #8b949e;
+  --accent-danger: #f85149;
+  --accent-danger-hover: #ff7b72;
+  --accent-success: #3fb950;
+  --accent-warning: #d29922;
+
+  /* Shadow */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 8px 24px rgba(0, 0, 0, 0.6);
+
+  /* Code Block */
+  --code-bg: #161b22;
+  --code-text: #e6edf3;
+  --code-border: #30363d;
+
+  /* Scrollbar */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #30363d;
+  --scrollbar-thumb-hover: #484f58;
+
+  /* Status Colors */
+  --status-online: #3fb950;
+  --status-offline: #8b949e;
+  --status-busy: #d29922;
+
+  /* Input */
+  --input-bg: #0d1117;
+  --input-border: #30363d;
+  --input-focus-border: #58a6ff;
+  --input-focus-shadow: 0 0 0 2px rgba(56, 139, 253, 0.2);
+
+  /* Button  */
+  --btn-primary-bg: #238636;
+  --btn-primary-text: #ffffff;
+  --btn-primary-hover: #2ea043;
+  --btn-secondary-bg: #21262d;
+  --btn-secondary-text: #e6edf3;
+  --btn-secondary-hover: #30363d;
+  --btn-danger-bg: #da3633;
+  --btn-danger-text: #ffffff;
+  --btn-danger-hover: #f85149;
+
+  /* Message Bubbles */
+  --msg-user-bg: #238636;
+  --msg-user-text: #ffffff;
+  --msg-assistant-bg: #161b22;
+  --msg-assistant-text: #e6edf3;
+  --msg-system-bg: #341a00;
+  --msg-system-text: #d29922;
+
+  /* Syntax Highlighting (Dark) */
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-comment: #8b949e;
+  --syntax-function: #d2a8ff;
+  --syntax-number: #79c0ff;
+  --syntax-operator: #ff7b72;
+
+  /* Extended Colors - Dark Theme */
+  --text-muted: #8b949e;
+  --text-muted-light: #6e7681;
+  --text-muted-dark: #8b949e;
+  --text-disabled: #484f58;
+  --text-code: #a5d6ff;
+
+  /* Background Extended - Dark */
+  --bg-code: #0d1117;
+  --bg-panel: #161b22;
+  --bg-badge-success: rgba(46, 160, 67, 0.15);
+  --bg-badge-warning: rgba(210, 153, 34, 0.15);
+  --bg-badge-danger: rgba(248, 81, 73, 0.15);
+  --bg-badge-info: rgba(56, 139, 253, 0.15);
+
+  /* Border Extended - Dark */
+  --border-panel: #21262d;
+  --border-dashed: #30363d;
+
+  /* Status Extended - Dark */
+  --status-success-bright: #3fb950;
+  --status-danger-bright: #f85149;
+  --status-warning-bright: #d29922;
+  --status-info: #a5d6ff;
+  --status-success-text: #3fb950;
+  --status-warning-text: #d29922;
+
+  /* Gray Scale - Dark */
+  --gray-100: #21262d;
+  --gray-200: #30363d;
+  --gray-300: #484f58;
+  --gray-400: #6e7681;
+  --gray-500: #8b949e;
+  --gray-600: #8b949e;
+  --gray-700: #e6edf3;
+  --gray-800: #e6edf3;
+  --gray-900: #e6edf3;
+}
+
+/* Scrollbar Styles */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-primary-light);
+  color: var(--text-primary);
+}
+
+/* Focus Visible */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}

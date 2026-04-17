@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { API, fetchJSON, postJSON } from '../utils/api';
 import type { ModelConfig } from '../types';
 
@@ -19,6 +20,7 @@ interface BackendModel {
 }
 
 export const ModelManagerTab: React.FC = () => {
+  const { t } = useTranslation();
   const [savedModels, setSavedModels] = useState<ModelConfig[]>([]);
   const [currentModelId, setCurrentModelId] = useState<string | null>(null);
   const [editingModel, setEditingModel] = useState<ModelConfig | null>(null);
@@ -52,11 +54,11 @@ export const ModelManagerTab: React.FC = () => {
         setCurrentModelId(models[0].id);
       }
     } catch (error) {
-      console.error('加载模型列表失败:', error);
+      console.error(t('modelManager.loadFailed'), error);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [currentModelId, t]);
 
   useEffect(() => {
     loadModels();
@@ -76,7 +78,7 @@ export const ModelManagerTab: React.FC = () => {
 
   const handleSave = async () => {
     if (!name || !baseUrl || !modelId) {
-      alert('请填写必要字段');
+      alert(t('modelManager.fillRequired'));
       return;
     }
 
@@ -94,9 +96,9 @@ export const ModelManagerTab: React.FC = () => {
       await postJSON(API.modelAdd, model);
       await loadModels();
       resetForm();
-      alert(`模型已保存: ${name}`);
+      alert(t('modelManager.saved', { name }));
     } catch (error: any) {
-      alert(`保存失败: ${error.message}`);
+      alert(t('modelManager.saveFailed', { message: error.message }));
     }
   };
 
@@ -115,9 +117,9 @@ export const ModelManagerTab: React.FC = () => {
       await postJSON(API.modelReloadEngine, {});
 
       setCurrentModelId(model.id);
-      alert(`已切换到: ${model.name}`);
+      alert(t('modelManager.switched', { name: model.name }));
     } catch (error: any) {
-      alert(`切换失败: ${error.message}`);
+      alert(t('modelManager.switchFailed', { message: error.message }));
     }
   };
 
@@ -133,7 +135,7 @@ export const ModelManagerTab: React.FC = () => {
   };
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`确定删除模型 "${name}"？`)) return;
+    if (!confirm(t('modelManager.confirmDelete', { name }))) return;
     try {
       await fetchJSON(API.modelDelete(name), { method: 'DELETE' });
       await loadModels();
@@ -141,13 +143,13 @@ export const ModelManagerTab: React.FC = () => {
         setCurrentModelId(null);
       }
     } catch (error: any) {
-      alert(`删除失败: ${error.message}`);
+      alert(t('modelManager.deleteFailed', { message: error.message }));
     }
   };
 
   const handleFetchModels = async () => {
     if (!baseUrl) {
-      alert('请先输入 API 地址');
+      alert(t('modelManager.enterApiUrl'));
       return;
     }
 
@@ -159,7 +161,7 @@ export const ModelManagerTab: React.FC = () => {
       );
       setAvailableModels(data.models?.map((m) => m.id || String(m)) || []);
     } catch (error: any) {
-      alert(`获取模型列表失败: ${error.message}`);
+      alert(t('modelManager.fetchFailed', { message: error.message }));
     } finally {
       setIsLoadingModels(false);
     }
@@ -174,20 +176,20 @@ export const ModelManagerTab: React.FC = () => {
   };
 
   if (isLoading) {
-    return <div className="settings-panel">加载中...</div>;
+    return <div className="settings-panel">{t('common.loading')}</div>;
   }
 
   return (
     <div className="settings-panel">
-      <h3 className="settings-section-title">模型管理</h3>
-      <p className="settings-desc">管理并快速切换您常用的 API 服务和本地部署模型。</p>
+      <h3 className="settings-section-title">{t('modelManager.title')}</h3>
+      <p className="settings-desc">{t('modelManager.description')}</p>
 
       <div className="model-manager">
         <div className="saved-models">
-          <h4>已保存的模型</h4>
+          <h4>{t('modelManager.savedModels')}</h4>
           <div className="model-list">
             {savedModels.length === 0 ? (
-              <div className="model-list-empty">暂无保存的模型</div>
+              <div className="model-list-empty">{t('modelManager.noModels')}</div>
             ) : (
               savedModels.map((model) => (
                 <div
@@ -204,14 +206,14 @@ export const ModelManagerTab: React.FC = () => {
                     <button
                       className="model-item-btn"
                       onClick={() => handleEdit(model)}
-                      title="编辑"
+                      title={t('common.edit')}
                     >
                       ✏️
                     </button>
                     <button
                       className="model-item-btn"
                       onClick={() => handleDelete(model.name)}
-                      title="删除"
+                      title={t('common.delete')}
                     >
                       🗑️
                     </button>
@@ -223,15 +225,15 @@ export const ModelManagerTab: React.FC = () => {
         </div>
 
         <div className="model-form">
-          <h4>{editingModel ? '编辑模型' : '添加新模型'}</h4>
+          <h4>{editingModel ? t('modelManager.editModel') : t('modelManager.addNewModel')}</h4>
 
           <div className="form-group">
-            <label>配置名称 *</label>
+            <label>{t('modelManager.configName')} *</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="例如: 我的 LM Studio"
+              placeholder={t('modelManager.configNamePlaceholder')}
             />
           </div>
 
@@ -241,29 +243,29 @@ export const ModelManagerTab: React.FC = () => {
               value={provider}
               onChange={(e) => setProvider(e.target.value as 'openai' | 'local')}
             >
-              <option value="openai">OpenAI 兼容</option>
-              <option value="local">本地部署</option>
+              <option value="openai">{t('modelManager.openaiCompatible')}</option>
+              <option value="local">{t('modelManager.localDeploy')}</option>
             </select>
           </div>
 
           <div className="form-group">
-            <label>API 地址 *</label>
+            <label>{t('modelManager.apiUrl')} *</label>
             <input
               type="text"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="例如: http://localhost:1234/v1"
+              placeholder={t('modelManager.apiUrlPlaceholder')}
             />
           </div>
 
           <div className="form-group">
-            <label>模型 ID *</label>
+            <label>{t('modelManager.modelId')} *</label>
             {provider === 'local' && availableModels.length > 0 ? (
               <select
                 value={modelId}
                 onChange={(e) => setModelId(e.target.value)}
               >
-                <option value="">-- 选择模型 --</option>
+                <option value="">-- {t('modelManager.selectModel')} --</option>
                 {availableModels.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
@@ -273,7 +275,7 @@ export const ModelManagerTab: React.FC = () => {
                 type="text"
                 value={modelId}
                 onChange={(e) => setModelId(e.target.value)}
-                placeholder="例如: gpt-4o"
+                placeholder={t('modelManager.modelIdPlaceholder')}
               />
             )}
           </div>
@@ -284,7 +286,7 @@ export const ModelManagerTab: React.FC = () => {
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="可选，本地部署可留空"
+              placeholder={t('modelManager.apiKeyPlaceholder')}
             />
           </div>
 
@@ -301,7 +303,7 @@ export const ModelManagerTab: React.FC = () => {
               />
             </div>
             <div className="form-group">
-              <label>超时 (秒)</label>
+              <label>{t('modelManager.timeout')}</label>
               <input
                 type="number"
                 value={timeout}
@@ -314,17 +316,17 @@ export const ModelManagerTab: React.FC = () => {
 
           <div className="form-actions">
             <button className="btn-primary" onClick={handleSave}>
-              {editingModel ? '更新模型' : '保存模型'}
+              {editingModel ? t('modelManager.updateModel') : t('modelManager.saveModel')}
             </button>
             {editingModel && (
               <button className="btn-secondary" onClick={resetForm}>
-                取消编辑
+                {t('modelManager.cancelEdit')}
               </button>
             )}
           </div>
 
           <div className="quick-presets">
-            <span className="quick-presets-label">快速添加:</span>
+            <span className="quick-presets-label">{t('modelManager.quickAdd')}:</span>
             <button onClick={() => handleQuickAdd('lmstudio')}>LM Studio</button>
             <button onClick={() => handleQuickAdd('ollama')}>Ollama</button>
             <button onClick={() => handleQuickAdd('vllm')}>vLLM</button>

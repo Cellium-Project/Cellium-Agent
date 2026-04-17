@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { Message, Session, ModelConfig } from '../types';
 import { API, fetchJSON, postJSON } from '../utils/api';
+import i18n from '../i18n';
+
+export type Theme = 'light' | 'dark' | 'auto';
+export type Language = 'zh-CN' | 'zh-TW' | 'en';
 
 interface AppState {
   // Sessions
@@ -29,6 +33,10 @@ interface AppState {
   showSettingsPage: boolean;
   settingsTab: string;
 
+  // Theme & Language
+  theme: Theme;
+  language: Language;
+
   // Actions
   setCurrentSessionId: (id: string | null) => void;
   setSessions: (sessions: Session[]) => void;
@@ -54,6 +62,11 @@ interface AppState {
   setStatusOnline: (online: boolean) => void;
   setShowSettingsPage: (show: boolean) => void;
   setSettingsTab: (tab: string) => void;
+
+  // Theme & Language Actions
+  setTheme: (theme: Theme) => void;
+  setLanguage: (lang: Language) => void;
+  initTheme: () => void;
 
   // Async Actions
   fetchSessions: () => Promise<void>;
@@ -82,6 +95,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   statusOnline: false,
   showSettingsPage: false,
   settingsTab: 'model',
+
+  // Theme & Language Initial State
+  theme: (localStorage.getItem('theme') as Theme) || 'auto',
+  language: (localStorage.getItem('language') as Language) || 'zh-CN',
 
   // Actions
   setCurrentSessionId: (id) => set({ currentSessionId: id }),
@@ -120,6 +137,69 @@ export const useAppStore = create<AppState>((set, get) => ({
   setStatusOnline: (online) => set({ statusOnline: online }),
   setShowSettingsPage: (show) => set({ showSettingsPage: show }),
   setSettingsTab: (tab) => set({ settingsTab: tab }),
+
+  // Theme & Language Actions
+  setTheme: (theme) => {
+    localStorage.setItem('theme', theme);
+    set({ theme });
+    
+    // Apply theme
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+    } else if (theme === 'light') {
+      root.removeAttribute('data-theme');
+    } else {
+      // Auto - follow system
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (prefersDark) {
+        root.setAttribute('data-theme', 'dark');
+      } else {
+        root.removeAttribute('data-theme');
+      }
+    }
+  },
+  
+  setLanguage: (lang) => {
+    localStorage.setItem('language', lang);
+    set({ language: lang });
+    i18n.changeLanguage(lang);
+  },
+  
+  initTheme: () => {
+    const { theme } = get();
+    const root = document.documentElement;
+    
+    if (theme === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+    } else if (theme === 'light') {
+      root.removeAttribute('data-theme');
+    } else {
+      // Auto
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (prefersDark) {
+        root.setAttribute('data-theme', 'dark');
+      } else {
+        root.removeAttribute('data-theme');
+      }
+      
+      // Listen for system theme changes
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        const currentTheme = get().theme;
+        if (currentTheme === 'auto') {
+          if (e.matches) {
+            root.setAttribute('data-theme', 'dark');
+          } else {
+            root.removeAttribute('data-theme');
+          }
+        }
+      });
+    }
+    
+    // Init language
+    const { language } = get();
+    i18n.changeLanguage(language);
+  },
 
   // Async Actions
   fetchSessions: async () => {

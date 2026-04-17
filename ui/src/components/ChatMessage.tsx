@@ -1,4 +1,5 @@
 import React, { memo, useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Message, TimelineSegment } from '../types';
@@ -105,8 +106,9 @@ interface ToolTraceCardProps {
 }
 
 const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
+  const { t } = useTranslation();
   const argsStr = JSON.stringify(trace.arguments || {}, null, 2);
-  const resultPreview = makeResultPreview(trace.result);
+  const resultPreview = makeResultPreview(trace.result, t);
   
   const cmdPreview = (() => {
     try {
@@ -162,7 +164,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
           {status === 'running' && (
             <span className="tool-status-running">
               <span className="loading-pulse"></span>
-              执行中 {durStr}
+              {t('chat.executing')} {durStr}
             </span>
           )}
           {status !== 'running' && <span className="tool-trace-time">{durStr}</span>}
@@ -173,24 +175,25 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
           </div>
         )}
         <details className="tool-trace-detail" open={status === 'running'}>
-          <summary>参数 / 结果</summary>
+          <summary>{t('chat.paramsAndResult')}</summary>
           <pre className="tool-args">{escapeHtml(argsStr)}</pre>
           {status !== 'running' && <div className="tool-result">{resultPreview}</div>}
-          {status === 'running' && <div className="tool-result"><span className="status-dot dot-running"></span>等待结果...</div>}
+          {status === 'running' && <div className="tool-result"><span className="status-dot dot-running"></span>{t('chat.waitingForResult')}</div>}
         </details>
       </div>
     </>
   );
 };
 
-function makeResultPreview(result: any): React.ReactNode {
-  if (!result) return <span>(空)</span>;
+function makeResultPreview(result: any, t?: (key: string) => string): React.ReactNode {
+  const translate = t || ((key: string) => key);
+  if (!result) return <span>({translate('common.empty')})</span>;
 
   if (result.error) {
     return (
       <>
         <span className="status-dot dot-error"></span>
-        <span style={{ color: '#d93025' }}>错误: {escapeHtml(result.error)}</span>
+        <span style={{ color: 'var(--text-error)' }}>{translate('common.error')}: {escapeHtml(result.error)}</span>
       </>
     );
   }
@@ -199,10 +202,10 @@ function makeResultPreview(result: any): React.ReactNode {
     return result.success ? (
       <>
         <span className="status-dot dot-success"></span>
-        <span style={{ color: '#34a853' }}>完成</span>
+        <span style={{ color: 'var(--accent-success)' }}>{translate('common.completed')}</span>
       </>
     ) : (
-      <span style={{ color: '#5f6368' }}>完成</span>
+      <span style={{ color: 'var(--text-secondary)' }}>{translate('common.completed')}</span>
     );
   }
 

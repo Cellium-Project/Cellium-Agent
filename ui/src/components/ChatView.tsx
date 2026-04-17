@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useChat } from '../hooks/useChat';
 import { useAppStore } from '../stores/appStore';
 import { Icons } from './Icons';
@@ -19,6 +20,7 @@ const MessageList = memo(({
   currentSessionId: string | null;
   fetchMessages: (sessionId: string, offset?: number) => Promise<void>;
 }) => {
+  const { t } = useTranslation();
   const prevMessagesCountRef = useRef<number>(0);
   const wasEmptyRef = useRef<boolean>(true);
 
@@ -43,7 +45,7 @@ const MessageList = memo(({
   return (
     <div className="chat-messages" ref={messagesContainerRef} onScroll={handleScroll}>
       {isLoadingMessages && messages.length === 0 && (
-        <div className="history-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div>
+        <div className="history-loading"><span className="loading-dots"><span></span><span></span><span></span></span> {t('chat.historyLoading')}</div>
       )}
       {messages.map((msg, idx) => (
         <ChatMessage 
@@ -58,6 +60,7 @@ const MessageList = memo(({
 });
 
 export const ChatView: React.FC = () => {
+  const { t } = useTranslation();
   const [inputValue, setInputValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -88,8 +91,8 @@ export const ChatView: React.FC = () => {
     <div className="chat-view">
       {/* Header */}
       <div className="chat-header">
-        <h1 className="chat-header-title">Cellium Agent</h1>
-        <span className={`status ${statusOnline ? '' : 'error'}`}>{statusOnline ? '在线' : '离线'}</span>
+        <h1 className="chat-header-title">{t('chat.title')}</h1>
+        <span className={`status ${statusOnline ? '' : 'error'}`}>{statusOnline ? t('common.online') : t('common.offline')}</span>
       </div>
 
       {/* Messages — 独立组件，流式更新不影响输入框 */}
@@ -113,12 +116,12 @@ export const ChatView: React.FC = () => {
             onChange={(e) => setInputValue(e.target.value)}
             onInput={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder={isStreaming ? "输入补充说明..." : "输入消息..."}
+            placeholder={isStreaming ? t('chat.placeholderStreaming') : t('chat.placeholder')}
             rows={1}
           />
           <div className="input-actions">
             {isStreaming && (
-              <button className="btn-stop" onClick={stopStreaming} title="停止生成">
+              <button className="btn-stop" onClick={stopStreaming} title={t('chat.stopTitle')}>
                 <Icons.Square size={18} />
               </button>
             )}
@@ -126,14 +129,14 @@ export const ChatView: React.FC = () => {
               className="btn-send"
               onClick={handleSend}
               disabled={!inputValue.trim()}
-              title={isStreaming ? "发送补充说明" : "发送消息"}
+              title={isStreaming ? t('chat.sendSupplementTitle') : t('chat.sendTitle')}
             >
               <Icons.Send size={18} />
             </button>
           </div>
         </div>
         <div className="input-footer">
-          按 Enter 发送，Shift + Enter 换行
+          {t('chat.inputTip')}
         </div>
       </div>
     </div>
