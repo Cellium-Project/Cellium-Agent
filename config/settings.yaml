@@ -16,3 +16,4 @@ enabled_components:
 - components.qq_files.QQFiles
 - components.web_search.WebSearch
 - components.web_fetch.WebFetch
+- components.telegram_files.TelegramFiles

@@ -55,12 +55,18 @@ async def reload_channel(platform: str = "qq") -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"通道 {platform} 未注册")
 
     try:
-        from app.channels.qq_channel_config import QQChannelConfig
-        qq_config = QQChannelConfig()
-        await adapter.update_config(
-            app_id=qq_config.get_app_id(force_reload=True),
-            app_secret=qq_config.get_app_secret(force_reload=True),
-        )
+        if platform == "qq":
+            from app.channels.qq_channel_config import QQChannelConfig
+            qq_config = QQChannelConfig()
+            await adapter.update_config(
+                app_id=qq_config.get_app_id(force_reload=True),
+                app_secret=qq_config.get_app_secret(force_reload=True),
+            )
+        elif platform == "telegram":
+            from app.channels.telegram_channel_config import TelegramChannelConfig
+            tg_config = TelegramChannelConfig()
+            pass
+
         await adapter.disconnect()
         asyncio.create_task(adapter.connect())
         logger.info(f"[ChannelAPI] 通道 {platform} 正在后台重连")

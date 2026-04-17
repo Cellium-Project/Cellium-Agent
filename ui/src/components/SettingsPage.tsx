@@ -454,59 +454,27 @@ const SecuritySettings: React.FC = () => {
 };
 
 // ═════════════════════════════════════════════════════════════
-// 通道配置 Tab (多平台消息入口)
+// QQ 通道配置子组件
 // ═════════════════════════════════════════════════════════════
-const ChannelSettings: React.FC = () => {
-  const [config, setConfig] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchJSON<Record<string, any>>(API.configSection('channels')).then(data => {
-      setConfig(data?.qq || { enabled: true, auto_start: true });
-      setLoading(false);
-    }).catch(() => {
-      setConfig({ enabled: true, auto_start: true });
-      setLoading(false);
-    });
-  }, []);
-
-  const updateQQField = (field: string, value: any) => {
-    setConfig(prev => ({
-      ...prev,
-      [field]: value,
-    }));
+const QQChannelCard: React.FC<{
+  config: Record<string, any>;
+  onChange: (config: Record<string, any>) => void;
+  saving: boolean;
+  saved: boolean;
+  onSave: () => void;
+  error: string | null;
+}> = ({ config, onChange, saving, saved, onSave, error }) => {
+  const updateField = (field: string, value: any) => {
+    onChange({ ...config, [field]: value });
   };
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const payload = { qq: config };
-      await putJSON(API.configUpdate('channels'), { value: payload, persist: true });
-      await fetch(`${API.channelReload}?platform=qq`, { method: 'POST' });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (e: any) {
-      setError(e.message || '保存失败');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading) {
-    return <div className="settings-card"><div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div></div>;
-  }
 
   return (
-    <div className="settings-card">
+    <div className="settings-card" style={{ marginBottom: 24 }}>
       <div className="settings-card-header">
         <div className="settings-card-title">
           <Icons.Globe size={16} /> QQ 机器人通道
         </div>
-        <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+        <button className="btn-primary btn-sm" onClick={onSave} disabled={saving}>
           {saving ? '保存中...' : saved ? '已保存!' : '保存配置'}
         </button>
       </div>
@@ -520,7 +488,7 @@ const ChannelSettings: React.FC = () => {
             <input
               type="checkbox"
               checked={config.enabled !== false}
-              onChange={e => updateQQField('enabled', e.target.checked)}
+              onChange={e => updateField('enabled', e.target.checked)}
             />
             <span className="toggle-slider"></span>
             <span className="toggle-label">{config.enabled !== false ? '已启用' : '已禁用'}</span>
@@ -533,7 +501,7 @@ const ChannelSettings: React.FC = () => {
             <input
               type="checkbox"
               checked={config.auto_start !== false}
-              onChange={e => updateQQField('auto_start', e.target.checked)}
+              onChange={e => updateField('auto_start', e.target.checked)}
             />
             <span className="toggle-slider"></span>
             <span className="toggle-label">{config.auto_start !== false ? '已开启' : '已关闭'}</span>
@@ -545,7 +513,7 @@ const ChannelSettings: React.FC = () => {
           <input
             type="text"
             value={config.app_id || ''}
-            onChange={e => updateQQField('app_id', e.target.value)}
+            onChange={e => updateField('app_id', e.target.value)}
             placeholder="从环境变量 QQ_BOT_APP_ID 读取"
           />
         </div>
@@ -555,7 +523,7 @@ const ChannelSettings: React.FC = () => {
           <input
             type="password"
             value={config.app_secret || ''}
-            onChange={e => updateQQField('app_secret', e.target.value)}
+            onChange={e => updateField('app_secret', e.target.value)}
             placeholder="从环境变量 QQ_BOT_APP_SECRET 读取"
           />
         </div>
@@ -565,7 +533,7 @@ const ChannelSettings: React.FC = () => {
           <input
             type="number"
             value={config.intents || 1107296256}
-            onChange={e => updateQQField('intents', parseInt(e.target.value))}
+            onChange={e => updateField('intents', parseInt(e.target.value))}
           />
         </div>
 
@@ -588,6 +556,191 @@ const ChannelSettings: React.FC = () => {
           提示：保存配置后将自动热重载通道连接。凭证也可以通过环境变量 QQ_BOT_APP_ID 和 QQ_BOT_APP_SECRET 设置。
         </p>
       </div>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════
+// Telegram 通道配置子组件
+// ═════════════════════════════════════════════════════════════
+const TelegramChannelCard: React.FC<{
+  config: Record<string, any>;
+  onChange: (config: Record<string, any>) => void;
+  saving: boolean;
+  saved: boolean;
+  onSave: () => void;
+  error: string | null;
+}> = ({ config, onChange, saving, saved, onSave, error }) => {
+  const updateField = (field: string, value: any) => {
+    onChange({ ...config, [field]: value });
+  };
+
+  const updateListField = (field: string, value: string) => {
+    const list = value.split(',').map(s => s.trim()).filter(Boolean);
+    onChange({ ...config, [field]: list });
+  };
+
+  return (
+    <div className="settings-card">
+      <div className="settings-card-header">
+        <div className="settings-card-title">
+          <Icons.Globe size={16} /> Telegram Bot 通道
+        </div>
+        <button className="btn-primary btn-sm" onClick={onSave} disabled={saving}>
+          {saving ? '保存中...' : saved ? '已保存!' : '保存配置'}
+        </button>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="settings-card-grid">
+        <div className="form-group">
+          <FieldLabel label="启用通道" />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.enabled === true}
+              onChange={e => updateField('enabled', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.enabled === true ? '已启用' : '已禁用'}</span>
+          </label>
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="自动启动" />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.auto_start !== false}
+              onChange={e => updateField('auto_start', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.auto_start !== false ? '已开启' : '已关闭'}</span>
+          </label>
+        </div>
+
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label="Bot Token" desc="从 @BotFather 获取" />
+          <input
+            type="password"
+            value={config.bot_token || ''}
+            onChange={e => updateField('bot_token', e.target.value)}
+            placeholder="从环境变量 TELEGRAM_BOT_TOKEN 读取"
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="白名单用户 ID" desc="可选，逗号分隔" />
+          <input
+            type="text"
+            value={(config.whitelist_user_ids || []).join(', ')}
+            onChange={e => updateListField('whitelist_user_ids', e.target.value)}
+            placeholder="例如: 123456789, 987654321"
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="白名单用户名" desc="可选，逗号分隔，不含@" />
+          <input
+            type="text"
+            value={(config.whitelist_usernames || []).join(', ')}
+            onChange={e => updateListField('whitelist_usernames', e.target.value)}
+            placeholder="例如: username1, username2"
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label="凭证状态" />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: config.bot_token ? '#22c55e' : '#ef4444',
+            }} />
+            <span style={{ color: '#a8b1c2', fontSize: 13 }}>
+              {config.bot_token ? '已配置凭证' : '缺少凭证（请配置或设置环境变量）'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-card-footer">
+        <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+          提示：保存配置后将自动热重载通道连接。Token 也可以通过环境变量 TELEGRAM_BOT_TOKEN 设置。
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════
+// 通道配置 Tab (多平台消息入口)
+// ═════════════════════════════════════════════════════════════
+const ChannelSettings: React.FC = () => {
+  const [configs, setConfigs] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+
+  useEffect(() => {
+    fetchJSON<Record<string, any>>(API.configSection('channels')).then(data => {
+      setConfigs({
+        qq: data?.qq || { enabled: true, auto_start: true },
+        telegram: data?.telegram || { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] }
+      });
+      setLoading(false);
+    }).catch(() => {
+      setConfigs({
+        qq: { enabled: true, auto_start: true },
+        telegram: { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] }
+      });
+      setLoading(false);
+    });
+  }, []);
+
+  const handleSave = async (platform: string) => {
+    setSaving(prev => ({ ...prev, [platform]: true }));
+    setErrors(prev => ({ ...prev, [platform]: null }));
+    try {
+      const payload = { ...configs, [platform]: configs[platform] };
+      await putJSON(API.configUpdate('channels'), { value: payload, persist: true });
+      await fetch(`${API.channelReload}?platform=${platform}`, { method: 'POST' });
+      setSaved(prev => ({ ...prev, [platform]: true }));
+      setTimeout(() => setSaved(prev => ({ ...prev, [platform]: false })), 2000);
+    } catch (e: any) {
+      setErrors(prev => ({ ...prev, [platform]: e.message || '保存失败' }));
+    } finally {
+      setSaving(prev => ({ ...prev, [platform]: false }));
+    }
+  };
+
+  const updateConfig = (platform: string, config: Record<string, any>) => {
+    setConfigs(prev => ({ ...prev, [platform]: config }));
+  };
+
+  if (loading) {
+    return <div className="settings-card"><div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> 加载中...</div></div>;
+  }
+
+  return (
+    <div>
+      <QQChannelCard
+        config={configs.qq || {}}
+        onChange={(cfg) => updateConfig('qq', cfg)}
+        saving={saving.qq || false}
+        saved={saved.qq || false}
+        onSave={() => handleSave('qq')}
+        error={errors.qq || null}
+      />
+      <TelegramChannelCard
+        config={configs.telegram || {}}
+        onChange={(cfg) => updateConfig('telegram', cfg)}
+        saving={saving.telegram || false}
+        saved={saved.telegram || false}
+        onSave={() => handleSave('telegram')}
+        error={errors.telegram || null}
+      />
     </div>
   );
 };

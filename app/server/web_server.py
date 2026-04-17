@@ -24,10 +24,11 @@ from app.server.routes.session_events import router as session_events_router
 async def lifespan_context(app: FastAPI):
     from app.channels import ChannelManager
     channel_mgr = ChannelManager.get_instance()
-    if channel_mgr.get_adapter("qq") and not channel_mgr.is_running:
+    if channel_mgr.list_platforms() and not channel_mgr.is_running:
         await channel_mgr.start_all(with_queue=False)
         import logging
-        logging.getLogger(__name__).info("[Channel] QQ 通道已在启动时自动连接")
+        platforms = ", ".join(channel_mgr.list_platforms())
+        logging.getLogger(__name__).info(f"[Channel] 通道已在启动时自动连接: {platforms}")
     yield
 
 

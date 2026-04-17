@@ -191,6 +191,8 @@ class SessionStore:
                 title = None
             elif session_id.startswith("qq:"):
                 title = f"QQ-{session_id.split(':')[1][:8]}"
+            elif session_id.startswith("telegram:"):
+                title = f"TG-{session_id.split(':')[1][:8]}"
             else:
                 title = None
 

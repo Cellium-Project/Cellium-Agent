@@ -81,6 +81,7 @@ class MessageQueue:
 class ChannelManager:
     _instance: Optional['ChannelManager'] = None
     FILE_MESSAGE_JOIN_WINDOW_SECONDS = 3.0
+    MESSAGE_DEDUP_WINDOW_SECONDS = 300  # 5分钟内的重复消息去重
 
     def __init__(self):
         self._adapters: Dict[str, ChannelAdapter] = {}
@@ -89,6 +90,9 @@ class ChannelManager:
         self._message_queue: Optional[MessageQueue] = None
         self._agent_loop_manager = None
         self._channel_task_consumers: Dict[str, asyncio.Task] = {}
+        # 消息去重缓存: {(platform, msg_id): timestamp}
+        self._processed_messages: Dict[tuple, float] = {}
+        self._max_dedup_size = 1000
 
     @classmethod
     def get_instance(cls) -> 'ChannelManager':
@@ -121,6 +125,9 @@ class ChannelManager:
         while self._running:
             try:
                 await adapter.connect()
+                # 连接成功后，等待适配器停止运行
+                while self._running and getattr(adapter, '_running', False):
+                    await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"[ChannelManager] {adapter.platform_name} error: {e}")
                 await asyncio.sleep(5)
@@ -292,10 +299,42 @@ class ChannelManager:
 
         self._ensure_channel_task_consumer(message, session_id, queue)
 
+    def _is_duplicate_message(self, message: UnifiedMessage) -> bool:
+        """检查消息是否重复"""
+        msg_id = None
+        if message.raw:
+            # Telegram: message_id, QQ: id
+            msg_id = message.raw.get("message_id") or message.raw.get("id")
+
+        if not msg_id:
+            return False
+
+        key = (message.platform, str(msg_id))
+        now = time.time()
+
+        cutoff = now - self.MESSAGE_DEDUP_WINDOW_SECONDS
+        expired_keys = [k for k, t in self._processed_messages.items() if t < cutoff]
+        for k in expired_keys:
+            del self._processed_messages[k]
+
+        if len(self._processed_messages) > self._max_dedup_size:
+            oldest_keys = [k for k, _ in sorted(self._processed_messages.items(), key=lambda x: x[1])[:100]]
+            for k in oldest_keys:
+                del self._processed_messages[k]
+
+        if key in self._processed_messages:
+            return True
+
+        self._processed_messages[key] = now
+        return False
+
     async def _on_message(self, message: UnifiedMessage):
         logger.info(f"[ChannelManager] Message from {message.platform}: {message.content[:50]}...")
 
-        # 获取对应平台的 adapter 处理文件消息
+        if self._is_duplicate_message(message):
+            logger.debug(f"[ChannelManager] Duplicate message ignored: {message.platform} {message.msg_id}")
+            return
+
         adapter = self._adapters.get(message.platform)
         from app.agent.loop.session_manager import get_session_manager
         session_mgr = get_session_manager()
@@ -304,7 +343,8 @@ class ChannelManager:
             try:
                 is_file = await adapter.handle_file_message(message)
                 if is_file:
-                    filename = message.raw.get("filename", "unknown") if message.raw else "unknown"
+                    file_info = adapter.extract_file_info(message.raw) if message.raw else None
+                    filename = file_info.get("filename", "unknown") if file_info else "unknown"
                     logger.info(f"[ChannelManager] File received via {message.platform}: {filename}")
                     self._schedule_file_followup_notice(message, session_info)
                     return
@@ -391,7 +431,6 @@ class ChannelManager:
             content_to_agent = message.content
             self._cancel_pending_file_notice(session_info)
             
-            # 检查是否有待处理的文件，如果有则附加到消息内容
             if hasattr(session_info, "pending_files") and session_info.pending_files:
                 file_info = "📎 **已收到的文件**：\n"
                 for i, f in enumerate(session_info.pending_files, 1):
@@ -399,7 +438,6 @@ class ChannelManager:
                     if f.get('url'):
                         file_info += f"     下载链接: {f['url']}\n"
                 content_to_agent = file_info + "\n" + content_to_agent
-                # 清空已处理的文件列表
                 session_info.pending_files = []
                 logger.info(f"[ChannelManager] Attached {i} pending files to message for session={session_id}")
             
