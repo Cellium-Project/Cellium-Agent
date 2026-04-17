@@ -5,3 +5,8 @@ channels:
     app_id: ''
     app_secret: ''
     intents: 1107296256
+  telegram:
+    enabled: true
+    auto_start: true
+    whitelist_user_ids: []
+    whitelist_usernames: []

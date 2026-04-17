@@ -5,6 +5,7 @@ import { API, fetchJSON, postJSON, putJSON } from '../utils/api';
 import { Icons } from './Icons';
 import { CustomDropdown } from './CustomDropdown';
 import { MemoryManagerPanel } from './MemoryManagerPanel';
+import { Collapsible } from './Collapsible';
 import type { Theme, Language } from '../stores/appStore';
 
 
@@ -20,7 +21,7 @@ const useSettingsTabs = () => {
     { id: 'security', label: t('settings.tabs.security'), Icon: Icons.Shield },
     { id: 'channel', label: t('settings.tabs.channel'), Icon: Icons.Globe },
     { id: 'logging', label: t('settings.tabs.logging'), Icon: Icons.FileText },
-    { id: 'appearance', label: t('settings.tabs.appearance'), Icon: Icons.Settings },
+    { id: 'appearance', label: t('settings.tabs.appearance'), Icon: Icons.Palette },
   ] as const;
 };
 
@@ -1451,7 +1452,6 @@ const HeuristicsSettings: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [selectedPreset, setSelectedPreset] = useState<PresetKey | 'custom'>('balanced');
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const { saving, saved, doSave } = useSavingState();
 
   useEffect(() => {
@@ -1543,13 +1543,6 @@ const HeuristicsSettings: React.FC = () => {
           <div className="settings-card-title">
             {t('settings.heuristics.engineDecision')}
           </div>
-          <button
-            className={`btn-link ${showAdvanced ? 'active' : ''}`}
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            style={{ fontSize: '12px', marginLeft: 'auto' }}
-          >
-            {showAdvanced ? t('settings.heuristics.hideAdvanced') : t('settings.heuristics.showAdvanced')}
-          </button>
         </div>
         <div className="preset-grid">
           {(Object.entries(HEURISTICS_PRESETS) as [PresetKey, typeof HEURISTICS_PRESETS[PresetKey]][]).map(([key, preset]) => (
@@ -1565,118 +1558,116 @@ const HeuristicsSettings: React.FC = () => {
         </div>
       </div>
 
-      {showAdvanced && (
-        <>
-          <div className="settings-card">
-            <div className="settings-card-header">
-              <div className="settings-card-title">{t('settings.heuristics.logAndTrace')}</div>
+      <Collapsible summary={t('settings.heuristics.advancedConfig')} className="settings-collapsible">
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.heuristics.logAndTrace')}</div>
+          </div>
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.logLevel')} />
+              <CustomDropdown
+                value={(config.log_level || 'info').toUpperCase()}
+                items={[
+                  { value: 'DEBUG', label: 'DEBUG' },
+                  { value: 'INFO', label: 'INFO' },
+                  { value: 'WARNING', label: 'WARNING' },
+                  { value: 'ERROR', label: 'ERROR' },
+                ]}
+                onChange={val => updateField('log_level', val.toLowerCase())}
+              />
             </div>
-            <div className="settings-card-grid">
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.logLevel')} />
-                <CustomDropdown
-                  value={(config.log_level || 'info').toUpperCase()}
-                  items={[
-                    { value: 'DEBUG', label: 'DEBUG' },
-                    { value: 'INFO', label: 'INFO' },
-                    { value: 'WARNING', label: 'WARNING' },
-                    { value: 'ERROR', label: 'ERROR' },
-                  ]}
-                  onChange={val => updateField('log_level', val.toLowerCase())}
-                />
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.decisionTrace')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!config.trace_enabled} onChange={e => updateField('trace_enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                </label>
-              </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.decisionTrace')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!config.trace_enabled} onChange={e => updateField('trace_enabled', e.target.checked)} />
+                <span className="toggle-slider"></span>
+              </label>
             </div>
           </div>
+        </div>
 
-          <div className="settings-card">
-            <div className="settings-card-header">
-              <div className="settings-card-title">{t('settings.heuristics.globalThresholds')}</div>
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.heuristics.globalThresholds')}</div>
+          </div>
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.iterationWarningRatio')} desc={t('settings.heuristics.iterationWarningRatioDesc')} />
+              <input type="number" value={Number(thresholds.max_iterations_ratio) || 0.8} min={0.5} max={1} step={0.05}
+                onChange={e => updateField('thresholds.max_iterations_ratio', parseFloat(e.target.value))} />
             </div>
-            <div className="settings-card-grid">
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.iterationWarningRatio')} desc={t('settings.heuristics.iterationWarningRatioDesc')} />
-                <input type="number" value={Number(thresholds.max_iterations_ratio) || 0.8} min={0.5} max={1} step={0.05}
-                  onChange={e => updateField('thresholds.max_iterations_ratio', parseFloat(e.target.value))} />
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.tokenBudgetWarningRatio')} desc={t('settings.heuristics.tokenBudgetWarningRatioDesc')} />
-                <input type="number" value={Number(thresholds.token_budget_ratio) || 0.9} min={0.5} max={1} step={0.05}
-                  onChange={e => updateField('thresholds.token_budget_ratio', parseFloat(e.target.value))} />
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.noProgressIterations')} desc={t('settings.heuristics.noProgressIterationsDesc')} />
-                <input type="number" value={Number(thresholds.stuck_iterations) || 3} min={1} max={20}
-                  onChange={e => updateField('thresholds.stuck_iterations', parseInt(e.target.value))} />
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.repetitionThreshold')} desc={t('settings.heuristics.repetitionThresholdDesc')} />
-                <input type="number" value={Number(thresholds.repetition_threshold) || 3} min={1} max={20}
-                  onChange={e => updateField('thresholds.repetition_threshold', parseInt(e.target.value))} />
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.emaSmoothingFactor')} desc={t('settings.heuristics.emaSmoothingFactorDesc')} />
-                <input type="number" value={Number(thresholds.ema_alpha) || 0.3} min={0.1} max={1} step={0.05}
-                  onChange={e => updateField('thresholds.ema_alpha', parseFloat(e.target.value))} />
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.plateauStuckLimit')} desc={t('settings.heuristics.plateauStuckLimitDesc')} />
-                <input type="number" value={Number(thresholds.plateau_stuck_limit) || 5} min={1} max={30}
-                  onChange={e => updateField('thresholds.plateau_stuck_limit', parseInt(e.target.value))} />
-              </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.tokenBudgetWarningRatio')} desc={t('settings.heuristics.tokenBudgetWarningRatioDesc')} />
+              <input type="number" value={Number(thresholds.token_budget_ratio) || 0.9} min={0.5} max={1} step={0.05}
+                onChange={e => updateField('thresholds.token_budget_ratio', parseFloat(e.target.value))} />
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.noProgressIterations')} desc={t('settings.heuristics.noProgressIterationsDesc')} />
+              <input type="number" value={Number(thresholds.stuck_iterations) || 3} min={1} max={20}
+                onChange={e => updateField('thresholds.stuck_iterations', parseInt(e.target.value))} />
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.repetitionThreshold')} desc={t('settings.heuristics.repetitionThresholdDesc')} />
+              <input type="number" value={Number(thresholds.repetition_threshold) || 3} min={1} max={20}
+                onChange={e => updateField('thresholds.repetition_threshold', parseInt(e.target.value))} />
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.emaSmoothingFactor')} desc={t('settings.heuristics.emaSmoothingFactorDesc')} />
+              <input type="number" value={Number(thresholds.ema_alpha) || 0.3} min={0.1} max={1} step={0.05}
+                onChange={e => updateField('thresholds.ema_alpha', parseFloat(e.target.value))} />
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.plateauStuckLimit')} desc={t('settings.heuristics.plateauStuckLimitDesc')} />
+              <input type="number" value={Number(thresholds.plateau_stuck_limit) || 5} min={1} max={30}
+                onChange={e => updateField('thresholds.plateau_stuck_limit', parseInt(e.target.value))} />
             </div>
           </div>
+        </div>
 
-          <div className="settings-card">
-            <div className="settings-card-header">
-              <div className="settings-card-title">{t('settings.heuristics.ruleSwitches')}</div>
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.heuristics.ruleSwitches')}</div>
+          </div>
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.tokenBudgetProtection')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!(config.rules?.['term-002']?.enabled)} onChange={e => updateField('rules.term-002.enabled', e.target.checked)} />
+                <span className="toggle-slider"></span>
+              </label>
             </div>
-            <div className="settings-card-grid">
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.tokenBudgetProtection')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!(config.rules?.['term-002']?.enabled)} onChange={e => updateField('rules.term-002.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                </label>
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.emptyResultChainDetection')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!(config.rules?.['term-003']?.enabled)} onChange={e => updateField('rules.term-003.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                </label>
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.noProgressDetection')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!(config.rules?.['term-004']?.enabled)} onChange={e => updateField('rules.term-004.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                </label>
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.repetitiveToolCalls')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!(config.rules?.['loop-001']?.enabled)} onChange={e => updateField('rules.loop-001.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                </label>
-              </div>
-              <div className="form-group">
-                <FieldLabel label={t('settings.heuristics.patternLoopDetection')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!(config.rules?.['loop-002']?.enabled)} onChange={e => updateField('rules.loop-002.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                </label>
-              </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.emptyResultChainDetection')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!(config.rules?.['term-003']?.enabled)} onChange={e => updateField('rules.term-003.enabled', e.target.checked)} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.noProgressDetection')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!(config.rules?.['term-004']?.enabled)} onChange={e => updateField('rules.term-004.enabled', e.target.checked)} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.repetitiveToolCalls')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!(config.rules?.['loop-001']?.enabled)} onChange={e => updateField('rules.loop-001.enabled', e.target.checked)} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.heuristics.patternLoopDetection')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!(config.rules?.['loop-002']?.enabled)} onChange={e => updateField('rules.loop-002.enabled', e.target.checked)} />
+                <span className="toggle-slider"></span>
+              </label>
             </div>
           </div>
-        </>
-      )}
+        </div>
+      </Collapsible>
 
       <div className="form-actions">
         <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
@@ -1741,17 +1732,17 @@ const AppearanceSettings: React.FC = () => {
       <div className="settings-card">
         <div className="settings-card-header">
           <span className="settings-card-title">
-            <Icons.Settings size={18} />
+            <Icons.Theme size={18} />
             {t('settings.theme.title')}
           </span>
         </div>
         <div className="form-group">
           <FieldLabel label={t('settings.theme.title')} />
-          <div className="settings-options-grid">
+          <div className="theme-options-grid">
             {themes.map((t) => (
               <label
                 key={t.value}
-                className={`settings-option-card ${theme === t.value ? 'selected' : ''}`}
+                className={`theme-option-card ${theme === t.value ? 'selected' : ''}`}
               >
                 <input
                   type="radio"
@@ -1761,7 +1752,15 @@ const AppearanceSettings: React.FC = () => {
                   onChange={() => setTheme(t.value)}
                   style={{ display: 'none' }}
                 />
-                <span className="option-label">{t.label}</span>
+                <div className={`theme-preview ${t.value === 'auto' ? 'auto-theme' : t.value}`}>
+                  {t.value === 'auto' ? (
+                    <>
+                      <div className="theme-half light"></div>
+                      <div className="theme-half dark"></div>
+                    </>
+                  ) : null}
+                </div>
+                <span className="theme-label">{t.label}</span>
               </label>
             ))}
           </div>

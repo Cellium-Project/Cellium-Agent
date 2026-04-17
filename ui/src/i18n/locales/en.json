@@ -68,7 +68,9 @@
     "completed": "Completed",
     "pleaseSelect": "Please select",
     "dash": "-",
-    "deleting": "Deleting..."
+    "deleting": "Deleting...",
+    "prevPage": "Previous",
+    "nextPage": "Next"
   },
   "sidebar": {
     "newChat": "New Chat",
@@ -100,7 +102,10 @@
     "inputTip": "Press Enter to send, Shift + Enter for new line",
     "backToChat": "Back to chat",
     "historyLoading": "Loading history...",
-    "title": "Cellium Agent"
+    "title": "Cellium Agent",
+    "paramsAndResult": "Parameters & Result",
+    "executing": "Executing",
+    "waitingForResult": "Waiting for result..."
   },
   "session": {
     "untitled": "Untitled Session",
@@ -227,7 +232,8 @@
       "embeddingDimensions": "Embedding Dimensions",
       "defaultSchema": "Default Schema",
       "allowSensitiveStore": "Allow Storing Sensitive Info",
-      "allowSensitiveStoreDesc": "Disabled by default, only enable when explicitly needed"
+      "allowSensitiveStoreDesc": "Disabled by default, only enable when explicitly needed",
+      "save": "Save Memory Config"
     },
     "security": {
       "title": "Security Policy",
@@ -391,11 +397,13 @@
       "stopConfirmConfidence": "Stop Confirmation Confidence",
       "policyDefault": "Default Policy",
       "policyEfficient": "Efficient Policy",
-      "policyAggressive": "Aggressive Policy"
+      "policyAggressive": "Aggressive Policy",
+      "save": "Save Learning Config"
     }
   },
   "modelManager": {
     "title": "Model Manager",
+    "description": "Add multiple model configurations, then select the current model after saving.",
     "add": "Add Model",
     "edit": "Edit",
     "delete": "Delete",
@@ -403,7 +411,36 @@
     "test": "Test Connection",
     "testing": "Testing...",
     "testSuccess": "Connection successful",
-    "testFailed": "Connection failed"
+    "testFailed": "Connection failed",
+    "loadFailed": "Failed to load model config",
+    "fillRequired": "Please fill in required fields",
+    "saved": "Model \"{{name}}\" saved",
+    "saveFailed": "Save failed: {{message}}",
+    "switched": "Switched to model \"{{name}}\"",
+    "switchFailed": "Switch failed: {{message}}",
+    "confirmDelete": "Delete model \"{{name}}\"?",
+    "deleteFailed": "Delete failed: {{message}}",
+    "enterApiUrl": "Please enter API URL",
+    "fetchFailed": "Failed to fetch model list: {{message}}",
+    "savedModels": "Saved Models",
+    "noModels": "No model configurations",
+    "editModel": "Edit Model",
+    "addNewModel": "Add New Model",
+    "configName": "Config Name",
+    "configNamePlaceholder": "e.g.: Production, Testing",
+    "openaiCompatible": "OpenAI Compatible",
+    "localDeploy": "Local Deployment",
+    "apiUrl": "API URL",
+    "apiUrlPlaceholder": "e.g.: https://api.openai.com/v1",
+    "modelId": "Model ID",
+    "selectModel": "Select model",
+    "modelIdPlaceholder": "e.g.: gpt-4o",
+    "apiKeyPlaceholder": "Leave empty to use env variable",
+    "timeout": "Timeout (seconds)",
+    "updateModel": "Update Model",
+    "saveModel": "Save Model",
+    "cancelEdit": "Cancel Edit",
+    "quickAdd": "Quick Add"
   },
   "memoryManager": {
     "title": "Memory Manager",
@@ -496,7 +533,8 @@
     "confirmAction": "Confirm {{action}} \"{{title}}\"?",
     "actionCompleted": "{{action}} \"{{title}}\" succeeded",
     "actionFailed": "{{action}} \"{{title}}\" failed",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "paginationInfo": "Items {{start}}-{{end}} of {{total}}"
   },
   "errors": {
     "network": "Network error, please check your connection",

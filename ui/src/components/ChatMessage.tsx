@@ -4,6 +4,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Message, TimelineSegment } from '../types';
 import { Icons } from './Icons';
+import { Collapsible } from './Collapsible';
 
 marked.setOptions({ gfm: true });
 
@@ -174,12 +175,11 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
             <code>{escapeHtml(cmdPreview)}</code>
           </div>
         )}
-        <details className="tool-trace-detail" open={status === 'running'}>
-          <summary>{t('chat.paramsAndResult')}</summary>
+        <Collapsible summary={t('chat.paramsAndResult')} defaultOpen={status === 'running'}>
           <pre className="tool-args">{escapeHtml(argsStr)}</pre>
           {status !== 'running' && <div className="tool-result">{resultPreview}</div>}
           {status === 'running' && <div className="tool-result"><span className="status-dot dot-running"></span>{t('chat.waitingForResult')}</div>}
-        </details>
+        </Collapsible>
       </div>
     </>
   );

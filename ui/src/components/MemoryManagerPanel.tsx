@@ -494,7 +494,7 @@ export const MemoryManagerPanel: React.FC = () => {
               onClick={() => setOffset(Math.max(0, offset - limit))}
               disabled={offset === 0 || loading}
             >
-              {t('common.previous')}
+              {t('common.prevPage')}
             </button>
             <span className="memory-pagination-page">
               {Math.floor(offset / limit) + 1} / {Math.ceil(total / limit)}
@@ -504,7 +504,7 @@ export const MemoryManagerPanel: React.FC = () => {
               onClick={() => setOffset(offset + limit)}
               disabled={offset + limit >= total || loading}
             >
-              {t('common.next')}
+              {t('common.nextPage')}
             </button>
           </div>
         </div>

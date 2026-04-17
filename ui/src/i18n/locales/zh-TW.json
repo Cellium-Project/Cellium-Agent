@@ -14,6 +14,7 @@
     "confirm": "確認",
     "close": "關閉",
     "refresh": "重新整理",
+    "refreshing": "重新整理中...",
     "search": "搜尋",
     "copy": "複製",
     "copied": "已複製",
@@ -63,7 +64,12 @@
     "unselect": "取消選擇",
     "expand": "展開",
     "collapse": "收起",
-    "dash": "-"
+    "dash": "-",
+    "pleaseSelect": "請選擇",
+    "deleting": "刪除中...",
+    "completed": "已完成",
+    "prevPage": "上一頁",
+    "nextPage": "下一頁"
   },
   "sidebar": {
     "newChat": "新對話",
@@ -95,7 +101,10 @@
     "inputTip": "按 Enter 發送，Shift + Enter 換行",
     "backToChat": "返回對話",
     "historyLoading": "載入歷史中...",
-    "title": "Cellium Agent"
+    "title": "Cellium Agent",
+    "paramsAndResult": "參數與結果",
+    "executing": "執行中",
+    "waitingForResult": "等待結果..."
   },
   "session": {
     "untitled": "未命名會話",
@@ -133,8 +142,8 @@
     "theme": {
       "title": "主題",
       "description": "選擇介面主題",
-      "light": "亮色",
-      "dark": "暗色",
+      "light": "淺色",
+      "dark": "深色",
       "auto": "跟隨系統"
     },
     "model": {
@@ -222,7 +231,8 @@
       "embeddingDimensions": "Embedding 維度",
       "defaultSchema": "預設 Schema",
       "allowSensitiveStore": "允許儲存敏感資訊",
-      "allowSensitiveStoreDesc": "預設建議關閉，僅在明確需要時開啟"
+      "allowSensitiveStoreDesc": "預設建議關閉，僅在明確需要時開啟",
+      "save": "儲存記憶設定"
     },
     "security": {
       "title": "安全策略",
@@ -386,11 +396,13 @@
       "stopConfirmConfidence": "停止確認置信度",
       "policyDefault": "預設策略",
       "policyEfficient": "高效策略",
-      "policyAggressive": "激進策略"
+      "policyAggressive": "激進策略",
+      "save": "儲存學習設定"
     }
   },
   "modelManager": {
     "title": "模型管理",
+    "description": "新增多個模型設定，儲存後選擇目前使用的模型。",
     "add": "新增模型",
     "edit": "編輯",
     "delete": "刪除",
@@ -398,7 +410,36 @@
     "test": "測試連線",
     "testing": "測試中...",
     "testSuccess": "連線成功",
-    "testFailed": "連線失敗"
+    "testFailed": "連線失敗",
+    "loadFailed": "載入模型設定失敗",
+    "fillRequired": "請填寫必填欄位",
+    "saved": "模型「{{name}}」已儲存",
+    "saveFailed": "儲存失敗：{{message}}",
+    "switched": "已切換到模型「{{name}}」",
+    "switchFailed": "切換失敗：{{message}}",
+    "confirmDelete": "確定刪除模型「{{name}}」？",
+    "deleteFailed": "刪除失敗：{{message}}",
+    "enterApiUrl": "請輸入 API 位址",
+    "fetchFailed": "取得模型列表失敗：{{message}}",
+    "savedModels": "已儲存的模型",
+    "noModels": "暫無模型設定",
+    "editModel": "編輯模型",
+    "addNewModel": "新增模型",
+    "configName": "設定名稱",
+    "configNamePlaceholder": "例如：正式環境、測試環境",
+    "openaiCompatible": "OpenAI 相容",
+    "localDeploy": "本地部署",
+    "apiUrl": "API 位址",
+    "apiUrlPlaceholder": "例如：https://api.openai.com/v1",
+    "modelId": "模型 ID",
+    "selectModel": "選擇模型",
+    "modelIdPlaceholder": "例如：gpt-4o",
+    "apiKeyPlaceholder": "留空則使用環境變數",
+    "timeout": "逾時時間（秒）",
+    "updateModel": "更新模型",
+    "saveModel": "儲存模型",
+    "cancelEdit": "取消編輯",
+    "quickAdd": "快速新增"
   },
   "memoryManager": {
     "title": "記憶管理",
@@ -491,7 +532,8 @@
     "confirmAction": "確認 {{action}}「{{title}}」？",
     "actionCompleted": "{{action}}「{{title}}」成功",
     "actionFailed": "{{action}}「{{title}}」失敗",
-    "processing": "處理中..."
+    "processing": "處理中...",
+    "paginationInfo": "第 {{start}}-{{end}} 條，共 {{total}} 條"
   },
   "errors": {
     "network": "網路錯誤，請檢查連線",
