@@ -129,7 +129,49 @@ class ComponentBuilder(BaseCell):
 
         methods_code = "\n".join(methods_parts)
 
-        # 生成 _cmd_help 方法（核心！让 LLM 自学习用法）──
+        agent_helper = '''
+    def _run_agent(self, prompt: str, session_id: str = None) -> Dict[str, Any]:
+        """
+        启动 Agent 循环执行任务（可选功能）
+
+        Args:
+            prompt: 要 Agent 执行的任务描述
+            session_id: 会话 ID（可选，不传则自动生成）
+
+        Returns:
+            {"success": True, "session_id": "...", "status": "started"}
+        """
+        import httpx
+        from datetime import datetime
+
+        sid = session_id or f"scheduled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        try:
+            from app.core.util.agent_config import get_config
+            cfg = get_config()
+            host = cfg.get("server.host", "127.0.0.1")
+            port = cfg.get("server.port", 18000)
+            base_url = f"http://{host}:{port}"
+        except Exception:
+            base_url = "http://127.0.0.1:18000"
+
+        try:
+            response = httpx.post(
+                f"{base_url}/api/chat/stream",
+                json={"message": prompt, "session_id": sid},
+                timeout=10.0
+            )
+            result = response.json()
+            return {
+                "success": result.get("status") in ("started", "reconnecting"),
+                "session_id": sid,
+                "status": result.get("status"),
+                "message": f"Agent 任务已启动: {prompt[:50]}..."
+            }
+        except Exception as e:
+            return {"success": False, "error": f"启动 Agent 失败: {e}"}
+'''
+
         examples_parts = []
         for i, cmd in enumerate(cmd_list):
             cn = cmd.get("name", "execute")
@@ -166,6 +208,9 @@ class ComponentBuilder(BaseCell):
                 "使用前请用 file.edit 编辑本文件补充实现代码",
                 "调用时必须带 command 字段指定子命令名",
                 "如果不确定如何调用，可先调 help 查看用法",
+                "【调用 Agent 循环】如需启动 Agent 执行任务，可调用 self._run_agent(prompt)",
+                "  示例: result = self._run_agent('帮我分析这个日志文件')",
+                "  返回: {'success': True, 'session_id': '...', 'status': 'started'}",
             ],
             "_call_format": {{
                 "note": "这是多命令模式工具，每次调用必须带 command 字段",
@@ -219,8 +264,12 @@ class ComponentBuilder(BaseCell):
         lines.append(f'        return "{cell_name}"')
         lines.append('')
 
-        # 追加方法（保持原有缩进，不要 strip）
         for line in methods_code.split('\n'):
+            lines.append(line)
+
+        lines.append('')
+
+        for line in agent_helper.split('\n'):
             lines.append(line)
 
         lines.append('')
@@ -252,6 +301,8 @@ class ComponentBuilder(BaseCell):
             "module_path": f"components.{name}.{class_name}",
             "commands": [{c["name"]: c["desc"]} for c in cmd_list],
             "has_help_method": True,
+            "has_agent_helper": True,
+            "agent_helper_note": "组件包含 _run_agent(prompt) 方法，可启动 Agent 循环执行任务",
             "next_step": (
                 "\u7ec4\u4ef6\u5c06\u5728\u70ed\u63d2\u62cb\u7cfb\u7edf\u68c0\u6d4b\u5230\u540e\u81ea\u52a8\u52a0\u8f7d\uff08\u7ea73\u79d2\u5185\u751f\u6548\uff09"
                 "\uff0c\u6216\u8c03\u7528 component.reload() \u7acb\u5373\u52a0\u8f7d"
@@ -474,6 +525,7 @@ class MyComponent(BaseCell):
             "_notes": [
                 "这是系统内置组件（白名单豁免），负责创建和管理其他 Cellium 组件",
                 "generate 创建的组件会自动包含 _cmd_help 方法供 LLM 自学习用法",
+                "generate 创建的组件会自动包含 _run_agent(prompt) 方法，可启动 Agent 循环",
                 "每次调用必须带 command 字段指定子命令名",
                 "调用格式: {\"command\": \"generate\", \"name\": \"my_tool\", ...}",
                 "如果不确定如何调用，可先调 help 查看用法或调 list 查看可用命令",

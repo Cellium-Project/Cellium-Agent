@@ -43,7 +43,7 @@ export function useChat() {
       updateStreamingMessage(null);
       return;
     }
-    if (typeof connectionId === 'number' && connectionId !== connectionIdRef.current) {
+    if (typeof connectionId === 'number' && connectionId !== connectionIdRef.current && !ctx.sawDone) {
       return;
     }
 
@@ -358,7 +358,7 @@ export function useChat() {
   }, [handleChatEvent, setIsStreaming]);
 
   // 连接 WebSocket（处理旧连接关闭）
-  const connectWebSocket = useCallback((sessionId: string, ctx: ReturnType<typeof buildStreamingContext>, isReconnect: boolean) => {
+  const connectWebSocket = useCallback((sessionId: string, ctx: ReturnType<typeof buildStreamingContext>, connectionId: number, isReconnect: boolean) => {
     const connectingKey = `ws_connecting_${sessionId}`;
     if ((window as any)[connectingKey]) {
       console.log('[WS] Already connecting, skipping');
@@ -371,8 +371,6 @@ export function useChat() {
       reconnectTimerRef.current = null;
     }
 
-    const currentConnectionId = ++connectionIdRef.current;
-
     // 先关闭旧连接并等待其完成
     const oldWs = wsRef.current;
     if (oldWs) {
@@ -382,7 +380,7 @@ export function useChat() {
         // 等待旧连接关闭后再创建新连接
         const checkAndConnect = () => {
           if (oldWs.readyState === WebSocket.CLOSED) {
-            createNewConnection(sessionId, ctx, currentConnectionId, connectingKey);
+            createNewConnection(sessionId, ctx, connectionId, connectingKey);
           } else {
             setTimeout(checkAndConnect, 50);
           }
@@ -393,7 +391,7 @@ export function useChat() {
     }
 
     // 无旧连接，直接创建
-    createNewConnection(sessionId, ctx, currentConnectionId, connectingKey);
+    createNewConnection(sessionId, ctx, connectionId, connectingKey);
   }, [createNewConnection]);
 
   const disconnectWebSocket = useCallback(() => {
@@ -443,7 +441,8 @@ export function useChat() {
     try {
       const hasTask = await checkTaskStatus(sessionId);
       if (hasTask) {
-        connectWebSocket(sessionId, ctx, true);
+        const connectionId = ++connectionIdRef.current;
+        connectWebSocket(sessionId, ctx, connectionId, true);
       } else {
         updateStreamingMessage(null);
         setIsStreaming(false);
@@ -481,10 +480,9 @@ export function useChat() {
 
     const ctx = buildStreamingContext();
     lastEventIdBySessionRef.current[sessionId] = 0;
-    const connectionId = ++connectionIdRef.current;
     updateStreamingMessage({
       role: 'assistant',
-      content: '',
+      content: '正在思考...',
       toolTraces: [],
       timeline: [],
     });
@@ -492,7 +490,8 @@ export function useChat() {
     abortControllerRef.current = new AbortController();
 
     try {
-      connectWebSocket(sessionId, ctx, false);
+      const connectionId = ++connectionIdRef.current;
+      connectWebSocket(sessionId, ctx, connectionId, false);
 
       const response = await fetch(API.stream, {
         method: 'POST',
@@ -574,7 +573,8 @@ export function useChat() {
       });
       setIsStreaming(true);
 
-      connectWebSocket(sessionId, ctx, true);
+      const connectionId = ++connectionIdRef.current;
+      connectWebSocket(sessionId, ctx, connectionId, true);
     };
 
     checkAndReconnect();

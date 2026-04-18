@@ -25,6 +25,7 @@ class SessionInfo:
         max_tool_results: int = 10,
         max_tool_result_length: int = 500,
         auto_compact_threshold: int = 10000,
+        flash_mode: bool = False,
     ):
         self.session_id = session_id
         self.memory = MemoryManager(
@@ -36,6 +37,7 @@ class SessionInfo:
         self.created_at = time.time()
         self.last_active = time.time()
         self.message_count = 0
+        self.flash_mode = flash_mode
 
     def touch(self):
         """更新最后活跃时间"""
@@ -49,6 +51,7 @@ class SessionInfo:
             "last_active": datetime.fromtimestamp(self.last_active).isoformat(),
             "age_seconds": int(time.time() - self.created_at),
             "idle_seconds": int(time.time() - self.last_active),
+            "flash_mode": self.flash_mode,
         }
 
 
@@ -71,10 +74,18 @@ class SessionManager:
         self._max_sessions = max_sessions or self.MAX_SESSIONS
         self.three_layer_memory = three_layer_memory  # 可选，用于对话结束时持久化
 
-    def get_or_create(self, session_id: str) -> SessionInfo:
+    def get_or_create(self, session_id: str, flash_mode: bool = None) -> SessionInfo:
         """获取或创建会话（冷启动时自动从归档恢复历史消息）"""
         evicted_info = None  # 用于保存被淘汰的会话信息
         info = None
+
+        if flash_mode is None:
+            try:
+                from app.core.util.agent_config import get_config
+                _cfg = get_config()
+                flash_mode = _cfg.get("flash_mode", False)
+            except Exception:
+                flash_mode = False
 
         with self._lock:
             if session_id in self._sessions:
@@ -102,6 +113,7 @@ class SessionManager:
                     max_tool_results=short_term.get("max_tool_results", 10),
                     max_tool_result_length=short_term.get("max_tool_result_length", 500),
                     auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
+                    flash_mode=flash_mode,
                 )
 
                 # 冷启动：从归档恢复历史对话到 MemoryManager
@@ -154,12 +166,19 @@ class SessionManager:
 
         try:
             messages = info.memory.get_messages()
-            if len(messages) < 2:
+            if len(messages) < 1:
                 return
 
             user_messages = [m.get("content", "") for m in messages if m.get("role") == "user" and m.get("content")]
             assistant_messages = [m.get("content", "") for m in messages if m.get("role") == "assistant" and m.get("content")]
-            if not user_messages or not assistant_messages:
+            if not user_messages:
+                return
+
+            if not assistant_messages:
+                if info.flash_mode:
+                    logger.debug("[SessionManager] Flash模式会话，跳过快照保存（已由 _persist_conversation 保存）| session=%s", session_id)
+                else:
+                    logger.debug("[SessionManager] 无 assistant 消息，跳过快照保存 | session=%s", session_id)
                 return
 
             self.three_layer_memory.persist_session(

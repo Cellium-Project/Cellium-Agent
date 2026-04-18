@@ -94,7 +94,7 @@ class PromptContextBuilder:
         system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
         messages.append({"role": "system", "content": system_prompt})
 
-        # 2. 注入长期记忆（非闪电模式）
+        # 2. 注入长期记忆
         if not self._flash_mode and self._three_layer_memory:
             long_term_context = self._retrieve_long_term_memory(user_input)
             if long_term_context:
@@ -112,6 +112,10 @@ class PromptContextBuilder:
 
         # 4. 会话历史
         messages.extend(session_messages)
+
+        # 4.5 Flash模式：直接注入用户输入（session_messages 为空时）
+        if self._flash_mode and not session_messages:
+            messages.append({"role": "user", "content": user_input})
 
         # 5. 引导消息（如果有）
         if guidance_message:
@@ -176,7 +180,7 @@ class PromptContextBuilder:
         # 3. 会话历史（后续轮次不需要重复注入长期记忆）
         messages.extend(session_messages)
 
-        # 4. 自动提示（如果有）
+        # 4. 自动提示
         if auto_hints:
             messages.append({
                 "role": "user",
@@ -187,7 +191,7 @@ class PromptContextBuilder:
                 "content": "好的，我会参考这些提示。",
             })
 
-        # 4. 引导消息（如果有）
+        # 4. 引导消息
         if guidance_message:
             messages.append({
                 "role": "user",
@@ -229,5 +233,4 @@ class PromptContextBuilder:
 
 
     def update_flash_mode(self, enabled: bool):
-        """更新闪电模式状态"""
         self._flash_mode = enabled

@@ -478,11 +478,15 @@ def _instantiate_component(module_path: str) -> tuple:
     
     module_name, class_name = parts
     
-    # 导入模块
     try:
-        module = importlib.import_module(module_name)
+        if module_name in sys.modules:
+            parent_name = module_name.rsplit(".", 1)[0] if "." in module_name else None
+            if parent_name and parent_name not in sys.modules:
+                importlib.import_module(parent_name)
+            module = importlib.reload(sys.modules[module_name])
+        else:
+            module = importlib.import_module(module_name)
     except ImportError:
-        # 尝试从 components_dir 手动加载
         components_dir = get_components_dir()
         file_path = components_dir / f"{class_name.lower()}.py"
         if file_path.exists():

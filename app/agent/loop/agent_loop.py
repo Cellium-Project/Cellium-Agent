@@ -442,7 +442,7 @@ class AgentLoop:
 
         if isinstance(result, dict):
             result["elapsed_ms"] = round(duration_ms)
-        if not self.flash_mode:
+        if tool_call_id:
             effective_memory.add_tool_result(tool_call_id, result)
         self._tool_executor.track_result(tool_name, result)
 
@@ -528,17 +528,16 @@ class AgentLoop:
                 session_id=effective_session,
                 message=user_input,
             )
-            if not self.flash_mode:
-                effective_memory.add_user_message(user_input)
+            effective_memory.add_user_message(user_input)
 
-                session_notes = self._get_session_notes(effective_session)
-                session_notes.load()
-                current_goal = session_notes.get_goal()
-                if self._should_update_goal(user_input, current_goal):
-                    logger.info("[AgentLoop] 检测到新目标，更新 | session=%s | 旧目标: %s | 新目标: %s", 
-                               effective_session, current_goal[:50] if current_goal else "(无)", user_input[:50])
-                    session_notes.set_goal(user_input, force=True)
-                    session_notes.save()
+            # === 1.5 会话目标更新 ===
+            session_notes = self._get_session_notes(effective_session)
+            current_goal = session_notes.get_goal()
+            if self._should_update_goal(user_input, current_goal):
+                logger.info("[AgentLoop] 检测到新目标，更新 | session=%s | 旧目标: %s | 新目标: %s",
+                           effective_session, current_goal[:50] if current_goal else "(无)", user_input[:50])
+                session_notes.set_goal(user_input, force=True)
+                session_notes.save()
 
             # === 2. 拦截系统命令 ===
             if self._cmd_handler.is_slash_command(user_input):
@@ -561,14 +560,16 @@ class AgentLoop:
                 policy_name = self.learning.start_session()
                 logger.info("[Learning] 选择 Policy: %s", policy_name)
 
+            # LoopState: 会话状态（Flash模式也需要，供Learning等模块使用）
+            self._loop_state = LoopState(
+                session_id=effective_session,
+                max_iterations=self.max_iterations,
+                user_input=user_input,
+                available_tools=list(self.tools.keys()),
+            )
+
             # Control Loop: 会话开始
             if self.control_loop:
-                self._loop_state = LoopState(
-                    session_id=effective_session,
-                    max_iterations=self.max_iterations,
-                    user_input=user_input,
-                    available_tools=list(self.tools.keys()),
-                )
                 self.control_loop.start_session(self._loop_state)
 
             yield {"type": "thinking", "content": "正在思考..."}
@@ -586,8 +587,7 @@ class AgentLoop:
                         sup_content = sup.get("content", "")
                         if sup_content:
                             logger.info(f"[AgentLoop] 注入补充消息 | content={sup_content[:50]}...")
-                            if not self.flash_mode:
-                                effective_memory.add_user_message(sup_content)
+                            effective_memory.add_user_message(sup_content)
                             supplement_event = {
                                 "type": "supplement_injected",
                                 "content": sup_content,
@@ -761,7 +761,7 @@ class AgentLoop:
                         logger.warning("[Heuristics] %s", "; ".join(warnings))
 
                 # === 构建提示词 ===
-                session_messages = effective_memory.get_messages() if not self.flash_mode else []
+                session_messages = effective_memory.get_messages()
 
                 runtime_status_str = None
                 rs = get_runtime_status()
@@ -853,10 +853,7 @@ class AgentLoop:
                         forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
                         blocked_by_constraint = tool_name in forbidden_tools
 
-                        if not self.flash_mode:
-                            tool_call_id = effective_memory.add_tool_call(tool_name, arguments)
-                        else:
-                            tool_call_id = None
+                        tool_call_id = effective_memory.add_tool_call(tool_name, arguments)
 
                         description = ToolDescriptionGenerator.generate(tool_name, arguments)
                         desc_str = description if isinstance(description, str) else str(description)
@@ -1135,11 +1132,8 @@ class AgentLoop:
         sid = session_id or self.session_id
         if not self.has_long_term_memory:
             return
-        # 即使 response_content 为空也尝试保存
-        # 但如果有 messages，可以从 messages 构建完整归档
         try:
             all_messages = memory.get_messages() if memory else None
-            # 如果没有 response_content 但有 messages，使用最后一条 user 消息作为 response
             actual_response = response_content
             if not actual_response and all_messages:
                 for msg in reversed(all_messages):
@@ -1151,9 +1145,15 @@ class AgentLoop:
             if not actual_response and not all_messages:
                 logger.debug("[AgentLoop] 无内容可持久化，跳过")
                 return
-            source_id = self.three_layer_memory.persist_session(
-                user_input, actual_response, session_id=sid, messages=all_messages,
-            )
+
+            if self.flash_mode:
+                source_id = self.three_layer_memory.persist_session(
+                    user_input, actual_response, session_id=sid, messages=None,
+                )
+            else:
+                source_id = self.three_layer_memory.persist_session(
+                    user_input, actual_response, session_id=sid, messages=all_messages,
+                )
 
             logger.info("[AgentLoop] 对话已持久化 | session=%s | archive_id=%s", sid, source_id[:12] if source_id else "N/A")
         except Exception as mem_e:

@@ -523,6 +523,10 @@ body {
     background: var(--accent-success);
     filter: brightness(0.9);
 }
+.btn-send:active:not(:disabled) {
+    transform: scale(0.95);
+    filter: brightness(0.85);
+}
 
 .btn-send:disabled {
     background: var(--text-tertiary);
@@ -869,6 +873,9 @@ body {
     background: var(--bg-active);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
+}
+.btn-back-chat:active {
+    transform: scale(0.96);
 }
 
 .settings-body {
@@ -1376,6 +1383,7 @@ input:focus, select:focus, textarea:focus {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: all 0.15s ease;
 }
 
 /* ── 模型列表 ── */
@@ -1405,10 +1413,15 @@ input:focus, select:focus, textarea:focus {
     border: none;
     font-size: 12px;
     cursor: pointer;
+    transition: all 0.15s ease;
 }
 
 .btn-small:hover {
     background: var(--btn-primary-hover);
+}
+.btn-small:active {
+    transform: scale(0.95);
+    filter: brightness(0.92);
 }
 
 .model-card {
@@ -1444,11 +1457,16 @@ input:focus, select:focus, textarea:focus {
     cursor: pointer;
     color: var(--text-secondary);
     border-radius: 4px;
+    transition: all 0.15s ease;
 }
 
 .btn-icon:hover {
     background: var(--gray-200);
     color: var(--accent-danger);
+}
+.btn-icon:active {
+    transform: scale(0.9);
+    background: var(--gray-300);
 }
 
 .model-card-body {
@@ -1469,6 +1487,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 .btn-primary:hover:not(:disabled) { background: var(--btn-primary-hover); }
+.btn-primary:active:not(:disabled) { transform: scale(0.97); filter: brightness(0.92); }
 .btn-primary:disabled { background: var(--gray-400); cursor: not-allowed; }
 
 .btn-secondary {
@@ -1479,8 +1498,10 @@ input:focus, select:focus, textarea:focus {
     border-radius: 6px;
     font-size: 13px;
     cursor: pointer;
+    transition: all 0.15s ease;
 }
 .btn-secondary:hover { background: var(--bg-hover); }
+.btn-secondary:active { transform: scale(0.97); filter: brightness(0.95); }
 
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
@@ -1496,6 +1517,10 @@ input:focus, select:focus, textarea:focus {
 }
 .btn-link:hover {
     background: var(--accent-primary-light);
+}
+.btn-link:active {
+    transform: scale(0.96);
+    opacity: 0.7;
 }
 .btn-link.active {
     color: var(--accent-primary-hover);
@@ -1858,10 +1883,15 @@ input:focus, select:focus, textarea:focus {
     border: none;
     border-radius: 6px;
     cursor: pointer;
+    transition: all 0.15s ease;
 }
 
 .btn-danger:hover:not(:disabled) {
     background: var(--btn-danger-hover);
+}
+.btn-danger:active:not(:disabled) {
+    transform: scale(0.97);
+    filter: brightness(0.9);
 }
 
 .btn-danger:disabled {

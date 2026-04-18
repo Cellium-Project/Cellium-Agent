@@ -246,6 +246,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       historyOffset: 0,
       hasMoreHistory: true,
+      streamingMessage: null,
     });
 
     await fetchMessages(sessionId, 0);

@@ -6,4 +6,4 @@ agent:
   max_sessions: 100
   default_session_id: default
   flash_mode: false
-  shell_cwd: 'workspace'
+  shell_cwd: workspace

@@ -226,6 +226,13 @@ class BackgroundTaskManager:
         clear_status_history()
         clear_runtime_status()
 
+        from app.server.routes.ws_event_manager import WSConnectionManager
+        try:
+            ws_manager = WSConnectionManager.get_instance_sync()
+            ws_manager.clear_session_events(session_id)
+        except Exception:
+            pass
+
         info = TaskInfo(
             session_id=session_id,
             status=TaskStatus.PENDING,

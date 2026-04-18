@@ -205,7 +205,8 @@ class WSConnectionManager:
         if event_id is None:
             return False
 
-        event_key = f"{event_data.get('session_id', 'global')}:{event_id}"
+        session_id = event_data.get("session_id", "global")
+        event_key = f"{session_id}:{event_id}"
         if event_key in self._published_event_ids:
             return True
 
@@ -213,6 +214,13 @@ class WSConnectionManager:
         if len(self._published_event_ids) > self._max_published_ids:
             self._published_event_ids = set(list(self._published_event_ids)[-self._max_published_ids:])
         return False
+
+    def clear_session_events(self, session_id: str):
+        """清理指定 session 的已推送事件记录"""
+        prefix = f"{session_id}:"
+        to_remove = [key for key in self._published_event_ids if key.startswith(prefix)]
+        for key in to_remove:
+            self._published_event_ids.discard(key)
 
     async def send_to_session(self, session_id: str, message: WSMessage):
         """发送到特定 session 的所有客户端"""
