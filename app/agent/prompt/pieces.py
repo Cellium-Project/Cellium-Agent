@@ -64,29 +64,7 @@ DEFAULT_IDENTITY = """# Cellium Agent
 # 动态层 - 按需启用
 # ============================================================
 
-def get_tools_guide_piece() -> PromptPiece:
-    """
-    获取工具调用规范拼图块
-
-    注意：如果 personality.md 已包含详细规范，可禁用此块
-    """
-    try:
-        from app.agent.loop.tool_executor import TOOL_CALL_GUIDE
-        content = TOOL_CALL_GUIDE
-    except ImportError:
-        content = ""
-
-    return PromptPiece(
-        name="tools_guide",
-        content=content,
-        priority=100,
-        enabled=False,  # 默认禁用，personality.md 已包含
-    )
-
-
 DYNAMIC_PIECES: List[PromptPiece] = [
-    # tools_guide 默认禁用，因为 personality.md 已包含详细规范
-    get_tools_guide_piece(),
     PromptPiece(
         name="session_context",
         template="""## 当前对话上下文

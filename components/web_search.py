@@ -572,30 +572,82 @@ class WebSearch(BaseCell):
         Returns:
             {"success": bool, "results": [...]}
         """
+        import time
+        current_time = time.time()
+        elapsed = current_time - self._last_search_time
+        if elapsed < self._min_search_interval:
+            wait_needed = self._min_search_interval - elapsed
+            logger.info("[WebSearch] 搜索频率限制，需等待 %.1f 秒", wait_needed)
+            time.sleep(wait_needed)
+        self._last_search_time = time.time()
+
+        if not keywords or not keywords.strip():
+            return {"success": False, "error": "缺少必填参数 'keywords'"}
+
+        keywords = keywords.strip()
+
+        cached = self._get_cached_result(keywords, 'auto')
+        if cached:
+            cached['from_cache'] = True
+            return cached
+
+        # 获取要尝试的引擎列表（按优先级排序）
+        priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
+        engines_to_try = []
+        
+        # 首选引擎
+        best_engine = self._select_best_engine()
+        if best_engine in priority_order:
+            engines_to_try.append(best_engine)
+        
+        # 添加其他引擎
+        for eng in priority_order:
+            if eng not in engines_to_try and eng in self.SEARCH_ENGINES:
+                engines_to_try.append(eng)
+        
+        logger.info(f"[WebSearch] 将尝试以下引擎: {engines_to_try}")
+        
+        # 依次尝试每个引擎
+        last_error = None
+        for engine in engines_to_try:
+            try:
+                logger.info(f"[WebSearch] 尝试使用引擎: {engine}")
+                result = self._search_with_engine(keywords, max_results, wait_time, time_range, engine)
+                
+                if result.get('success') and result.get('results'):
+                    logger.info(f"[WebSearch] 引擎 {engine} 搜索成功，返回 {len(result['results'])} 条结果")
+                    self._engine_health[engine] = 'green'
+                    result['engine'] = engine
+                    result['tried_engines'] = engines_to_try[:engines_to_try.index(engine) + 1]
+                    self._set_cached_result(keywords, 'auto', result)
+                    return result
+                else:
+                    logger.warning(f"[WebSearch] 引擎 {engine} 返回空结果或失败: {result.get('error', '未知错误')}")
+                    self._engine_health[engine] = 'red'
+                    last_error = result.get('error', f'{engine} 返回空结果')
+                    
+            except Exception as e:
+                logger.error(f"[WebSearch] 引擎 {engine} 异常: {e}")
+                self._engine_health[engine] = 'red'
+                last_error = str(e)
+                continue
+        
+        # 所有引擎都失败
+        return {
+            "success": False, 
+            "error": f"所有搜索引擎均失败，最后错误: {last_error}",
+            "tried_engines": engines_to_try,
+            "engine_health": self._engine_health.copy()
+        }
+
+    def _search_with_engine(self, keywords: str, max_results: int, wait_time: int, time_range: str, engine: str) -> dict:
+        """
+        使用指定引擎执行搜索
+        
+        Returns:
+            {"success": bool, "results": [...], "error": str}
+        """
         try:
-            import time
-            current_time = time.time()
-            elapsed = current_time - self._last_search_time
-            if elapsed < self._min_search_interval:
-                wait_needed = self._min_search_interval - elapsed
-                logger.info("[WebSearch] 搜索频率限制，需等待 %.1f 秒", wait_needed)
-                time.sleep(wait_needed)
-            self._last_search_time = time.time()
-
-            if not keywords or not keywords.strip():
-                return {"success": False, "error": "缺少必填参数 'keywords'"}
-
-            keywords = keywords.strip()
-            engine = 'auto'
-
-            cached = self._get_cached_result(keywords, engine)
-            if cached:
-                cached['from_cache'] = True
-                return cached
-
-            engine = self._select_best_engine()
-            logger.info(f"[WebSearch] 自动选择搜索引擎: {engine}")
-
             engine_config = self.SEARCH_ENGINES[engine]
 
             clean_keywords = keywords.replace('年预测', '').replace('年展望', '').strip()
@@ -678,7 +730,7 @@ class WebSearch(BaseCell):
 
                 if url not in seen and not any(x in url for x in ['login', 'signin', 'auth', 'account']):
                     seen.add(url)
-                    date_str = self._extract_date_from_result(item) if 'item' in locals() else ""
+                    date_str = ""
                     score = self._score_result(title, snippet, url, keywords, date_str)
                     scored_results.append({
                         'title': title,
@@ -742,26 +794,20 @@ class WebSearch(BaseCell):
                 })
 
             if not results:
-                self._engine_health[engine] = 'red'
                 return {
                     "success": False,
                     "error": f"搜索引擎 {engine} 搜索结果为空"
                 }
 
-            self._engine_health[engine] = 'green'
-            result = {
+            return {
                 "success": True,
                 "results": results,
                 "time_range": time_range,
-                "engine": engine,
                 "hint": "选择相关链接，用 web_fetch.read(url='...', action='open') 获取内容"
             }
-            self._set_cached_result(keywords, engine, result)
-            return result
 
         except Exception as e:
-            self._engine_health[engine] = 'red'
-            return {"success": False, "error": str(e), "engine_health": self._engine_health.copy()}
+            return {"success": False, "error": str(e)}
 
     def _cmd_close(self) -> dict:
         """关闭浏览器，释放资源"""

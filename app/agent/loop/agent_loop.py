@@ -29,7 +29,6 @@ from app.core.util.logger import set_runtime_status, get_runtime_status
 from .tool_executor import (
     ToolExecutor,
     ToolDescriptionGenerator,
-    TOOL_CALL_GUIDE,
 )
 from .command_handler import CommandHandler
 from .auto_hints import AutoHintManager
@@ -789,6 +788,7 @@ class AgentLoop:
                         guidance_message=_pending_guidance_msg,
                         system_injection=_pending_system_injection,
                         runtime_status=runtime_status_str,
+                        iteration=iteration,
                     )
 
                 if iteration > 1:

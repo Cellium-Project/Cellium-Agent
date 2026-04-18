@@ -136,6 +136,18 @@ class PromptContextBuilder:
 
         return messages
 
+    _BRIEF_SYSTEM_REMINDER = """[系统规则提醒]
+- _intent: 正在{动作}：{对象}
+- 禁止：shell 写文件 → 用 file 工具
+- 读代码：先 insight 结构，再 read 内容
+- 有 Skill 可用时优先使用
+
+[决策原则]
+- 不要忽略运行时状态中的红色警告信息
+- 不要重复最近失败的相同操作
+- 不要超过迭代限制强行继续
+- 主动利用控制环给出的 redirect 建议"""
+
     def build_subsequent_round(
         self,
         session_messages: List[Dict],
@@ -143,6 +155,7 @@ class PromptContextBuilder:
         guidance_message: Optional[str] = None,
         system_injection: Optional[str] = None,
         runtime_status: Optional[str] = None,
+        iteration: int = 1,
     ) -> List[Dict]:
         """
         构建后续轮次的消息
@@ -153,6 +166,7 @@ class PromptContextBuilder:
             guidance_message: 引导消息
             system_injection: 系统提示词注入（来自控制环）
             runtime_status: 运行时状态摘要（来自 LoopState）
+            iteration: 当前迭代轮次（用于控制 personality.md 注入频率）
 
         Returns:
             LLM 消息列表
@@ -171,11 +185,25 @@ class PromptContextBuilder:
                 priority=50,
             )
 
-        system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
+        # 每 5 轮注入一次完整的 personality.md，其他轮次注入极简提醒
+        # iteration 从 2 开始（第一轮用 build_first_round）
+        # 所以第 2, 7, 12... 轮注入完整提示词
+        # 计算：第2轮(2-2)%5=0, 第7轮(7-2)%5=0, 第12轮(12-2)%5=0
+        should_inject_full = (iteration - 2) % 5 == 0
+
+        if should_inject_full:
+            system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
+        else:
+            # 极简提醒 + 动态注入
+            system_prompt = self._BRIEF_SYSTEM_REMINDER
+            if runtime_status:
+                system_prompt += f"\n\n[运行时状态]\n{runtime_status}"
+
         messages.append({"role": "system", "content": system_prompt})
 
-        # 2. 运行时状态通过 PromptBuilder 注入（统一管理）
-        self._inject_runtime_status(runtime_status)
+        # 2. 运行时状态（只在注入完整 personality.md 时通过 PromptBuilder 注入）
+        if should_inject_full:
+            self._inject_runtime_status(runtime_status)
 
         # 3. 会话历史（后续轮次不需要重复注入长期记忆）
         messages.extend(session_messages)

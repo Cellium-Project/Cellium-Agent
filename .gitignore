@@ -77,4 +77,7 @@ dll/cookies.dat
 
 # 其他
 *.tmp
+
+# Skill 系统自动生成的索引文件（会自动重新生成）
+components/skills/_index.json
 *.temp

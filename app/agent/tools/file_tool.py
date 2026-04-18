@@ -70,6 +70,7 @@ class FileTool(BaseTool):
         "| read | 读文件，支持 offset/limit 分页 | 大文件先用 insight |\n"
         "| write | 写文件 | mode: overwrite/append/create |\n"
         "| edit | 编辑文件 | **必须先 read** |\n"
+        "| truncate | 原子删除指定行范围 | start/end 为行号，end=None 删到末尾 |\n"
         "| create | 批量创建多文件 | files 为 {路径:内容} 字典 |\n"
         "| delete | 删除文件或目录 | recursive=True 删除非空目录 |\n"
         "| list | 列目录 | pattern 支持 glob 如 *.py |\n"
@@ -78,7 +79,8 @@ class FileTool(BaseTool):
         "| insight | 搜索/结构/摘要 | 先用 insight 看骨架再精准 read |\n"
         "\n\n"
         "**insight**: structure 返回骨架（breadcrumb/visual_tree），search 返回命中（breadcrumb/match_pos）\n"
-        "**read**: 默认 offset=0, limit=500，建议先用 insight 看结构再精准读取"
+        "**read**: 默认 offset=0, limit=500，建议先用 insight 看结构再精准读取\n"
+        "**truncate**: 原子操作，先写临时文件再 rename，失败不损坏原文件"
     )
 
     def __init__(self, allowed_roots=None):
@@ -573,6 +575,69 @@ class FileTool(BaseTool):
             "details": results,
             **({"errors": failed} if failed else {}),
         }
+
+    def _cmd_truncate(self, path: str, start: int = 0, end: Optional[int] = None) -> Dict[str, Any]:
+        """原子截断/删除文件内容（先写临时文件再替换）
+
+        Args:
+            path: 文件路径
+            start: 开始删除的行号（从0开始，包含）
+            end: 结束删除的行号（不包含）；None 表示删除到文件末尾
+        """
+        if not path:
+            return {
+                "error": "未提供 path 参数",
+                "hint": '示例: {"command":"truncate","path":"D:\\test.py","start":10,"end":20}',
+            }
+
+        abs_path = self._resolve_path(path)
+
+        if not os.path.isfile(abs_path):
+            return {"success": False, "error": f"文件不存在: {abs_path}"}
+
+        try:
+            encoding = self._detect_encoding(abs_path)
+            with open(abs_path, "r", encoding=encoding, errors="replace") as f:
+                all_lines = f.readlines()
+
+            total_lines = len(all_lines)
+
+            if start < 0:
+                start = 0
+            if start >= total_lines:
+                return {"success": False, "error": f"start={start} 超出文件总行数 {total_lines}"}
+
+            if end is None:
+                end = total_lines
+            if end > total_lines:
+                end = total_lines
+            if end <= start:
+                return {"success": False, "error": f"end={end} 必须大于 start={start}"}
+
+            # 保留的内容：start 之前 + end 之后
+            new_lines = all_lines[:start] + all_lines[end:]
+            new_content = "".join(new_lines)
+
+            # 原子写入
+            self._atomic_write(abs_path, new_content)
+
+            # 更新缓存
+            self._set_file_state(abs_path, FileState(
+                path=abs_path,
+                content=new_content,
+                timestamp=os.path.getmtime(abs_path),
+            ))
+
+            return {
+                "success": True,
+                "message": f"已删除第 {start}-{end-1} 行（共 {end-start} 行）",
+                "path": abs_path,
+                "deleted_lines": end - start,
+                "remaining_lines": len(new_lines),
+                "total_lines_before": total_lines,
+            }
+        except Exception as e:
+            return {"success": False, "error": f"截断失败 ({type(e).__name__}): {e}"}
 
     def _cmd_insight(self, path: str, mode: str = "auto", query: str = None, offset: int = 0) -> Dict[str, Any]:
         """

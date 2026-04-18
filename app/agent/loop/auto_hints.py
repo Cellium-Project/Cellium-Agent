@@ -62,6 +62,11 @@ class AutoHintManager:
         """
         hints = []
 
+        # 1. 注入 Skill 可用性提示
+        skill_hint = self._get_skill_hint()
+        if skill_hint:
+            hints.append(skill_hint)
+
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
             reg = get_component_tool_registry()
@@ -73,6 +78,49 @@ class AutoHintManager:
             logger.debug("[AutoHint] 审查提示获取失败: %s", e)
 
         return "\n\n".join(hints)
+
+    def _get_skill_hint(self) -> str:
+        """
+        获取 Skill 可用性提示
+
+        Returns:
+            Skill 提示文本（如果没有可用 Skill 则返回空字符串）
+        """
+        try:
+            from components.skill_manager import SkillManager
+
+            skills_dir = SkillManager._get_skills_dir()
+            if not skills_dir.exists():
+                return ""
+
+            # 获取所有可用 Skill
+            available_skills = []
+            for skill_dir in sorted(skills_dir.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                skill_md = skill_dir / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                name = skill_dir.name
+                if name.startswith("_"):
+                    continue
+                available_skills.append(name)
+
+            if not available_skills:
+                return ""
+
+            # 构建提示文本
+            skill_list = ", ".join(available_skills[:10])  # 最多显示10个
+            if len(available_skills) > 10:
+                skill_list += f" 等共 {len(available_skills)} 个"
+
+            return (
+                f"**可用 Skill**: {skill_list}\n"
+                f"处理任务前，先调用 `skill_manager.list()` 或 `skill_manager.get_info(name=\"xxx\")` 查看匹配的 Skill。"
+            )
+        except Exception as e:
+            logger.debug("[AutoHint] Skill 提示获取失败: %s", e)
+            return ""
 
     @staticmethod
     def build_redirect_message(
