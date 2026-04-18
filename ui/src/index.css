@@ -929,6 +929,28 @@ body {
     max-width: 700px;
 }
 
+.settings-panel > * {
+    opacity: 0;
+    transform: translateY(20px);
+    animation: slideDownIn 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.settings-panel > *:nth-child(1) { animation-delay: 0.05s; }
+.settings-panel > *:nth-child(2) { animation-delay: 0.1s; }
+.settings-panel > *:nth-child(3) { animation-delay: 0.15s; }
+.settings-panel > *:nth-child(4) { animation-delay: 0.2s; }
+.settings-panel > *:nth-child(5) { animation-delay: 0.25s; }
+.settings-panel > *:nth-child(6) { animation-delay: 0.3s; }
+.settings-panel > *:nth-child(7) { animation-delay: 0.35s; }
+.settings-panel > *:nth-child(8) { animation-delay: 0.4s; }
+
+@keyframes slideDownIn {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
 /* ── 设置页面卡片布局 ── */
 .settings-tabs {
     display: flex;
@@ -1913,7 +1935,8 @@ input:focus, select:focus, textarea:focus {
 .theme-option-card.selected {
     border-color: var(--accent-primary);
     background: var(--bg-active);
-    box-shadow: var(--shadow-md);
+    transform: translateY(-8px);
+    box-shadow: 0 12px 24px rgba(26, 115, 232, 0.2), 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .theme-preview {

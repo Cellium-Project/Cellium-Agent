@@ -736,7 +736,7 @@ const ChannelSettings: React.FC = () => {
   }
 
   return (
-    <div>
+    <div className="settings-panel">
       <QQChannelCard
         config={configs.qq || {}}
         onChange={(cfg) => updateConfig('qq', cfg)}
