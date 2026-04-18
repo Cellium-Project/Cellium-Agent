@@ -540,9 +540,8 @@
   "skill": {
     "refresh": "Refresh Index",
     "install": "Install Skill",
-    "installFromPath": "Install Skill from Directory",
-    "directoryPath": "Skill Directory Path",
-    "browse": "Browse",
+    "installFromArchive": "Install from Archive",
+    "selectedArchive": "Selected Archive",
     "filterPlaceholder": "Filter skill name, description or category...",
     "installedSkills": "Installed Skills",
     "noSkills": "No installed skills yet",

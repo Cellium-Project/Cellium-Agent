@@ -42,10 +42,12 @@ export const SkillManagerTab: React.FC = () => {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterQuery, setFilterQuery] = useState('');
-  const [installPath, setInstallPath] = useState('');
+  const [selectedArchive, setSelectedArchive] = useState<File | null>(null);
+  const [skillFolderName, setSkillFolderName] = useState('');
   const [showInstallForm, setShowInstallForm] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillInfo | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+  const archiveInputRef = React.useRef<HTMLInputElement>(null);
 
   const { saving, saved, error, doSave } = useSavingState();
 
@@ -75,27 +77,51 @@ export const SkillManagerTab: React.FC = () => {
     );
   }, [skills, filterQuery]);
 
-  const handleSelectFolder = async () => {
-    try {
-      const data = await fetchJSON<any>(API.skillSelectFolder);
-      if (data.success && data.path) {
-        setInstallPath(data.path);
-        setShowInstallForm(true);
+  const handleSelectArchive = () => {
+    archiveInputRef.current?.click();
+  };
+
+  const handleArchiveChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const validExtensions = ['.zip', '.tar', '.tar.gz', '.tgz'];
+      const fileName = file.name.toLowerCase();
+      const isValid = validExtensions.some(ext => fileName.endsWith(ext));
+      
+      if (!isValid) {
+        alert('请选择 .zip 或 .tar.gz 格式的压缩包');
+        return;
       }
-    } catch (e: any) {
-      console.error('Failed to select folder:', e);
+      
+      const archiveName = file.name.replace(/\.(zip|tar\.gz|tgz|tar)$/i, '');
+      setSkillFolderName(archiveName);
+      setSelectedArchive(file);
+      setShowInstallForm(true);
     }
   };
 
   const handleInstall = async () => {
-    if (!installPath.trim()) return;
+    if (!selectedArchive) return;
     await doSave(async () => {
-      await postJSON<any>(API.skillInstall, {
-        source_dir: installPath.trim(),
-        source: 'local',
+      const formData = new FormData();
+      formData.append('archive', selectedArchive);
+      
+      const response = await fetch(API.skillInstall, {
+        method: 'POST',
+        body: formData,
       });
-      setInstallPath('');
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: '安装失败' }));
+        throw new Error(error.detail || `HTTP ${response.status}`);
+      }
+
+      setSelectedArchive(null);
+      setSkillFolderName('');
       setShowInstallForm(false);
+      if (archiveInputRef.current) {
+        archiveInputRef.current.value = '';
+      }
       await loadSkills();
     });
   };
@@ -137,40 +163,48 @@ export const SkillManagerTab: React.FC = () => {
           <button className="btn-secondary btn-sm" onClick={handleRefresh} disabled={saving} title={t('skill.refresh')}>
             <Icons.Refresh size={14} />
           </button>
-          <button className="btn-primary btn-sm" onClick={handleSelectFolder} title={t('skill.install')}>
+          <button className="btn-primary btn-sm" onClick={handleSelectArchive} title={t('skill.install')}>
             <Icons.Plus size={14} />
           </button>
         </div>
       </div>
 
+      <input
+        ref={archiveInputRef}
+        type="file"
+        accept=".zip,.tar,.tar.gz,.tgz"
+        style={{ display: 'none' }}
+        onChange={handleArchiveChange}
+      />
+
       {error && <div className="memory-feedback error">{error}</div>}
       {saved && <div className="memory-feedback success">{t('skill.operationSuccess')}</div>}
 
-      {showInstallForm && (
+      {showInstallForm && selectedArchive && (
         <div className="model-card">
           <div className="model-card-header">
-            <h4>{t('skill.installFromPath')}</h4>
+            <h4>{t('skill.installFromArchive')}</h4>
           </div>
           <div className="model-card-body">
             <div className="form-group">
-              <label>{t('skill.directoryPath')}</label>
-              <div className="skill-path-input">
-                <input
-                  type="text"
-                  value={installPath}
-                  onChange={(e) => setInstallPath(e.target.value)}
-                  placeholder="D:/skills/my-skill"
-                />
-                <button className="btn-secondary btn-sm" onClick={handleSelectFolder}>
-                  {t('skill.browse')}
-                </button>
+              <label>{t('skill.selectedArchive')}</label>
+              <div className="selected-file-info">
+                <span className="file-name">{skillFolderName}</span>
+                <span className="file-size">({(selectedArchive.size / 1024).toFixed(2)} KB)</span>
               </div>
             </div>
             <div className="form-actions">
-              <button className="btn-primary" onClick={handleInstall} disabled={saving || !installPath.trim()}>
+              <button className="btn-primary" onClick={handleInstall} disabled={saving}>
                 {saving ? t('common.loading') : t('skill.install')}
               </button>
-              <button className="btn-secondary" onClick={() => { setShowInstallForm(false); setInstallPath(''); }}>
+              <button className="btn-secondary" onClick={() => { 
+                setShowInstallForm(false); 
+                setSelectedArchive(null);
+                setSkillFolderName('');
+                if (archiveInputRef.current) {
+                  archiveInputRef.current.value = '';
+                }
+              }}>
                 {t('common.cancel')}
               </button>
             </div>
@@ -190,7 +224,7 @@ export const SkillManagerTab: React.FC = () => {
       </div>
 
       <div className="settings-section">
-        <h4>{t('skill.installedSkills')} ({filteredSkills.length}/{skills.length})</h4>
+        <h4>{t('skill.installedSkills')} ({skills.length})</h4>
         {loading ? (
           <div className="loading-indicator">{t('common.loading')}</div>
         ) : filteredSkills.length === 0 ? (
@@ -233,18 +267,38 @@ export const SkillManagerTab: React.FC = () => {
               </button>
             </div>
             <div className="modal-body">
-              <div className="detail-row">
-                <label>{t('skill.description')}</label>
-                <span>{selectedSkill.frontmatter?.description || selectedSkill.description || '-'}</span>
-              </div>
-              <div className="detail-row">
-                <label>{t('skill.category')}</label>
-                <span>{selectedSkill.frontmatter?.category || '-'}</span>
-              </div>
-              <div className="detail-row">
-                <label>{t('skill.version')}</label>
-                <span>{selectedSkill.frontmatter?.version || '-'}</span>
-              </div>
+              {selectedSkill.frontmatter && Object.keys(selectedSkill.frontmatter).length > 0 ? (
+                Object.entries(selectedSkill.frontmatter).map(([key, value]) => {
+                  let displayValue: React.ReactNode = '-';
+                  if (value === null || value === undefined) {
+                    displayValue = '-';
+                  } else if (Array.isArray(value)) {
+                    displayValue = value.length > 0 ? value.join(', ') : '-';
+                  } else if (typeof value === 'object') {
+                    const objKeys = Object.keys(value as object);
+                    displayValue = objKeys.length > 0 
+                      ? <pre style={{margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px'}}>{JSON.stringify(value, null, 2)}</pre>
+                      : '-';
+                  } else if (typeof value === 'boolean') {
+                    displayValue = value ? '是' : '否';
+                  } else {
+                    displayValue = String(value);
+                  }
+                  return (
+                    <div key={key} className="detail-row">
+                      <label>{key}</label>
+                      <span>{displayValue}</span>
+                    </div>
+                  );
+                })
+              ) : (
+                selectedSkill.description && (
+                  <div className="detail-row">
+                    <label>{t('skill.description')}</label>
+                    <span>{selectedSkill.description}</span>
+                  </div>
+                )
+              )}
               <div className="detail-row">
                 <label>{t('skill.source')}</label>
                 <span>{selectedSkill.source || '-'}</span>
@@ -257,12 +311,6 @@ export const SkillManagerTab: React.FC = () => {
                 <label>{t('skill.filePath')}</label>
                 <span className="file-path">{selectedSkill.skill_md_path}</span>
               </div>
-              {selectedSkill.frontmatter && Object.keys(selectedSkill.frontmatter).length > 0 && (
-                <div className="detail-row">
-                  <label>{t('skill.frontmatter')}</label>
-                  <pre>{JSON.stringify(selectedSkill.frontmatter, null, 2)}</pre>
-                </div>
-              )}
             </div>
           </div>
         </div>

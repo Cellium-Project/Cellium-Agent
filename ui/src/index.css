@@ -2158,6 +2158,28 @@ input:focus, select:focus, textarea:focus {
     flex: 1;
 }
 
+.selected-file-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-active);
+    border-radius: 6px;
+    border: 1px solid var(--border-secondary);
+}
+
+.selected-file-info .file-name {
+    font-family: monospace;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.selected-file-info .file-size {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
 .skill-header-actions button {
     min-width: 32px;
     height: 32px;

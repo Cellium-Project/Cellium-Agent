@@ -235,15 +235,17 @@ class SkillInstaller(BaseCell):
         source: str = "",
         content: str = "",
         source_dir: str = "",
+        archive_path: str = "",
     ) -> Dict[str, Any]:
         """
         安装一个或多个 Skill 到 skills/ 目录
         
         Args:
-            name: Skill 名称（小写英文标识符，如 git_helper）。如果为空且提供 source_dir，则自动扫描
+            name: Skill 名称（小写英文标识符，如 git_helper）。如果为空且提供 source_dir/archive_path，则自动扫描
             source: 来源描述（如 "builtin" / "local" / "url:https://..."）
             content: 可选的 SKILL.md 内容（如果提供则直接写入；否则生成模板）
             source_dir: 可选的 Skill 包目录路径（包含 SKILL.md 的完整目录结构）
+            archive_path: 可选的压缩包路径（支持 .zip, .tar.gz, .tgz, .tar）
         
         Returns:
             {"success": True, "installed": [...], "skipped": [...], "errors": [...]} 或 error
@@ -253,9 +255,13 @@ class SkillInstaller(BaseCell):
           skill_installer.install(name="my_skill", source_dir="D:/skills/my_skill")  # 从目录安装单个
           skill_installer.install(source_dir="D:/skills-main/skills")  # 批量安装目录下所有 Skill
           skill_installer.install(name="my_skill", content="...")  # 从内容创建单个
+          skill_installer.install(archive_path="D:/my_skill.zip")  # 从压缩包安装
         """
         skills_dir = self._get_skills_dir()
         skills_dir.mkdir(parents=True, exist_ok=True)
+
+        if archive_path and archive_path.strip():
+            return self._install_from_archive(archive_path, skills_dir, source, name)
 
         if source_dir and source_dir.strip() and (not name or not name.strip()):
             return self._batch_install_from_directory(source_dir, skills_dir, source)
@@ -398,6 +404,123 @@ class SkillInstaller(BaseCell):
             "total_skipped": len(skipped),
             "total_errors": len(errors),
         }
+
+    def _install_from_archive(
+        self, archive_path: str, skills_dir: Path, source: str, name: str = ""
+    ) -> Dict[str, Any]:
+        """从压缩包安装 Skill（支持 .zip, .tar.gz, .tgz, .tar）"""
+        import tempfile
+        import zipfile
+        import tarfile
+        import shutil
+        
+        archive = Path(archive_path)
+        if not archive.exists():
+            return {"error": f"压缩包不存在: {archive_path}"}
+        
+        archive_name = archive.name.lower()
+        if not (archive_name.endswith('.zip') or archive_name.endswith('.tar.gz') or 
+                archive_name.endswith('.tgz') or archive_name.endswith('.tar')):
+            return {
+                "error": "不支持的压缩包格式",
+                "hint": "请使用 .zip 或 .tar.gz 格式的压缩包",
+            }
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            extract_dir = Path(temp_dir) / "extracted"
+            extract_dir.mkdir()
+            
+            try:
+                if archive_name.endswith('.zip'):
+                    with zipfile.ZipFile(archive, 'r') as zf:
+                        zf.extractall(extract_dir)
+                else:
+                    with tarfile.open(archive, 'r:*') as tf:
+                        tf.extractall(extract_dir)
+            except Exception as e:
+                return {"error": f"解压失败: {e}"}
+            
+            skill_md_files = list(extract_dir.rglob("SKILL.md"))
+            if not skill_md_files:
+                return {
+                    "error": "压缩包中未找到 SKILL.md 文件",
+                    "hint": "Skill 包根目录必须包含 SKILL.md 文件",
+                }
+            
+            skill_dirs_found = list(set(f.parent for f in skill_md_files))
+            
+            if len(skill_dirs_found) == 1:
+                skill_src_dir = skill_dirs_found[0]
+                skill_name = name.lower() if name and name.strip() else skill_src_dir.name
+                dest_dir = self._get_skill_dir(skill_name)
+                
+                if dest_dir.exists():
+                    return {
+                        "error": f"Skill '{skill_name}' 已存在",
+                        "existing_dir": str(dest_dir),
+                        "hint": "如需更新请先卸载再重新安装",
+                    }
+                
+                try:
+                    shutil.copytree(str(skill_src_dir), str(dest_dir))
+                except Exception as e:
+                    return {"error": f"复制目录失败: {e}"}
+                
+                dest_md = dest_dir / "SKILL.md"
+                with open(dest_md, "r", encoding="utf-8") as f:
+                    md_content = f.read()
+                
+                return self._finalize_install(skill_name, md_content, dest_dir, dest_md, source or "archive")
+            else:
+                installed = []
+                skipped = []
+                errors = []
+                
+                for skill_src_dir in skill_dirs_found:
+                    skill_name = skill_src_dir.name
+                    dest_dir = self._get_skill_dir(skill_name)
+                    
+                    if dest_dir.exists():
+                        skipped.append({
+                            "name": skill_name,
+                            "reason": "已存在",
+                        })
+                        continue
+                    
+                    try:
+                        shutil.copytree(str(skill_src_dir), str(dest_dir))
+                        dest_md = dest_dir / "SKILL.md"
+                        with open(dest_md, "r", encoding="utf-8") as f:
+                            md_content = f.read()
+                        
+                        metadata = self._parse_skill_md_frontmatter(md_content)
+                        index = self._load_index()
+                        index[skill_name] = {
+                            "name": skill_name,
+                            "source": source or "archive",
+                            "installed_at": datetime.now().isoformat(),
+                            "frontmatter": metadata,
+                        }
+                        self._save_index(index)
+                        
+                        installed.append({
+                            "name": skill_name,
+                            "path": str(dest_dir),
+                        })
+                        logger.info(f"[SkillInstaller] 从压缩包安装 | name={skill_name}")
+                    except Exception as e:
+                        errors.append({
+                            "name": skill_name,
+                            "error": str(e),
+                        })
+                
+                return {
+                    "success": True,
+                    "message": f"从压缩包批量安装完成",
+                    "installed": installed,
+                    "skipped": skipped,
+                    "errors": errors,
+                }
 
     def _install_from_directory(
         self, name: str, source_dir: str, skills_dir: Path, skill_dir: Path, skill_md_path: Path, source: str

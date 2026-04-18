@@ -8,28 +8,33 @@ Skill 管理 API — 前端 Skill 管理界面接口
   GET    /api/skills              → 已安装 Skill 列表
   GET    /api/skills/{name}       → 指定 Skill 详情
   POST   /api/skills/search       → 搜索 Skill
-  POST   /api/skills/install      → 安装 Skill
+  POST   /api/skills/install      → 安装 Skill 
   DELETE /api/skills/{name}       → 卸载 Skill
   POST   /api/skills/refresh-index → 手动刷新索引
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 
 def _get_skill_installer():
     from app.core.di.container import get_container
+    from components.skill_installer import SkillInstaller
     container = get_container()
-    return container.resolve("skill_installer")
+    return container.resolve(SkillInstaller)
 
 
 def _get_skill_manager():
     from app.core.di.container import get_container
+    from components.skill_manager import SkillManager
     container = get_container()
-    return container.resolve("skill_manager")
+    return container.resolve(SkillManager)
 
 
 class InstallRequest(BaseModel):
@@ -85,22 +90,38 @@ async def search_skills(body: SearchRequest):
 
 
 @router.post("/install")
-async def install_skill(body: InstallRequest):
-    """安装 Skill"""
+async def install_skill(
+    archive: UploadFile = File(...),
+):
+    """安装 Skill (通过上传压缩包)"""
     try:
-        installer = _get_skill_installer()
-        result = installer._cmd_install(
-            name=body.name or "",
-            source=body.source or "local",
-            content=body.content or "",
-            source_dir=body.source_dir or "",
-        )
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
-        return result
+        import tempfile
+        from pathlib import Path
+        
+        archive_filename = archive.filename or ""
+        valid_extensions = ['.zip', '.tar.gz', '.tgz', '.tar']
+        if not any(archive_filename.lower().endswith(ext) for ext in valid_extensions):
+            raise HTTPException(status_code=400, detail="不支持的压缩包格式，请使用 .zip 或 .tar.gz")
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_path = Path(temp_dir) / archive_filename
+            with open(archive_path, 'wb') as f:
+                f.write(await archive.read())
+            
+            installer = _get_skill_installer()
+            result = installer._cmd_install(
+                archive_path=str(archive_path),
+                source="upload",
+            )
+            
+            if "error" in result:
+                raise HTTPException(status_code=400, detail=result["error"])
+            return result
+            
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"安装 Skill 失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -124,37 +145,7 @@ async def refresh_index():
     """手动刷新 Skill 索引"""
     try:
         installer = _get_skill_installer()
-        updated, removed = installer._scan_skills_dir()
-        return {
-            "success": True,
-            "message": "索引已刷新",
-            "updated": updated,
-            "removed": removed,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/select-folder")
-async def select_folder():
-    """打开文件夹选择对话框"""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-        import os
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes("-topmost", 1)
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "html", "logo.png")
-        if os.path.exists(icon_path):
-            try:
-                root.iconbitmap(icon_path)
-            except:
-                pass
-        folder_path = filedialog.askdirectory(title="选择 Skill 目录")
-        root.destroy()
-        if folder_path:
-            return {"success": True, "path": folder_path}
-        return {"success": False, "path": ""}
+        result = installer._cmd_refresh_index()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

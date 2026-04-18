@@ -59,7 +59,6 @@ export const API = {
   skillSearch: `${API_BASE}/skills/search`,
   skillInstall: `${API_BASE}/skills/install`,
   skillRefreshIndex: `${API_BASE}/skills/refresh-index`,
-  skillSelectFolder: `${API_BASE}/skills/select-folder`,
 
   health: `${API_BASE}/health`,
 } as const;
