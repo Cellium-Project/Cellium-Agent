@@ -52,6 +52,15 @@ export const API = {
   channelStatus: `${API_BASE}/channels/status`,
   channelStart: `${API_BASE}/channels/start`,
   channelStop: `${API_BASE}/channels/stop`,
+
+  // Skills
+  skills: `${API_BASE}/skills`,
+  skillDetail: (name: string) => `${API_BASE}/skills/${name}`,
+  skillSearch: `${API_BASE}/skills/search`,
+  skillInstall: `${API_BASE}/skills/install`,
+  skillRefreshIndex: `${API_BASE}/skills/refresh-index`,
+  skillSelectFolder: `${API_BASE}/skills/select-folder`,
+
   health: `${API_BASE}/health`,
 } as const;
 

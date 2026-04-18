@@ -2129,6 +2129,180 @@ input:focus, select:focus, textarea:focus {
     gap: 12px;
 }
 
+/* Skill Manager - 补充样式 */
+.skill-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.skill-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.skill-header-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.skill-path-input {
+    display: flex;
+    gap: 8px;
+}
+
+.skill-path-input input {
+    flex: 1;
+}
+
+.skill-header-actions button {
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+}
+
+.skill-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.skill-name {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.skill-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.skill-path {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: monospace;
+}
+
+.skill-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.skill-detail-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.skill-detail-modal .modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.skill-detail-modal .modal-content {
+    position: relative;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.skill-detail-modal .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.skill-detail-modal .modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.skill-detail-modal .btn-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+.skill-detail-modal .btn-close:hover {
+    background: var(--bg-secondary);
+}
+
+.skill-detail-modal .modal-body {
+    padding: 20px;
+}
+
+.skill-detail-modal .detail-row {
+    margin-bottom: 16px;
+}
+
+.skill-detail-modal .detail-row label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.skill-detail-modal .detail-row span {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.skill-detail-modal .detail-row .file-path {
+    font-family: monospace;
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.skill-detail-modal .detail-row pre {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 12px;
+    overflow-x: auto;
+    max-height: 300px;
+}
+
+.loading-indicator {
+    text-align: center;
+    padding: 24px;
+    color: var(--text-secondary);
+}
+
 .log-level-select {
     padding: 6px 10px;
     border: 1px solid var(--border-primary);

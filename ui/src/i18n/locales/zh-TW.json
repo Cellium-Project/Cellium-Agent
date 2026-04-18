@@ -535,6 +535,27 @@
     "processing": "處理中...",
     "paginationInfo": "第 {{start}}-{{end}} 條，共 {{total}} 條"
   },
+  "skill": {
+    "refresh": "重新整理索引",
+    "install": "安裝 Skill",
+    "installFromPath": "從目錄安裝 Skill",
+    "directoryPath": "Skill 目錄路徑",
+    "browse": "瀏覽",
+    "filterPlaceholder": "過濾 Skill 名稱、描述或分類...",
+    "installedSkills": "已安裝的 Skill",
+    "noSkills": "尚無已安裝的 Skill",
+    "noMatch": "沒有符合的 Skill",
+    "viewDetail": "詳情",
+    "uninstall": "解除安裝",
+    "description": "描述",
+    "category": "分類",
+    "version": "版本",
+    "source": "來源",
+    "installedAt": "安裝時間",
+    "filePath": "檔案路徑",
+    "frontmatter": "元資訊",
+    "operationSuccess": "操作成功"
+  },
   "errors": {
     "network": "網路錯誤，請檢查連線",
     "server": "伺服器錯誤",
