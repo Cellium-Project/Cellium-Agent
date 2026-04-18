@@ -129,7 +129,7 @@ The core of Cellium Agent is a **Control Loop** driven decision-making system, c
 ```
 
 ### Control Loop Workflow
-
+![Control Loop](tests/img/1.png)
 Each loop contains 5 stages:
 
 1. **Feature Extraction**
@@ -166,7 +166,7 @@ Code definition: `ACTION_TYPES = ["continue", "retry", "redirect", "compress", "
 | terminate | Terminate session | Hard rule triggered: output loop and exact_repetition_count >= 5 |
 
 ### Self-Learning Mechanism
-
+![Self-Learning Mechanism](tests/img/2.png)
 **Policy - Bandit - Action Three-Layer Architecture**:
 
 ```
@@ -285,7 +285,7 @@ Agent perceives running state in real-time through FeatureExtractor, dynamically
 5. **Dynamic HardConstraint**: Real-time generation of control commands (e.g., REDIRECT/COMPRESS/RETRY) based on state
 
 ### Three-Layer Memory
-
+![Memory System](tests/img/3.png)
 | Layer | Implementation | Description |
 |-------|----------------|-------------|
 | Personality | personality.md | Static personality setting file |
@@ -348,7 +348,7 @@ Supports file transfer between QQBot and local:
 **File Save Path**: `workspace/downloads/qq/`
 
 ### Native Browser Operation Component (web_fetch)
-
+![Operation Demo](tests/img/qq.png)
 Headless browser component based on DrissionPage, supports web automation:
 
 | Command | Function | Example |
@@ -401,6 +401,7 @@ Complete Skill package management solution, supporting installation from archive
 | `skill_manager` | Uninstall Skill | `uninstall(name)` |
 
 **Frontend Interface**:
+![skill](tests/img/4.png)
 - Settings page provides Skill management panel
 - Supports archive upload installation
 - Supports filtering by name, description, category
