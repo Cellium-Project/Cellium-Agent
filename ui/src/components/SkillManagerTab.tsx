@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { API, fetchJSON, postJSON } from '../utils/api';
 import { Icons } from './Icons';
@@ -47,6 +48,7 @@ export const SkillManagerTab: React.FC = () => {
   const [showInstallForm, setShowInstallForm] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillInfo | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
   const archiveInputRef = React.useRef<HTMLInputElement>(null);
 
   const { saving, saved, error, doSave } = useSavingState();
@@ -149,10 +151,19 @@ export const SkillManagerTab: React.FC = () => {
     try {
       const data = await fetchJSON<any>(API.skillDetail(skill.name));
       setSelectedSkill(data);
+      setIsClosing(false);
       setShowDetail(true);
     } catch (e: any) {
       console.error('Failed to load skill detail:', e);
     }
+  };
+
+  const handleCloseDetail = () => {
+    setIsClosing(true);
+    setTimeout(() => {
+      setShowDetail(false);
+      setIsClosing(false);
+    }, 150);
   };
 
   return (
@@ -256,13 +267,13 @@ export const SkillManagerTab: React.FC = () => {
         )}
       </div>
 
-      {showDetail && selectedSkill && (
-        <div className="skill-detail-modal">
-          <div className="modal-overlay" onClick={() => setShowDetail(false)} />
+      {showDetail && selectedSkill && createPortal(
+        <div className={`skill-detail-modal ${isClosing ? 'closing' : ''}`}>
+          <div className="modal-overlay" onClick={handleCloseDetail} />
           <div className="modal-content">
             <div className="modal-header">
               <h3>{selectedSkill.name}</h3>
-              <button className="btn-close" onClick={() => setShowDetail(false)}>
+              <button className="btn-close" onClick={handleCloseDetail}>
                 <Icons.Close />
               </button>
             </div>
@@ -313,7 +324,8 @@ export const SkillManagerTab: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

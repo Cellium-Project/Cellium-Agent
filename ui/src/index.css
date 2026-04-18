@@ -2227,15 +2227,41 @@ input:focus, select:focus, textarea:focus {
     align-items: center;
     justify-content: center;
     z-index: 1000;
+    pointer-events: none;
+    animation: modalFadeIn 0.2s ease-out;
+}
+
+@keyframes modalFadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes modalFadeOut {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}
+
+.skill-detail-modal.closing {
+    animation: modalFadeOut 0.15s ease-in forwards;
 }
 
 .skill-detail-modal .modal-overlay {
-    position: absolute;
+    position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background-color: rgba(0, 0, 0, 0.5);
+    pointer-events: auto;
+    z-index: 1;
 }
 
 .skill-detail-modal .modal-content {
@@ -2248,6 +2274,35 @@ input:focus, select:focus, textarea:focus {
     max-height: 80vh;
     overflow-y: auto;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    z-index: 2;
+    animation: modalSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-20px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes modalSlideOut {
+    from {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(-20px) scale(0.95);
+    }
+}
+
+.skill-detail-modal.closing .modal-content {
+    animation: modalSlideOut 0.15s ease-in forwards;
 }
 
 .skill-detail-modal .modal-header {

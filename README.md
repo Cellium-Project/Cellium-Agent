@@ -13,6 +13,8 @@
 
 **这是一个 AI Agent 框架**
 
+[English](README_EN.md) | 中文
+
 </div>
 
 基于微内核架构（EventBus + DI + BaseTool），支持任意 OpenAI 兼容 API
@@ -365,7 +367,8 @@ components/
 ├── __init__.py              # 包标记
 ├── _example_component.py    # 组件模板参考
 ├── component_builder.py     # 组件生成器（系统内置）
-├── skill_installer.py       # Skill 管理器（待完善）
+├── skill_installer.py       # Skill 安装器（支持从压缩包安装）
+├── skill_manager.py         # Skill 管理器（列表、搜索、详情、卸载）
 └── my_tool.py               # Agent 创建的组件（系统级）
 ```
 
@@ -415,12 +418,45 @@ components/
 - 支持 `_intent` 参数自定义描述（最高优先级）
 - 示例：`{"command": "read", "path": "test.py", "_intent": "正在读取配置文件"}`
 
+### Skill 管理系统 (skill_installer + skill_manager)
+
+完整的 Skill 包管理解决方案，支持从压缩包安装、列表展示、搜索、详情查看和卸载。
+
+**安装方式**：
+- 支持 `.zip`、`.tar.gz`、`.tgz`、`.tar` 格式压缩包
+- 压缩包内需包含 `SKILL.md` 文件
+- 自动解析 `SKILL.md` 的 YAML Frontmatter 元信息
+
+**管理功能**：
+
+| 组件 | 功能 | 命令/接口 |
+|------|------|-----------|
+| `skill_installer` | 安装 Skill | `install_from_archive(path)` |
+| `skill_installer` | 刷新索引 | `refresh_index()` |
+| `skill_manager` | 列出所有 Skill | `list(show_details=True)` |
+| `skill_manager` | 搜索 Skill | `search(query)` |
+| `skill_manager` | 获取详情 | `get_info(name)` |
+| `skill_manager` | 卸载 Skill | `uninstall(name)` |
+
+**前端界面**：
+![skill](tests/img/4.png)
+- 设置页面提供 Skill 管理面板
+- 支持压缩包上传安装
+- 支持按名称、描述、分类过滤
+- 详情弹窗展示完整元信息
+
 **目录约定**：
 ```
 components/
-├── _example_component.py     # 组件模板参考
-├── component_builder.py      # 组件生成器（系统内置）
-└── skills/                  # Skill 安装目录（待完善）
+├── skill_installer.py        # Skill 安装器
+├── skill_manager.py          # Skill 管理器
+└── skills/                   # Skill 安装目录
+    ├── skill-a/              # 已安装的 Skill
+    │   └── SKILL.md
+    ├── skill-b/
+    │   └── SKILL.md
+    └── _index.json           # 索引文件（自动生成）
+    
 ```
 
 ## 目录结构
@@ -464,7 +500,8 @@ Cellium-Agent/
 │   ├── telegram_files.py       # Telegram 文件传输组件
 │   ├── web_fetch.py            # 网页获取组件
 │   ├── web_search.py           # 网页搜索组件
-│   ├── skill_installer.py      # Skill 包管理器（待完善）
+│   ├── skill_installer.py      # Skill 安装器（支持 .zip/.tar.gz 压缩包安装）
+│   ├── skill_manager.py        # Skill 管理器（列表、搜索、详情、卸载）
 │   └── skills/                 # Skill 安装目录
 ├── config/agent/               # 配置文件
 │   ├── channels.yaml           # 通道配置（QQ、Telegram 等外部平台）
