@@ -9,9 +9,9 @@ models:
   gpt-4o-mini:      [128000, 16384, true]
   gpt-4-turbo:      [128000, 4096, true]
   gpt-3.5-turbo:    [16385, 4096, true]
-  o3-mini:          [200000, 100000, true]
-  gpt-5.4:          [1050000, 128000, true]  
-  gpt-5.4-mini:     [400000, 128000, true]
+  o3-mini:          [200000, 10000, true]
+  gpt-5.4:          [1050000, 12800, true]  
+  gpt-5.4-mini:     [400000, 12800, true]
   gpt-4.1:          [1048576, 32768, true]  
 
   # ---- 阶跃星辰 (StepFun) ----
@@ -60,9 +60,9 @@ models:
   glm-4-long:       [1000000, 4096, true]
   glm-4.5:          [128000, 18192, true]
   glm-4.7:          [128000, 18192, true]
-  glm-5:            [200000, 131072, true]
-  glm-5.1:          [200000, 131072, true]
-  glm-5-code:       [200000, 131072, true]
+  glm-5:            [200000, 18192, true]
+  glm-5.1:          [200000, 18192, true]
+  glm-5-code:       [200000, 18192, true]
 
   # ---- 通用兜底 ----
   default:          [32768, 18096, true]

@@ -212,7 +212,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         max_tokens: int = None,      
         timeout: int = 60,
         context_window: int = None,  
-        verify_model: bool = True,   
+        verify_model: bool = True,
+        omit_max_tokens: bool = True,
         **kwargs,
     ):
         self.api_key = api_key
@@ -223,7 +224,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._extra_client_args = kwargs
         self._verify_model = verify_model
         self._verify_deferred = False  
-        self._verify_done = False     
+        self._verify_done = False
+        self._omit_max_tokens = omit_max_tokens
 
         detected = _match_model(model)
 
@@ -241,10 +243,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._client = None
         self._async_client = None
 
+        max_tokens_hint = "(API自定)" if omit_max_tokens else str(self._model_info.max_output_tokens)
         logger.info(
-            "[LLM] 引擎初始化 | model=%s | ctx=%d | max_out=%d | tools=%s | url=%s | 能力来源=%s",
+            "[LLM] 引擎初始化 | model=%s | ctx=%d | max_out=%s | tools=%s | url=%s | 能力来源=%s",
             model, self._model_info.context_window,
-            self._model_info.max_output_tokens,
+            max_tokens_hint,
             self._model_info.supports_tools, base_url[:50],
             "显式传入" if (context_window or max_tokens)
             else ("内置注册表" if detected
@@ -338,8 +341,10 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             "model": self.model,
             "messages": effective_messages,
             "temperature": temperature or self.temperature,
-            "max_tokens": final_max_tokens,
         }
+
+        if not self._omit_max_tokens:
+            params["max_tokens"] = final_max_tokens
 
         if tools and self._model_info.supports_tools:
             params["tools"] = tools
@@ -355,10 +360,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
+        max_tokens_display = "API自定" if self._omit_max_tokens else str(final_max_tokens)
         logger.info(
-            "[LLM] >>> 调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%d | tools=%d | temperature=%s",
+            "[LLM] >>> 调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%s | tools=%d | temperature=%s",
             self.model, len(effective_messages), req_tokens,
-            final_max_tokens, tools_count,
+            max_tokens_display, tools_count,
             params.get("temperature", "N/A"),
         )
 
@@ -459,8 +465,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             "model": self.model,
             "messages": effective_messages,
             "temperature": temperature or self.temperature,
-            "max_tokens": final_max_tokens,
         }
+        if not self._omit_max_tokens:
+            params["max_tokens"] = final_max_tokens
         if tools:
             params["tools"] = tools
         if kwargs:
@@ -992,6 +999,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             timeout=int(model_config.get("timeout", 60)),
             context_window=int(model_config.get("context_window", 0)) or None,
             verify_model=True,
+            omit_max_tokens=bool(model_config.get("omit_max_tokens", False)),
         )
 
         info = engine.model_info
@@ -1017,6 +1025,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             timeout=int(oc.get("timeout", 120)),
             context_window=int(oc.get("context_window", 0)) or None,
             verify_model=True,
+            omit_max_tokens=bool(oc.get("omit_max_tokens", False)),
         )
         info = engine.model_info
         logger.info(
