@@ -122,12 +122,14 @@ class HybridController:
         if thought.plan:
             # 局部重规划：保留已执行的步骤，将新计划追加到后面
             if self._state.phase == HybridPhase.REPLAN and self._state.executed_steps:
-                # 保留已执行的步骤作为历史
+
                 executed_count = len(self._state.executed_steps)
-                # 新计划替换剩余部分
+                if executed_count > len(self._state.current_plan):
+                    executed_count = len(self._state.current_plan)
+
                 new_plan = thought.plan[:self.max_plan_steps]
                 self._state.current_plan = self._state.current_plan[:executed_count] + new_plan
-                self._state.pending_steps = list(new_plan)  # 只执行新规划的部分
+                self._state.pending_steps = list(new_plan) 
                 self._state.phase = HybridPhase.EXECUTE
                 logger.info(
                     "[Hybrid] 局部重规划完成: 保留 %d 步 | 新增 %d 步 | 总计 %d 步 | %s",
@@ -137,7 +139,7 @@ class HybridController:
                     [s.tool for s in new_plan]
                 )
             else:
-                # 正常规划
+
                 self._state.current_plan = thought.plan[:self.max_plan_steps]
                 self._state.pending_steps = list(self._state.current_plan)
                 self._state.phase = HybridPhase.EXECUTE
@@ -203,12 +205,10 @@ class HybridController:
         if needs_replan and self._state.replan_count < self.max_replans:
             self._state.phase = HybridPhase.REPLAN
             self._state.replan_count += 1
-            # 局部重规划：保留成功的步骤，只清空待执行的步骤
-            # 已执行的步骤保留在 executed_steps 中作为上下文
-            failed_step_index = len(self._state.executed_steps) - 1  # 当前失败的步骤索引
-            self._state.pending_steps = []  # 清空待执行步骤，等待重新规划
-            # 保留 current_plan 中已执行的部分，用于上下文参考
-            # 但标记为需要重新规划后续步骤
+
+            failed_step_index = len(self._state.executed_steps) - 1
+            self._state.pending_steps = []
+
             logger.warning(
                 "[Hybrid] 局部重规划 | 原因: %s | replan_count: %d | 已执行 %d 步 | 保留成功步骤",
                 obs.replan_reason, self._state.replan_count, failed_step_index
