@@ -153,9 +153,9 @@ Each loop contains 5 stages:
    - Update Bandit's Beta distribution parameters
    - Regularly decay old data to prevent overfitting
 
-### Structured Plan-Execute Engine (Plan-Execute-Observe-RePlan)
+### PEOP Loop (Plan-Execute-Observe-RePlan Loop)
 
-The Plan-Execute Engine is an extension module of the Control Loop, implementing a **batch-style plan-execute cycle**. This engine adopts a "plan-first, execute-batch, then evaluate" pipeline mode, achieving efficient task decomposition and execution through explicit state management:
+The PEOP Loop is an extension module of the Control Loop, implementing an **adaptive plan-execute cycle**. This module dynamically adjusts strategy based on task complexity: simple tasks receive direct responses, complex tasks automatically enable multi-step planning; during execution, results are continuously validated, and local replanning is triggered when deviations are detected, achieving efficient and reliable task decomposition through explicit state management:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
