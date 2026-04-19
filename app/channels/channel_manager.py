@@ -236,6 +236,15 @@ class ChannelManager:
                         if len(content_str) > 300:
                             content_str = content_str[:300] + "..."
                         await safe_send(f"> ## ✅ **{tool_name}** 耗时 {duration}ms")
+                    elif event_type == "hybrid_phase":
+                        phase_msg = event.get("message", "")
+                        phase_desc = event.get("description", "")
+                        if phase_msg in ("观察中", "完成"):
+                            continue
+                        if phase_msg and phase_desc:
+                            await safe_send(f"> [{phase_msg}] {phase_desc}")
+                        elif phase_msg:
+                            await safe_send(f"> [{phase_msg}]")
                     elif event_type == "content_chunk":
                         chunk_content = event.get("content", "")
                         logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
@@ -358,16 +367,8 @@ class ChannelManager:
                 task_mgr = get_task_manager()
                 if task_mgr.has_running_task(session_id):
                     task_mgr.cancel_task(session_id)
-                    await self.send_message(
-                        message.platform,
-                        self._resolve_target_id(message),
-                        "⏹ 已发送停止请求，Agent 将在当前迭代结束后停止",
-                        message.message_type,
-                        guild_id=message.guild_id,
-                    )
                     logger.info(f"[ChannelManager] /stop 请求已发送至运行中任务 session={session_id}")
-                    return
-                if not self._agent_loop_manager.has_session(session_id):
+                elif not self._agent_loop_manager.has_session(session_id):
                     await self.send_message(
                         message.platform,
                         self._resolve_target_id(message),
@@ -376,8 +377,10 @@ class ChannelManager:
                         guild_id=message.guild_id,
                     )
                     return
-                loop = await self._agent_loop_manager.get_loop(session_id)
-                loop.stop()
+                else:
+                    loop = await self._agent_loop_manager.get_loop(session_id)
+                    loop.stop()
+                    logger.info(f"[ChannelManager] /stop 请求已发送至 session={session_id}")
                 await self.send_message(
                     message.platform,
                     self._resolve_target_id(message),
@@ -385,7 +388,6 @@ class ChannelManager:
                     message.message_type,
                     guild_id=message.guild_id,
                 )
-                logger.info(f"[ChannelManager] /stop 请求已发送至 session={session_id}")
             except Exception as e:
                 logger.error(f"[ChannelManager] /stop 处理失败: {e}")
                 await self.send_message(

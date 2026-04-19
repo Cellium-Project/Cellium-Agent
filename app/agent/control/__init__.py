@@ -10,6 +10,8 @@ Control Loop Harness - LLM 控制环
   - ControlLoop: 统一控制入口
   - DecisionRenderer: 软约束渲染器（默认）
   - HardConstraintRenderer: 强约束渲染器（PromptBuilder v3）
+  - ThoughtParser: 思考解析器
+  - HybridController: Plan-Execute-Observe-RePlan 混合控制器
 """
 
 from .loop_state import LoopState, ControlDecision
@@ -22,6 +24,20 @@ from .hard_constraints import (
     HardConstraintRenderer,
     HardConstraintTemplates,
     ActionFusion,
+)
+from .thought_parser import (
+    ThoughtParser,
+    ParsedThought,
+    ThoughtStep,
+    ActionType,
+    THOUGHT_SCHEMA,
+)
+from .hybrid_controller import (
+    HybridController,
+    HybridPhase,
+    HybridState,
+    Observation,
+    create_hybrid_controller,
 )
 
 __all__ = [
@@ -38,4 +54,16 @@ __all__ = [
     "HardConstraintRenderer",
     "HardConstraintTemplates",
     "ActionFusion",
+    # 思考系统
+    "ThoughtParser",
+    "ParsedThought",
+    "ThoughtStep",
+    "ActionType",
+    "THOUGHT_SCHEMA",
+    # Hybrid 控制器
+    "HybridController",
+    "HybridPhase",
+    "HybridState",
+    "Observation",
+    "create_hybrid_controller",
 ]

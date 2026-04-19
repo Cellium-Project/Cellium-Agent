@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from .loop_state import LoopState, ControlDecision
 from .feedback_evaluator import FeedbackEvaluator
 from .action_bandit import ActionBandit
+from .hybrid_controller import HybridPhase
 
 if TYPE_CHECKING:
     from app.agent.heuristics.engine import HeuristicEngine
@@ -176,6 +177,10 @@ class ControlLoop:
         termination_decision = rule_decisions.get("termination")
         loop_decision = rule_decisions.get("loop")
 
+        hybrid_phase = str(getattr(state, "hybrid_phase", HybridPhase.OBSERVE.value))
+        hybrid_replan_count = int(getattr(state, "hybrid_replan_count", 0))
+        hybrid_needs_replan = bool(getattr(state, "hybrid_needs_replan", False))
+
         for decision in (termination_decision, loop_decision):
             if not decision:
                 continue
@@ -185,6 +190,21 @@ class ControlLoop:
 
         if features.is_output_loop and features.exact_repetition_count >= 5:
             return ["terminate"], reasons + ["检测到连续完全相同输出"]
+
+        if hybrid_phase == HybridPhase.OBSERVE.value:
+            return ["continue"], reasons + ["Hybrid 观察阶段"]
+        
+        if hybrid_phase == HybridPhase.PLAN.value:
+            return ["continue"], reasons + ["Hybrid 规划阶段"]
+        
+        if hybrid_phase == HybridPhase.REPLAN.value or hybrid_needs_replan:
+            reasons.append(f"Hybrid 需要重新规划 (replan_count={hybrid_replan_count})")
+            if hybrid_replan_count >= 3:
+                return ["redirect"], reasons + ["Hybrid 重新规划次数过多"]
+            return ["continue"], reasons
+        
+        if hybrid_phase == HybridPhase.DONE.value:
+            return ["continue"], reasons + ["Hybrid 计划已完成"]
 
         candidates = set()
         stuck_threshold = self.heuristics.config.get_threshold("stuck_iterations", 3)

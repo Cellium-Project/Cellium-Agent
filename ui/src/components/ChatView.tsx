@@ -67,7 +67,7 @@ export const ChatView: React.FC = () => {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming } = useChat();
-  const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages } = useAppStore();
+  const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages, hybridPhase, hybridMessage, hybridDescription } = useAppStore();
 
   const handleSend = () => {
     if (!inputValue.trim()) return;
@@ -94,6 +94,14 @@ export const ChatView: React.FC = () => {
         <h1 className="chat-header-title">{t('chat.title')}</h1>
         <span className={`status ${statusOnline ? '' : 'error'}`}>{statusOnline ? t('common.online') : t('common.offline')}</span>
       </div>
+
+      {/* Hybrid 状态指示器 */}
+      {isStreaming && hybridPhase && (
+        <div className="hybrid-status-bar">
+          <span className="hybrid-phase">{hybridMessage}</span>
+          {hybridDescription && <span className="hybrid-desc">{hybridDescription}</span>}
+        </div>
+      )}
 
       {/* Messages — 独立组件，流式更新不影响输入框 */}
       <MessageList

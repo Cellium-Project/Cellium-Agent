@@ -153,6 +153,67 @@ Each loop contains 5 stages:
    - Update Bandit's Beta distribution parameters
    - Regularly decay old data to prevent overfitting
 
+### Structured Plan-Execute Engine (Plan-Execute-Observe-RePlan)
+
+The Plan-Execute Engine is an extension module of the Control Loop, implementing a **batch-style plan-execute cycle**. This engine adopts a "plan-first, execute-batch, then evaluate" pipeline mode, achieving efficient task decomposition and execution through explicit state management:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Plan-Execute Engine State Machine               │
+│                                                              │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐                  │
+│  │ OBSERVE │───▶│  PLAN   │───▶│ EXECUTE │◄──────────────┐  │
+│  │ Observe │    │  Plan   │    │ Execute │  Validation    │  │
+│  └─────────┘    └─────────┘    └────┬────┘  Success → Next │  │
+│       ▲                             │                      │  │
+│       │                   Validation│                      │  │
+│       │                      Failed │                      │  │
+│       │                             ▼                      │  │
+│       │                        ┌─────────┐  Replan Success │  │
+│       │                        │ REPLAN  │─────────────────┘  │
+│       │                        │ Replan  │                   │  │
+│       │                        └────┬────┘                   │  │
+│       │                             │                      │  │
+│       └─────────────────────────────┘  Max Replan Reached   │  │
+│                                        or Task Complete     │  │
+│                                        ▼                    │  │
+│                                      ┌─────┐                │  │
+│                                      │DONE │                │  │
+│                                      │Done │                │  │
+│                                      └─────┘                │  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Core Mechanisms**:
+
+| Mechanism | Description |
+|-----------|-------------|
+| **Batch Planning** | Generate multi-step execution plan at once (1-5 steps), reducing LLM call frequency |
+| **State-Driven** | 5-phase explicit state machine (OBSERVE/PLAN/EXECUTE/REPLAN/DONE) |
+| **In-Execution Validation** | Automatic result validation after each step (semantic matching + Jaccard similarity + purpose-driven) |
+| **Local Replanning** | Preserve successful steps on validation failure, only replan failed and subsequent steps |
+
+**Workflow**:
+
+1. **OBSERVE**: Analyze user input, understand task goals and context
+2. **PLAN**: LLM generates structured plan, each step contains: tool name, parameters, execution purpose, expected result
+3. **EXECUTE**: Execute plan steps sequentially, automatic validation after each step
+   - Validation Success → Continue to next step
+   - Validation Failed → Enter REPLAN phase
+4. **REPLAN**: Preserve successful steps, only regenerate plan for failed and subsequent steps
+5. **DONE**: All steps executed successfully, or max replanning reached
+
+**Design Characteristics**:
+- **Efficient**: Multi-step plan generated once, zero LLM calls during execution phase
+- **Reliable**: Expectation validation uses semantic matching, avoiding misjudgment (e.g., "function X" and "get_X" considered matching)
+- **Stable**: Local replanning avoids total overhaul, maintaining context continuity
+- **Observable**: 5-phase state machine provides clear execution trace for debugging and monitoring
+- **Collaborative**: State information synchronized to Control Loop in real-time, replanning triggers redirect decision
+
+**Configuration**:
+- `max_plan_steps=5`: Maximum 5 steps per plan
+- `max_replans=3`: Maximum 3 replanning attempts
+
 ### Action Types & Strategies
 
 Code definition: `ACTION_TYPES = ["continue", "retry", "redirect", "compress", "terminate"]`

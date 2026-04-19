@@ -65,7 +65,11 @@ async def reload_channel(platform: str = "qq") -> Dict[str, Any]:
         elif platform == "telegram":
             from app.channels.telegram_channel_config import TelegramChannelConfig
             tg_config = TelegramChannelConfig()
-            pass
+            await adapter.update_config(
+                bot_token=tg_config.get_bot_token(force_reload=True),
+                whitelist_user_ids=tg_config.get_whitelist_user_ids(force_reload=True),
+                whitelist_usernames=tg_config.get_whitelist_usernames(force_reload=True),
+            )
 
         await adapter.disconnect()
         asyncio.create_task(adapter.connect())

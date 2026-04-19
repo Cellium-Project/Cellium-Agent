@@ -113,6 +113,15 @@ class LoopState:
     recent_llm_outputs: List[str] = field(default_factory=list)
     # 存储最近 10 轮的 LLM 输出内容，用于检测一字不差的重复
 
+    # ===== Hybrid 控制器状态 =====
+    hybrid_phase: str = "observe"  # observe/plan/execute/evaluate/replan/done
+    hybrid_replan_count: int = 0
+    hybrid_plan_steps: int = 0
+    hybrid_executed_steps: int = 0
+    hybrid_needs_replan: bool = False
+    hybrid_last_observation: Optional[str] = None  
+    hybrid_plan_summary: str = ""
+
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（用于持久化）"""
         return {

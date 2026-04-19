@@ -397,6 +397,29 @@ class TelegramAdapter(ChannelAdapter):
 
         logger.info("[TelegramAdapter] Disconnected")
 
+    async def update_config(self, bot_token: str = None, whitelist_user_ids: list = None,
+                            whitelist_usernames: list = None, **kwargs):
+        """
+        热更新配置
+
+        Args:
+            bot_token: 新的 Bot Token
+            whitelist_user_ids: 新的白名单用户 ID 列表
+            whitelist_usernames: 新的白名单用户名列表
+        """
+        if bot_token is not None:
+            self.bot_token = bot_token
+            self.base_url = f"https://api.telegram.org/bot{bot_token}"
+            logger.info("[TelegramAdapter] Bot token updated")
+        
+        if whitelist_user_ids is not None:
+            self.whitelist_user_ids = set(whitelist_user_ids)
+            logger.info(f"[TelegramAdapter] Whitelist user IDs updated: {len(self.whitelist_user_ids)} users")
+        
+        if whitelist_usernames is not None:
+            self.whitelist_usernames = set(u.lower() for u in whitelist_usernames)
+            logger.info(f"[TelegramAdapter] Whitelist usernames updated: {len(self.whitelist_usernames)} users")
+
     async def send_message(self, target_id: str, content: str, message_type: str, **kwargs) -> bool:
         """
         发送消息到 Telegram
@@ -591,6 +614,10 @@ class TelegramAdapter(ChannelAdapter):
         chat_id = str(chat.get("id"))
         user_id = str(user_info.get("id", ""))
         user_name = user_info.get("first_name", "Unknown")
+
+        if user_info.get("is_bot", False):
+            logger.debug(f"[TelegramAdapter] Ignoring message from bot (self): {message.get('message_id')}")
+            return
 
         if not self._is_user_allowed(user_info):
             username = user_info.get("username", "N/A")

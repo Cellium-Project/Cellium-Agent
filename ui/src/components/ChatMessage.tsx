@@ -175,7 +175,10 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
             <code>{escapeHtml(cmdPreview)}</code>
           </div>
         )}
-        <Collapsible summary={t('chat.paramsAndResult')} defaultOpen={status === 'running'}>
+        <Collapsible 
+          summary={t('chat.paramsAndResult')} 
+          open={status === 'running' || (status === 'done' && trace.result?.error)}
+        >
           <pre className="tool-args">{escapeHtml(argsStr)}</pre>
           {status !== 'running' && <div className="tool-result">{resultPreview}</div>}
           {status === 'running' && <div className="tool-result"><span className="status-dot dot-running"></span>{t('chat.waitingForResult')}</div>}

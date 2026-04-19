@@ -5,6 +5,7 @@ import i18n from '../i18n';
 
 export type Theme = 'light' | 'dark' | 'auto';
 export type Language = 'zh-CN' | 'zh-TW' | 'en';
+export type HybridPhase = 'observe' | 'plan' | 'execute' | 'evaluate' | 'replan' | 'done';
 
 interface AppState {
   // Sessions
@@ -22,6 +23,11 @@ interface AppState {
   isStreaming: boolean;
   streamingMessage: Message | null;
   hasRunningTask: boolean;  // ★ 新增：后台任务运行状态
+
+  // Hybrid 状态
+  hybridPhase: HybridPhase;
+  hybridMessage: string;
+  hybridDescription: string;
 
   // Models
   savedModels: ModelConfig[];
@@ -54,6 +60,8 @@ interface AppState {
   setIsStreaming: (streaming: boolean) => void;
   setIsLoadingMessages: (loading: boolean) => void;
   setHasRunningTask: (running: boolean) => void;  // ★ 新增
+
+  setHybridPhase: (phase: HybridPhase, message: string, description: string) => void;
 
   setSavedModels: (models: ModelConfig[]) => void;
   setCurrentModelId: (id: string | null) => void;
@@ -89,6 +97,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   isStreaming: false,
   streamingMessage: null,
   hasRunningTask: false,  // ★ 新增
+  hybridPhase: 'observe',
+  hybridMessage: '',
+  hybridDescription: '',
   savedModels: [],
   currentModelId: null,
   sidebarCollapsed: false,
@@ -129,6 +140,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setIsLoadingMessages: (loading) => set({ isLoadingMessages: loading }),
   setHasRunningTask: (running) => set({ hasRunningTask: running }),
+
+  setHybridPhase: (phase, message, description) => set({
+    hybridPhase: phase,
+    hybridMessage: message,
+    hybridDescription: description,
+  }),
 
   setSavedModels: (models) => set({ savedModels: models }),
   setCurrentModelId: (id) => set({ currentModelId: id }),

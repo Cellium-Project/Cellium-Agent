@@ -234,3 +234,46 @@ class XxxTool(BaseCell):
 - **不要超过**迭代限制强行继续
 - **主动利用**控制环给出的 redirect 建议
 
+---
+
+## §8 THINKING PROTOCOL [核心]
+
+### §8.1 输出格式 [强制]
+
+**每次工具调用前必须输出 JSON**：
+```json
+{"reasoning": "分析(50-150字)", "plan": [{"tool": "名", "purpose": "目的"}], "action": "tool_call"}
+```
+
+| 字段 | 必填 | 说明 |
+|-----|------|------|
+| `reasoning` | ✅ | 分析过程，50-150字 |
+| `plan` | ✅ | 计划数组，最多3步 |
+| `action` | ✅ | `tool_call`/`direct_response`/`clarify` |
+
+### §8.2 铁律 [强制]
+
+**必须**：
+- 第一步永远是 `insight` 观察结构
+- 一次规划多步，批量执行
+- 读取前确认最小范围
+
+**禁止**：
+- 逐个工具调用（迭代爆炸）
+- 连续 read 同一文件
+- read 大文件前不用 insight 定位
+- 盲目 read 不确定是否需要
+
+### §8.3 工作流
+
+```
+OBSERVE → PLAN → EXECUTE → EVALUATE
+                              ↓
+                        [符合预期?]
+                         ↓是   ↓否
+                        DONE  Re-Plan
+```
+
+**Re-Plan 触发**：失败 / 结果不符 / 发现新信息
+**Re-Plan 原则**：分析原因 → 调整方向 → 禁止重复相同操作
+

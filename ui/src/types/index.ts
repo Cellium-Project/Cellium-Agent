@@ -52,7 +52,8 @@ export type SSEEventType =
   | 'stopped'
   | 'heuristic_redirect'
   | 'message_received'
-  | 'supplement_injected';
+  | 'supplement_injected'
+  | 'hybrid_phase';
 
 export interface SSEEvent {
   type: SSEEventType;
@@ -70,6 +71,8 @@ export interface SSEEvent {
   reason?: string;
   tool_traces?: ToolTrace[];
   suggestions?: string[];
+  // Hybrid 状态
+  phase?: string;
 }
 
 // Model Config

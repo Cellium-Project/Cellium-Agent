@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { API, postJSON } from '../utils/api';
 import type { SSEEvent, Message, ToolTrace, TimelineSegment } from '../types';
+import type { HybridPhase } from '../stores/appStore';
 
 export function useChat() {
   const wsRef = useRef<WebSocket | null>(null);
@@ -24,6 +25,7 @@ export function useChat() {
     fetchSessions,
     checkTaskStatus,
     stopTask,
+    setHybridPhase,
   } = useAppStore();
 
   function buildStreamingContext() {
@@ -275,8 +277,17 @@ export function useChat() {
         });
         break;
       }
+
+      case 'hybrid_phase': {
+        setHybridPhase(
+          (event.phase || 'observe') as HybridPhase,
+          event.message || '',
+          event.description || ''
+        );
+        break;
+      }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, setHybridPhase]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((

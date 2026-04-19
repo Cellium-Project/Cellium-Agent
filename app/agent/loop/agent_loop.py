@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Agent 主循环
-
-重构说明：
-  - LoopController: 迭代计数和循环检测
-  - PromptContextBuilder: 提示词上下文构建
-  - LoopEventPublisher: 事件发布封装
 """
 
 import json
@@ -24,6 +19,15 @@ from app.agent.prompt.pieces import create_default_builder
 from app.agent.memory.session_notes import SessionNotes
 from app.agent.memory.session_compact import SessionCompactor
 from app.agent.control import ControlLoop, LoopState, HardConstraintRenderer
+from app.agent.control import (
+    HybridController,
+    HybridPhase,
+    Observation,
+    ThoughtParser,
+    ParsedThought,
+    ActionType,
+    create_hybrid_controller,
+)
 from app.core.util.logger import set_runtime_status, get_runtime_status
 
 from .tool_executor import (
@@ -56,6 +60,7 @@ class AgentLoop:
         enable_heuristics: bool = True,
         flash_mode: bool = False,
         enable_learning: bool = True,
+        enable_hybrid: bool = True,
     ):
         self.llm = llm_engine
         self.shell = shell
@@ -64,10 +69,21 @@ class AgentLoop:
         self.session_id = session_id
         self.flash_mode = flash_mode
         self._did_persist_before_compact = False  # 标记压缩前是否已持久化
+        self._enable_hybrid = enable_hybrid
 
         # 事件总线
         self._bus = event_bus_instance or event_bus
         self._event_publisher = LoopEventPublisher(self._bus)
+
+        # Hybrid 控制器（Plan-Execute-Observe-RePlan）
+        self._hybrid_controller: Optional[HybridController] = None
+        self._last_hybrid_phase: str = ""  # 跟踪上一次发送的 phase
+        if enable_hybrid:
+            self._hybrid_controller = create_hybrid_controller(
+                max_plan_steps=5,
+                max_replans=3,
+            )
+            logger.info("[AgentLoop] Hybrid 控制器已启用（Plan→Execute→Observe→RePlan）")
 
         # 加载记忆配置（必须在创建 MemoryManager 之前）
         memory_dir = getattr(three_layer_memory, 'memory_dir', 'memory') if three_layer_memory else 'memory'
@@ -212,6 +228,32 @@ class AgentLoop:
             logger.debug("[AgentLoop] 加载学习配置失败: %s", e)
             return {}
 
+    def _sync_hybrid_state(self) -> Optional[Dict[str, Any]]:
+        """
+        同步 Hybrid 状态并发送状态变化事件
+        
+        Returns:
+            如果状态发生变化，返回事件字典；否则返回 None
+        """
+        if not self._hybrid_controller or not self._loop_state:
+            return None
+        
+        self._hybrid_controller.sync_to_loop_state(self._loop_state)
+        
+        phase_msg = self._hybrid_controller.get_phase_message()
+        if phase_msg["phase"] != self._last_hybrid_phase:
+            self._last_hybrid_phase = phase_msg["phase"]
+            return {
+                "type": "hybrid_phase",
+                "phase": phase_msg["phase"],
+                "icon": phase_msg["icon"],
+                "message": phase_msg["message"],
+                "description": phase_msg["description"],
+                "detail": phase_msg.get("detail", ""),
+            }
+        
+        return None
+
     def stop(self):
         """请求停止当前推理"""
         self._loop_controller.request_stop()
@@ -227,27 +269,37 @@ class AgentLoop:
         Returns:
             是否应该更新目标
         """
-        # 没有当前目标，需要设置
         if not current_goal:
             return True
 
-        # 检测明确的"新任务"信号词
+        # 检测明确的"新任务"信号词（中英文）
         new_task_keywords = [
+            # 中文
             "新任务", "新的任务", "换一个", "接下来", "现在请",
             "帮我", "请帮我", "我想要", "我想让", "现在需要",
             "重新开始", "从新开始", "开始新的", "另一个问题",
             "换个话题", "换个主题", "不再", "不用了", "算了",
+            # 英文
+            "new task", "new question", "next task", "another one",
+            "help me", "please help", "i want", "i need", "let's do",
+            "start over", "restart", "different topic", "change topic",
+            "never mind", "forget it", "actually", "instead",
         ]
         
         new_input_lower = new_input.lower()
         for kw in new_task_keywords:
             if kw in new_input_lower:
-                # 进一步检查：输入是否与当前目标明显不同
                 if not self._is_similar_goal(new_input, current_goal):
                     return True
 
-        # 检测明确的取消/否定当前任务
-        cancel_keywords = ["不对", "不是这个", "弄错了", "取消", "停止", "不要了"]
+        # 检测明确的取消/否定当前任务（中英文）
+        cancel_keywords = [
+            # 中文
+            "不对", "不是这个", "弄错了", "取消", "停止", "不要了",
+            # 英文
+            "wrong", "not this", "mistake", "cancel", "stop", "never mind",
+            "don't", "dont", "nope", "incorrect",
+        ]
         for kw in cancel_keywords:
             if kw in new_input_lower:
                 return True
@@ -258,12 +310,21 @@ class AgentLoop:
         """
         判断新输入是否与当前目标相似（可能是延续同一任务）
         """
-        # 简单的关键词重叠检查
         new_words = set(new_input.lower().split())
         goal_words = set(current_goal.lower().split())
         
-        # 移除常见停用词
-        stop_words = {"的", "了", "是", "在", "有", "和", "与", "或", "我", "你", "他", "她", "它"}
+        # 移除常见停用词（中英文）
+        stop_words = {
+            # 中文
+            "的", "了", "是", "在", "有", "和", "与", "或", "我", "你", "他", "她", "它",
+            # 英文
+            "the", "a", "an", "is", "are", "was", "were", "be", "been",
+            "i", "you", "he", "she", "it", "we", "they", "me", "him", "her",
+            "my", "your", "his", "her", "its", "our", "their",
+            "to", "for", "of", "with", "at", "by", "from", "in", "on",
+            "and", "or", "but", "so", "if", "then", "that", "this", "these",
+            "please", "can", "could", "would", "will", "should", "do", "does",
+        }
         new_words -= stop_words
         goal_words -= stop_words
         
@@ -319,12 +380,65 @@ class AgentLoop:
                 raise Exception(event.get("error", "AgentLoop stream error"))
         return result
 
-    def _get_last_assistant_message(self, memory: MemoryManager) -> str:
-        """获取最近一条 assistant 文本消息"""
+    def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
+        """
+        获取最近一条 assistant 文本消息
+        
+        Args:
+            memory: 内存管理器
+            skip_thinking: 是否跳过 JSON 思考格式
+            
+        Returns:
+            最后一条 assistant 消息内容
+        """
         for msg in reversed(memory.get_messages()):
             if msg.get("role") == "assistant" and msg.get("content"):
-                return msg.get("content", "")
+                content = msg.get("content", "")
+                if skip_thinking and self._is_thinking_json(content):
+                    continue
+                return content
         return ""
+
+    def _is_thinking_json(self, content: str) -> bool:
+        """
+        检测内容是否是纯 JSON 思考格式
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            是否是纯 JSON 思考
+        """
+        if not content:
+            return False
+        
+        content = content.strip()
+        
+        # 检测纯 JSON 格式
+        if content.startswith("{") and content.endswith("}"):
+            try:
+                import json
+                data = json.loads(content)
+                # 判断是否是思考格式
+                if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                    return True
+            except:
+                pass
+        
+        # 检测 markdown 包裹的 JSON
+        if content.startswith("```json") or content.startswith("```"):
+            try:
+                import re
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                if json_match:
+                    import json
+                    data = json.loads(json_match.group(1))
+                    if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                        return True
+            except:
+                pass
+        
+        return False
 
     def _persist_snapshot_before_compact(
         self,
@@ -567,9 +681,31 @@ class AgentLoop:
                 available_tools=list(self.tools.keys()),
             )
 
+            # Hybrid 控制器：每次输入重置 + 意图检测
+            if self._hybrid_controller:
+                # 复用笔记系统的目标检测逻辑
+                if current_goal and self._should_update_goal(user_input, current_goal):
+                    logger.info("[Hybrid] 检测到意图变化，重置计划")
+                self._hybrid_controller.reset()
+                self._last_hybrid_phase = ""
+                logger.debug("[Hybrid] 控制器已重置")
+
             # Control Loop: 会话开始
             if self.control_loop:
                 self.control_loop.start_session(self._loop_state)
+
+            # Hybrid: 显示初始观察状态
+            if self._hybrid_controller:
+                phase_msg = self._hybrid_controller.get_phase_message()
+                if phase_msg["phase"] != self._last_hybrid_phase:
+                    self._last_hybrid_phase = phase_msg["phase"]
+                    yield {
+                        "type": "hybrid_phase",
+                        "phase": phase_msg["phase"],
+                        "icon": phase_msg["icon"],
+                        "message": phase_msg["message"],
+                        "description": phase_msg["description"],
+                    }
 
             yield {"type": "thinking", "content": "正在思考..."}
 
@@ -630,6 +766,7 @@ class AgentLoop:
                         tool_traces=tool_traces,
                         iteration=self._loop_controller.iteration,
                         start_time=start_time,
+                        final_response_content=self._get_last_assistant_message(effective_memory),
                     ):
                         yield event
                     return
@@ -694,6 +831,7 @@ class AgentLoop:
                             tool_traces=tool_traces,
                             iteration=iteration,
                             start_time=start_time,
+                            final_response_content=self._get_last_assistant_message(effective_memory),
                         ):
                             yield event
                         return
@@ -730,6 +868,7 @@ class AgentLoop:
                                 tool_traces=tool_traces,
                                 iteration=iteration,
                                 start_time=start_time,
+                                final_response_content=self._get_last_assistant_message(effective_memory),
                             ):
                                 yield event
                             return
@@ -766,6 +905,14 @@ class AgentLoop:
                 rs = get_runtime_status()
                 if rs:
                     runtime_status_str = rs.to_summary()
+                
+                # 注入计划摘要到上下文
+                if self._loop_state and self._loop_state.hybrid_plan_summary:
+                    plan_context = f"[当前计划: {self._loop_state.hybrid_plan_summary}]"
+                    if runtime_status_str:
+                        runtime_status_str = f"{runtime_status_str}\n{plan_context}"
+                    else:
+                        runtime_status_str = plan_context
 
                 if iteration == 1:
                     llm_messages = self._prompt_context_builder.build_first_round(
@@ -807,6 +954,37 @@ class AgentLoop:
                 logger.info("[AgentLoop] 迭代 %d: LLM 返回 (tool_calls=%d, content长度=%d)",
                            iteration, len(response.tool_calls) if response.tool_calls else 0, len(response.content or ""))
 
+                # === Hybrid: 解析思考 ===
+                parsed_thought: Optional[ParsedThought] = None
+                if self._hybrid_controller and response.content:
+                    parsed_thought = self._hybrid_controller.process_thought(response.content)
+                    logger.info(
+                        "[AgentLoop] 思考解析 | action=%s | plan_steps=%d | confidence=%.2f | phase=%s",
+                        parsed_thought.action.value,
+                        len(parsed_thought.plan),
+                        parsed_thought.confidence,
+                        self._hybrid_controller.state.phase.value,
+                    )
+                    
+                    if parsed_thought.action == ActionType.DIRECT_RESPONSE:
+                        logger.info("[AgentLoop] 模型判断可直接回答，跳过工具调用")
+                        yield {"type": "content_chunk", "content": response.content}
+                        if not self.flash_mode:
+                            effective_memory.add_assistant_message(response.content)
+                        continue
+                    
+                    if parsed_thought.action == ActionType.CLARIFY:
+                        logger.info("[AgentLoop] 模型需要用户澄清")
+                        yield {"type": "content_chunk", "content": response.content}
+                        if not self.flash_mode:
+                            effective_memory.add_assistant_message(response.content)
+                        continue
+
+                # ★ 同步 Hybrid 状态到 LoopState（让 ControlLoop 感知）
+                hybrid_event = self._sync_hybrid_state()
+                if hybrid_event:
+                    yield hybrid_event
+
                 # ★ 记录 LLM 输出内容（用于检测重复循环）
                 if self._loop_state and response.content:
                     self._loop_state.recent_llm_outputs.append(response.content)
@@ -841,8 +1019,10 @@ class AgentLoop:
                     # LLM 在工具调用前输出的文本内容（interim content）
                     interim_content = (response.content or "").strip()
                     if interim_content:
-                        yield {"type": "content_chunk", "content": interim_content}
-                        # ★ 保存到 memory，确保 archive 可恢复
+                        if parsed_thought and parsed_thought.reasoning:
+                            yield {"type": "thinking", "content": parsed_thought.reasoning}
+                        else:
+                            yield {"type": "content_chunk", "content": interim_content}
                         if not self.flash_mode:
                             effective_memory.add_assistant_message(interim_content)
 
@@ -907,6 +1087,35 @@ class AgentLoop:
 
                     if self._loop_state:
                         set_runtime_status(self._loop_state)
+
+                    # === Hybrid: 观察执行结果 ===
+                    if self._hybrid_controller and iteration_traces:
+                        for trace in iteration_traces:
+                            if self._hybrid_controller.state.pending_steps:
+                                next_step = self._hybrid_controller.get_next_step()
+                                if next_step:
+                                    obs = self._hybrid_controller.observe_result(
+                                        step=next_step,
+                                        success=trace.get("success", False),
+                                        output=trace.get("result"),
+                                    )
+                                    logger.info(
+                                        "[Hybrid] 观察 | tool=%s | success=%s | matched=%s | phase=%s",
+                                        trace.get("tool"),
+                                        obs.success,
+                                        obs.matched_expectation,
+                                        self._hybrid_controller.state.phase.value,
+                                    )
+                                    if obs.needs_replan:
+                                        logger.warning(
+                                            "[Hybrid] 需要重新规划 | reason=%s",
+                                            obs.replan_reason
+                                        )
+                        
+                        # 观察后同步状态
+                        hybrid_event = self._sync_hybrid_state()
+                        if hybrid_event:
+                            yield hybrid_event
 
                     # Control Loop: 每轮结束，更新 Bandit
                     if self.control_loop and self._loop_state:
@@ -1135,11 +1344,25 @@ class AgentLoop:
         try:
             all_messages = memory.get_messages() if memory else None
             actual_response = response_content
+            
+            # 如果没有传入 response_content，从 memory 中查找
+            if not actual_response and all_messages:
+                for msg in reversed(all_messages):
+                    if msg.get("role") == "assistant" and msg.get("content"):
+                        content = msg.get("content", "")
+                        # 跳过纯 JSON 思考（工具调用前的 interim content）
+                        if self._is_thinking_json(content):
+                            continue
+                        actual_response = content
+                        break
+            
+            # 如果所有 assistant 消息都是 JSON 思考，取最后一条
             if not actual_response and all_messages:
                 for msg in reversed(all_messages):
                     if msg.get("role") == "assistant" and msg.get("content"):
                         actual_response = msg.get("content", "")
                         break
+            
             if not actual_response:
                 actual_response = "[无回复内容]" if user_input else ""
             if not actual_response and not all_messages:

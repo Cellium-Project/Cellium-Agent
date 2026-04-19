@@ -62,6 +62,22 @@ async def _do_channel_start(channel_mgr, qq_config):
         logger.error("[AgentDI] 通道启动失败: %s", e)
 
 
+async def _do_telegram_channel_start(channel_mgr, tg_config):
+    """启动 Telegram 通道"""
+    try:
+        from app.channels.telegram_adapter import TelegramAdapter
+        adapter = TelegramAdapter(
+            bot_token=tg_config.get_bot_token(),
+            whitelist_user_ids=tg_config.get_whitelist_user_ids(),
+            whitelist_usernames=tg_config.get_whitelist_usernames(),
+        )
+        await channel_mgr.register_adapter(adapter)
+        await adapter.connect()
+        logger.info("[AgentDI] Telegram 通道启动完成")
+    except Exception as e:
+        logger.error("[AgentDI] Telegram 通道启动失败: %s", e)
+
+
 def setup_agent_di(
     llm_engine=None,
     shell=None,
@@ -222,10 +238,12 @@ def setup_agent_di(
             return
         try:
             from app.channels.qq_channel_config import QQChannelConfig
+            from app.channels.telegram_channel_config import TelegramChannelConfig
             from app.channels import ChannelManager
+            channel_mgr = ChannelManager.get_instance()
+
             qq_config = QQChannelConfig()
             qq_config.reload()
-            channel_mgr = ChannelManager.get_instance()
             adapter = channel_mgr.get_adapter("qq")
             if adapter:
                 adapter.app_id = qq_config.get_app_id(force_reload=True)
@@ -233,14 +251,33 @@ def setup_agent_di(
                 asyncio.get_event_loop().call_soon_threadsafe(
                     lambda: asyncio.create_task(_do_channel_reconnect(adapter))
                 )
-                logger.info("[AgentDI] Channels 配置已热更新，正在重连...")
+                logger.info("[AgentDI] QQ 通道配置已热更新，正在重连...")
             elif qq_config.should_auto_start():
                 asyncio.get_event_loop().call_soon_threadsafe(
                     lambda: asyncio.create_task(_do_channel_start(channel_mgr, qq_config))
                 )
-                logger.info("[AgentDI] Channels 配置已热更新，正在启动...")
+                logger.info("[AgentDI] QQ 通道配置已热更新，正在启动...")
             else:
-                logger.warning("[AgentDI] Channels 配置已更新，但凭证缺失或未启用")
+                logger.warning("[AgentDI] QQ 通道配置已更新，但凭证缺失或未启用")
+
+            tg_config = TelegramChannelConfig()
+            tg_config.reload()
+            tg_adapter = channel_mgr.get_adapter("telegram")
+            if tg_adapter:
+                tg_adapter.bot_token = tg_config.get_bot_token(force_reload=True)
+                tg_adapter.whitelist_user_ids = set(tg_config.get_whitelist_user_ids(force_reload=True))
+                tg_adapter.whitelist_usernames = set(u.lower() for u in tg_config.get_whitelist_usernames(force_reload=True))
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.create_task(_do_channel_reconnect(tg_adapter))
+                )
+                logger.info("[AgentDI] Telegram 通道配置已热更新，正在重连...")
+            elif tg_config.should_auto_start():
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.create_task(_do_telegram_channel_start(channel_mgr, tg_config))
+                )
+                logger.info("[AgentDI] Telegram 通道配置已热更新，正在启动...")
+            else:
+                logger.warning("[AgentDI] Telegram 通道配置已更新，但凭证缺失或未启用")
         except Exception as e:
             logger.error("[AgentDI] Channels 配置热更新失败: %s", e, exc_info=True)
 

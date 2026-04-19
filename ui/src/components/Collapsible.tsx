@@ -4,6 +4,7 @@ interface CollapsibleProps {
   summary: React.ReactNode;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  open?: boolean;
   className?: string;
 }
 
@@ -11,11 +12,15 @@ export const Collapsible: React.FC<CollapsibleProps> = ({
   summary,
   children,
   defaultOpen = false,
+  open,
   className = ''
 }) => {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [isOpenInternal, setIsOpenInternal] = useState(defaultOpen);
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | undefined>(defaultOpen ? undefined : 0);
+  
+  const isOpen = open !== undefined ? open : isOpenInternal;
+  const setIsOpen = open !== undefined ? (() => {}) : setIsOpenInternal;
 
   useEffect(() => {
     const contentEl = contentRef.current;
@@ -33,9 +38,15 @@ export const Collapsible: React.FC<CollapsibleProps> = ({
     }
   }, [isOpen]);
 
+  const handleClick = () => {
+    if (open === undefined) {
+      setIsOpenInternal(!isOpenInternal);
+    }
+  };
+
   return (
     <div className={`collapsible ${className}`}>
-      <div className="collapsible-summary" onClick={() => setIsOpen(!isOpen)}>
+      <div className="collapsible-summary" onClick={handleClick}>
         <span className={`collapsible-arrow ${isOpen ? 'open' : ''}`}>▶</span>
         {summary}
       </div>

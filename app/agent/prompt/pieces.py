@@ -121,6 +121,33 @@ DYNAMIC_PIECES: List[PromptPiece] = [
         priority=105,
         enabled=False,  # 有 runtime_status 时才启用
     ),
+    PromptPiece(
+        name="thinking_reminder",
+        template="""## ⚡ 思考输出格式 [强制]
+
+**调用工具前必须先输出结构化思考**：
+
+```json
+{
+  "reasoning": "分析当前情况（50-200字）",
+  "plan": [
+    {"tool": "工具名", "purpose": "目的", "expected_result": "预期结果"}
+  ],
+  "action": "tool_call",
+  "confidence": 0.8,
+  "estimated_steps": 2
+}
+```
+
+**action 类型**：
+- `tool_call`: 需要调用工具
+- `direct_response`: 可以直接回答，无需工具
+- `clarify`: 需要用户澄清
+
+**禁止**：不输出思考直接调用工具、逐个工具试探""",
+        priority=150,
+        enabled=True,
+    ),
 ]
 
 
@@ -142,10 +169,8 @@ def create_default_builder(memory_dir: str = "memory") -> "PromptBuilder":
 
     builder = PromptBuilder()
 
-    # 注册基础层（只有 identity，personality.md 已包含约束）
     builder.register(get_identity_piece(memory_dir))
 
-    # 注册动态层
     for piece in DYNAMIC_PIECES:
         builder.register(piece)
 

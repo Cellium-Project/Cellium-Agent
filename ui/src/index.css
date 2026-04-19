@@ -359,6 +359,25 @@ body {
     color: var(--text-inverse);
 }
 
+.hybrid-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 13px;
+}
+
+.hybrid-phase {
+    color: var(--accent-primary);
+    font-weight: 500;
+}
+
+.hybrid-desc {
+    color: var(--text-secondary);
+}
+
 .header-actions {
     display: flex;
     gap: 8px;
