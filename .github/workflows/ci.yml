@@ -163,6 +163,21 @@ jobs:
           cp main.py release/
         shell: bash
 
+      - name: Clean Unix Runtime
+        if: runner.os != 'Windows'
+        run: |
+          rm -rf release/runtime/lib/python3.12/test
+          rm -rf release/runtime/lib/python3.12/lib2to3
+          rm -rf release/runtime/lib/python3.12/idlelib
+          rm -rf release/runtime/lib/python3.12/turtledemo
+          rm -rf release/runtime/lib/python3.12/venv
+          rm -f release/runtime/lib/python3.12/*-info
+          rm -f release/runtime/lib/python3.12/dist-info/*
+          rm -f release/runtime/lib/python3.12/*.whl
+          find release/runtime -name "*.pyc" -delete
+          find release/runtime -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+        shell: bash
+
       - name: Create Launcher (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -177,12 +192,20 @@ jobs:
           echo '$DIR/runtime/bin/python3 $DIR/main.py' >> release/start-cellium.sh
           chmod +x release/start-cellium.sh
 
-      - name: Prepare Package
+      - name: Prepare Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PKG_NAME = "Cellium-Agent-Windows"
+          Move-Item release $PKG_NAME
+          Get-ChildItem -Path $PKG_NAME -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          echo "FINAL_PKG_NAME=$PKG_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Prepare Package (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          if [ "${{ matrix.os }}" == "windows-latest" ]; then
-            PKG_NAME="Cellium-Agent-Windows"
-          elif [ "${{ matrix.os }}" == "macos-latest" ]; then
+          if [ "${{ matrix.os }}" == "macos-latest" ]; then
             PKG_NAME="Cellium-Agent-macOS"
           else
             PKG_NAME="Cellium-Agent-Linux"
@@ -195,5 +218,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.FINAL_PKG_NAME }}-v${{ env.VERSION }}
-          path: ${{ env.FINAL_PKG_NAME }}/
+          path: ${{ env.FINAL_PKG_NAME }}
           if-no-files-found: error
