@@ -106,7 +106,13 @@ jobs:
           curl -L -o py_runtime.zip https://www.python.org/ftp/python/${{ env.PY_VER }}/python-${{ env.PY_VER }}-embed-amd64.zip
           Expand-Archive -Path py_runtime.zip -DestinationPath release/runtime/
           curl -L -o release/runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
-          echo "python$ver.zip`n.`n../libs`n..`nimport site" | Out-File -FilePath "release/runtime/python$ver._pth" -Encoding ascii
+          @"
+import site
+python$ver.zip
+.
+../libs
+..
+"@ | Out-File -FilePath "release/runtime/python$ver._pth" -Encoding ascii
         shell: pwsh
 
       - name: Get Unix Runtime (Linux/macOS)
@@ -122,11 +128,11 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          python release/runtime/get-pip.py
-          python -m pip install setuptools wheel --target release/libs
-          python -m pip install -r requirements.txt --target release/libs
-          python -m pip install exceptiongroup --target release/libs
-        shell: bash
+          ./release/runtime/python.exe release/runtime/get-pip.py
+          ./release/runtime/python.exe -m pip install setuptools wheel --target release/libs
+          ./release/runtime/python.exe -m pip install -r requirements.txt --target release/libs
+          ./release/runtime/python.exe -m pip install exceptiongroup --target release/libs
+        shell: pwsh
 
       - name: Install Dependencies (Unix)
         if: runner.os != 'Windows'
@@ -199,7 +205,8 @@ jobs:
           $PKG_NAME = "Cellium-Agent-Windows"
           Move-Item release $PKG_NAME
           Get-ChildItem -Path $PKG_NAME -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          echo "FINAL_PKG_NAME=$PKG_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          Compress-Archive -Path $PKG_NAME -DestinationPath "$PKG_NAME.zip"
+          echo "FINAL_PKG_NAME=$PKG_NAME.zip" >> $env:GITHUB_ENV
 
       - name: Prepare Package (Unix)
         if: runner.os != 'Windows'
@@ -212,11 +219,12 @@ jobs:
           fi
           mv release "$PKG_NAME"
           find "$PKG_NAME" -name "__pycache__" -type d -exec rm -rf {} + || true
-          echo "FINAL_PKG_NAME=$PKG_NAME" >> $GITHUB_ENV
+          tar -czf "$PKG_NAME.tar.gz" "$PKG_NAME"
+          echo "FINAL_PKG_NAME=$PKG_NAME.tar.gz" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.FINAL_PKG_NAME }}-v${{ env.VERSION }}
+          name: ${{ env.FINAL_PKG_NAME }}
           path: ${{ env.FINAL_PKG_NAME }}
           if-no-files-found: error
