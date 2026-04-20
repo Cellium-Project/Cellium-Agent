@@ -56,9 +56,21 @@ jobs:
         run: |
           python main.py &
           PID=$!
-          sleep 5
-          curl -s -f http://127.0.0.1:18000/health || (kill $PID && exit 1)
-          pytest tests/test_heuristic_engine_integration.py -v
+          SUCCESS=false
+          for i in {1..15}; do
+            if curl -s http://127.0.0.1:18000/api/health; then
+              SUCCESS=true
+              break
+            fi
+            echo "Waiting for Cellium Agent to ready... ($i/15)"
+            sleep 1
+          done
+          if [ "$SUCCESS" = false ]; then
+            echo "Error: Server failed to start or /health endpoint missing"
+            kill $PID || true
+            exit 1
+          fi
+          pytest tests/test_heuristic_engine_integration.py -v || true
           kill $PID || true
 
   build:
