@@ -81,13 +81,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        include:
-          - os: windows-latest
-            artifact_name: cellium-agent-windows.zip
-          - os: ubuntu-latest
-            artifact_name: cellium-agent-linux.tar.gz
-          - os: macos-latest
-            artifact_name: cellium-agent-macos.tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -184,17 +177,23 @@ jobs:
           echo '$DIR/runtime/bin/python3 $DIR/main.py' >> release/start-cellium.sh
           chmod +x release/start-cellium.sh
 
-      - name: Archive (Windows)
-        if: runner.os == 'Windows'
-        run: Compress-Archive -Path release/* -DestinationPath ${{ matrix.artifact_name }}
-        shell: pwsh
-
-      - name: Archive (Unix)
-        if: runner.os != 'Windows'
-        run: tar -czf ${{ matrix.artifact_name }} -C release .
+      - name: Prepare Package
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" == "windows-latest" ]; then
+            PKG_NAME="Cellium-Agent-Windows"
+          elif [ "${{ matrix.os }}" == "macos-latest" ]; then
+            PKG_NAME="Cellium-Agent-macOS"
+          else
+            PKG_NAME="Cellium-Agent-Linux"
+          fi
+          mv release "$PKG_NAME"
+          find "$PKG_NAME" -name "__pycache__" -type d -exec rm -rf {} + || true
+          echo "FINAL_PKG_NAME=$PKG_NAME" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}-${{ github.sha }}
-          path: ${{ matrix.artifact_name }}
+          name: ${{ env.FINAL_PKG_NAME }}-v${{ env.VERSION }}
+          path: ${{ env.FINAL_PKG_NAME }}/
+          if-no-files-found: error
