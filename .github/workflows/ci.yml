@@ -102,11 +102,12 @@ jobs:
       - name: Get Windows Runtime
         if: runner.os == 'Windows'
         run: |
-          $ver = "${{ env.PY_VER }}".Replace(".","")
+          $ver = "${{ env.PY_VER }}".Replace(".","").Substring(0,3)
           curl -L -o py_runtime.zip https://www.python.org/ftp/python/${{ env.PY_VER }}/python-${{ env.PY_VER }}-embed-amd64.zip
           Expand-Archive -Path py_runtime.zip -DestinationPath release/runtime/
+          $pthContent = "python$ver.zip`n.`n../libs`n..`nimport site"
+          $pthContent | Out-File -FilePath "release/runtime/python$ver._pth" -Encoding ascii
           curl -L -o release/runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
-          Set-Content -Path "release/runtime/python$ver._pth" -Value "import site`npython$ver.zip`n.`n../libs`nScripts`n.."
         shell: pwsh
 
       - name: Get Unix Runtime (Linux/macOS)
@@ -122,10 +123,10 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          ./release/runtime/python.exe release/runtime/get-pip.py --no-warn-script-location
-          ./release/runtime/Scripts/pip.exe install setuptools wheel --target release/libs --no-warn-script-location
-          ./release/runtime/Scripts/pip.exe install -r requirements.txt --target release/libs --no-warn-script-location
-          ./release/runtime/Scripts/pip.exe install exceptiongroup --target release/libs --no-warn-script-location
+          ./release/runtime/python.exe ./release/runtime/get-pip.py --target release/libs --no-warn-script-location
+          ./release/runtime/python.exe -m pip install setuptools wheel --target release/libs
+          ./release/runtime/python.exe -m pip install -r requirements.txt --target release/libs
+          ./release/runtime/python.exe -m pip install exceptiongroup --target release/libs
         shell: pwsh
 
       - name: Install Dependencies (Unix)
