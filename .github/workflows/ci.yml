@@ -9,14 +9,15 @@ on:
 env:
   VERSION: "1.0.0.0"
   PY_VER: "3.12.10"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ['3.12']
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -26,9 +27,10 @@ jobs:
       - name: Run Unit Tests
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-asyncio requests
+          if (Test-Path requirements.txt) { pip install -r requirements.txt }
           pytest tests/ -v --tb=short
+        shell: pwsh
 
   integration-test:
     runs-on: ubuntu-latest

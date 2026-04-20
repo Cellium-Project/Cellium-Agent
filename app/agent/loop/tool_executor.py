@@ -250,7 +250,7 @@ class ToolDescriptionGenerator:
 
         # ── 查看类操作 ──
         if re.match(r'^(?:ls |dir |Get-ChildItem|gci )', cmd_lower.strip()):
-            path_match = re.search(r'(?:ls|dir|Get-ChildItem|gci)[^|]*?([A-Za-z]:[/\\][^>\s&&|]*|[/\\]\S+)', cmd)
+            path_match = re.search(r'(?:ls|dir|Get-ChildItem|gci)[^|]*?([A-Za-z]:[/\\][^>\s&|]*|[/\\]\S+)', cmd)
             target = path_match.group(1) if path_match else ""
             if target:
                 return f"正在查看目录：{target}"
