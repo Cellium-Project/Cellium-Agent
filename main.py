@@ -6,9 +6,12 @@ Cellium Agent - 主入口
 import os
 import sys
 import asyncio
+import multiprocessing
 import uvicorn
 import logging
 from uvicorn.logging import AccessFormatter
+
+multiprocessing.freeze_support()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

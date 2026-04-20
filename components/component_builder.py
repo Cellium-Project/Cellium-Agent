@@ -23,6 +23,7 @@ from app.core.util.components_loader import (
     get_cell,
     get_components_dir,
     discover_components,
+    get_load_errors,
 )
 
 
@@ -112,9 +113,10 @@ class ComponentBuilder(BaseCell):
         for cmd in cmd_list:
             cn = cmd.get("name", "execute")
             cd = cmd.get("desc", f"执行 {cn} 操作")
+            cd_escaped = cd.replace('"', '\\"').replace("'''", "\\'''")
             method = f'''    def _cmd_{cn}(self, input_data: str) -> Dict[str, Any]:
         """
-        {cd}
+        {cd_escaped}
 
         Args:
             input_data: 输入数据
@@ -175,7 +177,7 @@ class ComponentBuilder(BaseCell):
         examples_parts = []
         for i, cmd in enumerate(cmd_list):
             cn = cmd.get("name", "execute")
-            cd = cmd.get("desc", "")
+            cd = cmd.get("desc", "").replace('"', '\\"')
             comma = "," if i < len(cmd_list) - 1 else ""
             examples_parts.append(
                 f'                {{"command": "{cn}", "args": {{"input_data": "<{cn}的输入>"}}, '
@@ -210,7 +212,7 @@ class ComponentBuilder(BaseCell):
                 "如果不确定如何调用，可先调 help 查看用法",
                 "【调用 Agent 循环】如需启动 Agent 执行任务，可调用 self._run_agent(prompt)",
                 "  示例: result = self._run_agent('帮我分析这个日志文件')",
-                "  返回: {'success': True, 'session_id': '...', 'status': 'started'}",
+                "  返回: {{'success': True, 'session_id': '...', 'status': 'started'}}",
             ],
             "_call_format": {{
                 "note": "这是多命令模式工具，每次调用必须带 command 字段",
@@ -284,6 +286,17 @@ class ComponentBuilder(BaseCell):
 
         file_content = "\n".join(lines)
 
+        try:
+            compile(file_content, file_path.name, 'exec')
+        except SyntaxError as e:
+            return {
+                "success": False,
+                "error": f"生成的组件代码有语法错误: {e}",
+                "error_line": e.lineno,
+                "error_text": e.text,
+                "hint": "请检查 commands 参数或其他输入是否包含特殊字符导致代码格式错误",
+            }
+
         # 写入文件
         try:
             os.makedirs(components_dir, exist_ok=True)
@@ -347,11 +360,23 @@ class ComponentBuilder(BaseCell):
                 entry["commands"] = cmds
             result.append(entry)
 
+        # 获取加载错误的组件
+        load_errors = get_load_errors()
+        errors_list = []
+        for file_path, error_info in load_errors.items():
+            errors_list.append({
+                "file": error_info.get("file", "unknown"),
+                "error": error_info.get("error", "Unknown error"),
+                "error_type": error_info.get("error_type", "Error"),
+            })
+
         return {
             "components": result,
             "total": len(result),
             "tools_registered": len(registered_tools),
             "components_dir": str(get_components_dir()),
+            "load_errors": errors_list,
+            "error_count": len(errors_list),
         }
 
     def _cmd_info(self, name: str) -> Dict[str, Any]:

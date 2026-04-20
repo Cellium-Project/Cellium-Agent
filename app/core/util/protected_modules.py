@@ -98,8 +98,6 @@ _protection_depth = 0
 
 def _enable_protection():
     """启用保护：替换 sys.modules 中的受保护模块"""
-    global _original_modules
-
     for module_name in PROTECTED_IMPORTS:
         if module_name in sys.modules:
             original = sys.modules[module_name]
@@ -111,7 +109,6 @@ def _enable_protection():
 
 def _disable_protection():
     """禁用保护：恢复 sys.modules 中的原始模块"""
-    global _original_modules
 
     for module_name, original in _original_modules.items():
         sys.modules[module_name] = original

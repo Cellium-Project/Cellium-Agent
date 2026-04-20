@@ -490,6 +490,8 @@ class TestControlLoopRuleFirstSelection(unittest.TestCase):
         bandit.select_action = Mock(return_value="compress")
         loop = ControlLoop(heuristics, bandit, FeedbackEvaluator())
         state = LoopState(iteration=4, max_iterations=10, session_id="s")
+        # 设置 hybrid_phase 为非 OBSERVE 状态，以便测试 bandit 平局打破逻辑
+        state.hybrid_phase = "execute"
 
         decision = loop.step(state)
 

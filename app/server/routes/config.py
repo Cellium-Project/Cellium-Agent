@@ -13,6 +13,8 @@
   PUT  /api/config/{section}   → 运行时修改配置（内存+可选持久化）
 """
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any, Dict

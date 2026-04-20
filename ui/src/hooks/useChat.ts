@@ -81,12 +81,24 @@ export function useChat() {
     }
     switch (event.type) {
       case 'thinking':
-        updateStreamingMessage({
-          role: 'assistant',
-          content: event.content || '正在思考...',
-          toolTraces: ctx.traces,
-          timeline: [...ctx.timeline],
-        });
+        // 只显示来自 LLM reasoning 的 thinking，过滤系统默认消息
+        const content = event.content || '';
+        const isSystemDefault = ['正在思考...', '正在压缩会话记忆...', '正在根据控制决策压缩上下文...', 
+                                  '分析结果中...', '输出被截断，正在补充...', '正在分析工具定义...']
+                                  .includes(content);
+        if (!isSystemDefault && content.trim()) {
+          const thinkingSeg: TimelineSegment = {
+            kind: 'thinking',
+            content: content,
+          };
+          ctx.timeline.push(thinkingSeg);
+          updateStreamingMessage({
+            role: 'assistant',
+            content: '', // thinking 不直接显示在消息内容中
+            toolTraces: ctx.traces,
+            timeline: [...ctx.timeline],
+          });
+        }
         break;
 
       case 'tool_start': {

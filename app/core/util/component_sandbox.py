@@ -14,15 +14,16 @@ ComponentSandbox — 组件子进程沙箱
          │                         │
     返回结果  <──IPC──  返回结果/异常
 
-IPC 协议：JSON over stdin/stdout
+IPC 协议：multiprocessing.Queue
 """
 
 import json
 import logging
+import multiprocessing
 import os
-import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -31,97 +32,79 @@ logger = logging.getLogger(__name__)
 # 沙箱超时（秒）
 SANDBOX_TIMEOUT = 60
 
-# 沙箱工作器脚本
-SANDBOX_WORKER_SCRIPT = '''
-import json
-import sys
-import traceback
-import importlib.util
-import os
 
-# 项目根目录（由主进程传入）
-_project_root = None
-
-def load_component(module_path: str, class_name: str):
-    """动态加载组件类"""
-    # 确保项目根目录在 sys.path 中（在加载模块之前，因为模块顶层可能有 from app.xxx import）
-    if _project_root and _project_root not in sys.path:
-        sys.path.insert(0, _project_root)
-
-    spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, class_name)
-
-def main():
-    while True:
-        try:
-            line = sys.stdin.readline()
-            if not line:
-                break
-
-            request = json.loads(line)
-            action = request.get("action")
-
-            if action == "init":
-                # 初始化组件
-                global _project_root
-                module_path = request["module_path"]
-                class_name = request["class_name"]
-                init_args = request.get("init_args", {})
-                _project_root = request.get("project_root", "")
-
-                # 设置项目根目录到 sys.path
-                if _project_root and _project_root not in sys.path:
-                    sys.path.insert(0, _project_root)
-
-                global _component
-                _component_class = load_component(module_path, class_name)
-                _component = _component_class(**init_args)
-
-                response = {"status": "ok", "cell_name": getattr(_component, "cell_name", "unknown")}
-
-            elif action == "execute":
-                # 执行命令
-                command = request.get("command", "")
-                args = request.get("args", [])
-                kwargs = request.get("kwargs", {})
-
-                result = _component.execute(command, *args, **kwargs)
-                response = {"status": "ok", "result": result}
-
-            elif action == "get_commands":
-                # 获取命令列表
-                commands = _component.get_commands()
-                response = {"status": "ok", "commands": commands}
-
-            elif action == "ping":
-                response = {"status": "pong"}
-
-            else:
-                response = {"status": "error", "error": f"Unknown action: {action}"}
-
-        except Exception as e:
-            response = {
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "traceback": traceback.format_exc(),
-            }
-
-        sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\\n")
-        sys.stdout.flush()
-
-if __name__ == "__main__":
-    main()
-'''
+def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiprocessing.Queue, 
+                    module_path: str, class_name: str, init_args: Dict, project_root: str):
+    """
+    沙箱工作进程 - 在独立进程中执行组件代码
+    
+    这个函数在子进程中运行，通过 Queue 与主进程通信
+    """
+    try:
+        # 设置项目根目录到 sys.path
+        if project_root and project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
+        # 动态加载组件类
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        component_class = getattr(module, class_name)
+        component = component_class(**init_args)
+        
+        # 通知主进程初始化成功
+        output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
+        
+        # 处理命令
+        while True:
+            try:
+                request = input_queue.get(timeout=SANDBOX_TIMEOUT)
+                if request is None:  # 终止信号
+                    break
+                
+                action = request.get("action")
+                
+                if action == "execute":
+                    command = request.get("command", "")
+                    args = request.get("args", [])
+                    kwargs = request.get("kwargs", {})
+                    result = component.execute(command, *args, **kwargs)
+                    output_queue.put({"status": "ok", "result": result})
+                    
+                elif action == "get_commands":
+                    commands = component.get_commands()
+                    output_queue.put({"status": "ok", "commands": commands})
+                    
+                elif action == "ping":
+                    output_queue.put({"status": "pong"})
+                    
+                else:
+                    output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
+                    
+            except Exception as e:
+                output_queue.put({
+                    "status": "error",
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
+                })
+                
+    except Exception as e:
+        output_queue.put({
+            "status": "error",
+            "error": f"Failed to init component: {str(e)}",
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc(),
+        })
 
 
 class SandboxProcess:
     """
     沙箱子进程管理器
 
-    启动和管理一个独立的 Python 进程，用于执行组件代码。
+    使用 multiprocessing 启动独立进程，用于执行组件代码。
+    支持 Nuitka 打包环境。
     """
 
     def __init__(self, timeout: int = SANDBOX_TIMEOUT):
@@ -130,33 +113,58 @@ class SandboxProcess:
             timeout: 执行超时（秒）
         """
         self._timeout = timeout
-        self._process: Optional[subprocess.Popen] = None
+        self._process: Optional[multiprocessing.Process] = None
+        self._input_queue: Optional[multiprocessing.Queue] = None
+        self._output_queue: Optional[multiprocessing.Queue] = None
         self._initialized = False
+        self._module_path = None
+        self._class_name = None
 
-    def start(self):
-        """启动沙箱进程"""
-        if self._process is not None:
+    def start(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None):
+        """
+        启动沙箱进程并初始化组件
+        
+        Args:
+            module_path: 组件文件路径
+            class_name: 组件类名
+            init_args: 初始化参数
+            project_root: 项目根目录
+        """
+        if self._process is not None and self._process.is_alive():
             return
 
-        self._worker_file = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.py', delete=False, encoding='utf-8'
-        )
-        self._worker_file.write(SANDBOX_WORKER_SCRIPT)
-        self._worker_file.flush()
-        self._worker_path = self._worker_file.name
-        self._worker_file.close()
+        self._module_path = module_path
+        self._class_name = class_name
+        init_args = init_args or {}
+        project_root = project_root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-        self._process = subprocess.Popen(
-            [sys.executable, "-u", self._worker_path],  # -u: 无缓冲
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='replace',  # 忽略编码错误
+        # 创建通信队列
+        self._input_queue = multiprocessing.Queue()
+        self._output_queue = multiprocessing.Queue()
+
+        # 启动子进程
+        self._process = multiprocessing.Process(
+            target=_sandbox_worker,
+            args=(self._input_queue, self._output_queue, module_path, class_name, init_args, project_root)
         )
+        self._process.start()
 
         logger.debug("[Sandbox] Process started, pid=%s", self._process.pid)
+
+        # 等待初始化响应
+        try:
+            response = self._output_queue.get(timeout=self._timeout)
+            if response.get("status") == "ok":
+                self._initialized = True
+                logger.debug("[Sandbox] Component initialized: %s", response.get("cell_name"))
+            else:
+                error = response.get("error", "Unknown error")
+                logger.error("[Sandbox] Failed to init component: %s", error)
+                self.stop()
+                raise RuntimeError(f"Failed to init component: {error}")
+        except Exception as e:
+            self.stop()
+            raise RuntimeError(f"Sandbox communication error: {e}")
 
     def stop(self):
         """停止沙箱进程"""
@@ -164,191 +172,158 @@ class SandboxProcess:
             return
 
         try:
-            self._process.terminate()
-            self._process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
+            # 发送终止信号
+            if self._input_queue:
+                self._input_queue.put(None)
+            
+            # 等待进程结束
+            self._process.join(timeout=5)
+            if self._process.is_alive():
+                self._process.terminate()
+                self._process.join(timeout=2)
+                if self._process.is_alive():
+                    self._process.kill()
         except Exception as e:
             logger.warning("[Sandbox] Error stopping process: %s", e)
         finally:
             self._process = None
             self._initialized = False
-
-            try:
-                os.unlink(self._worker_path)
-            except Exception:
-                pass
+            self._input_queue = None
+            self._output_queue = None
 
         logger.debug("[Sandbox] Process stopped")
 
-    def _send(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """发送请求并接收响应"""
-        if self._process is None:
-            self.start()
-
-        try:
-            request_json = json.dumps(request, ensure_ascii=True)
-            self._process.stdin.write(request_json + '\n')
-            self._process.stdin.flush()
-
-            response_line = self._process.stdout.readline()
-            if not response_line:
-                stderr = self._process.stderr.read() if self._process.stderr else ""
-                raise RuntimeError(f"Sandbox process closed unexpectedly. stderr: {stderr[:500]}")
-
-            return json.loads(response_line)
-
-        except json.JSONDecodeError as e:
-            logger.error("[Sandbox] JSON decode error: %s", e)
-            return {
-                "status": "error",
-                "error": "Sandbox communication error",
-                "error_type": "SandboxError",
-            }
-        except Exception as e:
-            logger.error("[Sandbox] IPC error: %s", e)
-            self.stop()
-            raise
-
-    def init_component(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None) -> str:
-        """
-        初始化组件
-
-        Args:
-            module_path: 组件模块文件路径
-            class_name: 组件类名
-            init_args: 初始化参数
-            project_root: 项目根目录（用于沙箱中导入 app 模块）
-
-        Returns:
-            组件的 cell_name
-        """
-        if project_root is None:
-            import os
-            import sys
-
-            def _find_project_root(start_path: str) -> str:
-                """从给定路径向上搜索项目根目录（包含 app 目录）"""
-                current = os.path.abspath(start_path)
-                for _ in range(10):
-                    if os.path.isdir(os.path.join(current, "app")):
-                        return current
-                    parent = os.path.dirname(current)
-                    if parent == current:
-                        break
-                    current = parent
-                return current
-
-            project_root = _find_project_root(__file__)
-
-        response = self._send({
-            "action": "init",
-            "module_path": module_path,
-            "class_name": class_name,
-            "init_args": init_args or {},
-            "project_root": project_root,
-        })
-
-        if response.get("status") != "ok":
-            raise RuntimeError(f"Failed to init component: {response.get('error')}")
-
-        self._initialized = True
-        return response.get("cell_name", "unknown")
-
-    def execute(self, command: str = "", args: list = None, kwargs: dict = None) -> Dict[str, Any]:
-        """
-        执行组件命令
-
-        Args:
-            command: 命令名
-            args: 位置参数
-            kwargs: 关键字参数
-
-        Returns:
-            执行结果
-        """
+    def execute(self, command: str, *args, **kwargs) -> Dict[str, Any]:
+        """执行组件命令"""
         if not self._initialized:
-            raise RuntimeError("Component not initialized")
+            raise RuntimeError("Sandbox not initialized")
 
-        response = self._send({
+        request = {
             "action": "execute",
             "command": command,
-            "args": args or [],
-            "kwargs": kwargs or {},
-        })
+            "args": args,
+            "kwargs": kwargs,
+        }
+        
+        self._input_queue.put(request)
+        return self._output_queue.get(timeout=self._timeout)
 
-        if response.get("status") != "ok":
-            error = response.get("error", "Unknown error")
-            error_type = response.get("error_type", "RuntimeError")
-            traceback_str = response.get("traceback", "")
-
-            return {
-                "error": error,
-                "error_type": error_type,
-                "traceback": traceback_str,
-                "status": "error",
-            }
-
-        return response.get("result", {})
-
-    def get_commands(self) -> Dict[str, str]:
+    def get_commands(self) -> Dict[str, Any]:
         """获取组件命令列表"""
         if not self._initialized:
-            return {}
+            raise RuntimeError("Sandbox not initialized")
 
-        response = self._send({"action": "get_commands"})
-
-        if response.get("status") != "ok":
-            return {}
-
-        return response.get("commands", {})
+        request = {"action": "get_commands"}
+        self._input_queue.put(request)
+        return self._output_queue.get(timeout=self._timeout)
 
     def ping(self) -> bool:
-        """检查沙箱进程是否存活"""
-        if self._process is None:
+        """检查沙箱是否存活"""
+        if not self._initialized or not self._process or not self._process.is_alive():
+            return False
+        
+        try:
+            request = {"action": "ping"}
+            self._input_queue.put(request)
+            response = self._output_queue.get(timeout=5)
+            return response.get("status") == "pong"
+        except:
             return False
 
-        try:
-            response = self._send({"action": "ping"})
-            return response.get("status") == "pong"
-        except Exception:
+
+# 全局沙箱实例缓存
+_sandbox_instances: Dict[str, 'ComponentSandbox'] = {}
+
+
+class ComponentSandbox:
+    """
+    组件沙箱封装类
+
+    提供与原始 Cell 相同的接口，但内部使用子进程隔离执行。
+    """
+
+    def __init__(self, name: str, module_path: str = None, class_name: str = None, init_args: Dict = None):
+        """
+        Args:
+            name: 组件名称（唯一标识）
+            module_path: 组件 .py 文件路径
+            class_name: 组件类名
+            init_args: 初始化参数字典
+        """
+        self.name = name
+        self.module_path = module_path
+        self.class_name = class_name
+        self.init_args = init_args or {}
+        self._sandbox = SandboxProcess()
+        self._cell_name = None
+        self._initialized = False
+
+    @staticmethod
+    def get_sandbox(name: str) -> 'ComponentSandbox':
+        """获取或创建沙箱实例（单例模式）"""
+        if name not in _sandbox_instances:
+            _sandbox_instances[name] = ComponentSandbox(name)
+        return _sandbox_instances[name]
+
+    def init_component(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None):
+        """初始化组件"""
+        self.module_path = module_path
+        self.class_name = class_name
+        if init_args:
+            self.init_args.update(init_args)
+        
+        success = self.initialize(project_root)
+        self._initialized = success
+        return success
+
+    def initialize(self, project_root: str = None) -> bool:
+        """初始化沙箱和组件"""
+        if not self.module_path or not self.class_name:
+            logger.error("[ComponentSandbox] module_path and class_name required")
             return False
+            
+        try:
+            self._sandbox.start(self.module_path, self.class_name, self.init_args, project_root)
+            self._initialized = True
+            return True
+        except Exception as e:
+            logger.error("[ComponentSandbox] Failed to initialize: %s", e)
+            self._initialized = False
+            return False
+
+    def execute(self, command: str, args: list = None, kwargs: dict = None) -> Any:
+        """执行组件命令"""
+        args = args or []
+        kwargs = kwargs or {}
+        result = self._sandbox.execute(command, *args, **kwargs)
+        if result.get("status") == "error":
+            raise RuntimeError(result.get("error", "Unknown error"))
+        return result.get("result")
+
+    def get_commands(self) -> list:
+        """获取组件支持的命令列表"""
+        result = self._sandbox.get_commands()
+        if result.get("status") == "error":
+            raise RuntimeError(result.get("error", "Unknown error"))
+        return result.get("commands", [])
+
+    @property
+    def cell_name(self) -> str:
+        """组件名称"""
+        return self._cell_name or self.class_name.lower()
+
+    def is_alive(self) -> bool:
+        """检查沙箱是否存活"""
+        return self._sandbox.ping()
+
+    def stop(self):
+        """停止沙箱"""
+        self._sandbox.stop()
 
     def __enter__(self):
-        self.start()
+        self.initialize()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
         return False
-
-
-class ComponentSandbox:
-    """
-    组件沙箱管理器
-
-    为组件创建和管理沙箱进程。支持组件的隔离执行。
-    """
-
-    _instances: Dict[str, SandboxProcess] = {}
-
-    @classmethod
-    def get_sandbox(cls, component_id: str, timeout: int = SANDBOX_TIMEOUT) -> SandboxProcess:
-        """获取或创建沙箱实例"""
-        if component_id not in cls._instances:
-            cls._instances[component_id] = SandboxProcess(timeout=timeout)
-        return cls._instances[component_id]
-
-    @classmethod
-    def release_sandbox(cls, component_id: str):
-        """释放沙箱实例"""
-        if component_id in cls._instances:
-            cls._instances[component_id].stop()
-            del cls._instances[component_id]
-
-    @classmethod
-    def release_all(cls):
-        """释放所有沙箱实例"""
-        for sandbox in list(cls._instances.values()):
-            sandbox.stop()
-        cls._instances.clear()

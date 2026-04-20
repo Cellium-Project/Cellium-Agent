@@ -345,6 +345,21 @@ async def health():
 # ── 历史消息接口 ───────────────────────────────────────────
 
 
+def _is_json_thinking(content: str) -> bool:
+    """检测内容是否是纯 JSON thinking 格式"""
+    if not content:
+        return False
+    content = content.strip()
+    if content.startswith("{") and content.endswith("}"):
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                return True
+        except:
+            pass
+    return False
+
+
 def _messages_to_renderable(raw_messages: list) -> list:
     """将 MemoryManager 的内部消息格式转换为前端可渲染格式"""
     renderable = []
@@ -443,7 +458,16 @@ def _messages_to_renderable(raw_messages: list) -> list:
                     })
 
                 if final_text:
-                    timeline.append({"kind": "text", "content": final_text})
+                    if _is_json_thinking(final_text):
+                        try:
+                            reasoning_data = json.loads(final_text)
+                            reasoning = reasoning_data.get("reasoning", "")
+                            if reasoning:
+                                timeline.append({"kind": "thinking", "content": reasoning})
+                        except:
+                            pass
+                    else:
+                        timeline.append({"kind": "text", "content": final_text})
 
                 renderable.append({
                     "role": "assistant",
@@ -454,11 +478,24 @@ def _messages_to_renderable(raw_messages: list) -> list:
                 i = j
 
             else:
+                timeline = []
+                if content:
+                    if _is_json_thinking(content):
+                        try:
+                            reasoning_data = json.loads(content)
+                            reasoning = reasoning_data.get("reasoning", "")
+                            if reasoning:
+                                timeline.append({"kind": "thinking", "content": reasoning})
+                        except:
+                            pass
+                    else:
+                        timeline.append({"kind": "text", "content": content})
+                
                 renderable.append({
                     "role": "assistant",
                     "content": content or "",
                     "toolTraces": [],
-                    "timeline": [{"kind": "text", "content": content or ""}] if (content or "") else [],
+                    "timeline": timeline,
                 })
                 i += 1
         else:

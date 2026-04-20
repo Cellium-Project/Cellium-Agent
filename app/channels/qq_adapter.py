@@ -58,7 +58,6 @@ def _get_cache_key(content_hash: str, scope: str, target_id: str, file_type: int
 
 def _get_cached_file_info(cache_key: str) -> Optional[Dict[str, Any]]:
     """获取缓存的文件信息"""
-    global _upload_cache
     now = time.time()
 
     entry = _upload_cache.get(cache_key)
@@ -80,7 +79,6 @@ def _set_cached_file_info(
     ttl: int
 ):
     """缓存文件信息"""
-    global _upload_cache
     now = time.time()
 
     expired_keys = [k for k, v in _upload_cache.items() if now >= v.get("expires_at", 0)]

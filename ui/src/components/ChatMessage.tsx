@@ -81,6 +81,17 @@ function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNod
     );
   }
 
+  if (segment.kind === 'thinking') {
+    return (
+      <div
+        className="assistant-text thinking-text"
+        dangerouslySetInnerHTML={{
+          __html: safeRenderMarkdown(segment.content),
+        }}
+      />
+    );
+  }
+
   return (
     <ToolTraceCard
       trace={{
@@ -177,7 +188,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
         )}
         <Collapsible 
           summary={t('chat.paramsAndResult')} 
-          open={status === 'running' || (status === 'done' && trace.result?.error)}
+          defaultOpen={status === 'running' || (status === 'done' && trace.result?.error)}
         >
           <pre className="tool-args">{escapeHtml(argsStr)}</pre>
           {status !== 'running' && <div className="tool-result">{resultPreview}</div>}

@@ -330,6 +330,5 @@ def start_watching(interval: float = 3.0) -> ComponentWatcher:
 
 def stop_watching():
     """停止全局监控器"""
-    global _global_watcher
     if _global_watcher:
         _global_watcher.stop()

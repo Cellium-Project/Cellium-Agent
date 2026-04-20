@@ -1,0 +1,186 @@
+name: CI (Multi-Platform Green Release)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  VERSION: "1.0.0.0"
+  PY_VER: "3.12.10"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run Unit Tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pytest tests/ -v --tb=short
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio requests
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run Integration Check
+        env:
+          REDIS_HOST: localhost
+        run: |
+          python main.py &
+          PID=$!
+          sleep 5
+          curl -s -f http://127.0.0.1:18000/health || (kill $PID && exit 1)
+          pytest tests/test_heuristic_engine_integration.py -v
+          kill $PID || true
+
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            artifact_name: cellium-agent-windows.zip
+          - os: ubuntu-latest
+            artifact_name: cellium-agent-linux.tar.gz
+          - os: macos-latest
+            artifact_name: cellium-agent-macos.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create Structure
+        run: |
+          mkdir -p release/runtime
+          mkdir -p release/libs
+          mkdir -p release/app
+          mkdir -p release/components
+          mkdir -p release/components/skills
+          mkdir -p release/workspace
+
+      - name: Get Windows Runtime
+        if: runner.os == 'Windows'
+        run: |
+          $ver = "${{ env.PY_VER }}".Replace(".","")
+          curl -L -o py_runtime.zip https://www.python.org/ftp/python/${{ env.PY_VER }}/python-${{ env.PY_VER }}-embed-amd64.zip
+          Expand-Archive -Path py_runtime.zip -DestinationPath release/runtime/
+          curl -L -o release/runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
+          echo "python$ver.zip`n.`n../libs`n..`nimport site" | Out-File -FilePath "release/runtime/python$ver._pth" -Encoding ascii
+        shell: pwsh
+
+      - name: Get Unix Runtime (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "${{ runner.os }}" == "Linux" ]; then
+            URL="https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.12.1+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          else
+            URL="https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.12.1+20240107-aarch64-apple-darwin-install_only.tar.gz"
+          fi
+          curl -L $URL | tar -xz -C release/runtime --strip-components=1
+
+      - name: Install Dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python release/runtime/get-pip.py
+          python -m pip install setuptools wheel --target release/libs
+          python -m pip install -r requirements.txt --target release/libs
+          python -m pip install exceptiongroup --target release/libs
+        shell: bash
+
+      - name: Install Dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          python -m pip install setuptools wheel --target release/libs
+          python -m pip install -r requirements.txt --target release/libs
+          python -m pip install exceptiongroup --target release/libs
+        shell: bash
+
+      - name: Copy Assets (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          rm -f release/runtime/get-pip.py release/runtime/python-3.12.10-embed-amd64.zip || true
+          cp -r app/* release/app/
+          cp -r components/* release/components/
+          cp -r components/skills/* release/components/skills/ || true
+          cp -r config release/ || true
+          cp -r html release/ || true
+          cp -r memory release/ || true
+          cp app_icon.ico release/ || true
+          cp main.py release/
+        shell: bash
+
+      - name: Copy Assets (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp -r app/* release/app/
+          cp -r components/* release/components/
+          cp -r components/skills/* release/components/skills/ || true
+          cp -r config release/ || true
+          cp -r html release/ || true
+          cp -r memory release/ || true
+          cp app_icon.ico release/ || true
+          cp main.py release/
+        shell: bash
+
+      - name: Create Launcher (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          "@echo off`ncd /d %~dp0`nstart `"`" `".\runtime\python.exe`" `"main.py`"" | Out-File -FilePath "release/Start-Cellium.bat" -Encoding ascii
+        shell: pwsh
+
+      - name: Create Launcher (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          echo "#!/bin/bash" > release/start-cellium.sh
+          echo 'DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> release/start-cellium.sh
+          echo '$DIR/runtime/bin/python3 $DIR/main.py' >> release/start-cellium.sh
+          chmod +x release/start-cellium.sh
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path release/* -DestinationPath ${{ matrix.artifact_name }}
+        shell: pwsh
+
+      - name: Archive (Unix)
+        if: runner.os != 'Windows'
+        run: tar -czf ${{ matrix.artifact_name }} -C release .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}-${{ github.sha }}
+          path: ${{ matrix.artifact_name }}

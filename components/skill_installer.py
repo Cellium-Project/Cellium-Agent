@@ -15,7 +15,7 @@ SkillInstaller — Skill 包管理器（组件）
     - 位于 components/skills/<skill_name>/SKILL.md，独立目录存放
     - 通过本工具(skill_installer)安装/卸载/更新
     - 插件化能力包，可动态增删
-    - 安装后 LLM 可通过 skill_manager 获取列表，通过 file_tool 读取 SKILL.md 获取完整使用信息
+    - 安装后你可通过 skill_manager 获取列表，通过 file_tool 读取 SKILL.md 获取完整使用信息
 
 【职责分工】
 

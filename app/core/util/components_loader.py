@@ -52,6 +52,8 @@ except ImportError:
     yaml = None
 
 from app.core.di.container import DIContainer
+
+# 组件采用外置模式，通过文件系统动态加载
 from app.core.interface.icell import ICell
 from app.core.interface.base_cell import BaseCell
 
@@ -65,11 +67,17 @@ _cell_registry: Dict[str, ICell] = {}          # cell_name → instance
 _component_classes: Dict[str, type] = {}        # class_name → class (原始类引用)
 _loaded_files: Set[str] = set()                 # 已加载的文件路径集合
 _file_mtimes: Dict[str, float] = {}              # 文件路径 → mtime（用于检测变更）
+_load_errors: Dict[str, Dict] = {}               # 文件路径 → 加载错误信息（供 LLM 查询）
 
 
 def get_all_cells() -> Dict[str, ICell]:
     """获取所有已注册的组件实例"""
     return dict(_cell_registry)
+
+
+def get_load_errors() -> Dict[str, Dict]:
+    """获取组件加载错误列表（供 LLM 查询）"""
+    return dict(_load_errors)
 
 
 def get_cell(name: str) -> Optional[ICell]:
@@ -209,6 +217,10 @@ def register_to_config(module_path: str):
     Args:
         module_path: 如 "components.my_component.MyComponent"
     """
+    # 跳过临时模块路径（扫描时生成的 _component_xxx_ 前缀）
+    if module_path.startswith("_component_"):
+        return False
+    
     try:
         config = load_settings()
         components = config.get("enabled_components", []) or []
@@ -255,7 +267,13 @@ def unregister_from_config(module_path: str):
 
 def get_components_dir() -> pathlib.Path:
     """获取组件扫描目录（components/）"""
-    base_dir = pathlib.Path(__file__).resolve().parent.parent.parent.parent
+    # 支持 Nuitka 打包后的路径
+    if getattr(sys, 'frozen', False):
+        # Nuitka 打包后，sys.executable 指向 .exe 文件
+        base_dir = pathlib.Path(sys.executable).resolve().parent
+    else:
+        # 开发环境
+        base_dir = pathlib.Path(__file__).resolve().parent.parent.parent.parent
     return base_dir / "components"
 
 
@@ -306,8 +324,18 @@ def discover_components() -> List[Dict[str, Any]]:
                     classes, error_info = result
                     if error_info:
                         logger.warning(f"[Component] 文件有错误 {py_file.name}: {error_info['error_type']} - {error_info['error']}")
+                        # 记录错误供 LLM 查询
+                        _load_errors[str(py_file)] = {
+                            "file": py_file.name,
+                            "error": error_info['error'],
+                            "error_type": error_info['error_type'],
+                            "timestamp": time.time(),
+                        }
                 else:
                     classes = result
+                    # 清除之前的错误记录
+                    if str(py_file) in _load_errors:
+                        del _load_errors[str(py_file)]
 
                 for cls_info in classes:
                     is_new = str(py_file) not in _loaded_files
@@ -327,25 +355,25 @@ def discover_components() -> List[Dict[str, Any]]:
 
 def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
     """
-    从单个 .py 文件中提取所有合法的组件类
+    从单个 .py 文件中提取所有合法的组件类（支持外部热加载，不依赖 components package）
 
     Returns:
         (classes, error_info) 元组
         - classes: 找到的组件类列表
         - error_info: 如果有错误则包含错误详情，否则为 None
     """
-    # 构造模块路径
+    # 使用唯一模块名避免冲突（基于文件路径）
     rel_path = file_path.relative_to(get_components_dir())
-    module_name = f"components.{rel_path.stem}"
-    
+    module_name = f"_component_{rel_path.stem}_{hash(str(file_path)) & 0xFFFFFF}"
+
     # 动态导入
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if spec is None or spec.loader is None:
-        return []
-    
+        return [], {"error": f"无法加载文件: {file_path}", "file": str(file_path)}
+
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    
+
     try:
         spec.loader.exec_module(module)
     except Exception as e:
@@ -359,23 +387,26 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
             "module": module_name,
             "file": str(file_path),
         }
-    
+
     # 提取类
     found = []
+    
     for name, obj in inspect.getmembers(module, inspect.isclass):
         # 跳过非本文件定义的类
         if obj.__module__ != module_name:
             continue
-        
+
         # 检查是否是 BaseCell 或 ICell 子类
         if issubclass(obj, BaseCell) or (
             issubclass(obj, ICell) and obj is not ICell and obj is not BaseCell
         ):
             # 检查是否可实例化（非抽象）
             if not inspect.isabstract(obj):
+                # 使用正确的模块路径（不是临时的 _component_xxx_ 路径）
+                correct_module_path = f"components.{rel_path.stem}.{name}"
                 found.append({
                     "class_name": name,
-                    "module_path": f"{module_name}.{name}",
+                    "module_path": correct_module_path,
                     "cls": obj,
                 })
 
@@ -407,8 +438,6 @@ def load_components(
     Returns:
         已加载的组件字典 {cell_name: instance}
     """
-    global _loaded_files
-    
     # 1. 自动发现
     if auto_discover:
         discovered = discover_components()
@@ -467,36 +496,40 @@ def load_components(
 
 def _instantiate_component(module_path: str) -> tuple:
     """
-    实例化单个组件
-    
+    实例化单个组件（支持外部热加载，不依赖 components package）
+
     Returns:
         (instance, info_dict) 或 (None, error_info)
     """
     parts = module_path.rsplit(".", 1)
     if len(parts) != 2:
         raise ValueError(f"无效的模块路径: {module_path}")
-    
+
     module_name, class_name = parts
-    
-    try:
-        if module_name in sys.modules:
-            parent_name = module_name.rsplit(".", 1)[0] if "." in module_name else None
-            if parent_name and parent_name not in sys.modules:
-                importlib.import_module(parent_name)
-            module = importlib.reload(sys.modules[module_name])
-        else:
-            module = importlib.import_module(module_name)
-    except ImportError:
+
+    # 从 sys.modules 中查找已加载的模块
+    if module_name in sys.modules:
+        module = sys.modules[module_name]
+    else:
+        # 尝试从文件系统加载（支持外部热加载）
         components_dir = get_components_dir()
-        file_path = components_dir / f"{class_name.lower()}.py"
+        # 类名转 snake_case: ComponentBuilder -> component_builder, QQFiles -> qq_files
+        import re
+        # 先处理小写+大写的情况 (如 ComponentBuilder -> Component_Builder)
+        s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
+        # 再处理连续大写+小写的情况 (如 QQFiles -> QQ_Files)
+        snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
+        file_path = components_dir / f"{snake_name}.py"
         if file_path.exists():
             spec = importlib.util.spec_from_file_location(module_name, str(file_path))
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = module
                 spec.loader.exec_module(module)
+            else:
+                raise ImportError(f"无法加载文件: {file_path}")
         else:
-            raise
+            raise ImportError(f"组件文件不存在: {file_path}")
     
     # 获取类
     cls = getattr(module, class_name, None)

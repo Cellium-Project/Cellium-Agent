@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """LLM 引擎 — 统一接口 + OpenAI 兼容实现 + 模型能力自动检测"""
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -663,7 +664,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if isinstance(raw_response, str):
             raw = raw_response.strip()
             if raw.startswith("data:") and "\n" in raw_response:
-                parsed_sse = OpenAILLMEngine._parse_sse_text_response(raw_response)
+                parsed_sse = OpenAICompatibleEngine._parse_sse_text_response(raw_response)
                 logger.warning(
                     "[LLM] 收到整段 SSE 文本串响应，按兼容模式聚合解析 | content_len=%d | finish_reason=%s",
                     len(parsed_sse.content or ""),
@@ -870,8 +871,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         logger.info("[LLM] 已触发后台模型验证（线程=%s）", t.name)
 
     def verify_model_exists(self) -> bool:
-        global _VERIFY_CACHE
-
         if not self._verify_model:
             logger.debug("[LLM] 模型验证已跳过 (verify_model=False)")
             return True

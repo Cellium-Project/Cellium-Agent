@@ -842,6 +842,52 @@ body {
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+/* =========================================
+   Thinking 卡片样式 - 可折叠的思考过程
+   ========================================= */
+.thinking-card {
+    background: var(--bg-tertiary);
+    border: 1px dashed var(--gray-300);
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+
+.thinking-card .collapsible-summary {
+    padding: 6px 10px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 11px;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.thinking-card .collapsible-summary::before {
+    content: '💭';
+    font-size: 12px;
+}
+
+.thinking-card .collapsible-summary:hover {
+    background: var(--bg-hover);
+}
+
+.thinking-content {
+    padding: 10px;
+    margin: 0;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: inherit;
+}
+
 
 /* =========================================
    设置页面及新增 UI 元素的样式 (匹配原配色)

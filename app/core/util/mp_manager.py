@@ -132,14 +132,12 @@ class MultiprocessManager:
         Args:
             init_func: 初始化函数，将在每个子进程启动时调用
         """
-        global _worker_initializers
         if init_func not in _worker_initializers:
             _worker_initializers.append(init_func)
             logger.info(f"[MP] 已注册初始化函数: {init_func.__name__}")
     
     def clear_initializers(self):
         """清除所有工作进程初始化函数"""
-        global _worker_initializers
         _worker_initializers.clear()
         logger.info("[MP] 已清除所有初始化函数")
 

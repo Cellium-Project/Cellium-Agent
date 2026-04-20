@@ -11,9 +11,12 @@
 """
 
 import os
-from typing import List
+from typing import List, TYPE_CHECKING
 
 from app.agent.prompt.piece import PromptPiece
+
+if TYPE_CHECKING:
+    from app.agent.prompt.builder import PromptBuilder
 
 
 # ============================================================

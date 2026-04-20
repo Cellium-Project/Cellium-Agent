@@ -139,9 +139,9 @@ class RuntimeStatus:
         }
 
 
-def set_runtime_status(state: "LoopState") -> None:
+def set_runtime_status(state) -> None:
     """从 LoopState 更新运行时状态，每次调用前先快照当前状态（按 iteration 去重）"""
-    global _runtime_status, _status_history
+    global _runtime_status
 
     if _runtime_status is None:
         _runtime_status = RuntimeStatus()
@@ -204,7 +204,6 @@ def get_status_history() -> List[Dict]:
 
 def clear_status_history() -> None:
     """清空历史快照（每次新任务开始时调用）"""
-    global _status_history
     _status_history.clear()
     _logger.info("[StatusHistory] 历史快照已清空")
 

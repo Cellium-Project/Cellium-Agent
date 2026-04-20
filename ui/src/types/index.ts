@@ -22,6 +22,7 @@ export interface ToolTrace {
 // ★ 有序时间线片段 — 支持文本和工具调用按时间顺序交错显示
 export type TimelineSegment =
   | { kind: 'text'; content: string }
+  | { kind: 'thinking'; content: string }  // ★ 思考过程，可折叠显示
   | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error'; call_id?: string };  // ★ 唯一标识符
 
 export interface Message {
