@@ -122,10 +122,10 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          ./release/runtime/python.exe release/runtime/get-pip.py
-          ./release/runtime/python.exe -m pip install setuptools wheel --target release/libs
-          ./release/runtime/python.exe -m pip install -r requirements.txt --target release/libs
-          ./release/runtime/python.exe -m pip install exceptiongroup --target release/libs
+          ./release/runtime/python.exe release/runtime/get-pip.py --no-warn-script-location
+          ./release/runtime/Scripts/pip.exe install setuptools wheel --target release/libs --no-warn-script-location
+          ./release/runtime/Scripts/pip.exe install -r requirements.txt --target release/libs --no-warn-script-location
+          ./release/runtime/Scripts/pip.exe install exceptiongroup --target release/libs --no-warn-script-location
         shell: pwsh
 
       - name: Install Dependencies (Unix)
@@ -181,14 +181,21 @@ jobs:
       - name: Create Launcher (Windows)
         if: runner.os == 'Windows'
         run: |
-          "@echo off`ncd /d %~dp0`nstart `"`" `".\runtime\python.exe`" `"main.py`"" | Out-File -FilePath "release/Start-Cellium.bat" -Encoding ascii
+          $batContent = @"
+@echo off
+cd /d %~dp0
+set PYTHONPATH=%~dp0libs;%PYTHONPATH%
+start "" ".\runtime\python.exe" "main.py"
+"@
+          $batContent | Out-File -FilePath "release/Start-Cellium.bat" -Encoding ascii
         shell: pwsh
 
       - name: Create Launcher (Unix)
         if: runner.os != 'Windows'
         run: |
-          echo "#!/bin/bash" > release/start-cellium.sh
+          echo '#!/bin/bash' > release/start-cellium.sh
           echo 'DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> release/start-cellium.sh
+          echo 'export PYTHONPATH="$DIR/libs:$PYTHONPATH"' >> release/start-cellium.sh
           echo '$DIR/runtime/bin/python3 $DIR/main.py' >> release/start-cellium.sh
           chmod +x release/start-cellium.sh
 
