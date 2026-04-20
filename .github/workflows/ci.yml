@@ -181,13 +181,13 @@ jobs:
       - name: Create Launcher (Windows)
         if: runner.os == 'Windows'
         run: |
-          $batContent = @"
-@echo off
-cd /d %~dp0
-set PYTHONPATH=%~dp0libs;%PYTHONPATH%
-start "" ".\runtime\python.exe" "main.py"
-"@
-          $batContent | Out-File -FilePath "release/Start-Cellium.bat" -Encoding ascii
+          $lines = @(
+            '@echo off',
+            'cd /d %~dp0',
+            'set PYTHONPATH=%~dp0libs;%PYTHONPATH%',
+            'start "" ".\runtime\python.exe" "main.py"'
+          )
+          $lines | Out-File -FilePath "release/Start-Cellium.bat" -Encoding ascii
         shell: pwsh
 
       - name: Create Launcher (Unix)
