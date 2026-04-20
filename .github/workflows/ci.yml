@@ -106,7 +106,7 @@ jobs:
           curl -L -o py_runtime.zip https://www.python.org/ftp/python/${{ env.PY_VER }}/python-${{ env.PY_VER }}-embed-amd64.zip
           Expand-Archive -Path py_runtime.zip -DestinationPath release/runtime/
           curl -L -o release/runtime/get-pip.py https://bootstrap.pypa.io/get-pip.py
-          Set-Content -Path "release/runtime/python$ver._pth" -Value "import site`npython$ver.zip`n.`n../libs`n.."
+          Set-Content -Path "release/runtime/python$ver._pth" -Value "import site`npython$ver.zip`n.`n../libs`nScripts`n.."
         shell: pwsh
 
       - name: Get Unix Runtime (Linux/macOS)
