@@ -243,14 +243,15 @@ class TestHybridControllerGetNextStep(unittest.TestCase):
         self.assertIsNone(next_step)
 
     def test_get_next_step_returns_none_when_no_pending(self):
-        """没有待执行步骤时返回 None"""
+        """没有待执行步骤时返回 None（不自动改变 phase）"""
         self.controller._state.phase = HybridPhase.EXECUTE
         self.controller._state.pending_steps = []
-        
+
         next_step = self.controller.get_next_step()
-        
+
         self.assertIsNone(next_step)
-        self.assertEqual(self.controller.state.phase, HybridPhase.DONE)
+        # get_next_step 不改变 phase，由 observe_result 负责 phase 转换
+        self.assertEqual(self.controller.state.phase, HybridPhase.EXECUTE)
 
 
 class TestHybridControllerShouldMethods(unittest.TestCase):

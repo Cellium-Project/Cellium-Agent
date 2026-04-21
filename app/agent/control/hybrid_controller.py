@@ -269,8 +269,8 @@ class HybridController:
             if len(common) >= len(expected_chars) * 0.3:
                 return True
 
-        logger.debug("[Hybrid] 启发式匹配分数较低但工具执行成功，认为匹配通过")
-        return True
+        logger.debug("[Hybrid] 结果与预期匹配度较低")
+        return False
     
     def _get_replan_reason(self, step: ThoughtStep, success: bool, output: str) -> str:
         if not success:
