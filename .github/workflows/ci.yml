@@ -144,7 +144,7 @@ jobs:
       - name: Copy Assets (Windows)
         if: runner.os == 'Windows'
         run: |
-          rm -f release/runtime/get-pip.py release/runtime/python-3.12.10-embed-amd64.zip || true
+          rm -f release/runtime/python-3.12.10-embed-amd64.zip || true
           cp -r app/* release/app/
           cp -r components/* release/components/
           cp -r components/skills/* release/components/skills/ || true
@@ -176,11 +176,20 @@ jobs:
           rm -rf release/runtime/lib/python3.12/idlelib
           rm -rf release/runtime/lib/python3.12/turtledemo
           rm -rf release/runtime/lib/python3.12/venv
+          rm -rf release/runtime/lib/python3.12/ensurepip
+          rm -rf release/runtime/lib/python3.12/pydoc_data
           rm -f release/runtime/lib/python3.12/*-info
           rm -f release/runtime/lib/python3.12/dist-info/*
           rm -f release/runtime/lib/python3.12/*.whl
+          find release/runtime -name "*.a" -delete
+          find release/runtime -name "*.pdb" -delete
+          find release/runtime -type f -name "*.so" -exec strip --strip-debug {} \; 2>/dev/null || true
           find release/runtime -name "*.pyc" -delete
           find release/runtime -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          if [ "${{ runner.os }}" == "Linux" ]; then
+            rm -rf release/runtime/lib/python3.12/tkinter
+            rm -rf release/runtime/lib/python3.12/turtle.py
+          fi
         shell: bash
 
       - name: Create Launcher (Windows)
