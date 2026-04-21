@@ -230,3 +230,41 @@ jobs:
           name: ${{ env.FINAL_PKG_NAME }}
           path: ${{ env.FINAL_PKG_NAME }}
           if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: Cellium-Agent-*
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Cellium Agent v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION }}
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Cellium Agent v${{ env.VERSION }}
+
+            ### 下载 / Download
+            - **Windows**: `Cellium-Agent-Windows.zip`
+            - **Linux**: `Cellium-Agent-Linux.tar.gz`
+            - **macOS**: `Cellium-Agent-macOS.tar.gz`
+
+            ### 使用 / Usage
+            **中文**: 解压后运行对应平台的启动脚本即可。
+            - Windows: 双击 `Start-Cellium.bat`
+            - Linux/macOS: `./start-cellium.sh`
+
+            **English**: Extract and run the launcher for your platform.
+            - Windows: Double-click `Start-Cellium.bat`
+            - Linux/macOS: Run `./start-cellium.sh`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
