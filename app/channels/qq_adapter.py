@@ -376,7 +376,7 @@ class QQAdapter(ChannelAdapter):
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
-            logger.info(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}, markdown={is_markdown}")
+            logger.debug(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}, markdown={is_markdown}")
             return True
 
     async def _send_group_message(self, token: str, group_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
@@ -390,7 +390,7 @@ class QQAdapter(ChannelAdapter):
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
-            logger.info(f"[QQAdapter] Group sent: markdown={is_markdown}")
+            logger.debug(f"[QQAdapter] Group sent: markdown={is_markdown}")
             return True
 
     async def _send_guild_message(self, token: str, channel_id: str, guild_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
@@ -407,7 +407,7 @@ class QQAdapter(ChannelAdapter):
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
-            logger.info(f"[QQAdapter] Guild sent: channel={channel_id}, markdown={is_markdown}")
+            logger.debug(f"[QQAdapter] Guild sent: channel={channel_id}, markdown={is_markdown}")
             return True
 
     def _parse_message(self, t: str, d: Dict[str, Any]) -> Optional[UnifiedMessage]:

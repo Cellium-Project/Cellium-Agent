@@ -1,40 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-组件加载器 v2 — 自动发现 + 热加载 + 自扩展
-
-核心能力：
-  1. 扫描 components/ 目录（含 skills/ 子目录），自动发现符合 ICell 契约的组件类
-  2. 发现新组件后自动写入 config/settings.yaml（无需人工干预）
-  3. 支持热加载：运行时动态注册/卸载组件
-  4. Agent 只需在 components/ 下放一个 .py 文件即可扩展自身能力
-
-目录约定：
-  components/
-  ├── __init__.py              # （空包标记）
-  ├── _example_component.py     # 组件模板参考
-  ├── component_builder.py      # 组件生成器（系统内置）
-  ├── skill_installer.py        # Skill 管理器（系统内置）
-  ├── my_tool.py               # Agent 创建的组件（系统级）
-  └── skills/                  # Skill 安装目录（插件式，通过 skill_installer 管理）
-      ├── __init__.py          # 包标记
-      ├── git_helper.py         # 已安装的 Skill
-      └── code_refactor.py      # 已安装的 Skill
-
-【Skill vs 组件】
-  组件 (Components): 系统内置工具，随启动自动加载，通过 component.generate() 创建
-  Skill (Skills): 插件式能力包，安装于 skills/ 子目录，通过 skill_installer 管理
-  两者最终都是 BaseCell 子类，都会被注册为 LLM 可调用工具
-
-组件铁律（Agent 必须遵守）：
-  - 文件必须包含一个继承 BaseCell 的类（或实现 ICell 接口）
-  - 类名即组件标识，cell_name 属性用于命令路由
-  - 命令方法以 _cmd_ 前缀定义，自动映射为 execute(command)
-  - 每个命令必须有 docstring 描述其用途
-
-配置文件自动维护：
-  发现新组件 → 自动追加到 settings.yaml 的 enabled_components
-  Agent 不需要手动编辑 YAML，只需写好 .py 文件放入目录
-"""
 
 import importlib
 import inspect
@@ -277,14 +241,10 @@ def get_components_dir() -> pathlib.Path:
     return base_dir / "components"
 
 
-def get_skills_dir() -> pathlib.Path:
-    """获取 Skill 安装目录（components/skills/）"""
-    return get_components_dir() / "skills"
-
 
 def discover_components() -> List[Dict[str, Any]]:
     """
-    扫描 components/ 目录（含 skills/ 子目录），发现所有符合条件的组件类
+    扫描 components/ 目录，发现所有符合条件的组件类
     
     识别规则：
       1. .py 文件（非 __init__.py，非 _ 开头文件）
@@ -292,21 +252,16 @@ def discover_components() -> List[Dict[str, Any]]:
       3. 类不是抽象的（可以实例化）
     
     扫描范围：
-      - components/*.py        → 系统组件
-      - components/skills/*.py  → 安装的 Skill
+      - components/*.py → 系统组件
     
     Returns:
         发现结果列表 [{file, class_name, module_path, is_new}]
     """
     components_dir = get_components_dir()
-    skills_dir = get_skills_dir()
     
     results = []
     
-    # 扫描两个目录：组件目录 + skills 目录
     scan_dirs = [components_dir]
-    if skills_dir.exists() and skills_dir.is_dir() and skills_dir != components_dir:
-        scan_dirs.append(skills_dir)
     
     for scan_dir in scan_dirs:
         if not scan_dir.exists():
@@ -324,7 +279,6 @@ def discover_components() -> List[Dict[str, Any]]:
                     classes, error_info = result
                     if error_info:
                         logger.warning(f"[Component] 文件有错误 {py_file.name}: {error_info['error_type']} - {error_info['error']}")
-                        # 记录错误供 LLM 查询
                         _load_errors[str(py_file)] = {
                             "file": py_file.name,
                             "error": error_info['error'],
@@ -333,7 +287,6 @@ def discover_components() -> List[Dict[str, Any]]:
                         }
                 else:
                     classes = result
-                    # 清除之前的错误记录
                     if str(py_file) in _load_errors:
                         del _load_errors[str(py_file)]
 
@@ -354,19 +307,9 @@ def discover_components() -> List[Dict[str, Any]]:
 
 
 def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
-    """
-    从单个 .py 文件中提取所有合法的组件类（支持外部热加载，不依赖 components package）
-
-    Returns:
-        (classes, error_info) 元组
-        - classes: 找到的组件类列表
-        - error_info: 如果有错误则包含错误详情，否则为 None
-    """
-    # 使用唯一模块名避免冲突（基于文件路径）
     rel_path = file_path.relative_to(get_components_dir())
     module_name = f"_component_{rel_path.stem}_{hash(str(file_path)) & 0xFFFFFF}"
 
-    # 动态导入
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if spec is None or spec.loader is None:
         return [], {"error": f"无法加载文件: {file_path}", "file": str(file_path)}
@@ -388,11 +331,9 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
             "file": str(file_path),
         }
 
-    # 提取类
     found = []
     
     for name, obj in inspect.getmembers(module, inspect.isclass):
-        # 跳过非本文件定义的类
         if obj.__module__ != module_name:
             continue
 
@@ -400,7 +341,6 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
         if issubclass(obj, BaseCell) or (
             issubclass(obj, ICell) and obj is not ICell and obj is not BaseCell
         ):
-            # 检查是否可实例化（非抽象）
             if not inspect.isabstract(obj):
                 # 使用正确的模块路径（不是临时的 _component_xxx_ 路径）
                 correct_module_path = f"components.{rel_path.stem}.{name}"
@@ -422,30 +362,13 @@ def load_components(
     auto_discover: bool = True,
     auto_register: bool = True,
 ) -> Dict[str, ICell]:
-    """
-    加载组件（支持自动发现 + 配置驱动）
-    
-    流程：
-      1. 如果 auto_discover=True，先扫描目录发现新组件
-      2. 新发现的自动写入 settings.yaml（如果 auto_register）
-      3. 按 settings.yaml 列表加载所有启用的组件
-    
-    Args:
-        container: DI 容器（可选）
-        auto_discover: 是否自动扫描发现新组件
-        auto_register: 发现后是否自动注册到配置
-    
-    Returns:
-        已加载的组件字典 {cell_name: instance}
-    """
-    # 1. 自动发现
+
     if auto_discover:
         discovered = discover_components()
         for item in discovered:
             if item["is_new"] and auto_register:
                 register_to_config(item["module_path"])
     
-    # 2. 从配置加载
     config = load_settings()
     component_list = config.get("enabled_components", []) or []
     
@@ -462,23 +385,19 @@ def load_components(
                 failed.append(module_path)
                 continue
             
-            # 注册到全局表
             register_cell(instance)
             loaded[instance.cell_name] = instance
             
-            # 注册到 DI 容器
             if container:
                 cls = type(instance)
                 container.register(cls, instance)
             
-            # 记录来源文件
             source_file = info.get("source_file")
             if source_file:
                 _loaded_files.add(source_file)
                 _file_mtimes[source_file] = os.path.getmtime(source_file)
                 instance._source_file = source_file
 
-            # 调用加载钩子
             if hasattr(instance, "on_load"):
                 instance.on_load()
             
@@ -507,17 +426,16 @@ def _instantiate_component(module_path: str) -> tuple:
 
     module_name, class_name = parts
 
-    # 从 sys.modules 中查找已加载的模块
     if module_name in sys.modules:
         module = sys.modules[module_name]
+        try:
+            importlib.reload(module)
+        except Exception as e:
+            logging.warning(f"重载模块 {module_name} 失败: {e}")
     else:
-        # 尝试从文件系统加载（支持外部热加载）
         components_dir = get_components_dir()
-        # 类名转 snake_case: ComponentBuilder -> component_builder, QQFiles -> qq_files
         import re
-        # 先处理小写+大写的情况 (如 ComponentBuilder -> Component_Builder)
         s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
-        # 再处理连续大写+小写的情况 (如 QQFiles -> QQ_Files)
         snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
         file_path = components_dir / f"{snake_name}.py"
         if file_path.exists():
@@ -628,10 +546,8 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             except OSError:
                 pass
     
-    # 检测被删除的文件
     removed_files = _loaded_files - current_files
     for file_path in removed_files:
-        # 找到对应组件名
         target_name = None
         for name, cell in list(_cell_registry.items()):
             if getattr(cell, '_source_file', '') == file_path:

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
@@ -155,15 +156,18 @@ class HybridController:
         return thought
     
     def get_next_step(self) -> Optional[ThoughtStep]:
-        """获取下一个要执行的步骤"""
+        """获取下一个要执行的步骤（不自动改变 phase）"""
         if self._state.phase not in (HybridPhase.EXECUTE, HybridPhase.REPLAN):
             return None
-        
+
         if not self._state.pending_steps:
-            self._state.phase = HybridPhase.DONE
             return None
-        
+
         return self._state.pending_steps[0]
+
+    def has_pending_steps(self) -> bool:
+        """检查是否还有待执行的计划步骤"""
+        return bool(self._state.pending_steps)
     
     def observe_result(
         self,
@@ -195,9 +199,8 @@ class HybridController:
         
         if not self._state.initial_observation_done:
             self._state.initial_observation_done = True
-            self._state.phase = HybridPhase.PLAN
             logger.info(
-                "[Hybrid] 初始观察完成 | 结果: %s | 进入规划阶段",
+                "[Hybrid] 初始观察完成 | 结果: %s | 等待 LLM 决策",
                 output_preview[:100] if output_preview else "(空)"
             )
             return obs
@@ -236,62 +239,38 @@ class HybridController:
         return str(output)[:500]
     
     def _check_expectation(self, step: ThoughtStep, success: bool, output: str) -> bool:
-        """
-        智能验证执行结果是否符合预期
-        
-        策略：
-        1. 执行失败 → 直接返回 False
-        2. 无预期结果 → 返回 True（无需验证）
-        3. 语义匹配：使用多种启发式规则判断
-        """
+
         if not success:
             return False
-        
+
         if not step.expected_result:
             return True
-        
-        expected = step.expected_result.lower().strip()
+
         actual = output.lower().strip()
-        
-        # 规则1：直接包含（子串匹配）
+        expected = step.expected_result.lower().strip()
+
         if expected in actual or actual in expected:
             return True
-        
-        # 规则2：关键词集合匹配（Jaccard 相似度）
+
         expected_words = set(expected.split())
         actual_words = set(actual.split())
-        
+
         if expected_words and actual_words:
             intersection = expected_words & actual_words
-            union = expected_words | actual_words
-            jaccard = len(intersection) / len(union) if union else 0
-            if jaccard >= 0.5:  # 50% 以上的词重叠
+            jaccard = len(intersection) / len(expected_words) if expected_words else 0
+            if jaccard >= 0.3:
                 return True
-        
-        # 规则3：关键模式匹配（处理命名变体如 get_X vs X）
-        # 提取字母数字字符进行模糊匹配
-        import re
+
         expected_chars = set(re.findall(r'[a-z0-9]+', expected))
         actual_chars = set(re.findall(r'[a-z0-9]+', actual))
-        
+
         if expected_chars and actual_chars:
-            # 检查是否有共同的核心标识符
             common = expected_chars & actual_chars
-            # 如果预期中的核心词在实际结果中出现超过一半
-            if len(common) >= len(expected_chars) * 0.5:
+            if len(common) >= len(expected_chars) * 0.3:
                 return True
-        
-        # 规则4：目的导向验证（使用 step.purpose）
-        # 如果 purpose 包含在结果中，认为成功
-        if step.purpose:
-            purpose_keywords = set(step.purpose.lower().split())
-            actual_words = set(actual.split())
-            if purpose_keywords:
-                purpose_match = len(purpose_keywords & actual_words) / len(purpose_keywords)
-                if purpose_match >= 0.6:  # 60% 以上的目的关键词出现
-                    return True
-        
-        return False
+
+        logger.debug("[Hybrid] 启发式匹配分数较低但工具执行成功，认为匹配通过")
+        return True
     
     def _get_replan_reason(self, step: ThoughtStep, success: bool, output: str) -> str:
         if not success:
@@ -314,6 +293,9 @@ class HybridController:
         
         if self._state.phase == HybridPhase.DONE:
             return False
+        
+        if self._state.phase == HybridPhase.EXECUTE and self._state.initial_observation_done:
+            return True
         
         return False
     
@@ -394,7 +376,6 @@ class HybridController:
         else:
             loop_state.hybrid_last_observation = None
         
-        # 计划摘要：工具列表
         if self._state.current_plan:
             tools = [s.tool.split(":")[-1] for s in self._state.current_plan]
             loop_state.hybrid_plan_summary = f"{len(tools)}步: " + " -> ".join(tools)

@@ -243,14 +243,16 @@ class SessionManager:
                         restored_count += 1
                     elif role == "assistant":
                         if tool_calls:
+                            tool_calls_data = []
                             for tc in tool_calls:
                                 original_tc_id = tc.get("id", "")
-                                memory.add_tool_call(
-                                    tc.get("function", {}).get("name", ""),
-                                    json.loads(tc.get("function", {}).get("arguments", "{}")),
-                                    tool_call_id=original_tc_id,  #保留原始 ID，与 tool_result 匹配
-                                )
-                                restored_count += 1
+                                tool_calls_data.append({
+                                    "tool_name": tc.get("function", {}).get("name", ""),
+                                    "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")),
+                                    "tool_call_id": original_tc_id,
+                                })
+                            memory.add_tool_calls_batch(tool_calls_data, content=content or None)
+                            restored_count += 1
                         elif content:
                             memory.add_assistant_message(content)
                             restored_count += 1

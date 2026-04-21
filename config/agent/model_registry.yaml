@@ -1,10 +1,4 @@
 
-python release/runtime/get-pip.py
-
-# 现在# LLM 模型注册表
-# 格式: "model_name": [context_window, max_output_tokens, supports_tools]
-# supports_tools: true/false
-
 models:
 
   # ---- OpenAI  ----

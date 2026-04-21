@@ -83,16 +83,16 @@ class ComponentBuilder(BaseCell):
             try:
                 parsed = json.loads(commands)
                 if isinstance(parsed, list):
-                    # 支持两种格式：
-                    # 1. 完整对象数组: [{"name": "xxx", "desc": "..."}, ...]
-                    # 2. 简单字符串数组: ["run_all", "cleanup"]
                     for item in parsed:
                         if isinstance(item, str):
                             cmd_list.append({"name": item, "desc": f"执行 {item} 操作"})
                         elif isinstance(item, dict):
                             cmd_list.append(item)
             except json.JSONDecodeError:
-                return {"success": False, "error": f"commands 参数不是有效的 JSON: {commands[:100]}"}
+                for cmd_name in commands.split():
+                    cmd_name = cmd_name.strip()
+                    if cmd_name:
+                        cmd_list.append({"name": cmd_name, "desc": f"执行 {cmd_name} 操作"})
 
         if not cmd_list:
             cmd_list = [{"name": "execute", "desc": f"执行{description or cell_name}的主要功能"}]
@@ -100,7 +100,6 @@ class ComponentBuilder(BaseCell):
         components_dir = get_components_dir()
         file_path = components_dir / f"{name}.py"
 
-        # 文件已存在检查
         if file_path.exists():
             return {
                 "error": f"组件已存在: {file_path}",

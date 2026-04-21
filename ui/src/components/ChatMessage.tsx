@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useRef } from 'react';
+import React, { memo, useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -13,6 +13,230 @@ function safeRenderMarkdown(content: string): string {
   const rawHtml = marked.parse(content) as string;
   return DOMPurify.sanitize(rawHtml);
 }
+
+/** Check if a parsed JSON object looks like a "thought" block (reasoning/plan/action) */
+function isThoughtJson(obj: any): boolean {
+  return typeof obj === 'object' && obj !== null &&
+    ('reasoning' in obj || 'plan' in obj || 'action' in obj);
+}
+
+/**
+ * Split content into segments: plain text and JSON thought blocks.
+ * Detects both ```json ... ``` fenced blocks AND raw JSON objects
+ * that look like thought blocks ({reasoning, plan, action, ...}).
+ */
+function splitJsonBlocks(content: string): Array<{ type: 'text' | 'json'; content: string }> {
+  const segments: Array<{ type: 'text' | 'json'; content: string }> = [];
+
+  // Phase 1: split by ```json ... ``` fences
+  const fencedSegments: Array<{ type: 'text' | 'json'; content: string }> = [];
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = jsonBlockRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      fencedSegments.push({ type: 'text', content: content.slice(lastIndex, match.index) });
+    }
+    fencedSegments.push({ type: 'json', content: match[1].trim() });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < content.length) {
+    fencedSegments.push({ type: 'text', content: content.slice(lastIndex) });
+  }
+  if (fencedSegments.length === 0) {
+    fencedSegments.push({ type: 'text', content });
+  }
+
+  // Phase 2: for each text segment, detect raw JSON thought blocks
+  // Pattern: a JSON object starting with { that contains reasoning/plan/action keys
+  for (const seg of fencedSegments) {
+    if (seg.type === 'json') {
+      segments.push(seg);
+      continue;
+    }
+
+    const text = seg.content;
+    // Try to find a raw JSON thought object in the text
+    const rawJsonResult = extractRawThoughtJson(text);
+    if (rawJsonResult) {
+      // Text before the JSON
+      if (rawJsonResult.before.trim()) {
+        segments.push({ type: 'text', content: rawJsonResult.before });
+      }
+      segments.push({ type: 'json', content: rawJsonResult.json });
+      // Text after the JSON
+      if (rawJsonResult.after.trim()) {
+        segments.push({ type: 'text', content: rawJsonResult.after });
+      }
+    } else {
+      segments.push(seg);
+    }
+  }
+
+  return segments;
+}
+
+/**
+ * Try to extract a raw JSON thought block from text content.
+ * Returns { before, json, after } or null if not found.
+ */
+function extractRawThoughtJson(text: string): { before: string; json: string; after: string } | null {
+  // Quick check: if content doesn't contain a {, skip
+  const firstBrace = text.indexOf('{');
+  if (firstBrace === -1) return null;
+
+  // Try to find a balanced JSON object starting at each {
+  for (let startIdx = firstBrace; startIdx < text.length; startIdx++) {
+    if (text[startIdx] !== '{') continue;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = startIdx; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+
+      if (depth === 0) {
+        // Found a balanced JSON object
+        const jsonCandidate = text.slice(startIdx, i + 1);
+        try {
+          const parsed = JSON.parse(jsonCandidate);
+          if (isThoughtJson(parsed)) {
+            return {
+              before: text.slice(0, startIdx),
+              json: jsonCandidate,
+              after: text.slice(i + 1),
+            };
+          }
+        } catch {
+          // Not valid JSON, continue searching
+        }
+        break; // This { ... } was balanced but not a thought JSON, stop here
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Render content that may contain JSON blocks — JSON blocks are collapsible */
+function renderContentWithCollapsibleJson(content: string): React.ReactNode {
+  const segments = splitJsonBlocks(content);
+  if (segments.length === 0) {
+    return (
+      <div
+        className="assistant-text"
+        dangerouslySetInnerHTML={{ __html: safeRenderMarkdown(content) }}
+      />
+    );
+  }
+
+  // If no JSON blocks found, just render as markdown
+  if (segments.every(s => s.type === 'text')) {
+    return (
+      <div
+        className="assistant-text"
+        dangerouslySetInnerHTML={{ __html: safeRenderMarkdown(content) }}
+      />
+    );
+  }
+
+  return (
+    <>
+      {segments.map((seg, idx) => {
+        if (seg.type === 'text') {
+          if (!seg.content.trim()) return null;
+          return (
+            <div
+              key={idx}
+              className="assistant-text"
+              dangerouslySetInnerHTML={{ __html: safeRenderMarkdown(seg.content) }}
+            />
+          );
+        }
+
+        // JSON block — render as collapsible
+        return <JsonBlockCard key={idx} jsonStr={seg.content} />;
+      })}
+    </>
+  );
+}
+
+/** Collapsible card for a JSON reasoning/plan block */
+const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
+  const { t } = useTranslation();
+
+  const { label, summaryText, prettyJson } = useMemo(() => {
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      // Not valid JSON — just show as-is
+      return {
+        label: 'JSON',
+        summaryText: jsonStr.slice(0, 60) + (jsonStr.length > 60 ? '...' : ''),
+        prettyJson: jsonStr,
+      };
+    }
+
+    const label = parsed.action
+      ? String(parsed.action)
+      : parsed.reasoning
+        ? '💭 reasoning'
+        : 'JSON';
+
+    const summaryParts: string[] = [];
+    if (parsed.reasoning) {
+      summaryParts.push(String(parsed.reasoning).slice(0, 80));
+    }
+    if (parsed.confidence !== undefined) {
+      summaryParts.push(`confidence: ${parsed.confidence}`);
+    }
+    if (parsed.estimated_steps !== undefined) {
+      summaryParts.push(`steps: ${parsed.estimated_steps}`);
+    }
+
+    return {
+      label,
+      summaryText: summaryParts.join(' · ') || jsonStr.slice(0, 60),
+      prettyJson: JSON.stringify(parsed, null, 2),
+    };
+  }, [jsonStr]);
+
+  return (
+    <div className="json-block-card">
+      <Collapsible
+        summary={
+          <span className="json-block-summary">
+            <span className="json-block-label">{escapeHtml(label)}</span>
+            <span className="json-block-preview">{escapeHtml(summaryText)}</span>
+          </span>
+        }
+        defaultOpen={false}
+      >
+        <pre className="json-block-content">{escapeHtml(prettyJson)}</pre>
+      </Collapsible>
+    </div>
+  );
+};
 
 interface ChatMessageProps {
   message: Message;
@@ -41,11 +265,52 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
 
 function renderTimeline(message: Message): React.ReactNode {
   if (message.timeline && message.timeline.length > 0) {
+    // Merge consecutive text/thinking segments before rendering.
+    // Streaming splits content into many tiny chunks; we must
+    // reassemble them so JSON detection sees the full block.
+    type ToolSegment = Extract<TimelineSegment, { kind: 'tool' }>;
+    type GroupItem =
+      | { kind: 'merged-text'; contents: string[] }
+      | ToolSegment;
+
+    const groups: GroupItem[] = [];
+
+    for (const segment of message.timeline) {
+      if (segment.kind === 'text' || segment.kind === 'thinking') {
+        const last = groups[groups.length - 1];
+        if (last && last.kind === 'merged-text') {
+          last.contents.push(segment.content);
+        } else {
+          groups.push({ kind: 'merged-text', contents: [segment.content] });
+        }
+      } else if (segment.kind === 'tool') {
+        groups.push(segment as ToolSegment);
+      }
+    }
+
     return (
       <>
-        {message.timeline.map((segment, idx) => (
-          <TimelineItem key={idx} segment={segment} />
-        ))}
+        {groups.map((group, idx) => {
+          if (group.kind === 'merged-text') {
+            const merged = group.contents.join('');
+            return <React.Fragment key={idx}>{renderContentWithCollapsibleJson(merged)}</React.Fragment>;
+          }
+          // tool segment
+          const seg = group as ToolSegment;
+          return (
+            <ToolTraceCard
+              key={idx}
+              trace={{
+                tool: seg.tool,
+                arguments: seg.arguments,
+                result: seg.result,
+                duration_ms: seg.duration_ms,
+                description: seg.description,
+              }}
+              status={seg.status}
+            />
+          );
+        })}
       </>
     );
   }
@@ -59,37 +324,19 @@ function renderTimeline(message: Message): React.ReactNode {
           ))}
         </div>
       )}
-      <div
-        className="assistant-text"
-        dangerouslySetInnerHTML={{
-          __html: safeRenderMarkdown(message.content),
-        }}
-      />
+      {renderContentWithCollapsibleJson(message.content)}
     </>
   );
 }
 
 function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNode {
   if (segment.kind === 'text') {
-    return (
-      <div
-        className="assistant-text"
-        dangerouslySetInnerHTML={{
-          __html: safeRenderMarkdown(segment.content),
-        }}
-      />
-    );
+    return renderContentWithCollapsibleJson(segment.content);
   }
 
   if (segment.kind === 'thinking') {
-    return (
-      <div
-        className="assistant-text thinking-text"
-        dangerouslySetInnerHTML={{
-          __html: safeRenderMarkdown(segment.content),
-        }}
-      />
-    );
+    // Thinking content may also contain raw JSON thought blocks
+    return renderContentWithCollapsibleJson(segment.content);
   }
 
   return (

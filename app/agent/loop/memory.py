@@ -87,6 +87,49 @@ class MemoryManager:
 
         return tool_call_id
 
+    def add_tool_calls_batch(
+        self,
+        tool_calls_data: List[Dict],
+        content: str = None,
+    ) -> List[str]:
+        tool_calls = []
+        tool_call_ids = []
+
+        for data in tool_calls_data:
+            tool_name = data.get("tool_name", "")
+            arguments = data.get("arguments", {})
+            tool_call_id = data.get("tool_call_id")
+
+            if not tool_call_id:
+                self.tool_call_counter += 1
+                tool_call_id = f"call_{self.tool_call_counter}"
+
+            tool_call_ids.append(tool_call_id)
+
+            tool_calls.append({
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False)
+                }
+            })
+
+        self.messages.append({
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": tool_calls,
+            "timestamp": datetime.now().isoformat()
+        })
+
+        logger.debug(
+            "[MemoryManager] 批量添加 tool_calls | count=%d | content_len=%d",
+            len(tool_calls),
+            len(content) if content else 0,
+        )
+
+        return tool_call_ids
+
     def add_tool_result(self, tool_call_id: str, result: dict):
         """插入工具执行结果到提示词"""
         content = json.dumps(result, ensure_ascii=False)
@@ -120,26 +163,14 @@ class MemoryManager:
         return messages
 
     def _smart_truncate(self, messages: List[Dict], max_count: int) -> List[Dict]:
-        """
-        智能截断消息，确保 tool 消息链的完整性
-        
-        规则：
-        1. 如果消息数 <= max_count，直接返回
-        2. 截断时，确保不截断 tool 消息对应的 assistant 消息
-        3. 如果截断点在 tool 消息链中间，向前扩展到链的开始
-        4. 确保第一条消息是 user 或 system 消息
-        """
         if len(messages) <= max_count:
             return messages
         
-        # 从截断点开始，向前查找确保消息链完整
         start_idx = len(messages) - max_count
         
-        # 如果截断点第一条是 tool 消息，需要向前找对应的 assistant 消息
         while start_idx > 0 and messages[start_idx].get("role") == "tool":
             tool_call_id = messages[start_idx].get("tool_call_id", "")
             
-            # 向前查找对应的 assistant 消息
             found = False
             for j in range(start_idx - 1, -1, -1):
                 msg = messages[j]
@@ -153,24 +184,14 @@ class MemoryManager:
                     break
             
             if not found:
-                # 找不到对应的 assistant 消息，停止向前扩展
                 break
         
-        # 确保第一条消息是 user 或 system 消息
         while start_idx < len(messages) and messages[start_idx].get("role") not in ("user", "system"):
             start_idx += 1
         
         return messages[start_idx:] if start_idx < len(messages) else messages[-max_count:]
 
     def _fix_message_sequence(self, messages: List[Dict]) -> List[Dict]:
-        """
-        修复消息序列，确保 tool 消息前面有对应的 tool_calls assistant 消息
-
-        规则：
-        1. 如果 assistant 消息有 tool_calls，必须确保后续有对应的 tool 消息
-        2. 如果 assistant 消息有 tool_calls 但后续没有对应 tool 消息，清除 tool_calls
-        3. 如果有孤立的 tool 消息（前面没有对应的 assistant/tool_calls），移除它们
-        """
         if not messages:
             return messages
 

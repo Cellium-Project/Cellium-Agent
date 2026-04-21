@@ -345,19 +345,32 @@ async def health():
 # ── 历史消息接口 ───────────────────────────────────────────
 
 
-def _is_json_thinking(content: str) -> bool:
-    """检测内容是否是纯 JSON thinking 格式"""
+def _extract_json_thinking(content: str) -> dict:
+    """从内容中提取 JSON thinking 数据，支持 Markdown 代码块和纯 JSON"""
     if not content:
-        return False
-    content = content.strip()
-    if content.startswith("{") and content.endswith("}"):
+        return {}
+    
+    import re
+    json_block_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
+    match = json_block_pattern.search(content)
+    if match:
+        json_str = match.group(1).strip()
+    else:
+        json_str = content.strip()
+    
+    if json_str.startswith("{") and json_str.endswith("}"):
         try:
-            data = json.loads(content)
+            data = json.loads(json_str)
             if isinstance(data, dict) and "reasoning" in data and "action" in data:
-                return True
+                return data
         except:
             pass
-    return False
+    return {}
+
+
+def _is_json_thinking(content: str) -> bool:
+    """检测内容是否包含 JSON thinking 格式"""
+    return bool(_extract_json_thinking(content))
 
 
 def _messages_to_renderable(raw_messages: list) -> list:
@@ -458,14 +471,18 @@ def _messages_to_renderable(raw_messages: list) -> list:
                     })
 
                 if final_text:
-                    if _is_json_thinking(final_text):
-                        try:
-                            reasoning_data = json.loads(final_text)
-                            reasoning = reasoning_data.get("reasoning", "")
-                            if reasoning:
-                                timeline.append({"kind": "thinking", "content": reasoning})
-                        except:
-                            pass
+                    reasoning_data = _extract_json_thinking(final_text)
+                    if reasoning_data:
+                        reasoning = reasoning_data.get("reasoning", "")
+                        if reasoning:
+                            timeline.append({"kind": "thinking", "content": reasoning})
+                        # 如果有 plan，也添加到 timeline
+                        plan = reasoning_data.get("plan", [])
+                        if plan:
+                            plan_text = "\n".join([f"{i+1}. {step.get('tool', step.get('purpose', '执行'))}" 
+                                                   for i, step in enumerate(plan) if isinstance(step, dict)])
+                            if plan_text:
+                                timeline.append({"kind": "thinking", "content": f"**计划：**\n{plan_text}"})
                     else:
                         timeline.append({"kind": "text", "content": final_text})
 
@@ -480,14 +497,18 @@ def _messages_to_renderable(raw_messages: list) -> list:
             else:
                 timeline = []
                 if content:
-                    if _is_json_thinking(content):
-                        try:
-                            reasoning_data = json.loads(content)
-                            reasoning = reasoning_data.get("reasoning", "")
-                            if reasoning:
-                                timeline.append({"kind": "thinking", "content": reasoning})
-                        except:
-                            pass
+                    reasoning_data = _extract_json_thinking(content)
+                    if reasoning_data:
+                        reasoning = reasoning_data.get("reasoning", "")
+                        if reasoning:
+                            timeline.append({"kind": "thinking", "content": reasoning})
+                        # 如果有 plan，也添加到 timeline
+                        plan = reasoning_data.get("plan", [])
+                        if plan:
+                            plan_text = "\n".join([f"{i+1}. {step.get('tool', step.get('purpose', '执行'))}" 
+                                                   for i, step in enumerate(plan) if isinstance(step, dict)])
+                            if plan_text:
+                                timeline.append({"kind": "thinking", "content": f"**计划：**\n{plan_text}"})
                     else:
                         timeline.append({"kind": "text", "content": content})
                 
@@ -648,6 +669,7 @@ async def save_session_message(session_id: str, req: SaveMessageRequest):
 
     tool_call_ids = {}
     if req.tool_traces:
+        tool_calls_data = []
         for trace in req.tool_traces:
             tool_name = trace.get("tool", "")
             arguments = trace.get("arguments", {})
@@ -655,12 +677,25 @@ async def save_session_message(session_id: str, req: SaveMessageRequest):
             duration_ms = trace.get("duration_ms", 0)
 
             if tool_name:
-                tool_call_id = memory.add_tool_call(tool_name, arguments)
-                tool_call_ids[tool_name] = tool_call_id
+                tool_calls_data.append({
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                })
                 if result:
                     if isinstance(result, dict):
                         result["elapsed_ms"] = duration_ms
-                    memory.add_tool_result(tool_call_id, result)
+
+        if tool_calls_data:
+            tool_call_id_list = memory.add_tool_calls_batch(tool_calls_data)
+            # 按 tool_name 映射，同时将 result 写入对应的 tool 消息
+            for idx, trace in enumerate(req.tool_traces):
+                tool_name = trace.get("tool", "")
+                result = trace.get("result", {})
+                if tool_name and idx < len(tool_call_id_list):
+                    tc_id = tool_call_id_list[idx]
+                    tool_call_ids[tool_name] = tc_id
+                    if result:
+                        memory.add_tool_result(tc_id, result)
 
     if req.assistant_message:
         memory.add_assistant_message(req.assistant_message)

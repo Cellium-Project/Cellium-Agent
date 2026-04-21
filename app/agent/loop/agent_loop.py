@@ -5,6 +5,7 @@ Agent 主循环
 
 import json
 import logging
+import re
 import time
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -417,21 +418,18 @@ class AgentLoop:
         # 检测纯 JSON 格式
         if content.startswith("{") and content.endswith("}"):
             try:
-                import json
                 data = json.loads(content)
                 # 判断是否是思考格式
                 if isinstance(data, dict) and "reasoning" in data and "action" in data:
                     return True
             except:
                 pass
-        
+
         # 检测 markdown 包裹的 JSON
         if content.startswith("```json") or content.startswith("```"):
             try:
-                import re
                 json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
                 if json_match:
-                    import json
                     data = json.loads(json_match.group(1))
                     if isinstance(data, dict) and "reasoning" in data and "action" in data:
                         return True
@@ -439,6 +437,65 @@ class AgentLoop:
                 pass
         
         return False
+
+    def _is_json_thinking_content(self, content: str) -> bool:
+        """检测内容是否包含 JSON thinking 格式"""
+        if not content:
+            return False
+        json_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
+        if json_pattern.search(content):
+            return True
+        content = content.strip()
+        if content.startswith("{") and content.endswith("}"):
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                    return True
+            except json.JSONDecodeError:
+                pass
+        return False
+
+    def _extract_text_from_thinking(self, content: str) -> tuple:
+        """
+        从包含 JSON 思考块的内容中提取纯文本回复
+
+        Args:
+            content: 可能包含 JSON 块的原始内容
+
+        Returns:
+            (is_json_thinking, reasoning_text, after_json_text)
+            - is_json_thinking: 是否为 JSON thinking 格式
+            - reasoning_text: reasoning 内容
+            - after_json_text: JSON 后的普通文本
+        """
+        if not content:
+            return False, "", ""
+
+        json_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
+        match = json_pattern.search(content)
+
+        if match:
+            json_str = match.group(1).strip()
+            try:
+                data = json.loads(json_str)
+                if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                    reasoning = data.get("reasoning", "")
+                    after_json = content[match.end():].strip()
+                    return True, reasoning, after_json
+            except json.JSONDecodeError:
+                pass
+
+        content = content.strip()
+        if content.startswith("{") and content.endswith("}"):
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                    reasoning = data.get("reasoning", "")
+                    return True, reasoning, ""
+            except json.JSONDecodeError:
+                pass
+
+        return False, "", content
 
     def _persist_snapshot_before_compact(
         self,
@@ -572,6 +629,90 @@ class AgentLoop:
         logger.info("[AgentLoop] 发送 tool_result 事件 | tool=%s | duration=%dms", tool_name, round(duration_ms))
         return trace
 
+    def _finalize_session(
+        self,
+        *,
+        user_input: str,
+        effective_session: str,
+        effective_memory: MemoryManager,
+        tool_traces: List[Dict[str, Any]],
+        iteration: int,
+        start_time: float,
+        final_content: str = "",
+        reason: str = "complete",
+        completed: bool = True,
+        cleanup_incomplete: bool = False,
+        error: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        会话收尾逻辑
+
+        Args:
+            user_input: 用户原始输入
+            effective_session: 会话ID
+            effective_memory: 记忆管理器
+            tool_traces: 工具调用轨迹
+            iteration: 当前迭代次数
+            start_time: 开始时间
+            final_content: 最终回复内容
+            reason: 结束原因
+            completed: 是否正常完成
+            cleanup_incomplete: 是否清理不完整的 tool_calls
+            error: 是否发生错误
+
+        Returns:
+            done event dict
+        """
+        total_time = (time.time() - start_time) * 1000
+
+        # 发布完成事件
+        self._event_publisher.publish_response_complete(
+            session_id=effective_session,
+            iteration=iteration,
+            content=final_content,
+            total_time_ms=total_time,
+        )
+        self._event_publisher.publish_loop_end(
+            session_id=effective_session,
+            total_iterations=iteration,
+            reason=reason,
+            result={"type": "response", "content": final_content, "iterations": iteration},
+        )
+
+        # 持久化对话
+        if not self._did_persist_before_compact:
+            if cleanup_incomplete:
+                self._cleanup_incomplete_tool_calls(effective_memory)
+            content_to_persist = final_content or self._get_last_assistant_message(effective_memory)
+            self._persist_conversation(user_input, content_to_persist, effective_session, memory=effective_memory)
+        else:
+            self._did_persist_before_compact = False
+
+        # Control Loop: 会话结束
+        if self.control_loop and self._loop_state:
+            self.control_loop.end_session(self._loop_state)
+
+        # Learning: 会话结束
+        if self.learning:
+            stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state and self._loop_state.features else 0
+            self.learning.end_session(
+                error=error,
+                iteration=max(iteration, 1),
+                max_iterations=self.max_iterations,
+                tool_call_count=len([t for t in tool_traces if t.get("tool")]),
+                stuck_iterations=stuck_iters,
+            )
+
+        return {
+            "type": "done",
+            "content": final_content,
+            "iterations": iteration,
+            "tool_traces": tool_traces,
+            "completed": completed,
+            "total_time_ms": total_time,
+            "reason": reason,
+        }
+
     async def _emit_stop_and_finalize(
         self,
         *,
@@ -584,48 +725,29 @@ class AgentLoop:
         start_time: float,
         final_response_content: Optional[str] = None,
     ):
-        """统一处理 stop 场景的收尾逻辑"""
+        """处理 stop 场景：先发送 stop_event，再执行收尾"""
         yield stop_event
 
-        total_time = (time.time() - start_time) * 1000
-        self._event_publisher.publish_loop_end(
-            session_id=effective_session,
-            total_iterations=iteration,
+        done_event = self._finalize_session(
+            user_input=user_input,
+            effective_session=effective_session,
+            effective_memory=effective_memory,
+            tool_traces=tool_traces,
+            iteration=iteration,
+            start_time=start_time,
+            final_content=final_response_content or "",
             reason=stop_event.get("reason") or stop_event.get("type", "stopped"),
-            result=stop_event,
+            completed=False,
+            cleanup_incomplete=True,
+            error=stop_event.get("reason") != "user_cancelled",
         )
 
-        if not self._did_persist_before_compact:
-            self._cleanup_incomplete_tool_calls(effective_memory)
-            content_to_persist = final_response_content or self._get_last_assistant_message(effective_memory)
-            self._persist_conversation(user_input, content_to_persist, effective_session, memory=effective_memory)
-        else:
-            self._did_persist_before_compact = False
+        # 补充 stop 相关字段
+        done_event["stop_reason"] = stop_event.get("reason")
+        done_event["stop_type"] = stop_event.get("type")
+        done_event["action"] = stop_event.get("action")
 
-        if self.control_loop and self._loop_state:
-            self.control_loop.end_session(self._loop_state)
-
-        if self.learning:
-            stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state and self._loop_state.features else 0
-            self.learning.end_session(
-                error=stop_event.get("reason") != "user_cancelled",
-                iteration=max(iteration, 1),
-                max_iterations=self.max_iterations,
-                tool_call_count=len([t for t in tool_traces if t.get("tool")]),
-                stuck_iterations=stuck_iters,
-            )
-
-        yield {
-            "type": "done",
-            "content": final_response_content or "",
-            "iterations": iteration,
-            "tool_traces": tool_traces,
-            "stop_reason": stop_event.get("reason"),
-            "stop_type": stop_event.get("type"),
-            "action": stop_event.get("action"),
-            "completed": False,
-            "total_time_ms": total_time,
-        }
+        yield done_event
 
 
     async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None, system_injection: str = None):
@@ -836,8 +958,6 @@ class AgentLoop:
                             yield event
                         return
 
-
-                # Heuristics: 旧系统（兼容保留，但不覆盖 ControlLoop 的决策）
                 if self.heuristics:
                     context = self.heuristics.build_context(
                         session_id=effective_session,
@@ -848,10 +968,8 @@ class AgentLoop:
                         elapsed_ms=int((time.time() - start_time) * 1000),
                     )
 
-                    # ControlLoop 已启用时，复用其提取的 features 避免重复计算
                     features_from_control = self._loop_state.features if self.control_loop else None
 
-                    # 只有在 ControlLoop 未决策时才用 Heuristics 判断终止
                     if not self.control_loop:
                         should_stop, stop_reason = self.heuristics.should_stop(context)
                         if should_stop:
@@ -966,26 +1084,51 @@ class AgentLoop:
                         self._hybrid_controller.state.phase.value,
                     )
                     
-                    if parsed_thought.action == ActionType.DIRECT_RESPONSE:
-                        logger.info("[AgentLoop] 模型判断可直接回答，跳过工具调用")
-                        yield {"type": "content_chunk", "content": response.content}
+                    if parsed_thought.action in (ActionType.DIRECT_RESPONSE, ActionType.CLARIFY):
+                        if parsed_thought.action == ActionType.DIRECT_RESPONSE:
+                            logger.info("[AgentLoop] 模型判断可直接回答，跳过工具调用")
+                        else:
+                            logger.info("[AgentLoop] 模型需要用户澄清")
+                        is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(response.content or "")
+                        if is_json_thinking and reasoning_text:
+                            yield {"type": "thinking", "content": reasoning_text}
+                        if after_json_text:
+                            yield {"type": "content_chunk", "content": after_json_text}
                         if not self.flash_mode:
-                            effective_memory.add_assistant_message(response.content)
-                        continue
-                    
-                    if parsed_thought.action == ActionType.CLARIFY:
-                        logger.info("[AgentLoop] 模型需要用户澄清")
-                        yield {"type": "content_chunk", "content": response.content}
-                        if not self.flash_mode:
-                            effective_memory.add_assistant_message(response.content)
-                        continue
+                            effective_memory.add_assistant_message(response.content or "")
 
-                # ★ 同步 Hybrid 状态到 LoopState（让 ControlLoop 感知）
+                        # 同步 Hybrid 状态并发送事件
+                        hybrid_event = self._sync_hybrid_state()
+                        if hybrid_event:
+                            yield hybrid_event
+
+                        # 执行 ControlLoop 决策
+                        if self._loop_state:
+                            decision = self.control_loop.step(self._loop_state)
+                            if decision.should_stop:
+                                logger.info("[AgentLoop] ControlLoop 决定终止循环")
+
+                        # 统一收尾
+                        content = after_json_text or reasoning_text or ""
+                        done_event = self._finalize_session(
+                            user_input=user_input,
+                            effective_session=effective_session,
+                            effective_memory=effective_memory,
+                            tool_traces=tool_traces,
+                            iteration=iteration,
+                            start_time=start_time,
+                            final_content=content or response.content,
+                            reason="direct_response" if parsed_thought.action == ActionType.DIRECT_RESPONSE else "clarify",
+                        )
+                        yield done_event
+                        return
+
+                # 同步 Hybrid 状态到 LoopState（让 ControlLoop 感知）
                 hybrid_event = self._sync_hybrid_state()
                 if hybrid_event:
                     yield hybrid_event
 
-                # ★ 记录 LLM 输出内容（用于检测重复循环）
+                # 记录 LLM 输出内容（用于检测重复循环）
                 if self._loop_state and response.content:
                     self._loop_state.recent_llm_outputs.append(response.content)
                     # 保留最近 10 条
@@ -1019,13 +1162,13 @@ class AgentLoop:
                     # LLM 在工具调用前输出的文本内容（interim content）
                     interim_content = (response.content or "").strip()
                     if interim_content:
-                        if parsed_thought and parsed_thought.reasoning:
-                            yield {"type": "thinking", "content": parsed_thought.reasoning}
-                        else:
-                            yield {"type": "content_chunk", "content": interim_content}
-                        if not self.flash_mode:
-                            effective_memory.add_assistant_message(interim_content)
+                        is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(interim_content)
+                        if is_json_thinking and reasoning_text:
+                            yield {"type": "thinking", "content": reasoning_text}
+                        if after_json_text:
+                            yield {"type": "content_chunk", "content": after_json_text}
 
+                    # 收集本轮所有工具调用信息（先收集，再批量写入 memory）
                     tool_calls_info: List[Dict[str, Any]] = []
                     for tool_call in response.tool_calls:
                         tool_name = tool_call.name
@@ -1033,14 +1176,15 @@ class AgentLoop:
                         forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
                         blocked_by_constraint = tool_name in forbidden_tools
 
-                        tool_call_id = effective_memory.add_tool_call(tool_name, arguments)
+                        # 使用 LLM 返回的原始 tool_call.id，保持 ID 一致性
+                        original_tool_call_id = getattr(tool_call, 'id', None)
 
                         description = ToolDescriptionGenerator.generate(tool_name, arguments)
                         desc_str = description if isinstance(description, str) else str(description)
                         logger.debug("[AgentLoop] 工具描述（兜底）: %s", desc_str[:60] if desc_str else "")
 
-                        # ★ 使用 tool_call.id 作为唯一标识符（确保前后端匹配）
-                        call_id = getattr(tool_call, 'id', None) or tool_call_id or f"{tool_name}_{id(tool_call)}"
+                        # 使用 tool_call.id 作为唯一标识符（确保前后端匹配）
+                        call_id = original_tool_call_id or f"{tool_name}_{id(tool_call)}"
                         logger.info("[AgentLoop] 发送 tool_start 事件 | tool=%s | call_id=%s", tool_name, call_id)
                         yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description, "call_id": call_id}
 
@@ -1049,16 +1193,36 @@ class AgentLoop:
                             iteration=iteration,
                             tool_name=tool_name,
                             arguments=arguments,
-                            call_id=tool_call_id,
+                            call_id=original_tool_call_id or call_id,
                         )
 
                         tool_calls_info.append({
                             "tool_call": tool_call,
                             "tool_name": tool_name,
                             "arguments": arguments,
-                            "tool_call_id": tool_call_id,
+                            "tool_call_id": original_tool_call_id,
                             "blocked_by_constraint": blocked_by_constraint,
                         })
+
+                    if tool_calls_info:
+                        tool_calls_data = [
+                            {
+                                "tool_name": info["tool_name"],
+                                "arguments": info["arguments"],
+                                "tool_call_id": info["tool_call_id"],
+                            }
+                            for info in tool_calls_info
+                        ]
+                        # 非 flash 模式：将 interim_content 和 tool_calls 放在同一条消息中
+                        content_for_memory = (interim_content if interim_content else None) if not self.flash_mode else None
+                        tool_call_ids = effective_memory.add_tool_calls_batch(
+                            tool_calls_data,
+                            content=content_for_memory,
+                        )
+                        # 更新 tool_calls_info 中的 tool_call_id 为实际写入的 ID
+                        for idx, info in enumerate(tool_calls_info):
+                            if idx < len(tool_call_ids):
+                                info["tool_call_id"] = tool_call_ids[idx]
 
                     await asyncio.sleep(0.05)
 
@@ -1091,26 +1255,31 @@ class AgentLoop:
                     # === Hybrid: 观察执行结果 ===
                     if self._hybrid_controller and iteration_traces:
                         for trace in iteration_traces:
-                            if self._hybrid_controller.state.pending_steps:
-                                next_step = self._hybrid_controller.get_next_step()
-                                if next_step:
-                                    obs = self._hybrid_controller.observe_result(
-                                        step=next_step,
-                                        success=trace.get("success", False),
-                                        output=trace.get("result"),
+                            next_step = self._hybrid_controller.get_next_step()
+                            if next_step:
+                                obs = self._hybrid_controller.observe_result(
+                                    step=next_step,
+                                    success=trace.get("success", False),
+                                    output=trace.get("result"),
+                                )
+                                logger.info(
+                                    "[Hybrid] 观察(计划内) | tool=%s | success=%s | matched=%s | phase=%s",
+                                    trace.get("tool"),
+                                    obs.success,
+                                    obs.matched_expectation,
+                                    self._hybrid_controller.state.phase.value,
+                                )
+                                if obs.needs_replan:
+                                    logger.warning(
+                                        "[Hybrid] 需要重新规划 | reason=%s",
+                                        obs.replan_reason
                                     )
-                                    logger.info(
-                                        "[Hybrid] 观察 | tool=%s | success=%s | matched=%s | phase=%s",
-                                        trace.get("tool"),
-                                        obs.success,
-                                        obs.matched_expectation,
-                                        self._hybrid_controller.state.phase.value,
-                                    )
-                                    if obs.needs_replan:
-                                        logger.warning(
-                                            "[Hybrid] 需要重新规划 | reason=%s",
-                                            obs.replan_reason
-                                        )
+                            else:
+                                logger.debug(
+                                    "[Hybrid] 观察(计划外) | tool=%s | success=%s",
+                                    trace.get("tool"),
+                                    trace.get("success", False),
+                                )
                         
                         # 观察后同步状态
                         hybrid_event = self._sync_hybrid_state()
@@ -1180,8 +1349,11 @@ class AgentLoop:
                     logger.warning("[AgentLoop] 检测到循环重复输出")
                     if not self.flash_mode:
                         effective_memory.add_assistant_message(content)
-                    if content:
-                        yield {"type": "content_chunk", "content": content}
+                    is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
+                    if is_json_thinking and reasoning_text:
+                        yield {"type": "thinking", "content": reasoning_text}
+                    if after_json_text:
+                        yield {"type": "content_chunk", "content": after_json_text}
                     async for event in self._emit_stop_and_finalize(
                         stop_event={
                             "type": "stopped",
@@ -1206,7 +1378,7 @@ class AgentLoop:
 
                 # Control Loop: 每轮结束（无工具调用时也要更新 Bandit）
                 if self.control_loop and self._loop_state:
-                    self._loop_state.last_tool_result = None  
+                    self._loop_state.last_tool_result = None
                     reward = self.control_loop.end_round(self._loop_state)
                     logger.debug("[ControlLoop] 本轮结束（无工具调用）| reward=%.2f", reward)
 
@@ -1222,47 +1394,24 @@ class AgentLoop:
 
                 if not self.flash_mode:
                     effective_memory.add_assistant_message(content)
-                yield {"type": "content_chunk", "content": content}
+                is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
+                if is_json_thinking and reasoning_text:
+                    yield {"type": "thinking", "content": reasoning_text}
+                if after_json_text:
+                    yield {"type": "content_chunk", "content": after_json_text}
 
-                total_time = (time.time() - start_time) * 1000
-
-                self._event_publisher.publish_response_complete(
-                    session_id=effective_session,
+                # 统一收尾
+                done_event = self._finalize_session(
+                    user_input=user_input,
+                    effective_session=effective_session,
+                    effective_memory=effective_memory,
+                    tool_traces=tool_traces,
                     iteration=iteration,
-                    content=content,
-                    total_time_ms=total_time,
-                )
-                self._event_publisher.publish_loop_end(
-                    session_id=effective_session,
-                    total_iterations=iteration,
+                    start_time=start_time,
+                    final_content=final_response_content,
                     reason="complete",
-                    result={"type": "response", "content": content, "iterations": iteration},
                 )
-
-                # 如果压缩前已持久化，跳过对话结束时的重复持久化
-                if not self._did_persist_before_compact:
-                    self._persist_conversation(user_input, final_response_content, effective_session, memory=effective_memory)
-                else:
-                    self._did_persist_before_compact = False
-
-                # Control Loop: 会话结束（end_session 内部已记录日志）
-                if self.control_loop and self._loop_state:
-                    self.control_loop.end_session(self._loop_state)
-
-                # Learning: 会话结束
-                if self.learning:
-                    # 获取额外的统计信息
-                    tool_call_count = len([t for t in tool_traces if t.get("tool")])
-                    stuck_iters = self._loop_state.features.stuck_iterations if self._loop_state and self._loop_state.features else 0
-                    self.learning.end_session(
-                        error=False,
-                        iteration=iteration,
-                        max_iterations=self.max_iterations,
-                        tool_call_count=tool_call_count,
-                        stuck_iterations=stuck_iters,
-                    )
-
-                yield {"type": "done", "content": content, "iterations": iteration, "tool_traces": tool_traces}
+                yield done_event
                 return
 
         except Exception as e:

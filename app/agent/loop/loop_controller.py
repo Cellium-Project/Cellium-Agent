@@ -99,9 +99,8 @@ class LoopController:
         if not content or not content.strip():
             return False, None
 
-        normalized = content.strip()[:200]  # 只比较前200字符
+        normalized = content.strip()[:200] 
 
-        # 检查是否与最近的输出重复
         repeat_count = sum(1 for out in self._recent_outputs if out == normalized)
 
         self._recent_outputs.append(normalized)

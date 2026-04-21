@@ -204,7 +204,10 @@ class ControlLoop:
             return ["continue"], reasons
         
         if hybrid_phase == HybridPhase.DONE.value:
-            return ["continue"], reasons + ["Hybrid 计划已完成"]
+            if len(state.tool_traces) > 0:
+                return ["continue"], reasons + ["Hybrid 计划已完成，但有工具调用"]
+            else:
+                return ["terminate"], reasons + ["Hybrid DONE 且无工具调用，终止"]
 
         candidates = set()
         stuck_threshold = self.heuristics.config.get_threshold("stuck_iterations", 3)
