@@ -675,6 +675,7 @@ body {
     overflow-wrap: break-word;
     word-wrap: break-word;
     word-break: break-word;
+    margin-bottom: 12px;
 }
 
 /* ── 工具调用轨迹 ── */
@@ -961,7 +962,8 @@ body {
     font-size: 12px;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    word-break: break-word;
     flex: 1;
     min-width: 0;
 }
