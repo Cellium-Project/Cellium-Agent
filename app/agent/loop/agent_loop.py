@@ -382,16 +382,6 @@ class AgentLoop:
         return result
 
     def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
-        """
-        获取最近一条 assistant 文本消息
-        
-        Args:
-            memory: 内存管理器
-            skip_thinking: 是否跳过 JSON 思考格式
-            
-        Returns:
-            最后一条 assistant 消息内容
-        """
         for msg in reversed(memory.get_messages()):
             if msg.get("role") == "assistant" and msg.get("content"):
                 content = msg.get("content", "")
@@ -401,31 +391,19 @@ class AgentLoop:
         return ""
 
     def _is_thinking_json(self, content: str) -> bool:
-        """
-        检测内容是否是纯 JSON 思考格式
-        
-        Args:
-            content: 消息内容
-            
-        Returns:
-            是否是纯 JSON 思考
-        """
         if not content:
             return False
         
         content = content.strip()
         
-        # 检测纯 JSON 格式
         if content.startswith("{") and content.endswith("}"):
             try:
                 data = json.loads(content)
-                # 判断是否是思考格式
                 if isinstance(data, dict) and "reasoning" in data and "action" in data:
                     return True
             except:
                 pass
 
-        # 检测 markdown 包裹的 JSON
         if content.startswith("```json") or content.startswith("```"):
             try:
                 json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
@@ -439,7 +417,6 @@ class AgentLoop:
         return False
 
     def _is_json_thinking_content(self, content: str) -> bool:
-        """检测内容是否包含 JSON thinking 格式"""
         if not content:
             return False
         json_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
@@ -1518,14 +1495,19 @@ class AgentLoop:
                 logger.debug("[AgentLoop] 无内容可持久化，跳过")
                 return
 
-            if self.flash_mode:
-                source_id = self.three_layer_memory.persist_session(
-                    user_input, actual_response, session_id=sid, messages=None,
-                )
-            else:
-                source_id = self.three_layer_memory.persist_session(
-                    user_input, actual_response, session_id=sid, messages=all_messages,
-                )
+            # 保存本轮的完整消息（包括工具调用）
+            # 从 all_messages 中提取最后一轮的消息
+            last_user_idx = -1
+            for i in range(len(all_messages) - 1, -1, -1):
+                if all_messages[i].get("role") == "user":
+                    last_user_idx = i
+                    break
+            
+            round_messages = all_messages[last_user_idx:] if last_user_idx >= 0 else all_messages
+            
+            source_id = self.three_layer_memory.persist_session(
+                user_input, actual_response, session_id=sid, messages=round_messages,
+            )
 
             logger.info("[AgentLoop] 对话已持久化 | session=%s | archive_id=%s", sid, source_id[:12] if source_id else "N/A")
         except Exception as mem_e:

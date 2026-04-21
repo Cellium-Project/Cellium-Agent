@@ -11,6 +11,7 @@ import asyncio
 import base64
 import urllib.parse
 import hashlib
+import threading
 from functools import lru_cache
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -118,6 +119,7 @@ class WebSearch(BaseCell):
         }
         self._search_cache = {}
         self._user_agent = None
+        self._lock = threading.Lock()
 
     @property
     def cell_name(self) -> str:
@@ -210,6 +212,11 @@ class WebSearch(BaseCell):
             browser_path = find_browser_path()
             if browser_path:
                 self._options.set_browser_path(browser_path)
+                # Edge 浏览器特殊处理
+                if 'msedge' in browser_path.lower() or 'edge' in browser_path.lower():
+                    self._options.set_argument('--remote-debugging-port=9222')
+                    self._options.set_argument('--no-first-run')
+                    self._options.set_argument('--no-default-browser-check')
             if self._user_agent is None:
                 try:
                     from fake_useragent import UserAgent
@@ -266,18 +273,19 @@ class WebSearch(BaseCell):
 
     def _get_or_create_page(self):
         """获取或创建页面（复用浏览器 session）"""
-        if self._page is None or not self._is_page_alive():
-            from DrissionPage import Chromium, ChromiumOptions
-            self._close_page()
-            try:
-                co = self._get_options()
-                self._browser = Chromium(addr_or_opts=co)
-                self._page = self._browser.latest_tab
-                logger.info("[WebSearch] 浏览器页面创建成功")
-            except Exception as e:
-                logger.error(f"[WebSearch] 浏览器创建失败: {e}")
-                raise
-        return self._page
+        with self._lock:
+            if self._page is None or not self._is_page_alive():
+                from DrissionPage import Chromium, ChromiumOptions
+                self._close_page()
+                try:
+                    co = self._get_options()
+                    self._browser = Chromium(addr_or_opts=co)
+                    self._page = self._browser.latest_tab
+                    logger.info("[WebSearch] 浏览器页面创建成功")
+                except Exception as e:
+                    logger.error(f"[WebSearch] 浏览器创建失败: {e}")
+                    raise
+            return self._page
 
     def _is_page_alive(self) -> bool:
         """检查页面是否仍然可用"""

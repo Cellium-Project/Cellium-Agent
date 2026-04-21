@@ -146,9 +146,14 @@ class TestArchiveStore(unittest.TestCase):
     def test_append_conversation(self):
         source_id = self.archive.append("用户输入", "助手回复")
         record = self.archive.get_by_id(source_id)
-        self.assertEqual(record["user"], "用户输入")
-        self.assertEqual(record["assistant"], "助手回复")
+        # 新格式：只保存 messages 数组，不再单独保存 user/assistant 字段
         self.assertTrue(record.get("snapshot_hash"))
+        self.assertIn("messages", record)
+        messages = record["messages"]
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[0]["content"], "用户输入")
+        self.assertEqual(messages[1]["role"], "assistant")
+        self.assertEqual(messages[1]["content"], "助手回复")
 
     def test_get_latest_by_session(self):
         self.archive.append("问题1", "回答1", session_id="session1")

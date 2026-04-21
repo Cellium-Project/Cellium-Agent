@@ -4,6 +4,81 @@ import { API, postJSON } from '../utils/api';
 import type { SSEEvent, Message, ToolTrace, TimelineSegment } from '../types';
 import type { HybridPhase } from '../stores/appStore';
 
+/**
+ * 从内容中提取 JSON thinking 数据
+ */
+function extractJsonThinking(content: string): { reasoning?: string; plan?: unknown[]; action?: string; confidence?: number; estimated_steps?: number } | null {
+  if (!content) return null;
+  
+  // 匹配 ```json ... ``` 代码块
+  const jsonBlockMatch = content.match(/```json\s*([\s\S]*?)\s*```/i);
+  const jsonStr = jsonBlockMatch ? jsonBlockMatch[1].trim() : content.trim();
+  
+  if (jsonStr.startsWith('{') && jsonStr.endsWith('}')) {
+    try {
+      const data = JSON.parse(jsonStr);
+      if (data && typeof data === 'object' && 'reasoning' in data && 'action' in data) {
+        return data;
+      }
+    } catch {
+      // 解析失败，不是 JSON thinking
+    }
+  }
+  return null;
+}
+
+/**
+ * 从包含 JSON thinking 的内容中提取实际回复文本
+ */
+function extractFinalText(content: string): string {
+  if (!content) return '';
+  
+  // 移除 JSON 代码块
+  let text = content.replace(/```json\s*[\s\S]*?\s*```/gi, '');
+  
+  // 移除开头的 --- 分隔符
+  text = text.replace(/^\s*---\s*/, '');
+  
+  // 清理多余空行
+  text = text.replace(/\n{3,}/g, '\n\n');
+  
+  return text.trim();
+}
+
+/**
+ * 处理 timeline，提取 JSON thinking 并分离文本内容
+ */
+function processTimeline(timeline: TimelineSegment[]): TimelineSegment[] {
+  const result: TimelineSegment[] = [];
+  
+  for (const segment of timeline) {
+    if (segment.kind === 'text' && segment.content) {
+      const thinkingData = extractJsonThinking(segment.content);
+      if (thinkingData) {
+        // 添加 thinking 卡片
+        result.push({
+          kind: 'thinking',
+          content: JSON.stringify(thinkingData, null, 2),
+        });
+        // 添加实际文本内容
+        const finalText = extractFinalText(segment.content);
+        if (finalText) {
+          result.push({
+            kind: 'text',
+            content: finalText,
+          });
+        }
+      } else {
+        result.push(segment);
+      }
+    } else {
+      result.push(segment);
+    }
+  }
+  
+  return result;
+}
+
 export function useChat() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,12 +124,15 @@ export function useChat() {
       return;
     }
 
-    const finalText = ctx.timeline
+    // 处理 timeline，提取 JSON thinking
+    const processedTimeline = processTimeline(ctx.timeline);
+
+    const finalText = processedTimeline
       .filter(s => s.kind === 'text')
       .map(s => s.content)
       .join('\n\n');
 
-    const hasUsefulContent = Boolean(finalText.trim()) || ctx.traces.length > 0 || ctx.timeline.length > 0;
+    const hasUsefulContent = Boolean(finalText.trim()) || ctx.traces.length > 0 || processedTimeline.length > 0;
     ctx.finalized = true;
 
     if (!hasUsefulContent) {
@@ -66,7 +144,7 @@ export function useChat() {
       role: 'assistant',
       content: finalText,
       toolTraces: ctx.traces,
-      timeline: ctx.timeline,
+      timeline: processedTimeline,
     };
     addMessage(finalMessage);
     updateStreamingMessage(null);
@@ -196,7 +274,19 @@ export function useChat() {
           console.log('[content_chunk] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
         }
         if (rawChunk.length > 0) {
-          ctx.timeline.push({ kind: 'text', content: rawChunk });
+          // 处理 JSON thinking，分离 thinking 和 text
+          const thinkingData = extractJsonThinking(rawChunk);
+          if (thinkingData) {
+            // 添加 thinking 卡片
+            ctx.timeline.push({ kind: 'thinking', content: JSON.stringify(thinkingData, null, 2) });
+            // 添加实际文本内容
+            const finalText = extractFinalText(rawChunk);
+            if (finalText) {
+              ctx.timeline.push({ kind: 'text', content: finalText });
+            }
+          } else {
+            ctx.timeline.push({ kind: 'text', content: rawChunk });
+          }
         }
         updateStreamingMessage({
           role: 'assistant',

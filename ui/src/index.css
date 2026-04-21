@@ -675,7 +675,6 @@ body {
     overflow-wrap: break-word;
     word-wrap: break-word;
     word-break: break-word;
-    margin-bottom: 12px;
 }
 
 /* ── 工具调用轨迹 ── */
@@ -881,8 +880,7 @@ body {
 }
 
 .thinking-card .collapsible-summary::before {
-    content: '💭';
-    font-size: 12px;
+    content: none;
 }
 
 .thinking-card .collapsible-summary:hover {

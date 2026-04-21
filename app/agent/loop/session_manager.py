@@ -97,10 +97,9 @@ class SessionManager:
                     )
                     self._restore_from_archive(session_id, info.memory)
                 info.touch()
-                # 不在这里返回，让锁外有机会执行持久化
             else:
                 if len(self._sessions) >= self._max_sessions:
-                    evicted_info = self._evict_oldest()  # 返回被淘汰的会话信息
+                    evicted_info = self._evict_oldest()  
 
                 from app.core.util.agent_config import get_config
                 _cfg = get_config()
@@ -121,7 +120,6 @@ class SessionManager:
 
                 self._sessions[session_id] = info
 
-        # 在锁外执行持久化（IO 操作）
         if evicted_info:
             self._persist_session_snapshot(evicted_info[0], evicted_info[1])
 
@@ -136,11 +134,9 @@ class SessionManager:
             return info
 
     def get_memory(self, session_id: str) -> MemoryManager:
-        """获取指定 session 的 MemoryManager（自动创建）"""
         return self.get_or_create(session_id).memory
 
     def list_sessions(self, active_only: bool = True) -> List[Dict[str, Any]]:
-        """列出所有会话信息"""
         with self._lock:
             result = []
             for info in self._sessions.values():
@@ -169,23 +165,39 @@ class SessionManager:
             if len(messages) < 1:
                 return
 
-            user_messages = [m.get("content", "") for m in messages if m.get("role") == "user" and m.get("content")]
-            assistant_messages = [m.get("content", "") for m in messages if m.get("role") == "assistant" and m.get("content")]
-            if not user_messages:
+            last_user_idx = -1
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user":
+                    last_user_idx = i
+                    break
+
+            if last_user_idx == -1:
                 return
 
-            if not assistant_messages:
+            round_messages = messages[last_user_idx:]
+            if not round_messages:
+                return
+
+            has_assistant = any(m.get("role") == "assistant" for m in round_messages)
+            if not has_assistant:
                 if info.flash_mode:
-                    logger.debug("[SessionManager] Flash模式会话，跳过快照保存（已由 _persist_conversation 保存）| session=%s", session_id)
+                    logger.debug("[SessionManager] Flash模式会话，跳过快照保存 | session=%s", session_id)
                 else:
                     logger.debug("[SessionManager] 无 assistant 消息，跳过快照保存 | session=%s", session_id)
                 return
 
+            user_msg = round_messages[0]
+            assistant_msg = None
+            for m in round_messages:
+                if m.get("role") == "assistant":
+                    assistant_msg = m
+                    break
+
             self.three_layer_memory.persist_session(
-                user_input=user_messages[-1],
-                response=assistant_messages[-1],
+                user_input=user_msg.get("content", ""),
+                response=assistant_msg.get("content", "") if assistant_msg else "",
                 session_id=session_id,
-                messages=messages,
+                messages=round_messages, 
             )
         except Exception as e:
             logger.warning("[SessionManager] 会话持久化失败 | session=%s | error=%s", session_id, e)
@@ -193,18 +205,6 @@ class SessionManager:
 
     def _restore_from_archive(self, session_id: str,
                                memory: 'MemoryManager') -> int:
-        """
-        从归档 JSONL 恢复指定 session 的历史对话到 MemoryManager
-
-        归档数据结构：
-          - 每条记录 = 一轮对话结束时的 MemoryManager 完整快照（含所有历史）
-          - 新格式有 messages 字段（完整消息链，含 tool_call/tool_result）
-          - 旧格式只有 user+assistant 字段（纯文本）
-
-        混合恢复策略：
-          Step 1: 最新完整快照 → 还原最新对话（含 tool_call）
-          Step 2: 快照之前的旧格式记录 → 纯文本补全早期历史
-        """
         if self.three_layer_memory is None:
             return 0
 
@@ -221,94 +221,48 @@ class SessionManager:
 
         restored_count = 0
 
-        # ── Step 1: 找最新完整快照 ──
-        latest_snapshot = None
-        snapshot_index = -1
-        for i in range(len(records) - 1, -1, -1):
-            msgs = records[i].get("messages")
-            if isinstance(msgs, list) and len(msgs) >= 2:
-                latest_snapshot = msgs
-                snapshot_index = i
-                break
-
-        if latest_snapshot:
-            for msg in latest_snapshot:
-                try:
-                    role = msg.get("role", "")
-                    content = msg.get("content")
-                    tool_calls = msg.get("tool_calls")
-
-                    if role == "user":
-                        memory.add_user_message(content or "")
-                        restored_count += 1
-                    elif role == "assistant":
-                        if tool_calls:
-                            tool_calls_data = []
-                            for tc in tool_calls:
-                                original_tc_id = tc.get("id", "")
-                                tool_calls_data.append({
-                                    "tool_name": tc.get("function", {}).get("name", ""),
-                                    "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")),
-                                    "tool_call_id": original_tc_id,
-                                })
-                            memory.add_tool_calls_batch(tool_calls_data, content=content or None)
-                            restored_count += 1
-                        elif content:
-                            memory.add_assistant_message(content)
-                            restored_count += 1
-                    elif role == "tool":
-                        tc_id = msg.get("tool_call_id", "")
-                        result_raw = msg.get("content", "{}")
-                        try:
-                            parsed = json.loads(result_raw)
-                            memory.add_tool_result(tc_id, parsed)
-                            restored_count += 1
-                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                            logger.warning(
-                                "[SessionManager] 工具结果 JSON 解析失败，跳过 | tc_id=%s | error=%s",
-                                tc_id, e,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "[SessionManager] 工具结果恢复失败，跳过 | tc_id=%s | error=%s",
-                                tc_id, e,
-                            )
-                except (KeyError, TypeError, json.JSONDecodeError):
-                    pass
-
-            logger.info(
-                "[SessionManager] 快照恢复 | session=%s | %d 条",
-                session_id, restored_count,
-            )
-
-            # ── Step 2: 补充快照之前的纯旧格式记录（不含 messages 字段的才补）──
-            if snapshot_index > 0 and restored_count < memory.max_history:
-                supplemental = 0
-                for rec in records[:snapshot_index]:
-                    #跳过已有 messages 字段的新格式记录（数据已包含在快照中）
-                    if rec.get("messages"):
-                        continue
-                    user_text = rec.get("user", "")
-                    asst_text = rec.get("assistant", "")
-                    if user_text:
-                        memory.add_user_message(user_text)
-                        restored_count += 1
-                        supplemental += 1
-                    if asst_text:
-                        memory.add_assistant_message(asst_text)
-                        restored_count += 1
-                        supplemental += 1
-                if supplemental > 0:
-                    logger.info(
-                        "[SessionManager] 补充旧格式 | +%d 条 | 总=%d",
-                        supplemental, restored_count,
-                    )
-
-            return restored_count
-
-        # ── 无快照：全量降级 ──
         for rec in records:
-            try:
+            msgs = rec.get("messages")
+            if isinstance(msgs, list):
+                for msg in msgs:
+                    try:
+                        role = msg.get("role", "")
+                        content = msg.get("content")
+                        tool_calls = msg.get("tool_calls")
+
+                        if role == "user":
+                            memory.add_user_message(content or "")
+                            restored_count += 1
+                        elif role == "assistant":
+                            if tool_calls:
+                                tool_calls_data = []
+                                for tc in tool_calls:
+                                    original_tc_id = tc.get("id", "")
+                                    tool_calls_data.append({
+                                        "tool_name": tc.get("function", {}).get("name", ""),
+                                        "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")),
+                                        "tool_call_id": original_tc_id,
+                                    })
+                                memory.add_tool_calls_batch(tool_calls_data, content=content or None)
+                                restored_count += 1
+                            elif content:
+                                memory.add_assistant_message(content)
+                                restored_count += 1
+                        elif role == "tool":
+                            tc_id = msg.get("tool_call_id", "")
+                            result_raw = msg.get("content", "{}")
+                            try:
+                                parsed = json.loads(result_raw)
+                                memory.add_tool_result(tc_id, parsed)
+                                restored_count += 1
+                            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                logger.warning(
+                                    "[SessionManager] 工具结果 JSON 解析失败，跳过 | tc_id=%s | error=%s",
+                                    tc_id, e,
+                                )
+                    except (KeyError, TypeError, json.JSONDecodeError):
+                        pass
+            else:
                 user_text = rec.get("user", "")
                 asst_text = rec.get("assistant", "")
                 if user_text:
@@ -317,13 +271,11 @@ class SessionManager:
                 if asst_text:
                     memory.add_assistant_message(asst_text)
                     restored_count += 1
-            except (KeyError, TypeError):
-                continue
 
         if restored_count > 0:
             logger.info(
-                "[SessionManager] 纯文本降级 | session=%s | %d 轮",
-                session_id, restored_count // 2,
+                "[SessionManager] 归档恢复 | session=%s | %d 条消息",
+                session_id, restored_count,
             )
 
     def cleanup_expired(self) -> int:
@@ -384,7 +336,6 @@ class SessionManager:
         logger.info("[SessionManager] Memory 配置热重载 | 已更新 %d 个会话", updated_count)
 
 
-# ── 全局单例 ──────────────────────────────────────────────
 _manager: Optional[SessionManager] = None
 
 
@@ -392,7 +343,6 @@ def get_session_manager() -> SessionManager:
     """获取全局会话管理器单例"""
     global _manager
     if _manager is None:
-        # 尝试从 DI 容器获取 three_layer_memory
         tlm = None
         try:
             from app.agent.memory.three_layer import ThreeLayerMemory
@@ -405,7 +355,6 @@ def get_session_manager() -> SessionManager:
             logger.debug("[SessionManager] DI 容器未就绪: %s", e)
         _manager = SessionManager(three_layer_memory=tlm)
     elif _manager.three_layer_memory is None:
-        # 如果已有实例但没有 three_layer_memory，尝试补充
         try:
             from app.agent.memory.three_layer import ThreeLayerMemory
             from app.core.di.container import get_container

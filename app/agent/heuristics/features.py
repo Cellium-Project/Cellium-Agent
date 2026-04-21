@@ -51,6 +51,11 @@ def get_call_signature(call: Dict) -> str:
         cmd = args.get("command", args.get("cmd", ""))[:80]
         return f"{tool_name}:{cmd}"
 
+    # 特殊处理：web_fetch 工具使用 action 参数区分不同操作
+    if tool_name == "web_fetch":
+        action = args.get("action", "open")
+        return f"{tool_name}:{action}"
+
     # 其他工具：仅返回工具名（保持当前行为）
     return tool_name
 

@@ -6,14 +6,11 @@ from typing import Optional, Dict, List
 
 
 class ArchiveStore:
-    """原始对话归档 - JSONL 格式，支持按 session_id 检索恢复"""
-
     def __init__(self, base_dir: str = "memory/archive"):
         self.base_dir = base_dir
         os.makedirs(base_dir, exist_ok=True)
 
     def append(self, user_input: str, response: str, session_id: str = "default") -> str:
-        """追加对话记录到 JSONL 文件（纯文本模式，向后兼容）"""
         return self.append_messages(
             session_id=session_id,
             messages=[
@@ -28,25 +25,15 @@ class ArchiveStore:
         messages: list = None,
         snapshot_hash: Optional[str] = None,
     ) -> str:
-        """追加完整消息列表到 JSONL 文件（含 tool_call / tool_result）"""
         date_str = datetime.now().strftime("%Y-%m-%d")
         file_path = os.path.join(self.base_dir, f"{date_str}.jsonl")
 
-        user_text = ""
-        assistant_text = ""
         normalized_messages = messages or []
-        for message in normalized_messages:
-            if message.get("role") == "user":
-                user_text = message.get("content", "") or ""
-            elif message.get("role") == "assistant" and not message.get("tool_calls"):
-                assistant_text = (message.get("content") or "") or ""
 
         record = {
-            "id": self._gen_id(user_text, assistant_text, normalized_messages),
+            "id": self._gen_id(normalized_messages),
             "time": datetime.now().isoformat(),
             "session_id": session_id,
-            "user": user_text,
-            "assistant": assistant_text,
             "messages": normalized_messages,
             "snapshot_hash": snapshot_hash or self._hash_messages(normalized_messages),
         }
@@ -107,12 +94,8 @@ class ArchiveStore:
                 records.append(json.loads(line))
         return records
 
-    def _gen_id(self, user_input: str, response: str, messages: Optional[list] = None) -> str:
-        """生成唯一 ID（优先基于完整消息快照）"""
-        if messages:
-            payload = json.dumps(messages, ensure_ascii=False, sort_keys=True)
-        else:
-            payload = user_input + response
+    def _gen_id(self, messages: Optional[list] = None) -> str:
+        payload = json.dumps(messages or [], ensure_ascii=False, sort_keys=True)
         return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
     @staticmethod

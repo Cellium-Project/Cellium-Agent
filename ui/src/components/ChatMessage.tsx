@@ -265,24 +265,30 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
 
 function renderTimeline(message: Message): React.ReactNode {
   if (message.timeline && message.timeline.length > 0) {
-    // Merge consecutive text/thinking segments before rendering.
+    // Merge consecutive text segments before rendering.
     // Streaming splits content into many tiny chunks; we must
     // reassemble them so JSON detection sees the full block.
+    // Note: thinking segments are NOT merged, they are rendered separately.
     type ToolSegment = Extract<TimelineSegment, { kind: 'tool' }>;
+    type ThinkingSegment = Extract<TimelineSegment, { kind: 'thinking' }>;
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
-      | ToolSegment;
+      | ToolSegment
+      | ThinkingSegment;
 
     const groups: GroupItem[] = [];
 
     for (const segment of message.timeline) {
-      if (segment.kind === 'text' || segment.kind === 'thinking') {
+      if (segment.kind === 'text') {
         const last = groups[groups.length - 1];
         if (last && last.kind === 'merged-text') {
           last.contents.push(segment.content);
         } else {
           groups.push({ kind: 'merged-text', contents: [segment.content] });
         }
+      } else if (segment.kind === 'thinking') {
+        // thinking segments are kept separate and rendered with ThinkingCard
+        groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'tool') {
         groups.push(segment as ToolSegment);
       }
@@ -294,6 +300,9 @@ function renderTimeline(message: Message): React.ReactNode {
           if (group.kind === 'merged-text') {
             const merged = group.contents.join('');
             return <React.Fragment key={idx}>{renderContentWithCollapsibleJson(merged)}</React.Fragment>;
+          }
+          if (group.kind === 'thinking') {
+            return <ThinkingCard key={idx} content={group.content} />;
           }
           // tool segment
           const seg = group as ToolSegment;
@@ -329,14 +338,46 @@ function renderTimeline(message: Message): React.ReactNode {
   );
 }
 
+/** Thinking card with simple styling */
+const ThinkingCard: React.FC<{ content: string }> = ({ content }) => {
+  const prettyContent = useMemo(() => {
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      // Not valid JSON
+    }
+    
+    if (parsed && typeof parsed === 'object') {
+      return JSON.stringify(parsed, null, 2);
+    }
+    return content;
+  }, [content]);
+
+  return (
+    <div className="thinking-card">
+      <Collapsible
+        summary={
+          <span className="collapsible-summary">
+            Thinking
+          </span>
+        }
+        defaultOpen={false}
+      >
+        <pre className="thinking-content">{escapeHtml(prettyContent)}</pre>
+      </Collapsible>
+    </div>
+  );
+};
+
 function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNode {
   if (segment.kind === 'text') {
     return renderContentWithCollapsibleJson(segment.content);
   }
 
   if (segment.kind === 'thinking') {
-    // Thinking content may also contain raw JSON thought blocks
-    return renderContentWithCollapsibleJson(segment.content);
+    // Use dedicated thinking card with proper styling
+    return <ThinkingCard content={segment.content} />;
   }
 
   return (

@@ -1396,7 +1396,8 @@ class WebFetch(BaseCell):
         try:
             result = page.run_js(js_code)
             if result is None:
-                return {"success": False, "error": f"JS 执行返回空结果，元素可能不存在: {selector}"}
+                page.wait(0.5)
+                return {"success": True, "hint": f"点击已执行，页面可能已跳转: {selector}"}
             if result.get('success'):
                 page.wait(wait_after)
                 return {"success": True, "result": result, "hint": f"已点击: {result.get('tag')} - {result.get('text', '')[:30]}"}
