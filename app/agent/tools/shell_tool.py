@@ -48,14 +48,18 @@ class ShellTool(BaseTool):
 
     name = "shell"
     description = (
-        "执行系统命令。Win=PowerShell, Linux/Mac=bash。支持后台任务管理。\n\n"
+        "执行系统命令。\n\n"
+        "**重要**: Windows 环境使用 PowerShell，Linux/Mac 使用 bash。\n"
+        "- Windows: 用 PowerShell 语法（如 `Get-ChildItem`、`pwd`、`$env:PATH`）\n"
+        "- Linux/Mac: 用 bash 语法（如 `ls -la`、`pwd`、`echo $PATH`）\n\n"
         "| 子命令 | 用途 | 必填参数 |\n"
         "|--------|------|----------|\n"
         "| `run` | 执行命令 | `cmd` |\n"
         "| `list` | 列出后台任务 | - |\n"
         "| `output` | 获取任务输出 | `task_id` |\n"
         "| `kill` | 终止后台任务 | `task_id` |\n\n"
-        "**铁律**: 长运行服务（server/dev 等）必须 `background=true`，否则会阻塞超时"
+        "**铁律**: 长运行服务（server/dev 等）必须 `background=true`，否则会阻塞超时\n"
+        "**注意**: Windows 上可用 `dir`、`type`、`cd` 等 cmd 命令，会自动回退到 cmd.exe"
     )
 
     @property

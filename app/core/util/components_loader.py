@@ -417,6 +417,12 @@ def _instantiate_component(module_path: str) -> tuple:
     """
     实例化单个组件（支持外部热加载，不依赖 components package）
 
+    热重载策略：
+      - 先清除 sys.modules 中的旧模块（含 discover 阶段的临时模块）
+      - 再用 spec_from_file_location 从文件重新加载
+      - 这比 importlib.reload 更可靠，后者对 spec_from_file_location
+        加载的模块经常失败（缺少 __spec__.loader）
+
     Returns:
         (instance, info_dict) 或 (None, error_info)
     """
@@ -426,51 +432,67 @@ def _instantiate_component(module_path: str) -> tuple:
 
     module_name, class_name = parts
 
+    # ── 定位组件源文件 ──
+    components_dir = get_components_dir()
+    import re
+    s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
+    snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
+    file_path = components_dir / f"{snake_name}.py"
+
+    if not file_path.exists():
+        raise ImportError(f"组件文件不存在: {file_path}")
+
+    # ── 清除旧模块引用（确保重新加载而非复用缓存） ──
+    old_file = None
     if module_name in sys.modules:
-        module = sys.modules[module_name]
-        try:
-            importlib.reload(module)
-        except Exception as e:
-            logging.warning(f"重载模块 {module_name} 失败: {e}")
-    else:
-        components_dir = get_components_dir()
-        import re
-        s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
-        snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
-        file_path = components_dir / f"{snake_name}.py"
-        if file_path.exists():
-            spec = importlib.util.spec_from_file_location(module_name, str(file_path))
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-            else:
-                raise ImportError(f"无法加载文件: {file_path}")
-        else:
-            raise ImportError(f"组件文件不存在: {file_path}")
-    
+        old_mod = sys.modules[module_name]
+        old_file = getattr(old_mod, '__file__', None)
+        del sys.modules[module_name]
+        logger.debug(f"[Component] 清除旧模块: {module_name}")
+
+    # 也清除 discover 阶段创建的临时模块（_component_xxx 前缀）
+    for key in list(sys.modules.keys()):
+        if not key.startswith("_component_"):
+            continue
+        mod = sys.modules.get(key)
+        if mod is None:
+            continue
+        mod_file = getattr(mod, '__file__', None)
+        if mod_file and (mod_file == str(file_path) or mod_file == old_file):
+            del sys.modules[key]
+            logger.debug(f"[Component] 清除临时模块: {key}")
+
+    # ── 从文件重新加载 ──
+    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
+    if not spec or not spec.loader:
+        raise ImportError(f"无法加载文件: {file_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
     # 获取类
     cls = getattr(module, class_name, None)
     if cls is None:
         raise AttributeError(f"类不存在: {class_name} 在 {module_name}")
-    
+
     # 验证接口
     instance = cls()
-    
+
     # 来源信息
     source_file = ""
     try:
         source_file = inspect.getfile(cls)
     except TypeError:
         pass
-    
+
     info = {
         "class_name": class_name,
         "module_path": module_path,
         "source_file": source_file,
         "is_new": source_file not in _loaded_files if source_file else True,
     }
-    
+
     return instance, info
 
 

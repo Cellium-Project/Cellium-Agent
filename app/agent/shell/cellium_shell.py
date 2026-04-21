@@ -413,21 +413,27 @@ class CelliumShell:
         根据命令内容自动选择 Shell
 
         Windows:
-            - 检测到 PowerShell cmdlet → 用 PowerShell
-            - 其他 → 用 cmd.exe
+            - 有 PowerShell 可用时，默认使用 PowerShell（与 description 声明一致）
+            - 检测到 cmd.exe 专属语法（如 &、&&、||、>nul）时用 cmd.exe
+            - 无 PowerShell 时回退到 cmd.exe
         Linux/Mac:
             - 用 bash
         """
         if self._platform != "win32":
             return ("/bin/bash", ["-c"])
 
-        if _PS_CMDLET_PATTERN.search(cmd) or any(
-            kw in cmd for kw in ["$null", "$_", "| Select", "| Where", "| ForEach",
-                                "-ErrorAction", "-WhatIf", "| ConvertTo", "| ConvertFrom"]
-        ):
-            if self._pwsh_path:
-                return (self._pwsh_path, ["-NoProfile", "-NonInteractive", "-Command"])
-            logger.warning("[Shell] 检测到 PowerShell 语法但未找到 pwsh，回退到 cmd")
+        # 检测 cmd.exe 专属语法
+        cmd_exe_indicators = [
+            "&", "&&", "||", ">nul", "2>nul", "1>nul",
+            "2>&1", r"%\w+%", "nul", "cmd /c", "cmd.exe",
+        ]
+        for indicator in cmd_exe_indicators:
+            if indicator in cmd:
+                return ("cmd.exe", ["/c"])
+
+        # Windows 上优先使用 PowerShell（与 ShellTool.description 声明一致）
+        if self._pwsh_path:
+            return (self._pwsh_path, ["-NoProfile", "-NonInteractive", "-Command"])
 
         return ("cmd.exe", ["/c"])
 

@@ -85,17 +85,34 @@ class ComponentBuilder(BaseCell):
                 if isinstance(parsed, list):
                     for item in parsed:
                         if isinstance(item, str):
+                            # 简单字符串作为命令名
                             cmd_list.append({"name": item, "desc": f"执行 {item} 操作"})
                         elif isinstance(item, dict):
                             cmd_list.append(item)
             except json.JSONDecodeError:
-                for cmd_name in commands.split():
-                    cmd_name = cmd_name.strip()
-                    if cmd_name:
-                        cmd_list.append({"name": cmd_name, "desc": f"执行 {cmd_name} 操作"})
+                # 非 JSON 格式时，解析失败，返回错误提示而非盲目分割
+                return {
+                    "error": "commands 参数格式错误：必须是 JSON 数组格式",
+                    "hint": (
+                        '正确格式示例: commands=\'[{"name":"run","desc":"执行主逻辑"}]\'\n'
+                        '或 commands=\'["do_something", "check"]\'（简单字符串列表自动生成描述）'
+                    ),
+                    "received": commands[:200],
+                    "received_type": "string (not JSON)",
+                }
 
         if not cmd_list:
             cmd_list = [{"name": "execute", "desc": f"执行{description or cell_name}的主要功能"}]
+
+        # 验证命令名必须是合法 Python 标识符
+        for cmd in cmd_list:
+            cn = cmd.get("name", "execute")
+            if not cn or not cn.isidentifier():
+                return {
+                    "error": f"无效的命令名称 '{cn}'：必须是合法 Python 标识符",
+                    "hint": "命令名只能包含字母、数字和下划线，且不能以数字开头",
+                    "example": '正确的 commands 格式: [{"name":"run","desc":"执行主逻辑"}]',
+                }
 
         components_dir = get_components_dir()
         file_path = components_dir / f"{name}.py"
