@@ -28,11 +28,54 @@ Shell 工具 — 通用的命令执行工具（支持后台任务管理）
 """
 
 import logging
+import os
+import sys
+import pathlib
 from typing import Dict, Any, List
 
 from .base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_embedded_python() -> Dict[str, str]:
+    """
+    检测嵌入式 Python 环境（打包版）
+
+    Returns:
+        {
+            "is_embedded": "true/false",
+            "python_path": "嵌入式 Python 路径",
+            "libs_path": "依赖安装目录",
+            "pip_cmd": "安装依赖的完整命令",
+        }
+    """
+    # 检测是否有 runtime/python.exe（打包版结构）
+    exe_dir = pathlib.Path(sys.executable).resolve().parent
+
+    # 打包版结构：exe 在 runtime/ 目录
+    if exe_dir.name == "runtime":
+        project_root = exe_dir.parent
+        python_exe = exe_dir / "python.exe"
+        libs_dir = project_root / "libs"
+
+        if python_exe.exists():
+            return {
+                "is_embedded": "true",
+                "python_path": str(python_exe),
+                "libs_path": str(libs_dir),
+                "pip_cmd": f'"{python_exe}" -m pip install <package> --target="{libs_dir}"',
+                "project_root": str(project_root),
+            }
+
+    # 开发环境
+    return {
+        "is_embedded": "false",
+        "python_path": sys.executable,
+        "libs_path": "",
+        "pip_cmd": "pip install <package>",
+        "project_root": str(pathlib.Path.cwd()),
+    }
 
 
 class ShellTool(BaseTool):
@@ -47,25 +90,45 @@ class ShellTool(BaseTool):
     """
 
     name = "shell"
-    description = (
-        "执行系统命令。\n\n"
-        "**重要**: Windows 环境使用 PowerShell，Linux/Mac 使用 bash。\n"
-        "- Windows: 用 PowerShell 语法（如 `Get-ChildItem`、`pwd`、`$env:PATH`）\n"
-        "- Linux/Mac: 用 bash 语法（如 `ls -la`、`pwd`、`echo $PATH`）\n\n"
-        "| 子命令 | 用途 | 必填参数 |\n"
-        "|--------|------|----------|\n"
-        "| `run` | 执行命令 | `cmd` |\n"
-        "| `list` | 列出后台任务 | - |\n"
-        "| `output` | 获取任务输出 | `task_id` |\n"
-        "| `kill` | 终止后台任务 | `task_id` |\n\n"
-        "**铁律**: 长运行服务（server/dev 等）必须 `background=true`，否则会阻塞超时\n"
-        "**注意**: Windows 上可用 `dir`、`type`、`cd` 等 cmd 命令，会自动回退到 cmd.exe"
-    )
 
     @property
     def tool_name(self) -> str:
         """工具名称（LLM function calling 用）"""
         return "shell"
+
+    @property
+    def description(self) -> str:
+        """动态生成 description（包含环境信息）"""
+        env_info = _detect_embedded_python()
+
+        base_desc = (
+            "执行系统命令。\n\n"
+            "**重要**: Windows 环境使用 PowerShell，Linux/Mac 使用 bash。\n"
+            "- Windows: 用 PowerShell 语法（如 `Get-ChildItem`、`pwd`、`$env:PATH`）\n"
+            "- Linux/Mac: 用 bash 语法（如 `ls -la`、`pwd`、`echo $PATH`）\n\n"
+            "| 子命令 | 用途 | 必填参数 |\n"
+            "|--------|------|----------|\n"
+            "| `run` | 执行命令 | `cmd` |\n"
+            "| `list` | 列出后台任务 | - |\n"
+            "| `output` | 获取任务输出 | `task_id` |\n"
+            "| `kill` | 终止后台任务 | `task_id` |\n\n"
+            "**铁律**: 长运行服务（server/dev 等）必须 `background=true`，否则会阻塞超时\n"
+            "**注意**: Windows 上可用 `dir`、`type`、`cd` 等 cmd 命令，会自动回退到 cmd.exe"
+        )
+
+        # 打包环境：注入 Python 路径信息
+        if env_info["is_embedded"] == "true":
+            env_note = (
+                f"\n\n**【打包环境 Python 信息】**\n"
+                f"- 嵌入式 Python: `{env_info['python_path']}`\n"
+                f"- 依赖目录: `{env_info['libs_path']}`\n"
+                f"- **安装依赖必须用**: `{env_info['pip_cmd']}`\n"
+                f"- 示例: `{env_info['python_path']} -m pip install qrcode --target=\"{env_info['libs_path']}\"`\n"
+                f"**切勿**使用系统 pip，否则依赖无法被本程序加载！"
+            )
+            return base_desc + env_note
+
+        return base_desc
 
     def __init__(self, shell=None, mp_manager=None):
         super().__init__()
