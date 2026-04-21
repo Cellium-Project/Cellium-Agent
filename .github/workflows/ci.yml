@@ -5,10 +5,15 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # Dependabot PR 触发
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
   actions: read
+  pull-requests: write  # 允许 Dependabot PR 评论
 
 env:
   VERSION: "1.0.0.1"
