@@ -16,8 +16,9 @@ class MemoryTool(BaseTool):
 
     name = "memory"
     description = (
-        "长期记忆管理工具。支持搜索、写入、更新、删除、遗忘、冲突合并和概览。"
+        "长期记忆管理工具。支持搜索、写入、更新、删除、遗忘、冲突合并、概览和 Gene 查看。"
         "当用户告诉你重要偏好、项目约定、已解决问题等，应使用 store/update 维护长期记忆。"
+        "当任务失败时，使用 list_genes 查看已有 Gene，get_gene 查看具体 Gene 内容。"
     )
 
     def __init__(self, three_layer_memory=None):
@@ -41,8 +42,9 @@ class MemoryTool(BaseTool):
                         "command": {
                             "type": "string",
                             "description": "要执行的命令",
-                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge"],
+                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene"],
                         },
+                        "task_type": {"type": "string", "description": "[get_gene] Gene 任务类型"},
                         "query": {"type": "string", "description": "[search/forget] 搜索关键词或问题"},
                         "title": {"type": "string", "description": "[store/update] 记忆标题"},
                         "content": {"type": "string", "description": "[store/update] 记忆内容"},
@@ -278,6 +280,67 @@ class MemoryTool(BaseTool):
             }
         except Exception as e:
             logger.error("[MemoryTool] list 失败 | error=%s", e)
+            return {"success": False, "error": f"查询失败: {e}"}
+
+    def _cmd_list_genes(self) -> dict:
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+        
+        try:
+            results = self.memory.list_memories(
+                schema_type="control_gene",
+                limit=50,
+            )
+            items = results.get("items", [])
+            
+            genes = []
+            for item in items:
+                metadata = item.get("metadata", {})
+                genes.append({
+                    "task_type": metadata.get("task_type", ""),
+                    "version": metadata.get("version", 1),
+                    "success_rate": round(metadata.get("success_rate", 0.0), 2),
+                    "usage_count": metadata.get("usage_count", 0),
+                    "signals": metadata.get("signals", []),
+                })
+            
+            return {
+                "success": True,
+                "total_genes": len(genes),
+                "genes": genes,
+                "message": f"找到 {len(genes)} 个 Gene，使用 get_gene 命令查看详情",
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] list_genes 失败 | error=%s", e)
+            return {"success": False, "error": f"查询失败: {e}"}
+
+    def _cmd_get_gene(self, task_type: str) -> dict:
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+        if not task_type:
+            return {"success": False, "error": "task_type 不能为空"}
+        
+        try:
+            memory_key = f"gene:{task_type}"
+            result = self.memory.repository.get_by_memory_key(memory_key)
+            
+            if not result:
+                return {"success": False, "error": f"未找到 Gene: {task_type}"}
+            
+            metadata = result.get("metadata", {})
+            return {
+                "success": True,
+                "task_type": metadata.get("task_type", task_type),
+                "content": result.get("content", ""),
+                "version": metadata.get("version", 1),
+                "success_rate": round(metadata.get("success_rate", 0.0), 2),
+                "usage_count": metadata.get("usage_count", 0),
+                "forbidden_tools": metadata.get("forbidden_tools", []),
+                "preferred_tools": metadata.get("preferred_tools", []),
+                "evolution_history": metadata.get("evolution_history", [])[-5:],
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] get_gene 失败 | error=%s", e)
             return {"success": False, "error": f"查询失败: {e}"}
 
     # ================================================================

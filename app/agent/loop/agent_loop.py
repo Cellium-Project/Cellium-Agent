@@ -387,6 +387,18 @@ class AgentLoop:
                 raise Exception(event.get("error", "AgentLoop stream error"))
         return result
 
+    def save_agent_created_gene(self, agent_response: str) -> bool:
+        """保存 Agent 创建的 Gene"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        gene_data = GeneEvolution.parse_agent_gene_response(agent_response)
+        if gene_data:
+            success = GeneEvolution.save_agent_created_gene(gene_data)
+            if success:
+                logger.info("[AgentLoop] Agent 创建的 Gene 已保存 | task_type=%s", gene_data.get("task_type"))
+            return success
+        return False
+
     def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
         for msg in reversed(memory.get_messages()):
             if msg.get("role") == "assistant" and msg.get("content"):
@@ -1279,6 +1291,15 @@ class AgentLoop:
                         self._loop_state.last_tool_result = iteration_traces[-1].get("result") if iteration_traces else None
                         reward = self.control_loop.end_round(self._loop_state)
                         logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
+
+                    # Gene 创建：检查是否需要提示 Agent 创建 Gene
+                    if self._loop_state and getattr(self._loop_state, 'needs_agent_gene_creation', False):
+                        gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
+                        if gene_prompt:
+                            logger.info("[AgentLoop] 提示 Agent 创建 Gene")
+                            yield {"type": "gene_creation_prompt", "prompt": gene_prompt}
+                            # 重置标记，等待 Agent 响应
+                            self._loop_state.needs_agent_gene_creation = False
 
                     # Learning: 迭代级别反馈更新
                     if self.learning and self._loop_state:

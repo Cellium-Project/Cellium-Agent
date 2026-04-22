@@ -392,7 +392,7 @@ class TestPromptContextBuilder(unittest.TestCase):
         builder = PromptContextBuilder(prompt_builder=prompt_builder, three_layer_memory=three_layer_memory)
         messages = builder.build_first_round("请回忆之前的命令", session_messages=[{"role": "user", "content": "请回忆之前的命令"}])
 
-        three_layer_memory.retrieve_context.assert_called_once_with("请回忆之前的命令", top_k=3)
+        three_layer_memory.retrieve_context.assert_called_once_with("请回忆之前的命令", top_k=3, exclude_schema_types=["control_gene"])
         self.assertTrue(any("长期记忆检索结果" in (msg.get("content") or "") for msg in messages))
 
 

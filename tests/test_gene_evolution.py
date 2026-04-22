@@ -182,6 +182,7 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         from app.agent.control.feedback_evaluator import FeedbackEvaluator
 
         mock_gene_evolution.extract_avoid_cue.return_value = "DON'T: Test"
+        mock_gene_evolution.should_prompt_agent_for_gene.return_value = False  # 不触发 Agent 创建
 
         evaluator = FeedbackEvaluator()
         state = Mock(spec=LoopState)
@@ -197,7 +198,38 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
 
         self.assertLess(reward, 0.5)
         mock_gene_evolution.extract_avoid_cue.assert_called_once()
+        mock_gene_evolution.should_prompt_agent_for_gene.assert_called_once()
         mock_gene_evolution.update_gene_from_failure.assert_called_once()
+
+    @patch("app.agent.control.hard_constraints.GeneEvolution")
+    def test_evaluate_with_gene_evolution_triggers_agent_creation(self, mock_gene_evolution):
+        """测试当 should_prompt_agent_for_gene 返回 True 时触发 Agent 创建"""
+        from app.agent.control.feedback_evaluator import FeedbackEvaluator
+
+        mock_gene_evolution.extract_avoid_cue.return_value = None  
+        mock_gene_evolution.should_prompt_agent_for_gene.return_value = True 
+        mock_gene_evolution.build_gene_creation_prompt.return_value = "[系统提示] 请创建 Gene"
+
+        evaluator = FeedbackEvaluator()
+        state = Mock(spec=LoopState)
+        state.last_tool_result = {"error": "Failed"}
+        state.iteration = 5
+        state.max_iterations = 10
+        state.tokens_used = 1000
+        state.token_budget = 10000
+        state.features = None
+        state.elapsed_ms = 5000
+
+        reward = evaluator.evaluate_with_gene_evolution(state, "", "测试输入")
+
+        self.assertLess(reward, 0.5)
+        mock_gene_evolution.extract_avoid_cue.assert_called_once()
+        mock_gene_evolution.should_prompt_agent_for_gene.assert_called_once()
+        # 验证设置了 Gene 创建标记
+        self.assertTrue(state.needs_agent_gene_creation)
+        self.assertEqual(state.gene_creation_prompt, "[系统提示] 请创建 Gene")
+        # 不应该调用自动更新
+        mock_gene_evolution.update_gene_from_failure.assert_not_called()
 
     @patch("app.agent.control.hard_constraints.GeneEvolution")
     def test_evaluate_with_gene_evolution_success(self, mock_gene_evolution):
@@ -217,6 +249,108 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
 
         self.assertGreater(reward, 0.5)
         mock_gene_evolution.record_success.assert_called_once()
+
+
+class TestAgentGeneCreation(unittest.TestCase):
+    """测试 Agent 创建 Gene 功能"""
+
+    def setUp(self):
+        TaskSignalMatcher._repository = None
+        TaskSignalMatcher._cache.clear()
+        TaskSignalMatcher._cache_loaded = False
+
+    def tearDown(self):
+        TaskSignalMatcher._repository = None
+        TaskSignalMatcher._cache.clear()
+        TaskSignalMatcher._cache_loaded = False
+
+    def test_should_prompt_agent_for_gene_no_task_type(self):
+        """测试没有任务类型时提示 Agent"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        state = Mock(spec=LoopState)
+        state.features = None
+        
+        result = GeneEvolution.should_prompt_agent_for_gene(state, "", "some cue")
+        self.assertTrue(result)
+
+    def test_should_prompt_agent_for_gene_no_avoid_cue(self):
+        """测试无法提取 avoid cue 时提示 Agent"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        state = Mock(spec=LoopState)
+        state.features = None
+        
+        result = GeneEvolution.should_prompt_agent_for_gene(state, "test_task", None)
+        self.assertTrue(result)
+
+    def test_should_prompt_agent_for_gene_consecutive_failures(self):
+        """测试连续失败时提示 Agent"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        state = Mock(spec=LoopState)
+        state.features = Mock()
+        state.features.consecutive_failures = 3
+        
+        result = GeneEvolution.should_prompt_agent_for_gene(state, "test_task", "cue")
+        self.assertTrue(result)
+
+    def test_should_not_prompt_agent_when_normal(self):
+        """测试正常情况不提示 Agent"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        state = Mock(spec=LoopState)
+        state.features = Mock()
+        state.features.consecutive_failures = 1
+        
+        result = GeneEvolution.should_prompt_agent_for_gene(state, "test_task", "cue")
+        self.assertFalse(result)
+
+    def test_parse_agent_gene_response_with_code_block(self):
+        """测试解析带代码块的 Agent 响应"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        response = """```gene
+[HARD CONSTRAINTS]
+[任务类型]: API调试
+[CONTROL ACTION]
+MUST: 检查API文档
+MUST NOT: 盲目重试
+[AVOID]
+- 忽略错误码
+```"""
+        
+        result = GeneEvolution.parse_agent_gene_response(response)
+        
+        self.assertIsNotNone(result)
+        self.assertEqual(result["task_type"], "api调试")
+        self.assertIn("[HARD CONSTRAINTS]", result["content"])
+        self.assertIn("API调试", result["content"])
+
+    def test_parse_agent_gene_response_without_code_block(self):
+        """测试解析不带代码块的 Agent 响应"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        response = """[HARD CONSTRAINTS]
+[任务类型]: 数据处理
+[CONTROL ACTION]
+MUST: 验证数据格式
+MUST NOT: 直接处理脏数据"""
+        
+        result = GeneEvolution.parse_agent_gene_response(response)
+        
+        self.assertIsNotNone(result)
+        self.assertEqual(result["task_type"], "数据处理")
+
+    def test_parse_agent_gene_response_invalid(self):
+        """测试解析无效的 Agent 响应"""
+        from app.agent.control.hard_constraints import GeneEvolution
+        
+        response = "这是无效的响应"
+        
+        result = GeneEvolution.parse_agent_gene_response(response)
+        
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

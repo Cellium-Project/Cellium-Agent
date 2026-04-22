@@ -122,6 +122,10 @@ class LoopState:
     hybrid_last_observation: Optional[str] = None  
     hybrid_plan_summary: str = ""
 
+    # ===== Gene 创建状态 =====
+    needs_agent_gene_creation: bool = False  # 是否需要提示 Agent 创建 Gene
+    gene_creation_prompt: Optional[str] = None  # 提示 Agent 创建 Gene 的 Prompt
+
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（用于持久化）"""
         return {

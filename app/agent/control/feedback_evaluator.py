@@ -150,14 +150,22 @@ class FeedbackEvaluator:
 
         return reward
 
-    def evaluate_with_gene_evolution(self, state: LoopState, task_type: str = "") -> float:
+    def evaluate_with_gene_evolution(self, state: LoopState, task_type: str = "", user_input: str = "") -> float:
         reward = self.evaluate(state)
         
         from .hard_constraints import GeneEvolution
         
-        if reward < 0.5 and task_type:
+        if reward < 0.5:
             avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
-            if avoid_cue:
+            
+            # 混合策略：判断是否提示 Agent 创建 Gene
+            if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
+                # 返回一个特殊标记，让上层知道需要提示 Agent
+                state.needs_agent_gene_creation = True
+                state.gene_creation_prompt = GeneEvolution.build_gene_creation_prompt(state, user_input)
+                logger.info("[GeneEvolution] 需要提示 Agent 创建 Gene")
+            elif task_type and avoid_cue:
+                # 自动更新已有 Gene
                 GeneEvolution.update_gene_from_failure(task_type, avoid_cue, state, reward)
         elif reward >= 0.5 and task_type:
             GeneEvolution.record_success(task_type, reward, state.elapsed_ms)

@@ -39,7 +39,7 @@ class ThreeLayerMemory:
         """构建增强提示词（兼容旧接口，但内部走统一检索入口）"""
         personality = self._load_personality()
         context_section = self._format_session_context(session_messages)
-        long_term_results = self.retrieve_context(user_input, top_k=3)
+        long_term_results = self.retrieve_context(user_input, top_k=3, exclude_schema_types=["control_gene"])
         long_term_section = self.format_retrieved_context(long_term_results)
         return f"""{personality}
 
@@ -133,6 +133,7 @@ class ThreeLayerMemory:
         category: Optional[str] = None,
         schema_type: Optional[str] = None,
         include_sensitive: bool = False,
+        exclude_schema_types: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """统一长期记忆检索入口。"""
         clean_query = self._preprocess_query(query)
@@ -146,6 +147,9 @@ class ThreeLayerMemory:
             schema_type=schema_type,
             include_sensitive=include_sensitive,
         )
+
+        if exclude_schema_types:
+            results = [r for r in results if r.get("schema_type") not in exclude_schema_types]
 
         enriched = []
         for item in results:

@@ -105,10 +105,8 @@ class ControlLoop:
             if matched:
                 task_type = matched.get("task_type", "")
 
-        if task_type:
-            reward = self.evaluator.evaluate_with_gene_evolution(state, task_type)
-        else:
-            reward = self.evaluator.evaluate(state)
+        # 混合策略：传递 user_input 用于 Agent Gene 创建
+        reward = self.evaluator.evaluate_with_gene_evolution(state, task_type, user_input)
 
         state.round_reward = reward
         state.cumulative_reward += reward

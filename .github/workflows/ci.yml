@@ -5,7 +5,6 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  # Dependabot PR 触发
   pull_request_target:
     branches: [main, master]
     types: [opened, synchronize, reopened]
@@ -13,10 +12,10 @@ on:
 permissions:
   contents: write
   actions: read
-  pull-requests: write  # 允许 Dependabot PR 评论
+  pull-requests: write  
 
 env:
-  VERSION: "1.1.0.1"
+  VERSION: "1.1.1.1"
   PY_VER: "3.12.10"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 

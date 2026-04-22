@@ -251,7 +251,7 @@ class PromptContextBuilder:
             return None
 
         try:
-            results = self._three_layer_memory.retrieve_context(query, top_k=3)
+            results = self._three_layer_memory.retrieve_context(query, top_k=3, exclude_schema_types=["control_gene"])
             if not results:
                 return None
             return self._three_layer_memory.format_retrieved_context(results)

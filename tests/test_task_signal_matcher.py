@@ -370,5 +370,93 @@ class TestHardConstraintStructure(unittest.TestCase):
         self.assertNotIn("Debug task", terminate_constraint.hard_constraints)
 
 
+class TestSemanticMatch(unittest.TestCase):
+    """测试语义匹配功能"""
+    
+    def setUp(self):
+        TaskSignalMatcher._repository = None
+        TaskSignalMatcher._cache.clear()
+        TaskSignalMatcher._cache_loaded = False
+        TaskSignalMatcher._semantic_match_enabled = True
+
+    def tearDown(self):
+        TaskSignalMatcher._repository = None
+        TaskSignalMatcher._cache.clear()
+        TaskSignalMatcher._cache_loaded = False
+
+    def test_semantic_match_fallback(self):
+        """测试关键词不匹配时的语义匹配兜底"""
+        mock_repo = MagicMock()
+        # 模拟返回一个语义相似的 Gene（但不包含关键词）
+        mock_repo.search.return_value = [
+            {
+                "content": "[HARD CONSTRAINTS]\nDebug task detected...",
+                "metadata": {
+                    "task_type": "code_debug",
+                    "forbidden_tools": ["web_search"],
+                    "preferred_tools": ["file"],
+                    "usage_count": 10,
+                    "success_rate": 0.8,
+                },
+                "embedding_score": 0.75,  # 超过阈值 0.65
+            }
+        ]
+        
+        TaskSignalMatcher.initialize(mock_repo)
+        
+        # 输入不包含任何关键词，但语义相关
+        result = TaskSignalMatcher.match("程序崩溃了怎么办")
+        
+        self.assertIsNotNone(result)
+        self.assertEqual(result["task_type"], "code_debug")
+        self.assertTrue(result.get("semantic_match"))
+        self.assertGreater(result.get("match_score", 0), 0.65)
+
+    def test_semantic_match_threshold(self):
+        """测试语义匹配阈值过滤"""
+        mock_repo = MagicMock()
+        # 相似度低于阈值
+        mock_repo.search.return_value = [
+            {
+                "content": "[HARD CONSTRAINTS]\nSome gene...",
+                "metadata": {
+                    "task_type": "some_task",
+                    "forbidden_tools": [],
+                    "preferred_tools": [],
+                },
+                "embedding_score": 0.5,  # 低于阈值 0.65
+            }
+        ]
+        
+        TaskSignalMatcher.initialize(mock_repo)
+        
+        result = TaskSignalMatcher.match("完全不相关的内容")
+        # 低于阈值，应该返回 None
+        self.assertIsNone(result)
+
+    def test_keyword_match_priority(self):
+        """测试关键词匹配优先于语义匹配"""
+        mock_repo = MagicMock()
+        mock_repo.search.return_value = [
+            {
+                "content": "[HARD CONSTRAINTS]\nWrong gene...",
+                "metadata": {
+                    "task_type": "wrong_task",
+                },
+                "embedding_score": 0.9,
+            }
+        ]
+        
+        TaskSignalMatcher.initialize(mock_repo)
+        
+        # 包含明确的关键词，应该直接关键词匹配
+        result = TaskSignalMatcher.match("帮我 debug 这个")
+        
+        self.assertIsNotNone(result)
+        self.assertEqual(result["task_type"], "code_debug")
+        # 不是语义匹配
+        self.assertNotIn("semantic_match", result)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -229,7 +229,7 @@ class TestControlLoopIntegration(unittest.TestCase):
 
     def test_end_round(self):
         self.loop.start_session(self.state)
-        self.evaluator.evaluate = Mock(return_value=0.75)
+        self.evaluator.evaluate_with_gene_evolution = Mock(return_value=0.75)
 
         reward = self.loop.end_round(self.state)
         self.assertEqual(reward, 0.75)
@@ -251,7 +251,7 @@ class TestControlLoopIntegration(unittest.TestCase):
         decision.params["bandit_tiebreak"] = True
         self.state.decision_trace.append(decision)
 
-        self.evaluator.evaluate = Mock(return_value=0.8)
+        self.evaluator.evaluate_with_gene_evolution = Mock(return_value=0.8)
         self.loop.end_round(self.state)
 
         self.bandit.update.assert_called_once_with("retry", 0.8)

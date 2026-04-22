@@ -171,6 +171,8 @@ class TaskSignalMatcher:
     _repository = None
     _cache: Dict[str, Any] = {}
     _cache_loaded = False
+    _semantic_match_enabled = True
+    _semantic_threshold = 0.65  # 语义匹配阈值
 
     TASK_PATTERNS = {
         "code_debug": {
@@ -282,6 +284,7 @@ MUST NOT: Rely on single source, copy without understanding
         
         user_lower = user_input.lower()
         
+        # 1. 快速关键词匹配（O(1) 级别）
         for task_type, config in cls._cache.items():
             signals = config.get("signals", [])
             if any(signal in user_lower for signal in signals):
@@ -302,6 +305,61 @@ MUST NOT: Rely on single source, copy without understanding
                     "forbidden_tools": config["forbidden_tools"],
                     "preferred_tools": config["preferred_tools"],
                 }
+        
+        # 2. 语义向量匹配（兜底策略）
+        if cls._semantic_match_enabled and cls._repository:
+            semantic_match = cls._semantic_match(user_input)
+            if semantic_match:
+                return semantic_match
+        
+        return None
+    
+    @classmethod
+    def _semantic_match(cls, user_input: str) -> Optional[Dict[str, Any]]:
+        """基于向量相似度的语义匹配"""
+        try:
+            results = cls._repository.search(
+                query=user_input,
+                top_k=3,
+                schema_type="control_gene",
+            )
+            
+            if not results:
+                return None
+            
+            best_match = None
+            best_score = 0.0
+            
+            for item in results:
+                metadata = item.get("metadata", {})
+                base_score = item.get("embedding_score", 0.0)
+                usage_count = metadata.get("usage_count", 0)
+                success_rate = metadata.get("success_rate", 0.5)
+                
+                experience_bonus = min(usage_count * 0.01, 0.1)
+                success_bonus = (success_rate - 0.5) * 0.1 
+                
+                final_score = base_score + experience_bonus + success_bonus
+                
+                if final_score > best_score and base_score >= cls._semantic_threshold:
+                    best_score = final_score
+                    best_match = item
+            
+            if best_match:
+                metadata = best_match.get("metadata", {})
+                task_type = metadata.get("task_type", "unknown")
+                return {
+                    "task_type": task_type,
+                    "gene_template": best_match.get("content", ""),
+                    "forbidden_tools": metadata.get("forbidden_tools", []),
+                    "preferred_tools": metadata.get("preferred_tools", []),
+                    "semantic_match": True,
+                    "match_score": best_score,
+                }
+            
+        except Exception:
+            pass
+        
         return None
 
     @classmethod
@@ -544,6 +602,218 @@ class GeneEvolution:
             
         except Exception:
             pass
+    
+    @classmethod
+    def should_prompt_agent_for_gene(cls, state: "LoopState", task_type: str, avoid_cue: Optional[str]) -> bool:
+        """判断是否需要提示 Agent 创建 Gene
+        
+        返回 True 的情况：
+        1. 没有识别到任务类型（task_type 为空）
+        2. 自动提取失败（avoid_cue 为空）
+        3. 连续多次失败且 Gene 没有改善
+        """
+        if not task_type:
+            return True
+        
+        if not avoid_cue:
+            return True
+        
+        # 检查是否连续失败且没有改善
+        if state.features and state.features.consecutive_failures >= 3:
+            return True
+        
+        return False
+    
+    @classmethod
+    def _get_existing_gene(cls, user_input: str) -> Optional[Dict[str, Any]]:
+        if not TaskSignalMatcher._repository or not user_input:
+            return None
+        
+        try:
+            results = TaskSignalMatcher._repository.search(
+                query=user_input,
+                top_k=1,
+                schema_type="control_gene",
+            )
+            
+            if results:
+                item = results[0]
+                score = item.get("embedding_score", 0.0)
+                if score >= 0.7:
+                    return {
+                        "task_type": item.get("metadata", {}).get("task_type", ""),
+                        "content": item.get("content", ""),
+                        "score": score,
+                    }
+        except Exception:
+            pass
+        
+        return None
+    
+    @classmethod
+    def build_gene_creation_prompt(cls, state: "LoopState", user_input: str) -> str:
+        context_lines = []
+        
+        if state.last_error:
+            context_lines.append(f"错误信息: {state.last_error[:200]}")
+        
+        if state.features:
+            if state.features.stuck_iterations > 0:
+                context_lines.append(f"停滞轮数: {state.features.stuck_iterations}")
+            if state.features.repetition_score > 0.3:
+                context_lines.append(f"重复程度: {state.features.repetition_score:.2f}")
+        
+        if state.decision_trace:
+            recent_decisions = state.decision_trace[-3:]
+            context_lines.append("最近决策:")
+            for d in recent_decisions:
+                context_lines.append(f"  - {d.action_type}: {d.reason or 'no reason'}")
+        
+        context_str = "\n".join(context_lines) if context_lines else "无具体错误信息"
+        
+        existing_gene = cls._get_existing_gene(user_input)
+        
+        if existing_gene:
+            existing_section = f"""
+现有 Gene:
+```
+{existing_gene['content'][:500]}
+```"""
+        else:
+            existing_section = ""
+        
+        prompt = f"""[系统提示]
+任务执行失败，请按以下步骤处理：
+
+步骤1: 使用 memory list_genes 查看所有 Gene 列表
+步骤2: 如有相关 Gene，使用 memory get_gene task_type=<类型> 查看详情
+步骤3: 判断是否需要创建新 Gene 或更新现有 Gene
+
+用户输入: {user_input[:200]}
+
+失败上下文:
+{context_str}
+{existing_section}
+
+如果决定创建/更新 Gene，请按以下格式返回:
+```gene
+[HARD CONSTRAINTS]
+[任务类型]: <简短描述任务类型>
+[CONTROL ACTION]
+MUST: <应该采取的正确做法>
+MUST NOT: <应该避免的错误做法>
+[AVOID]
+- <具体的避免事项1>
+- <具体的避免事项2>
+```
+
+要求:
+1. 先查看已有 Gene 再决定
+2. 任务类型要具体且可识别
+3. MUST/MUST NOT 要 actionable
+4. AVOID 要基于具体失败经验
+5. 总长度控制在 200 tokens 以内"""
+        
+        return prompt
+    
+    @classmethod
+    def parse_agent_gene_response(cls, response: str) -> Optional[Dict[str, Any]]:
+        """解析 Agent 创建的 Gene"""
+        import re
+        
+        # 提取 gene 代码块
+        gene_match = re.search(r'```gene\s*\n(.*?)\n```', response, re.DOTALL)
+        if not gene_match:
+            # 尝试没有代码块标记的情况
+            gene_match = re.search(r'\[HARD CONSTRAINTS\](.*)', response, re.DOTALL)
+            if not gene_match:
+                return None
+            content = "[HARD CONSTRAINTS]" + gene_match.group(1).strip()
+        else:
+            content = gene_match.group(1).strip()
+        
+        # 提取任务类型
+        task_type_match = re.search(r'\[任务类型\]:\s*(.+?)(?:\n|$)', content)
+        task_type = task_type_match.group(1).strip() if task_type_match else "unknown"
+        
+        # 规范化任务类型（用于 memory_key）
+        task_type_normalized = re.sub(r'[^\w\u4e00-\u9fff]+', '_', task_type).lower().strip('_')
+        if not task_type_normalized:
+            task_type_normalized = "custom_task"
+        
+        # 提取信号词（从任务类型和用户输入推断）
+        signals = [task_type_normalized]
+        
+        return {
+            "task_type": task_type_normalized,
+            "content": content,
+            "signals": signals,
+            "forbidden_tools": [],  # Agent 可以后续通过进化添加
+            "preferred_tools": [],
+            "source": "agent_created",
+        }
+    
+    @classmethod
+    def save_agent_created_gene(cls, gene_data: Dict[str, Any]) -> bool:
+        if not TaskSignalMatcher._repository:
+            return False
+        
+        try:
+            task_type = gene_data["task_type"]
+            content = gene_data["content"]
+            signals = gene_data.get("signals", [task_type])
+            memory_key = f"gene:{task_type}"
+            
+            existing_history = []
+            existing_usage = 0
+            existing_success = 0
+            existing_failure = 0
+            
+            try:
+                existing = TaskSignalMatcher._repository.get_by_memory_key(memory_key)
+                if existing:
+                    existing_history = existing.get("metadata", {}).get("evolution_history", [])
+                    existing_usage = existing.get("metadata", {}).get("usage_count", 0)
+                    existing_success = existing.get("metadata", {}).get("success_count", 0)
+                    existing_failure = existing.get("metadata", {}).get("failure_count", 0)
+            except Exception:
+                pass
+            
+            new_version = len(existing_history) + 1
+            is_update = new_version > 1
+            
+            evolution_history = existing_history + [{
+                "version": new_version,
+                "change": "agent_updated" if is_update else "agent_created",
+                "at": datetime.now().isoformat(),
+            }]
+            
+            TaskSignalMatcher._repository.upsert_memory(
+                title=f"Gene: {task_type}",
+                content=content,
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=memory_key,
+                metadata={
+                    "task_type": task_type,
+                    "signals": signals,
+                    "forbidden_tools": gene_data.get("forbidden_tools", []),
+                    "preferred_tools": gene_data.get("preferred_tools", []),
+                    "version": new_version,
+                    "evolution_history": evolution_history,
+                    "usage_count": existing_usage,
+                    "success_count": existing_success,
+                    "failure_count": existing_failure,
+                    "success_rate": existing_success / max(existing_usage, 1),
+                    "source": "agent_created",
+                }
+            )
+            
+            TaskSignalMatcher._cache_loaded = False
+            return True
+            
+        except Exception:
+            return False
     
     @classmethod
     def record_success(cls, task_type: str, reward: float = 1.0, elapsed_ms: int = 0):

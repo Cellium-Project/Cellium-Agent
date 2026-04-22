@@ -54,9 +54,13 @@
 | `search` | `query` | 用户说"之前"、"上次"、"我告诉过你" |
 | `store` | `title`, `content`, `category`, `tags` | 用户告知偏好、路径、约定 |
 | `list` | - | 查看记忆概况 |
+| `list_genes` | - | 查看所有 Gene 基础信息（任务类型、成功率等） |
+| `get_gene` | `task_type` | 查看指定 Gene 的完整内容 |
 
 **category 可选值**: preference / code / troubleshooting / command / general / user_info / project
 **note_type 可选值**: goal_history / completed / finding / error / pending
+
+**Gene 查看**: 当任务失败时，先用 `list_genes` 查看已有 Gene，再用 `get_gene` 查看具体内容
 
 ---
 

@@ -507,7 +507,7 @@ class TestControlLoopRuleFirstSelection(unittest.TestCase):
         bandit = Mock()
         bandit.update = Mock()
         evaluator = Mock()
-        evaluator.evaluate = Mock(return_value=0.6)
+        evaluator.evaluate_with_gene_evolution = Mock(return_value=0.6)
         loop = ControlLoop(heuristics, bandit, evaluator)
         state = LoopState(iteration=2, max_iterations=10, session_id="s")
         state.decision_trace.append(ControlDecision(action_type="compress", params={"bandit_tiebreak": True}))
