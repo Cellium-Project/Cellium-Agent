@@ -19,6 +19,7 @@ from app.server.routes.logs import router as logs_router
 from app.server.routes.channels import router as channels_router
 from app.server.routes.session_events import router as session_events_router
 from app.server.routes.skills import router as skills_router
+from app.server.routes.gene import router as gene_router
 
 
 @asynccontextmanager
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(channels_router)
     app.include_router(session_events_router)
     app.include_router(skills_router)
+    app.include_router(gene_router)
 
     html_dir = cfg.get("server.static_dir") or os.path.join(os.path.dirname(__file__), "..", "..", "html")
     if os.path.exists(html_dir):

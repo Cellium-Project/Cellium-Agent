@@ -160,7 +160,10 @@ class TestHybridControllerPhaseTransition(unittest.TestCase):
         self.assertIn("执行失败", obs.replan_reason)
 
     def test_execute_to_replan_on_mismatch(self):
-        """结果不符合预期 → REPLAN"""
+        """结果不符合预期 + 强制模式 → REPLAN"""
+        # 使用强制重新规划模式
+        self.controller.suggest_replan_on_mismatch = False
+        
         step = ThoughtStep(
             tool="search",
             purpose="搜索Python",
@@ -179,6 +182,34 @@ class TestHybridControllerPhaseTransition(unittest.TestCase):
         
         self.assertEqual(self.controller.state.phase, HybridPhase.REPLAN)
         self.assertEqual(self.controller.state.replan_count, 1)
+        self.assertIn("不符合预期", obs.replan_reason)
+
+    def test_execute_suggest_replan_on_mismatch(self):
+        """结果不符合预期 + 建议模式 → 建议但不强制 REPLAN"""
+        # 默认是建议模式
+        self.assertTrue(self.controller.suggest_replan_on_mismatch)
+        
+        step = ThoughtStep(
+            tool="search",
+            purpose="搜索Python",
+            expected_result="Python相关结果",
+        )
+        self.controller._state.current_plan = [step]
+        self.controller._state.pending_steps = [step]
+        self.controller._state.phase = HybridPhase.EXECUTE
+        self.controller._state.initial_observation_done = True
+        
+        obs = self.controller.observe_result(
+            step=step,
+            success=True,
+            output={"result": "Java相关结果"},  # 不符合预期
+        )
+        
+        # 不进入 REPLAN 阶段，而是继续执行或完成
+        self.assertEqual(self.controller.state.phase, HybridPhase.DONE)
+        # 但会标记建议重新规划
+        self.assertTrue(obs.suggest_replan)
+        self.assertIn("预期不符", obs.suggestion_reason)
 
     def test_replan_to_execute_transition(self):
         """REPLAN → EXECUTE 转换"""

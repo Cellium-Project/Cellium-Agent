@@ -134,6 +134,12 @@ class AgentLoop:
             self.learning.set_control_loop(self.control_loop)
             logger.info("[AgentLoop] Learning 与 ControlLoop 已建立协作")
 
+        # 初始化 TaskSignalMatcher（Gene 记忆系统连接）
+        if three_layer_memory and three_layer_memory.repository:
+            from app.agent.control.hard_constraints import TaskSignalMatcher
+            TaskSignalMatcher.initialize(three_layer_memory.repository)
+            logger.info("[AgentLoop] TaskSignalMatcher 已连接记忆系统")
+
         # Prompt 构建器
         self._prompt_builder = create_default_builder(memory_dir)
         self._prompt_context_builder = PromptContextBuilder(
@@ -1250,6 +1256,11 @@ class AgentLoop:
                                     logger.warning(
                                         "[Hybrid] 需要重新规划 | reason=%s",
                                         obs.replan_reason
+                                    )
+                                elif obs.suggest_replan:
+                                    logger.info(
+                                        "[Hybrid] 建议重新规划 | reason=%s | 请评估是否需要调整计划",
+                                        obs.suggestion_reason
                                     )
                             else:
                                 logger.debug(

@@ -6,6 +6,7 @@ import { Icons } from './Icons';
 import { CustomDropdown } from './CustomDropdown';
 import { MemoryManagerPanel } from './MemoryManagerPanel';
 import { SkillManagerTab } from './SkillManagerTab';
+import { GeneManagerTab } from './GeneManagerTab';
 import { Collapsible } from './Collapsible';
 import type { Theme, Language } from '../stores/appStore';
 
@@ -18,6 +19,7 @@ const useSettingsTabs = () => {
     { id: 'agent', label: t('settings.tabs.agent'), Icon: Icons.Bot },
     { id: 'memory', label: t('settings.tabs.memory'), Icon: Icons.Brain },
     { id: 'skill', label: t('settings.tabs.skill'), Icon: Icons.Puzzle },
+    { id: 'gene', label: t('settings.tabs.gene'), Icon: Icons.Dna },
     { id: 'learning', label: t('settings.tabs.learning'), Icon: Icons.BookOpen },
     { id: 'heuristics', label: t('settings.tabs.heuristics'), Icon: Icons.Lightbulb },
     { id: 'security', label: t('settings.tabs.security'), Icon: Icons.Shield },
@@ -1784,6 +1786,7 @@ export const SettingsPage: React.FC = () => {
       case 'agent': return <AgentSettings />;
       case 'memory': return <MemorySettings />;
       case 'skill': return <SkillManagerTab />;
+      case 'gene': return <GeneManagerTab />;
       case 'learning': return <LearningSettings />;
       case 'heuristics': return <HeuristicsSettings />;
       case 'security': return <SecuritySettings />;

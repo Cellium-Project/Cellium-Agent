@@ -127,6 +127,7 @@
       "agent": "Agent Behavior",
       "memory": "Memory System",
       "skill": "Skill Manager",
+      "gene": "Gene Manager",
       "learning": "Learning Config",
       "heuristics": "Heuristics Engine",
       "security": "Security Policy",
@@ -555,6 +556,34 @@
     "installedAt": "Installed At",
     "filePath": "File Path",
     "frontmatter": "Metadata",
+    "operationSuccess": "Operation successful"
+  },
+  "gene": {
+    "stats": {
+      "totalGenes": "Total Genes",
+      "totalUsage": "Total Usage",
+      "avgSuccessRate": "Avg Success Rate",
+      "evolvedGenes": "Evolved Genes"
+    },
+    "searchPlaceholder": "Search Gene task type or content...",
+    "listTitle": "Gene List",
+    "empty": "No Genes",
+    "noMatch": "No matching Genes",
+    "selectGene": "Select a Gene to view details",
+    "viewDetail": "Details",
+    "edit": "Edit",
+    "evolve": "Evolve",
+    "evolved": "Evolved",
+    "usageCount": "Usage Count",
+    "successRate": "Success Rate",
+    "avgReward": "Avg Reward",
+    "avgDuration": "Avg Duration",
+    "recentResults": "Recent Results",
+    "success": "Success",
+    "failure": "Failure",
+    "content": "Content",
+    "evolutionHistory": "Evolution History",
+    "consecutiveFailureWarning": "{{count}} consecutive failures",
     "operationSuccess": "Operation successful"
   },
   "errors": {

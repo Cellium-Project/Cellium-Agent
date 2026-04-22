@@ -35,6 +35,8 @@ class Observation:
     matched_expectation: bool = True
     needs_replan: bool = False
     replan_reason: str = ""
+    suggest_replan: bool = False 
+    suggestion_reason: str = ""   
 
 
 @dataclass
@@ -67,11 +69,13 @@ class HybridController:
         max_replans: int = 3,
         observe_after_each_step: bool = True,
         auto_continue_on_success: bool = True,
+        suggest_replan_on_mismatch: bool = True,  # 预期不匹配时建议而非强制重新规划
     ):
         self.max_plan_steps = max_plan_steps
         self.max_replans = max_replans
         self.observe_after_each_step = observe_after_each_step
         self.auto_continue_on_success = auto_continue_on_success
+        self.suggest_replan_on_mismatch = suggest_replan_on_mismatch
         self._state = HybridState()
     
     @property
@@ -179,7 +183,32 @@ class HybridController:
         output_preview = output_str[:200] if len(output_str) > 200 else output_str
         
         matched = self._check_expectation(step, success, output_str)
-        needs_replan = not matched or not success
+        
+        # 区分强制重新规划和建议重新规划
+        if not success:
+            # 工具执行失败 - 强制重新规划
+            needs_replan = True
+            suggest_replan = False
+            replan_reason = f"工具 {step.tool} 执行失败"
+            suggestion_reason = ""
+        elif not matched and self.suggest_replan_on_mismatch:
+            # 预期不匹配 - 建议重新规划（非强制）
+            needs_replan = False
+            suggest_replan = True
+            replan_reason = ""
+            suggestion_reason = f"结果可能与预期不符: 期望 '{step.expected_result}'，请评估是否需要调整计划"
+        elif not matched:
+            # 预期不匹配且强制模式 - 强制重新规划
+            needs_replan = True
+            suggest_replan = False
+            replan_reason = f"结果不符合预期: 期望 '{step.expected_result}'"
+            suggestion_reason = ""
+        else:
+            # 成功且匹配
+            needs_replan = False
+            suggest_replan = False
+            replan_reason = ""
+            suggestion_reason = ""
         
         obs = Observation(
             step=step,
@@ -188,7 +217,9 @@ class HybridController:
             output_preview=output_preview,
             matched_expectation=matched,
             needs_replan=needs_replan,
-            replan_reason="" if matched else self._get_replan_reason(step, success, output_str),
+            replan_reason=replan_reason,
+            suggest_replan=suggest_replan,
+            suggestion_reason=suggestion_reason,
         )
         
         self._state.last_observation = obs
@@ -205,6 +236,7 @@ class HybridController:
             )
             return obs
         
+        # 强制重新规划（仅当执行失败时）
         if needs_replan and self._state.replan_count < self.max_replans:
             self._state.phase = HybridPhase.REPLAN
             self._state.replan_count += 1
@@ -216,6 +248,19 @@ class HybridController:
                 "[Hybrid] 局部重规划 | 原因: %s | replan_count: %d | 已执行 %d 步 | 保留成功步骤",
                 obs.replan_reason, self._state.replan_count, failed_step_index
             )
+        # 建议重新规划（仅记录日志，不强制）
+        elif suggest_replan:
+            logger.info(
+                "[Hybrid] 建议重新规划 | reason=%s | 由 Agent 决定是否调整",
+                obs.suggestion_reason
+            )
+            # 继续执行，不进入 REPLAN 阶段
+            if not self._state.pending_steps:
+                self._state.phase = HybridPhase.DONE
+                logger.info("[Hybrid] 计划执行完成")
+            else:
+                self._state.phase = HybridPhase.EXECUTE
+                logger.info("[Hybrid] 继续执行下一步")
         elif not self._state.pending_steps:
             self._state.phase = HybridPhase.DONE
             logger.info("[Hybrid] 计划执行完成")
@@ -352,6 +397,9 @@ class HybridController:
         
         if self._state.last_observation:
             detail = self._state.last_observation.replan_reason or detail
+            # 添加建议信息
+            if self._state.last_observation.suggest_replan:
+                detail = self._state.last_observation.suggestion_reason
         
         return {
             "phase": self._state.phase.value,
@@ -362,6 +410,8 @@ class HybridController:
             "plan_steps": len(self._state.current_plan),
             "executed_steps": len(self._state.executed_steps),
             "replan_count": self._state.replan_count,
+            "suggest_replan": self._state.last_observation.suggest_replan if self._state.last_observation else False,
+            "suggestion_reason": self._state.last_observation.suggestion_reason if self._state.last_observation else "",
         }
     
     def sync_to_loop_state(self, loop_state: Any) -> None:
@@ -372,7 +422,10 @@ class HybridController:
         loop_state.hybrid_needs_replan = self._state.phase == HybridPhase.REPLAN
         
         if self._state.last_observation:
-            loop_state.hybrid_last_observation = self._state.last_observation.replan_reason or "ok"
+            if self._state.last_observation.suggest_replan:
+                loop_state.hybrid_last_observation = f"[建议] {self._state.last_observation.suggestion_reason}"
+            else:
+                loop_state.hybrid_last_observation = self._state.last_observation.replan_reason or "ok"
         else:
             loop_state.hybrid_last_observation = None
         

@@ -150,6 +150,20 @@ class FeedbackEvaluator:
 
         return reward
 
+    def evaluate_with_gene_evolution(self, state: LoopState, task_type: str = "") -> float:
+        reward = self.evaluate(state)
+        
+        from .hard_constraints import GeneEvolution
+        
+        if reward < 0.5 and task_type:
+            avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
+            if avoid_cue:
+                GeneEvolution.update_gene_from_failure(task_type, avoid_cue, state, reward)
+        elif reward >= 0.5 and task_type:
+            GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
+        
+        return reward
+
     def explain(self, state: LoopState) -> Dict[str, Any]:
         success = self._is_round_success(state)
 

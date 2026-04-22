@@ -97,7 +97,19 @@ class ControlLoop:
         return decision
 
     def end_round(self, state: LoopState) -> float:
-        reward = self.evaluator.evaluate(state)
+        task_type = ""
+        user_input = getattr(state, 'user_input', '')
+        if user_input:
+            from .hard_constraints import TaskSignalMatcher
+            matched = TaskSignalMatcher.match(user_input)
+            if matched:
+                task_type = matched.get("task_type", "")
+
+        if task_type:
+            reward = self.evaluator.evaluate_with_gene_evolution(state, task_type)
+        else:
+            reward = self.evaluator.evaluate(state)
+
         state.round_reward = reward
         state.cumulative_reward += reward
 
@@ -277,9 +289,6 @@ class ControlLoop:
         bandit_used: bool = False,
         rule_decisions: Optional[Dict[str, Any]] = None,
     ) -> ControlDecision:
-        """
-        根据 Action 构建具体决策
-        """
         decision = ControlDecision(action_type=action)
         decision.params.update({
             "candidate_actions": candidate_actions or [action],
@@ -297,6 +306,31 @@ class ControlLoop:
             decision.guidance_message = self._build_redirect_message(features, redirect_suggestions)
             decision.suggested_tools = self._get_alternative_tools(state)
             decision.params["redirect_suggestions"] = redirect_suggestions
+            
+            from .hard_constraints import HardConstraintTemplates
+            constraint = HardConstraintTemplates.render_for_task(
+                user_input=state.user_input or "",
+                action=action
+            )
+            decision.params["hard_constraint"] = constraint.hard_constraints
+            decision.params["task_type"] = constraint.trigger_reason
+            if constraint.forbidden:
+                decision.forbidden_tools = constraint.forbidden
+            if constraint.preferred:
+                decision.suggested_tools = constraint.preferred
+
+        elif action == "retry":
+            from .hard_constraints import HardConstraintTemplates
+            constraint = HardConstraintTemplates.render_for_task(
+                user_input=state.user_input or "",
+                action=action
+            )
+            decision.params["hard_constraint"] = constraint.hard_constraints
+            decision.params["task_type"] = constraint.trigger_reason
+            if constraint.forbidden:
+                decision.forbidden_tools = constraint.forbidden
+            if constraint.preferred:
+                decision.suggested_tools = constraint.preferred
 
         elif action == "compress":
             decision.force_memory_compact = True

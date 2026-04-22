@@ -2607,3 +2607,43 @@ input:focus, select:focus, textarea:focus {
     transform-origin: center;
 }
 
+.memory-status-pill.good {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.memory-status-pill.medium {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.memory-status-pill.poor {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.gene-result-dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+}
+
+.gene-result-dot.success {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.gene-result-dot.failure {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.spin {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+

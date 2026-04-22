@@ -21,6 +21,8 @@ Based on microkernel architecture (EventBus + DI + BaseTool), supporting any Ope
 
 Core design: Self-learning Agent driven by Control Loop, with adaptive decision optimization through Bayesian Bandit.
 
+> Thanks to the [Strategy Gene](https://arxiv.org/abs/2604.15097) research team. This project adopts their compact experience representation method, enabling the Agent to automatically learn avoidance strategies from failures.
+
 ## Features
 
 | Feature | Description |
@@ -578,6 +580,29 @@ Cellium-Agent/
 ├── tests/                      # Unit tests
 └── main.py                     # Entry file
 ```
+
+## Strategy Gene (GEP) Integration
+
+This project adopts the [Strategy Gene](https://arxiv.org/abs/2604.15097) design proposed in the paper "From Procedural Skills to Strategy Genes: Towards Experience-Driven Test-Time Evolution" (arXiv:2604.15097).
+
+### Implementation
+
+The paper proposes encoding experience into compact Gene objects (~230 tokens) instead of documentation-heavy Skill packages (~2,500 tokens). This project implements this in the Control Loop's Hard Constraint layer:
+
+- **Task Matching**: Match Gene templates using keywords from user input
+- **Dynamic Injection**: Inject matched Gene as system prompt into LLM
+- **Experience Evolution**: Automatically extract Avoid_Cues from failure feedback and update Gene
+
+### Implemented Features
+
+| Paper Concept | This Project Implementation |
+|---------------|----------------------------|
+| Gene Structure | `[HARD CONSTRAINTS]` + `[CONTROL ACTION]` + `[AVOID]` |
+| Task Matching | `TaskSignalMatcher` keyword matching |
+| Avoid_Cues | Auto-extract from failure feedback, write to `[AVOID]` section |
+| Version Management | `version` field + `evolution_history` tracking changes |
+| Effect Evaluation | `success_rate`, `avg_reward`, `consecutive_success/failure` |
+| Cross Combination | `GeneComposer` merges multiple Genes for multi-task scenarios |
 
 ## License
 

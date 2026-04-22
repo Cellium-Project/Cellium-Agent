@@ -111,9 +111,11 @@ class DecisionRenderer:
         return result
 
     def _render_redirect(self, decision: ControlDecision) -> RenderedPrompt:
-        """渲染 redirect 决策"""
         result = RenderedPrompt()
         result.suggested_tools = decision.suggested_tools or []
+
+        if decision.params.get("hard_constraint"):
+            result.system_injection = decision.params["hard_constraint"]
 
         reasons = []
         if decision.guidance_message:

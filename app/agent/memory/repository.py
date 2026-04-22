@@ -44,7 +44,7 @@ class MemoryRepository:
         "project": "project",
         "troubleshooting": "issue",
     }
-    VALID_SCHEMA_TYPES = {"general", "profile", "project", "issue"}
+    VALID_SCHEMA_TYPES = {"general", "profile", "project", "issue", "control_gene"}
     ACTIVE_STATUSES = {"active"}
     STRONG_SECRET_PATTERNS = [
         ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)),

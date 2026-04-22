@@ -126,6 +126,7 @@
       "agent": "Agent 行为",
       "memory": "记忆系统",
       "skill": "Skill 管理",
+      "gene": "Gene 管理",
       "learning": "学习配置",
       "heuristics": "启发式引擎",
       "security": "安全策略",
@@ -567,6 +568,34 @@
     "installedAt": "安装时间",
     "filePath": "文件路径",
     "frontmatter": "元信息",
+    "operationSuccess": "操作成功"
+  },
+  "gene": {
+    "stats": {
+      "totalGenes": "Gene 总数",
+      "totalUsage": "总使用次数",
+      "avgSuccessRate": "平均成功率",
+      "evolvedGenes": "已进化数"
+    },
+    "searchPlaceholder": "搜索 Gene 任务类型或内容...",
+    "listTitle": "Gene 列表",
+    "empty": "暂无 Gene",
+    "noMatch": "没有匹配的 Gene",
+    "selectGene": "选择一个 Gene 查看详情",
+    "viewDetail": "详情",
+    "edit": "编辑",
+    "evolve": "进化",
+    "evolved": "已进化",
+    "usageCount": "使用次数",
+    "successRate": "成功率",
+    "avgReward": "平均奖励",
+    "avgDuration": "平均耗时",
+    "recentResults": "最近表现",
+    "success": "成功",
+    "failure": "失败",
+    "content": "内容",
+    "evolutionHistory": "进化历史",
+    "consecutiveFailureWarning": "连续失败 {{count}} 次",
     "operationSuccess": "操作成功"
   },
   "errors": {

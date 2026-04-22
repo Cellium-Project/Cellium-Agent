@@ -60,6 +60,13 @@ export const API = {
   skillInstall: `${API_BASE}/skills/install`,
   skillRefreshIndex: `${API_BASE}/skills/refresh-index`,
 
+  // Genes
+  genes: `${API_BASE}/genes`,
+  geneStats: `${API_BASE}/genes/stats`,
+  geneDetail: (geneId: string) => `${API_BASE}/genes/${geneId}`,
+  geneEvolve: (geneId: string) => `${API_BASE}/genes/${geneId}/evolve`,
+  geneDelete: (geneId: string) => `${API_BASE}/genes/${geneId}`,
+
   health: `${API_BASE}/health`,
 } as const;
 
@@ -97,5 +104,11 @@ export async function putJSON<T>(url: string, data: any): Promise<T> {
   return fetchJSON<T>(url, {
     method: 'PUT',
     body: JSON.stringify(data),
+  });
+}
+
+export async function deleteJSON<T>(url: string): Promise<T> {
+  return fetchJSON<T>(url, {
+    method: 'DELETE',
   });
 }

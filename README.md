@@ -22,6 +22,8 @@
 
 核心设计：决策环（Control Loop）驱动的自学习 Agent，通过贝叶斯 Bandit 实现自适应决策优化。
 
+> 感谢 [Strategy Gene](https://arxiv.org/abs/2604.15097) 研究团队，本项目参考并使用了其提出的紧凑经验表示方法，让 Agent 从失败中自动进化，持续优化决策策略。
+
 ## 特性
 
 | 特性 | 说明 |
@@ -615,6 +617,29 @@ Cellium-Agent/
 ├── tests/                      # 单元测试
 └── main.py                     # 入口文件
 ```
+
+## Strategy Gene (GEP) 集成
+
+Cellium Agent --- **2026-04-22** 引入 [Strategy Gene](https://arxiv.org/abs/2604.15097) 论文设计理念。
+
+### 实现方式
+
+论文提出将经验编码为紧凑的 Gene 对象（~230 tokens），替代文档型 Skill 包（~2,500 tokens）。本项目在 Control Loop 的 Hard Constraint 层实现：
+
+- **任务匹配**：用户输入关键词匹配 Gene 模板
+- **动态注入**：匹配到的 Gene 作为系统提示注入 LLM
+- **经验进化**：失败时自动提取 Avoid_Cues 并更新 Gene
+
+### 实现的功能
+
+| 论文概念 | 本项目实现 |
+|----------|-----------|
+| Gene 结构 | `[HARD CONSTRAINTS]` + `[CONTROL ACTION]` + `[AVOID]` |
+| 任务匹配 | `TaskSignalMatcher` 关键词匹配 |
+| Avoid_Cues | 从失败反馈自动提取，写入 `[AVOID]` 段 |
+| 版本管理 | `version` 字段 + `evolution_history` 记录变更 |
+| 效果评估 | `success_rate`, `avg_reward`, `consecutive_success/failure` |
+| 交叉组合 | `GeneComposer` 多任务时合并多个 Gene |
 
 ## License
 

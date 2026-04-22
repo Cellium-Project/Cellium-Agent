@@ -125,6 +125,8 @@
       "model": "模型設定",
       "agent": "Agent 行為",
       "memory": "記憶系統",
+      "skill": "Skill 管理",
+      "gene": "Gene 管理",
       "learning": "學習設定",
       "heuristics": "啟發式引擎",
       "security": "安全策略",
@@ -554,6 +556,34 @@
     "installedAt": "安裝時間",
     "filePath": "檔案路徑",
     "frontmatter": "元資訊",
+    "operationSuccess": "操作成功"
+  },
+  "gene": {
+    "stats": {
+      "totalGenes": "Gene 總數",
+      "totalUsage": "總使用次數",
+      "avgSuccessRate": "平均成功率",
+      "evolvedGenes": "已進化數"
+    },
+    "searchPlaceholder": "搜尋 Gene 任務類型或內容...",
+    "listTitle": "Gene 列表",
+    "empty": "暫無 Gene",
+    "noMatch": "沒有符合的 Gene",
+    "selectGene": "選擇一個 Gene 查看詳情",
+    "viewDetail": "詳情",
+    "edit": "編輯",
+    "evolve": "進化",
+    "evolved": "已進化",
+    "usageCount": "使用次數",
+    "successRate": "成功率",
+    "avgReward": "平均獎勵",
+    "avgDuration": "平均耗時",
+    "recentResults": "最近表現",
+    "success": "成功",
+    "failure": "失敗",
+    "content": "內容",
+    "evolutionHistory": "進化歷史",
+    "consecutiveFailureWarning": "連續失敗 {{count}} 次",
     "operationSuccess": "操作成功"
   },
   "errors": {

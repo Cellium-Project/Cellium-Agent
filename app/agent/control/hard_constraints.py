@@ -11,6 +11,7 @@ HardConstraintRenderer - 强约束渲染器 (PromptBuilder v3)
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -166,9 +167,568 @@ class FailureConditionBuilder:
         return "\n".join(lines)
 
 
-class ActionFusion:
-    """多 Action 融合策略"""
+class TaskSignalMatcher:
+    _repository = None
+    _cache: Dict[str, Any] = {}
+    _cache_loaded = False
 
+    TASK_PATTERNS = {
+        "code_debug": {
+            "signals": ["debug", "fix", "error", "bug", "exception", "traceback", "报错", "错误", "调试"],
+            "gene_template": """[HARD CONSTRAINTS]
+Debug task detected. Follow strict protocol.
+[CONTROL ACTION]
+MUST: 1) Read error location 2) Analyze root cause 3) Fix minimal code
+MUST NOT: Guess without reading code, change unrelated files
+[AVOID]
+- Don't ignore error line numbers
+- Don't fix symptoms without understanding cause""",
+            "forbidden_tools": ["web_search"],
+            "preferred_tools": ["file", "shell"],
+        },
+        "file_operation": {
+            "signals": ["read", "write", "edit", "create", "delete", "file", "文件", "写入", "读取"],
+            "gene_template": """[HARD CONSTRAINTS]
+File operation task. Safety first.
+[CONTROL ACTION]
+MUST: 1) Check file exists 2) Backup before write 3) Verify after change
+MUST NOT: Overwrite without reading, delete recursively
+[AVOID]
+- Don't assume file structure
+- Don't write without verification""",
+            "forbidden_tools": [],
+            "preferred_tools": ["file"],
+        },
+        "web_search": {
+            "signals": ["search", "find", "google", "lookup", "query", "搜索", "查找"],
+            "gene_template": """[HARD CONSTRAINTS]
+Search task. Precision required.
+[CONTROL ACTION]
+MUST: 1) Use specific keywords 2) Verify source reliability 3) Synthesize answer
+MUST NOT: Rely on single source, copy without understanding
+[AVOID]
+- Don't use vague search terms
+- Don't trust unverified sources""",
+            "forbidden_tools": ["shell"],
+            "preferred_tools": ["web_search"],
+        },
+    }
+
+    @classmethod
+    def set_repository(cls, repository):
+        cls._repository = repository
+        cls._cache_loaded = False
+        cls._cache.clear()
+
+    @classmethod
+    def _load_from_repository(cls):
+        if not cls._repository or cls._cache_loaded:
+            return
+        try:
+            results = cls._repository.search_memories(
+                query="control_gene strategy",
+                schema_type="control_gene",
+                top_k=10
+            )
+            for item in results:
+                metadata = item.get("metadata", {})
+                task_type = metadata.get("task_type")
+                if task_type:
+                    cls._cache[task_type] = {
+                        "task_type": task_type,
+                        "gene_template": item.get("content", ""),
+                        "forbidden_tools": metadata.get("forbidden_tools", []),
+                        "preferred_tools": metadata.get("preferred_tools", []),
+                        "signals": metadata.get("signals", []),
+                    }
+            cls._cache_loaded = True
+        except Exception:
+            pass
+
+    @classmethod
+    def _save_to_repository(cls, task_type: str, config: Dict[str, Any]):
+        if not cls._repository:
+            return
+        try:
+            cls._repository.upsert_memory(
+                title=f"Gene: {task_type}",
+                content=config["gene_template"],
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=f"gene:{task_type}",
+                metadata={
+                    "task_type": task_type,
+                    "signals": config.get("signals", []),
+                    "forbidden_tools": config.get("forbidden_tools", []),
+                    "preferred_tools": config.get("preferred_tools", []),
+                }
+            )
+        except Exception:
+            pass
+
+    @classmethod
+    def _init_builtin_genes(cls):
+        if not cls._repository:
+            return
+        for task_type, config in cls.TASK_PATTERNS.items():
+            cls._save_to_repository(task_type, config)
+
+    @classmethod
+    def match(cls, user_input: str) -> Optional[Dict[str, Any]]:
+        if not user_input:
+            return None
+        
+        cls._load_from_repository()
+        
+        user_lower = user_input.lower()
+        
+        for task_type, config in cls._cache.items():
+            signals = config.get("signals", [])
+            if any(signal in user_lower for signal in signals):
+                return {
+                    "task_type": task_type,
+                    "gene_template": config["gene_template"],
+                    "forbidden_tools": config["forbidden_tools"],
+                    "preferred_tools": config["preferred_tools"],
+                }
+        
+        for task_type, config in cls.TASK_PATTERNS.items():
+            if any(signal in user_lower for signal in config["signals"]):
+                if cls._repository:
+                    cls._save_to_repository(task_type, config)
+                return {
+                    "task_type": task_type,
+                    "gene_template": config["gene_template"],
+                    "forbidden_tools": config["forbidden_tools"],
+                    "preferred_tools": config["preferred_tools"],
+                }
+        return None
+
+    @classmethod
+    def initialize(cls, repository=None):
+        if repository:
+            cls.set_repository(repository)
+            cls._init_builtin_genes()
+            cls._load_from_repository()
+
+
+class HardConstraintTemplates:
+    REDIRECT_HARD = """[HARD CONSTRAINTS]
+You MUST obey control instruction. Violations = incorrect.
+[CONTROL ACTION]
+Action: REDIRECT
+MUST: Change strategy, use different tool.
+MUST NOT: Repeat same tool, continue same path.
+[CONTEXT HINT]
+Current approach may be stuck."""
+
+    REDIRECT_FORBIDDEN_TOOLS = """[HARD CONSTRAINTS]
+You MUST obey control instruction. Violations = incorrect.
+[CONTROL ACTION]
+Action: REDIRECT
+MUST: Use {forbidden_tools}, switch approach.
+MUST NOT: Repeat {last_tool}.
+[CONTEXT HINT]
+Try {suggested_tools}."""
+
+    COMPRESS_HARD = """[HARD CONSTRAINTS]
+You MUST obey control instruction. Violations = incorrect.
+[CONTROL ACTION]
+Action: COMPRESS
+MUST: Summarize in ≤{max_tokens} tokens, bullet points.
+MUST NOT: Repeat details, expand new ideas.
+[CONTEXT HINT]
+Context saturated. Prioritize key facts."""
+
+    TERMINATE_HARD = """[HARD CONSTRAINTS]
+You MUST follow termination signal. This is FINAL.
+[CONTROL ACTION]
+Action: TERMINATE
+MUST: Stop immediately, provide summary + next steps.
+MUST NOT: Continue exploration, request more input.
+[FAILURE CONDITIONS]
+- If you continue after this signal = FAILED
+- If you ignore summary request = FAILED"""
+
+    COMPRESS_REDIRECT_HARD = """[HARD CONSTRAINTS]
+You MUST obey control instruction. Violations = incorrect.
+[CONTROL ACTION]
+Action: COMPRESS + REDIRECT
+MUST: Summarize first (≤{max_tokens} tokens), then change tool.
+MUST NOT: Repeat details, use same tool.
+[CONTEXT HINT]
+Stuck + context saturated."""
+
+    RETRY_HARD = """[HARD CONSTRAINTS]
+You MUST obey control instruction. Violations = incorrect.
+[CONTROL ACTION]
+Action: RETRY
+MUST: Keep direction, adjust prompt/params.
+MUST NOT: Repeat exact same approach.
+[CONTEXT HINT]
+Minor stuck. Try refinement."""
+
+    COMPRESS_RETRY_HARD = """[HARD CONSTRAINTS]
+You MUST obey control instruction. Violations = incorrect.
+[CONTROL ACTION]
+Action: COMPRESS + RETRY
+MUST: Summarize first (≤{max_tokens} tokens), then refine approach.
+MUST NOT: Repeat details, use exact same params.
+[CONTEXT HINT]
+Stuck + need refinement."""
+
+    CONTINUE_HARD = ""
+
+    @classmethod
+    def get_template(cls, action: str) -> str:
+        return getattr(cls, action.upper() + "_HARD", cls.CONTINUE_HARD)
+
+    @classmethod
+    def render_for_task(cls, user_input: str, action: str) -> HardConstraint:
+        matches = GeneComposer.match_multiple(user_input)
+        composed = GeneComposer.compose(matches)
+        
+        if composed and action in ["redirect", "retry"]:
+            component_tasks = composed.get("component_tasks", [])
+            if len(component_tasks) > 1:
+                return HardConstraint(
+                    hard_constraints=composed["gene_template"],
+                    failure_conditions="[FAILURE CONDITIONS]\n- Ignoring multi-task protocol = FAILED",
+                    trigger_reason=f"Combined tasks: {','.join(component_tasks)}",
+                    forbidden=composed["forbidden_tools"],
+                    preferred=composed["preferred_tools"],
+                    max_tokens=500,
+                )
+            else:
+                return HardConstraint(
+                    hard_constraints=composed["gene_template"],
+                    failure_conditions="[FAILURE CONDITIONS]\n- Ignoring task-specific protocol = FAILED",
+                    trigger_reason=f"Task signal matched: {composed['task_type']}",
+                    forbidden=composed["forbidden_tools"],
+                    preferred=composed["preferred_tools"],
+                    max_tokens=300,
+                )
+        
+        template = cls.get_template(action)
+        return HardConstraint(
+            hard_constraints=template,
+            failure_conditions="",
+            trigger_reason="Generic rule triggered",
+            forbidden=[],
+            preferred=[],
+            max_tokens=80,
+        )
+
+
+class GeneEvolution:
+    MAX_RECENT_RESULTS = 20
+
+    @classmethod
+    def extract_avoid_cue(cls, state: "LoopState", reward: float) -> Optional[str]:
+        if reward >= 0.5:
+            return None
+        
+        avoid_cue = None
+        
+        if state.last_error:
+            avoid_cue = f"DON'T: Cause error '{state.last_error[:50]}'"
+        elif state.features and state.features.stuck_iterations > 2:
+            avoid_cue = f"DON'T: Get stuck for {state.features.stuck_iterations} iterations"
+        elif state.features and state.features.repetition_score > 0.5:
+            avoid_cue = "DON'T: Repeat the same tool call"
+        elif state.decision_trace:
+            last_decision = state.decision_trace[-1]
+            if last_decision.action_type == "redirect":
+                avoid_cue = "DON'T: Ignore redirect guidance"
+        
+        return avoid_cue
+    
+    @classmethod
+    def _update_recent_results(cls, metadata: Dict, success: bool, reward: float, elapsed_ms: int):
+        recent_results = metadata.get("recent_results", [])
+        recent_results.append({
+            "success": success,
+            "reward": reward,
+            "duration_ms": elapsed_ms,
+            "at": datetime.now().isoformat(),
+        })
+        if len(recent_results) > cls.MAX_RECENT_RESULTS:
+            recent_results = recent_results[-cls.MAX_RECENT_RESULTS:]
+        
+        avg_reward = sum(r["reward"] for r in recent_results) / len(recent_results)
+        avg_duration = sum(r["duration_ms"] for r in recent_results) / len(recent_results)
+        
+        consecutive_success = 0
+        consecutive_failure = 0
+        for r in reversed(recent_results):
+            if r["success"]:
+                consecutive_success += 1
+                consecutive_failure = 0
+            else:
+                consecutive_failure += 1
+                consecutive_success = 0
+        
+        return {
+            "recent_results": recent_results,
+            "avg_reward": avg_reward,
+            "avg_duration_ms": avg_duration,
+            "consecutive_success": consecutive_success,
+            "consecutive_failure": consecutive_failure,
+        }
+    
+    @classmethod
+    def update_gene_from_failure(cls, task_type: str, avoid_cue: str, state: "LoopState", reward: float = 0.0):
+        if not TaskSignalMatcher._repository or not avoid_cue:
+            return
+        
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query=f"gene:{task_type}",
+                schema_type="control_gene",
+                top_k=1
+            )
+            
+            if not results:
+                return
+            
+            gene = results[0]
+            content = gene.get("content", "")
+            metadata = gene.get("metadata", {})
+            
+            if avoid_cue in content:
+                return
+            
+            avoid_section = "[AVOID]"
+            if avoid_section in content:
+                content = content.replace(
+                    avoid_section,
+                    f"{avoid_section}\n- {avoid_cue}"
+                )
+            else:
+                content += f"\n\n[AVOID]\n- {avoid_cue}"
+            
+            current_version = metadata.get("version", 1)
+            new_version = current_version + 1
+            
+            evolution_history = metadata.get("evolution_history", [])
+            evolution_history.append({
+                "version": new_version,
+                "change": f"add: {avoid_cue[:40]}",
+                "at": datetime.now().isoformat(),
+            })
+            
+            usage_count = metadata.get("usage_count", 0) + 1
+            failure_count = metadata.get("failure_count", 0) + 1
+            
+            result_updates = cls._update_recent_results(metadata, False, reward, state.elapsed_ms)
+            
+            TaskSignalMatcher._repository.upsert_memory(
+                title=gene.get("title", f"Gene: {task_type}"),
+                content=content,
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=gene.get("memory_key", f"gene:{task_type}"),
+                metadata={
+                    **metadata,
+                    "version": new_version,
+                    "evolution_history": evolution_history,
+                    "usage_count": usage_count,
+                    "failure_count": failure_count,
+                    "last_failure_at": datetime.now().isoformat(),
+                    "evolved": True,
+                    **result_updates,
+                }
+            )
+            
+            TaskSignalMatcher._cache_loaded = False
+            
+        except Exception:
+            pass
+    
+    @classmethod
+    def record_success(cls, task_type: str, reward: float = 1.0, elapsed_ms: int = 0):
+        if not TaskSignalMatcher._repository or not task_type:
+            return
+        
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query=f"gene:{task_type}",
+                schema_type="control_gene",
+                top_k=1
+            )
+            
+            if not results:
+                return
+            
+            gene = results[0]
+            metadata = gene.get("metadata", {})
+            
+            usage_count = metadata.get("usage_count", 0) + 1
+            success_count = metadata.get("success_count", 0) + 1
+            
+            result_updates = cls._update_recent_results(metadata, True, reward, elapsed_ms)
+            
+            TaskSignalMatcher._repository.upsert_memory(
+                title=gene.get("title", f"Gene: {task_type}"),
+                content=gene.get("content", ""),
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=gene.get("memory_key", f"gene:{task_type}"),
+                metadata={
+                    **metadata,
+                    "usage_count": usage_count,
+                    "success_count": success_count,
+                    "success_rate": success_count / usage_count,
+                    "last_success_at": datetime.now().isoformat(),
+                    **result_updates,
+                }
+            )
+        except Exception:
+            pass
+
+
+class GeneComposer:
+    TASK_PRIORITY = {
+        "code_debug": 100,
+        "file_operation": 90,
+        "web_search": 80,
+    }
+
+    @classmethod
+    def match_multiple(cls, user_input: str) -> List[Dict[str, Any]]:
+        if not user_input:
+            return []
+
+        user_lower = user_input.lower()
+        matches = []
+
+        for task_type, config in TaskSignalMatcher._cache.items():
+            signals = config.get("signals", [])
+            if any(signal in user_lower for signal in signals):
+                matches.append({
+                    "task_type": task_type,
+                    "gene_template": config["gene_template"],
+                    "forbidden_tools": config["forbidden_tools"],
+                    "preferred_tools": config["preferred_tools"],
+                    "priority": cls.TASK_PRIORITY.get(task_type, 50),
+                })
+
+        for task_type, config in TaskSignalMatcher.TASK_PATTERNS.items():
+            if any(signal in user_lower for signal in config["signals"]):
+                if not any(m["task_type"] == task_type for m in matches):
+                    matches.append({
+                        "task_type": task_type,
+                        "gene_template": config["gene_template"],
+                        "forbidden_tools": config["forbidden_tools"],
+                        "preferred_tools": config["preferred_tools"],
+                        "priority": cls.TASK_PRIORITY.get(task_type, 50),
+                    })
+
+        matches.sort(key=lambda x: x["priority"], reverse=True)
+        return matches
+
+    @classmethod
+    def compose(cls, matches: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not matches:
+            return None
+
+        if len(matches) == 1:
+            return matches[0]
+
+        task_types = [m["task_type"] for m in matches]
+        combined_forbidden = list(set(
+            tool for m in matches for tool in m["forbidden_tools"]
+        ))
+        combined_preferred = list(set(
+            tool for m in matches for m in matches for tool in m["preferred_tools"]
+        ))
+
+        hard_constraints = cls._build_combined_constraints(matches)
+
+        return {
+            "task_type": f"combined:{','.join(task_types)}",
+            "gene_template": hard_constraints,
+            "forbidden_tools": combined_forbidden,
+            "preferred_tools": combined_preferred,
+            "component_tasks": task_types,
+        }
+
+    @classmethod
+    def _build_combined_constraints(cls, matches: List[Dict[str, Any]]) -> str:
+        task_types = [m["task_type"] for m in matches]
+
+        lines = [
+            "[HARD CONSTRAINTS]",
+            f"Multi-task: {' + '.join(task_types)}",
+            "",
+            "[CONTROL ACTION]",
+        ]
+
+        for i, match in enumerate(matches, 1):
+            task_type = match["task_type"]
+            template = match["gene_template"]
+
+            must_section = cls._extract_section(template, "MUST:")
+            must_not_section = cls._extract_section(template, "MUST NOT:")
+
+            lines.append(f"STEP {i} [{task_type}]:")
+            if must_section:
+                lines.append(f"  MUST: {must_section}")
+            if must_not_section:
+                lines.append(f"  MUST NOT: {must_not_section}")
+            lines.append("")
+
+        avoid_items = set()
+        for match in matches:
+            template = match["gene_template"]
+            items = cls._extract_avoid_items(template)
+            avoid_items.update(items)
+
+        if avoid_items:
+            lines.append("[AVOID]")
+            for item in sorted(avoid_items):
+                lines.append(f"- {item}")
+
+        return "\n".join(lines)
+
+    @classmethod
+    def _extract_section(cls, template: str, marker: str) -> str:
+        lines = template.split("\n")
+        result = []
+        capturing = False
+
+        for line in lines:
+            if marker in line:
+                capturing = True
+                result.append(line.split(marker, 1)[-1].strip())
+            elif capturing:
+                if line.strip().startswith("MUST") or line.strip().startswith("["):
+                    break
+                if line.strip():
+                    result.append(line.strip())
+
+        return " ".join(result) if result else ""
+
+    @classmethod
+    def _extract_avoid_items(cls, template: str) -> List[str]:
+        lines = template.split("\n")
+        items = []
+        in_avoid = False
+
+        for line in lines:
+            if "[AVOID]" in line:
+                in_avoid = True
+                continue
+            if in_avoid:
+                if line.strip().startswith("["):
+                    break
+                if line.strip().startswith("-"):
+                    items.append(line.strip()[1:].strip())
+
+        return items
+
+
+class ActionFusion:
     PRIORITY = {
         "terminate": 100,
         "compress": 50,
@@ -184,17 +744,13 @@ class ActionFusion:
 
     @classmethod
     def fuse(cls, actions: List[str]) -> str:
-        """融合多个 action"""
         if not actions:
             return "continue"
-
         if "terminate" in actions:
             return "terminate"
-
         action_set = tuple(sorted(set(actions)))
         if action_set in cls.FUSABLE:
             return cls.FUSABLE[action_set]
-
         return max(actions, key=lambda a: cls.PRIORITY.get(a, 0))
 
 

@@ -236,6 +236,14 @@ class TestControlLoopIntegration(unittest.TestCase):
         self.assertEqual(self.state.round_reward, 0.75)
         self.assertEqual(self.state.cumulative_reward, 0.75)
 
+    def test_end_round_with_task_type(self):
+        self.loop.start_session(self.state)
+        self.state.user_input = "debug python code"
+        self.evaluator.evaluate_with_gene_evolution = Mock(return_value=0.75)
+
+        reward = self.loop.end_round(self.state)
+        self.assertEqual(reward, 0.75)
+
     def test_end_round_updates_bandit(self):
         self.loop.start_session(self.state)
 
