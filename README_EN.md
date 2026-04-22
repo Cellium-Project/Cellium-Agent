@@ -28,9 +28,10 @@ Core design: Self-learning Agent driven by Control Loop, with adaptive decision 
 | Runtime Self-Awareness | Real-time perception of running state (progress, stagnation, loops, saturation), dynamically adjusting decisions |
 | Control Loop Architecture | Closed-loop control of decision - execution - feedback - learning in each iteration |
 | Self-Learning System | Action selection based on Bayesian Bandit, continuously optimizing decision strategies |
-| Three-Layer Memory | Personality memory + Session memory + Long-term memory (FTS5 full-text retrieval + 96-dim LSH vector hybrid recall) |
+| Three-Layer Memory | Personality memory + Session memory + Long-term memory (FTS5 full-text retrieval + 96-dim hash vector hybrid recall) |
 | Heuristic Decision Engine | Rule-based feature extraction + Bandit for tie-breaking, balancing interpretability and learning ability |
 | Tool Usage Control | Dynamic prohibition/recommendation of tool switching, avoiding loops from repeated tool calls |
+| Sensitive Info Control | Auto-detect and redact sensitive info like private keys, tokens, passwords; supports write blocking |
 | Component Hot-Plug | Files in app/components/ automatically load and take effect within 3 seconds |
 | Event-Driven Architecture | Publish-subscribe pattern based on EventBus, loose coupling between components |
 | Flash Mode | Skip memory injection to accelerate simple tasks |
@@ -358,7 +359,7 @@ Agent perceives running state in real-time through FeatureExtractor, dynamically
 Long-term memory uses a lightweight hybrid memory retrieval system without external dependencies, achieving locally efficient semantic approximate recall through feature hash vector and full-text retrieval fusion:
 
 - **Dimensions**: 96 dim
-- **Generation**: Locality Sensitive Hashing (LSH) based on SHA1
+- **Generation**: Vector encoding based on SHA1 hashing
   - English: character 3-gram
   - Chinese: word-level bigram + full pinyin hash + pinyin bigram
   - Tokenization (Jieba) + keyword extraction
@@ -368,6 +369,49 @@ Long-term memory uses a lightweight hybrid memory retrieval system without exter
 - **Hybrid Recall**: FTS5 full-text retrieval + vector similarity fusion sorting
 - **Chinese Enhancement**: Pinyin hash for Chinese homophone, pinyin initial matching
 - **Dependencies**: jieba (Chinese tokenization), optional pypinyin (pinyin enhancement)
+
+**Structured Schema & Category System**:
+
+Long-term memory uses a hierarchical classification design. Schema types determine data structure, while Categories determine content types:
+
+**Schema Types (4 types)**:
+
+| Schema Type | Purpose | Included Categories |
+|-------------|---------|---------------------|
+| `general` | General memory, session notes | `general`, `user_info`, `command`, `project` |
+| `profile` | User profile | `preference` |
+| `project` | Project-related | `project` |
+| `issue` | Troubleshooting | `troubleshooting`, `code` |
+
+**Category Classification (7 types)**:
+
+| Category | Description | Source |
+|----------|-------------|--------|
+| `general` | Daily conversations, Q&A | General memory |
+| `user_info` | User preferences, session goals | Session notes (goal/goal_history) |
+| `command` | Executed operation commands | Session notes (completed) |
+| `project` | Project config, key findings | General memory / Session notes (finding) |
+| `preference` | User profile information | General memory |
+| `troubleshooting` | Error records, solutions | General memory / Session notes (error) |
+| `code` | Code-related records | General memory / Session notes |
+
+**Session Compression Auto-Extraction**:
+
+During session compression, the following note types are automatically extracted and mapped to corresponding Categories for long-term memory storage:
+- `goal` / `goal_history` → `user_info`
+- `completed` → `command` / `code`
+- `finding` → `project` / `code` / `command`
+- `error` → `troubleshooting`
+- `pending` → `general`
+
+**Sensitive Information Control**:
+
+The memory system has built-in sensitive information detection and protection mechanisms:
+
+- **Auto-Detection**: Identifies sensitive content like private keys, AWS keys, GitHub tokens, API keys
+- **Redaction**: Automatically replaces sensitive values with `[REDACTED]`
+- **Write Blocking**: High-risk sensitive information (e.g., private keys) is blocked from memory by default
+- **Classification Marking**: Sensitive memories are tagged and can be filtered out during retrieval
 
 ### Heuristic Decision Rules
 
