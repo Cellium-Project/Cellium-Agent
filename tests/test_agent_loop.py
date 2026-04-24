@@ -44,11 +44,12 @@ class MockToolCall:
 class MockResponse:
     """模拟 LLM 响应"""
 
-    def __init__(self, content=None, tool_calls=None, usage=None, finish_reason=None):
+    def __init__(self, content=None, tool_calls=None, usage=None, finish_reason=None, reasoning_content=None):
         self.content = content
         self.tool_calls = tool_calls or []
         self.usage = usage
         self.finish_reason = finish_reason
+        self.reasoning_content = reasoning_content
 
 
 class TestAgentLoopBasic(unittest.TestCase):
