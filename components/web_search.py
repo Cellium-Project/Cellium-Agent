@@ -120,6 +120,9 @@ class WebSearch(BaseCell):
         self._search_cache = {}
         self._user_agent = None
         self._lock = threading.Lock()
+        self._browser_port = None
+        self._browser_path = None
+        self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
 
     @property
     def cell_name(self) -> str:
@@ -207,46 +210,53 @@ class WebSearch(BaseCell):
         return 'baidu'
 
     def _get_options(self):
-        if self._options is None:
-            from DrissionPage import ChromiumOptions
-            self._options = ChromiumOptions()
-            browser_path = find_browser_path()
-            if browser_path:
-                self._options.set_browser_path(browser_path)
-                # Edge 浏览器特殊处理
-                if 'msedge' in browser_path.lower() or 'edge' in browser_path.lower():
-                    self._options.set_argument('--remote-debugging-port=9222')
-                    self._options.set_argument('--no-first-run')
-                    self._options.set_argument('--no-default-browser-check')
-            if self._user_agent is None:
-                try:
-                    from fake_useragent import UserAgent
-                    ua = UserAgent()
-                    self._user_agent = ua.random
-                except Exception:
-                    self._user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            self._options.set_argument('--disable-gpu')
-            self._options.set_argument('--no-sandbox')
-            self._options.set_argument('--headless=new')
-            self._options.set_argument('--disable-blink-features=AutomationControlled')
-            self._options.set_argument('--disable-dev-shm-usage')
-            self._options.set_argument('--disable-extensions')
-            self._options.set_argument('--profile-directory=Default')
-            self._options.set_argument('--disable-plugins-discovery')
-            self._options.set_argument('--disable-infobars')
-            self._options.set_argument('--start-maximized')
-            self._options.set_argument('--disable-popup-blocking')
-            self._options.set_argument(f'--user-agent={self._user_agent}')
-            self._options.set_argument('--disable-web-security')
-            self._options.set_argument('--disable-bundled-ppapi-flash')
-            self._options.set_argument('--allow-running-insecure-content')
-            self._options.set_argument('--disable-client-side-phishing-detection')
-            self._options.set_argument('--mute-audio')
-            self._options.set_argument('--hide-scrollbars')
-            self._options.set_argument('--disable-background-networking')
-            self._options.set_argument('--disable-canvas-audit')
-            self._options.headless(True)
-        return self._options
+        """获取浏览器配置选项"""
+        from DrissionPage import ChromiumOptions
+        import random
+
+        options = ChromiumOptions()
+        if self._browser_path is None:
+            self._browser_path = find_browser_path()
+        browser_path = self._browser_path
+
+        if browser_path:
+            options.set_browser_path(browser_path)
+            if 'msedge' in browser_path.lower() or 'edge' in browser_path.lower():
+                if self._browser_port is None:
+                    port_hash = int(self._instance_id, 16) % 50000
+                    self._browser_port = 10000 + port_hash + random.randint(0, 1000)
+                options.set_argument(f'--remote-debugging-port={self._browser_port}')
+                options.set_argument('--no-first-run')
+                options.set_argument('--no-default-browser-check')
+        if self._user_agent is None:
+            try:
+                from fake_useragent import UserAgent
+                ua = UserAgent()
+                self._user_agent = ua.random
+            except Exception:
+                self._user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        options.set_argument('--disable-gpu')
+        options.set_argument('--no-sandbox')
+        options.set_argument('--disable-blink-features=AutomationControlled')
+        options.set_argument('--disable-dev-shm-usage')
+        options.set_argument('--disable-extensions')
+        options.set_argument('--profile-directory=Default')
+        options.set_argument('--disable-plugins-discovery')
+        options.set_argument('--disable-infobars')
+        options.set_argument('--disable-popup-blocking')
+        options.set_argument(f'--user-agent={self._user_agent}')
+        options.set_argument('--disable-web-security')
+        options.set_argument('--disable-bundled-ppapi-flash')
+        options.set_argument('--allow-running-insecure-content')
+        options.set_argument('--disable-client-side-phishing-detection')
+        options.set_argument('--mute-audio')
+        options.set_argument('--hide-scrollbars')
+        options.set_argument('--disable-background-networking')
+        options.set_argument('--disable-canvas-audit')
+        # 设置无头模式 - 使用 headless() 方法
+        options.headless(on_off=True)
+        logger.info(f"[WebSearch] 浏览器配置完成，headless=True，路径: {browser_path}")
+        return options
 
     def _get_page(self):
         if self._page is None:
@@ -271,36 +281,59 @@ class WebSearch(BaseCell):
                 logger.debug("[WebSearch] 关闭浏览器失败: %s", e)
             finally:
                 self._browser = None
+        self._browser_port = None
 
-    def _get_or_create_page(self):
-        """获取或创建页面（复用浏览器 session）"""
+    def _get_or_create_page(self, force_recreate: bool = False, max_retries: int = 3):
+        """获取或创建页面
+
+        Args:
+            force_recreate: 强制重建浏览器页面
+            max_retries: 最大重试次数
+        """
         with self._lock:
-            if self._page is None or not self._is_page_alive():
-                from DrissionPage import Chromium, ChromiumOptions
+            if force_recreate:
                 self._close_page()
-                try:
-                    co = self._get_options()
-                    self._browser = Chromium(addr_or_opts=co)
-                    self._page = self._browser.latest_tab
-                    logger.info("[WebSearch] 浏览器页面创建成功")
-                except Exception as e:
-                    logger.error(f"[WebSearch] 浏览器创建失败: {e}")
-                    raise
+
+            if self._page is None or not self._is_page_alive():
+                self._close_page()
+                last_error = None
+
+                for attempt in range(max_retries):
+                    try:
+                        from DrissionPage import Chromium, ChromiumOptions
+
+                        # 重试时：更换端口
+                        if attempt > 0:
+                            logger.info(f"[WebSearch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
+                            self._browser_port = None
+                            import time
+                            time.sleep(1)
+
+                        co = self._get_options()
+                        self._browser = Chromium(addr_or_opts=co)
+                        self._page = self._browser.latest_tab
+                        logger.info(f"[WebSearch] 浏览器页面创建成功 (端口: {self._browser_port})")
+                        return self._page
+                    except Exception as e:
+                        last_error = e
+                        logger.warning(f"[WebSearch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                        self._close_page()
+
+                logger.error(f"[WebSearch] 浏览器创建最终失败: {last_error}")
+                raise last_error
             return self._page
 
     def _is_page_alive(self) -> bool:
         """检查页面是否仍然可用"""
         try:
-            if self._page:
-                # 尝试访问 url 属性并执行简单操作验证连接
-                _ = self._page.url
-                # 再尝试访问 driver 确认连接有效
-                _ = self._page.driver
-                return True
+            if self._page is None:
+                return False
+            _ = self._page.url
+            _ = self._page.driver
+            return True
         except Exception as e:
             logger.debug(f"[WebSearch] 页面连接检查失败: {e}")
-            pass
-        return False
+            return False
 
     def _extract_links_generic(self, page, engine: str):
         """通用链接提取方法，适用于所有搜索引擎"""
@@ -595,53 +628,58 @@ class WebSearch(BaseCell):
 
         keywords = keywords.strip()
 
-        cached = self._get_cached_result(keywords, 'auto')
+        user_engine = kwargs.get('engine', 'auto')
+        if user_engine and user_engine != 'auto' and user_engine in self.SEARCH_ENGINES:
+            engines_to_try = [user_engine]
+            cache_engine = user_engine
+        else:
+            cache_engine = 'auto'
+            priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
+            engines_to_try = []
+
+            best_engine = self._select_best_engine()
+            if best_engine in priority_order:
+                engines_to_try.append(best_engine)
+
+            for eng in priority_order:
+                if eng not in engines_to_try and eng in self.SEARCH_ENGINES:
+                    engines_to_try.append(eng)
+
+        # 检查缓存（使用实际会尝试的第一个引擎作为缓存键）
+        cache_check_engine = engines_to_try[0] if engines_to_try else cache_engine
+        cached = self._get_cached_result(keywords, cache_check_engine)
         if cached:
             cached['from_cache'] = True
             return cached
-
-        # 获取要尝试的引擎列表（按优先级排序）
-        priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
-        engines_to_try = []
-        
-        # 首选引擎
-        best_engine = self._select_best_engine()
-        if best_engine in priority_order:
-            engines_to_try.append(best_engine)
-        
-        # 添加其他引擎
-        for eng in priority_order:
-            if eng not in engines_to_try and eng in self.SEARCH_ENGINES:
-                engines_to_try.append(eng)
         
         logger.info(f"[WebSearch] 将尝试以下引擎: {engines_to_try}")
-        
+
         # 依次尝试每个引擎
         last_error = None
-        for engine in engines_to_try:
+        for idx, engine in enumerate(engines_to_try):
             try:
                 logger.info(f"[WebSearch] 尝试使用引擎: {engine}")
-                result = self._search_with_engine(keywords, max_results, wait_time, time_range, engine)
-                
+                force_recreate = idx > 0
+                result = self._search_with_engine(keywords, max_results, wait_time, time_range, engine, force_recreate_page=force_recreate)
+
                 if result.get('success') and result.get('results'):
                     logger.info(f"[WebSearch] 引擎 {engine} 搜索成功，返回 {len(result['results'])} 条结果")
                     self._engine_health[engine] = 'green'
                     result['engine'] = engine
                     result['tried_engines'] = engines_to_try[:engines_to_try.index(engine) + 1]
-                    self._set_cached_result(keywords, 'auto', result)
+                    self._set_cached_result(keywords, engine, result)
                     return result
                 else:
                     logger.warning(f"[WebSearch] 引擎 {engine} 返回空结果或失败: {result.get('error', '未知错误')}")
                     self._engine_health[engine] = 'red'
                     last_error = result.get('error', f'{engine} 返回空结果')
-                    
+
             except Exception as e:
                 logger.error(f"[WebSearch] 引擎 {engine} 异常: {e}")
                 self._engine_health[engine] = 'red'
                 last_error = str(e)
                 continue
         
-        # 所有引擎都失败
         return {
             "success": False, 
             "error": f"所有搜索引擎均失败，最后错误: {last_error}",
@@ -649,10 +687,13 @@ class WebSearch(BaseCell):
             "engine_health": self._engine_health.copy()
         }
 
-    def _search_with_engine(self, keywords: str, max_results: int, wait_time: int, time_range: str, engine: str) -> dict:
+    def _search_with_engine(self, keywords: str, max_results: int, wait_time: int, time_range: str, engine: str, force_recreate_page: bool = False) -> dict:
         """
         使用指定引擎执行搜索
-        
+
+        Args:
+            force_recreate_page: 是否强制重建页面（引擎切换时需要）
+
         Returns:
             {"success": bool, "results": [...], "error": str}
         """
@@ -663,7 +704,7 @@ class WebSearch(BaseCell):
             if not clean_keywords:
                 clean_keywords = keywords
 
-            page = self._get_or_create_page()
+            page = self._get_or_create_page(force_recreate=force_recreate_page)
             search_query = clean_keywords
             encoded_query = urllib.parse.quote(search_query)
 

@@ -99,16 +99,6 @@ async def chat(request: ChatRequest):
     session_memory = session_info.memory
 
     try:
-        event_bus.publish(
-            AgentEventType.MESSAGE_RECEIVED,
-            MessageReceivedEvent(
-                event_type=AgentEventType.MESSAGE_RECEIVED,
-                data={"message": request.message, "source": "api"},
-                session_id=session_id,
-                message=request.message,
-            )
-        )
-
         result = await agent_loop.run(
             request.message,
             memory=session_memory,

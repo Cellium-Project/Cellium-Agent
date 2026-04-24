@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # 沙箱超时（秒）
-SANDBOX_TIMEOUT = 60
+SANDBOX_TIMEOUT = 120
 
 
 def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiprocessing.Queue, 

@@ -210,6 +210,11 @@ class MemoryManager:
         if not messages:
             return messages
 
+        has_reasoning_content = any(
+            msg.get("role") == "assistant" and msg.get("reasoning_content")
+            for msg in messages
+        )
+
         fixed = []
         i = 0
         n = len(messages)
@@ -248,6 +253,12 @@ class MemoryManager:
             else:
                 fixed.append(msg)
                 i += 1
+
+        # DeepSeek API 要求：如果对话中有 reasoning_content，所有 assistant 消息都必须有这个字段
+        if has_reasoning_content:
+            for msg in fixed:
+                if msg.get("role") == "assistant" and "reasoning_content" not in msg:
+                    msg["reasoning_content"] = ""
 
         return fixed
 

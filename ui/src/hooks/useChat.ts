@@ -274,19 +274,9 @@ export function useChat() {
           console.log('[content_chunk] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
         }
         if (rawChunk.length > 0) {
-          // 处理 JSON thinking，分离 thinking 和 text
-          const thinkingData = extractJsonThinking(rawChunk);
-          if (thinkingData) {
-            // 添加 thinking 卡片
-            ctx.timeline.push({ kind: 'thinking', content: JSON.stringify(thinkingData, null, 2) });
-            // 添加实际文本内容
-            const finalText = extractFinalText(rawChunk);
-            if (finalText) {
-              ctx.timeline.push({ kind: 'text', content: finalText });
-            }
-          } else {
-            ctx.timeline.push({ kind: 'text', content: rawChunk });
-          }
+          // 直接添加原始内容，不预先解析 JSON thinking
+          // 避免在 finalizeMessage 中重复处理
+          ctx.timeline.push({ kind: 'text', content: rawChunk });
         }
         updateStreamingMessage({
           role: 'assistant',

@@ -38,7 +38,7 @@ class ChatResponse:
     model: str = ""
     finish_reason: str = ""
     usage: Dict[str, int] = field(default_factory=dict)
-    reasoning_content: Optional[str] = None  # 用于 thinking 模式的推理内容
+    reasoning_content: Optional[str] = None 
 
     @property
     def has_tool_calls(self) -> bool:

@@ -161,7 +161,7 @@ class SessionManager:
             return
 
         try:
-            messages = info.memory.get_messages()
+            messages = info.memory.messages
             if len(messages) < 1:
                 return
 
@@ -234,6 +234,7 @@ class SessionManager:
                             memory.add_user_message(content or "")
                             restored_count += 1
                         elif role == "assistant":
+                            reasoning_content = msg.get("reasoning_content")
                             if tool_calls:
                                 tool_calls_data = []
                                 for tc in tool_calls:
@@ -243,10 +244,17 @@ class SessionManager:
                                         "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")),
                                         "tool_call_id": original_tc_id,
                                     })
-                                memory.add_tool_calls_batch(tool_calls_data, content=content or None)
+                                memory.add_tool_calls_batch(
+                                    tool_calls_data,
+                                    content=content or None,
+                                    reasoning_content=reasoning_content,
+                                )
                                 restored_count += 1
                             elif content:
-                                memory.add_assistant_message(content)
+                                memory.add_assistant_message(
+                                    content,
+                                    reasoning_content=reasoning_content,
+                                )
                                 restored_count += 1
                         elif role == "tool":
                             tc_id = msg.get("tool_call_id", "")
@@ -277,6 +285,7 @@ class SessionManager:
                 "[SessionManager] 归档恢复 | session=%s | %d 条消息",
                 session_id, restored_count,
             )
+            self._cleanup_incomplete_tool_calls(memory)
 
     def cleanup_expired(self) -> int:
         """清理所有超时会话，返回清理数量"""
@@ -291,6 +300,40 @@ class SessionManager:
         for sid, info in expired_infos:
             self._persist_session_snapshot(sid, info)
         return len(expired_infos)
+
+    def _cleanup_incomplete_tool_calls(self, memory) -> None:
+        messages = memory.messages
+        tool_call_ids = set()
+        tool_result_ids = set()
+
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls", []):
+                    tool_call_ids.add(tc.get("id"))
+            elif msg.get("role") == "tool":
+                tool_result_ids.add(msg.get("tool_call_id"))
+
+        incomplete_ids = tool_call_ids - tool_result_ids
+        if not incomplete_ids:
+            return
+
+        logger.info("[SessionManager] 清理 %d 个不完整 tool_call", len(incomplete_ids))
+        cleaned = []
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                remaining_tcs = [tc for tc in msg.get("tool_calls", []) if tc.get("id") not in incomplete_ids]
+                if remaining_tcs:
+                    msg_copy = dict(msg)
+                    msg_copy["tool_calls"] = remaining_tcs
+                    cleaned.append(msg_copy)
+                elif msg.get("content"):
+                    msg_copy = dict(msg)
+                    msg_copy.pop("tool_calls", None)
+                    cleaned.append(msg_copy)
+            else:
+                cleaned.append(msg)
+
+        memory.messages = cleaned
 
     def _evict_oldest(self) -> Optional[Tuple[str, SessionInfo]]:
         """淘汰最老的不活跃会话（仅从内存移除，返回被移除的会话信息供锁外持久化）"""

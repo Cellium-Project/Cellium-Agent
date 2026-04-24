@@ -38,6 +38,7 @@ EXEMPTED_NAMES: Set[str] = {
     "skill_installer",  # SkillInstaller — 需要安装包
     "skill_manager",    # SkillManager — 只读操作，无需沙箱
     "web_query",        # WebQuery — 需要网络请求
+    "web_search",       # WebSearch — 启动浏览器耗时较长，避免沙箱超时
     "qq_files",         # QQFiles — 需要访问主进程的 ChannelManager
     "telegram_files",   # TelegramFiles — 需要访问主进程的 ChannelManager
 }

@@ -10,6 +10,8 @@ import os
 import time
 import base64
 import concurrent.futures
+import hashlib
+import threading
 from typing import Dict, Any, Optional, Tuple
 
 import httpx
@@ -61,6 +63,9 @@ class WebFetch(BaseCell):
         self._http_content_cache: Optional[Dict[str, Any]] = None
         self._working_browser_name: Optional[str] = None
         self._browser_probe_failed = False
+        self._browser_port = None
+        self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+        self._lock = threading.Lock()
 
     @property
     def cell_name(self) -> str:
@@ -85,10 +90,22 @@ class WebFetch(BaseCell):
             browser_path: 指定浏览器路径（None 则自动查找）
             force_headless: 强制指定 headless 模式（None 则使用实例设置）
         """
+        import random
+
         options = ChromiumOptions()
         resolved_browser_path = browser_path or self._working_browser_path or find_browser_path()
         if resolved_browser_path:
             options.set_browser_path(resolved_browser_path)
+            # Edge 浏览器特殊处理：使用唯一端口避免冲突
+            if 'msedge' in resolved_browser_path.lower() or 'edge' in resolved_browser_path.lower():
+                if self._browser_port is None:
+                    # 基于实例ID生成端口 (10000-65535)
+                    port_hash = int(self._instance_id, 16) % 50000
+                    self._browser_port = 10000 + port_hash + random.randint(0, 1000)
+                options.set_argument(f'--remote-debugging-port={self._browser_port}')
+                options.set_argument('--no-first-run')
+                options.set_argument('--no-default-browser-check')
+
         options.set_argument('--disable-gpu')
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-blink-features=AutomationControlled')
@@ -186,9 +203,28 @@ class WebFetch(BaseCell):
 
     def _http_fetch_text(self, url: str, timeout: int = 20) -> dict:
         try:
+            import random
+
+            browser_headers = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            ]
+
             with httpx.Client(follow_redirects=True, timeout=timeout) as client:
                 response = client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    "User-Agent": random.choice(browser_headers),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Cache-Control": "max-age=0",
                 })
                 response.raise_for_status()
                 html = response.text
@@ -245,48 +281,66 @@ class WebFetch(BaseCell):
                 self._close_page()
             logger.info(f"[WebFetch] headless 模式已设置为: {headless}")
 
-    def _get_page(self):
-        if self._page is None or not self._is_page_alive():
-            if self._page:
-                try:
-                    self._page.quit()
-                except Exception:
-                    pass
-                self._page = None
-            browser_path = self._get_working_browser_path()
-            if not browser_path:
-                raise RuntimeError("没有可用的浏览器后端")
-            try:
-                from DrissionPage import Chromium
-                # 使用 _build_options 获取完整配置，确保 headless 设置一致
-                co = self._build_options(browser_path=browser_path)
-                self._browser = Chromium(addr_or_opts=co)
-                # 确保浏览器创建成功
-                if self._browser is None:
-                    raise RuntimeError("Chromium 浏览器创建失败")
-                # 获取最新标签页
-                self._page = self._browser.latest_tab
-                if self._page is None:
-                    # 尝试创建新标签页
-                    self._page = self._browser.new_tab()
-                    if self._page is None:
-                        raise RuntimeError("无法获取浏览器标签页")
-                logger.info("[WebFetch] 浏览器页面创建成功")
-            except Exception as e:
-                logger.error(f"[WebFetch] 浏览器创建失败: {e}")
+    def _get_page(self, force_recreate: bool = False, max_retries: int = 3):
+        """获取或创建页面（带复用和重试机制）
+
+        Args:
+            force_recreate: 强制重建浏览器页面
+            max_retries: 最大重试次数
+        """
+        with self._lock:
+            if force_recreate:
+                self._close_page()
+
+            if self._page is None or not self._is_page_alive():
+                self._close_page()
+                browser_path = self._get_working_browser_path()
+                if not browser_path:
+                    raise RuntimeError("没有可用的浏览器后端")
+
+                last_error = None
+                for attempt in range(max_retries):
+                    try:
+                        from DrissionPage import Chromium
+
+                        if attempt == 0 and self._browser_port:
+                            # 第一次：尝试连接已存在的浏览器
+                            try:
+                                self._browser = Chromium(f"127.0.0.1:{self._browser_port}")
+                                self._page = self._browser.latest_tab
+                                logger.info(f"[WebFetch] 复用已有浏览器 (端口: {self._browser_port})")
+                                return self._page
+                            except Exception as e:
+                                logger.debug(f"[WebFetch] 连接已有浏览器失败: {e}")
+                        elif attempt > 0:
+                            # 重试时：更换端口
+                            logger.info(f"[WebFetch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
+                            self._browser_port = None
+                            time.sleep(1)
+
+                        co = self._build_options(browser_path=browser_path)
+                        self._browser = Chromium(addr_or_opts=co)
+                        if self._browser is None:
+                            raise RuntimeError("Chromium 浏览器创建失败")
+                        self._page = self._browser.latest_tab
+                        if self._page is None:
+                            self._page = self._browser.new_tab()
+                            if self._page is None:
+                                raise RuntimeError("无法获取浏览器标签页")
+                        logger.info(f"[WebFetch] 浏览器页面创建成功 (端口: {self._browser_port})")
+                        return self._page
+                    except Exception as e:
+                        last_error = e
+                        logger.warning(f"[WebFetch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                        self._close_page()
+
+                # 所有重试都失败
+                logger.error(f"[WebFetch] 浏览器创建最终失败: {last_error}")
                 self._working_browser_path = None
                 self._working_browser_name = None
                 self._browser_probe_failed = False
-                # 清理资源
-                if self._browser:
-                    try:
-                        self._browser.quit()
-                    except:
-                        pass
-                    self._browser = None
-                self._page = None
-                raise RuntimeError(f"浏览器初始化失败: {e}")
-        return self._page
+                raise RuntimeError(f"浏览器初始化失败: {last_error}")
+            return self._page
 
     def _is_page_alive(self) -> bool:
         """检查页面是否仍然可用"""
@@ -314,21 +368,11 @@ class WebFetch(BaseCell):
                 logger.debug("[WebFetch] 关闭浏览器失败: %s", e)
             finally:
                 self._browser = None
+        self._browser_port = None
 
     def _new_page(self):
         """创建新页面（强制新建）"""
-        self._close_page()
-        browser_path = self._get_working_browser_path()
-        if not browser_path:
-            raise RuntimeError("没有可用的浏览器后端")
-        from DrissionPage import Chromium, ChromiumOptions
-        co = ChromiumOptions()
-        co.set_browser_path(browser_path)
-        if self._headless:
-            co.set_argument('--headless')
-        self._browser = Chromium(addr_or_opts=co)
-        self._page = self._browser.latest_tab
-        return self._page
+        return self._get_page(force_recreate=True)
 
     def _clean_text(self, text):
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
@@ -722,12 +766,12 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_insight(self, url: str, mode: str = "auto", query: str = None) -> Dict[str, Any]:
+    def _cmd_insight(self, url: str = None, mode: str = "auto", query: str = None) -> Dict[str, Any]:
         """
         理解层抓取：返回结构化摘要而非全文
 
         Args:
-            url: 页面URL（必填）
+            url: 页面URL（可选，默认使用当前页面）
             mode: "structure" | "search" | "summary" | "auto"（默认auto）
                   structure - 提取heading树+链接统计
                   search    - 关键词定位锚点
@@ -737,7 +781,11 @@ class WebFetch(BaseCell):
             结构化分析结果，上限约2KB
         """
         if not url:
-            return {"success": False, "error": "缺少必填参数 'url'"}
+            url = self._current_url
+            logger.info(f"[WebFetch:insight] 未提供url，使用当前页面: {url}")
+
+        if not url:
+            return {"success": False, "error": "缺少 url 参数，且没有当前页面。请先使用 fetch(url='...') 打开一个页面。"}
 
         page = None
         try:
@@ -746,9 +794,15 @@ class WebFetch(BaseCell):
                     **self._browser_unavailable_error(),
                     "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
                 }
-            page = self._new_page()
-            page.get(url, timeout=30)
-            page.wait(3)
+
+            # 如果url是当前页面，复用已有页面
+            if url == self._current_url and self._page and self._is_page_alive():
+                page = self._page
+                logger.info(f"[WebFetch:insight] 复用当前页面: {url}")
+            else:
+                page = self._new_page()
+                page.get(url, timeout=30)
+                page.wait(3)
 
             if mode == "auto":
                 mode = "structure" if not query else "search"
@@ -769,7 +823,8 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": f"Insight failed: {str(e)}"}
         finally:
-            if page:
+            # 只有不是复用当前页面时才关闭
+            if page and page != self._page:
                 try:
                     page.quit()
                 except Exception:
