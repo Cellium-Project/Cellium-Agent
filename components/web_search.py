@@ -8,12 +8,14 @@ import re
 import time
 import json
 import asyncio
+import os
 import base64
+import tempfile
 import urllib.parse
 import hashlib
 import threading
 from functools import lru_cache
-from typing import Optional
+from typing import Optional, Any
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 from app.core.interface.base_cell import BaseCell
@@ -120,7 +122,7 @@ class WebSearch(BaseCell):
         }
         self._search_cache = {}
         self._user_agent = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._browser_port = None
         self._browser_path = None
         self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
@@ -135,6 +137,15 @@ class WebSearch(BaseCell):
     @property
     def cell_name(self) -> str:
         return "web_search"
+
+    def execute(self, command: str, *args, **kwargs) -> Any:
+        command = command.strip().strip('>"\'')
+        method_name = f"_cmd_{command}"
+        if hasattr(self, method_name):
+            with self._lock:
+                return getattr(self, method_name)(*args, **kwargs)
+        from app.core.exception import CommandNotFoundError
+        raise CommandNotFoundError(command, self.cell_name)
 
     def get_engine_health(self) -> dict:
         """获取搜索引擎健康状态"""
@@ -228,10 +239,11 @@ class WebSearch(BaseCell):
 
         if browser_path:
             options.set_browser_path(browser_path)
+            options.auto_port()
             if 'msedge' in browser_path.lower() or 'edge' in browser_path.lower():
-                options.set_argument('--remote-debugging-port=0')
                 options.set_argument('--no-first-run')
                 options.set_argument('--no-default-browser-check')
+                options.set_argument('--no-singleton')
         if self._user_agent is None:
             try:
                 from fake_useragent import UserAgent
@@ -244,6 +256,10 @@ class WebSearch(BaseCell):
         options.set_argument('--disable-blink-features=AutomationControlled')
         options.set_argument('--disable-dev-shm-usage')
         options.set_argument('--disable-extensions')
+        import tempfile
+        _search_data_dir = os.path.join(tempfile.gettempdir(), 'Cellium_WebSearch_Profile')
+        os.makedirs(_search_data_dir, exist_ok=True)
+        options.set_argument(f'--user-data-dir={_search_data_dir}')
         options.set_argument('--profile-directory=Default')
         options.set_argument('--disable-plugins-discovery')
         options.set_argument('--disable-infobars')
@@ -261,14 +277,6 @@ class WebSearch(BaseCell):
         options.headless(on_off=True)
         logger.info(f"[WebSearch] 浏览器配置完成，headless=True，路径: {browser_path}")
         return options
-
-    def _get_page(self):
-        if self._page is None:
-            from DrissionPage import Chromium, ChromiumOptions
-            co = self._get_options()
-            self._browser = Chromium(addr_or_opts=co)
-            self._page = self._browser.latest_tab
-        return self._page
 
     def _close_page(self):
         with self._lock:
@@ -327,7 +335,41 @@ class WebSearch(BaseCell):
 
                     co = self._get_options()
                     self._browser = Chromium(addr_or_opts=co)
-                    self._page = self._browser.latest_tab
+                    if self._browser is None:
+                        raise RuntimeError("Chromium 浏览器创建失败")
+                    
+                    browser_ready = False
+                    for warmup in range(3):
+                        try:
+                            time.sleep(0.3)
+                            test_url = self._browser.address
+                            if not test_url:
+                                continue
+                            _ = self._browser.latest_tab
+                            if self._page is None:
+                                self._page = self._browser.latest_tab
+                            test_page_url = self._page.url if self._page else None
+                            if self._page and hasattr(self._page, 'driver'):
+                                _ = self._page.driver
+                            browser_ready = True
+                            break
+                        except (AttributeError, TypeError) as we:
+                            logger.debug(f"[WebSearch] 浏览器预热 {warmup+1}/5: {we}")
+                            continue
+                    
+                    if not browser_ready:
+                        raise RuntimeError("浏览器启动后无法建立连接")
+                    
+                    try:
+                        if hasattr(self._browser, 'address') and self._browser.address:
+                            addr_parts = self._browser.address.split(':')
+                            if len(addr_parts) == 2:
+                                self._browser_port = int(addr_parts[1])
+                    except Exception as e:
+                        logger.debug(f"[WebSearch] 获取端口失败: {e}")
+                    
+                    if self._page is None:
+                        self._page = self._browser.latest_tab
                     if self._page is None:
                         self._page = self._browser.new_tab()
                         if self._page is None:
@@ -823,9 +865,10 @@ class WebSearch(BaseCell):
 
             page.get(url, timeout=20)
             page.wait.doc_loaded()
-            page.wait(wait_time)
+            if wait_time > 0:
+                page.wait(wait_time)
             import random
-            random_delay = random.uniform(2, 6)
+            random_delay = random.uniform(1, 3)
             logger.info(f"[WebSearch:{engine}] 随机延迟 {random_delay:.1f} 秒防风控")
             page.wait(random_delay)
             logger.info(f"[WebSearch:{engine}] 页面加载完成，当前 URL: {page.url}")

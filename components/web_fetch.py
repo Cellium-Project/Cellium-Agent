@@ -67,7 +67,7 @@ class WebFetch(BaseCell):
         self._browser_probe_failed = False
         self._browser_port = None
         self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._last_used_time: float = 0
         self._idle_timer: Optional[threading.Thread] = None
         self._idle_stop_event = threading.Event()
@@ -76,6 +76,15 @@ class WebFetch(BaseCell):
     @property
     def cell_name(self) -> str:
         return "web_fetch"
+
+    def execute(self, command: str, *args, **kwargs) -> Any:
+        command = command.strip().strip('>"\'')
+        method_name = f"_cmd_{command}"
+        if hasattr(self, method_name):
+            with self._lock:
+                return getattr(self, method_name)(*args, **kwargs)
+        from app.core.exception import CommandNotFoundError
+        raise CommandNotFoundError(command, self.cell_name)
 
     def _is_generic_class(self, class_name: str) -> bool:
         """判断类名是否过于通用，不适合作为选择器"""
@@ -102,17 +111,21 @@ class WebFetch(BaseCell):
         resolved_browser_path = browser_path or self._working_browser_path or find_browser_path()
         if resolved_browser_path:
             options.set_browser_path(resolved_browser_path)
-            # Edge 浏览器特殊处理：使用唯一端口避免冲突
+            options.auto_port()
             if 'msedge' in resolved_browser_path.lower() or 'edge' in resolved_browser_path.lower():
-                options.set_argument('--remote-debugging-port=0')
                 options.set_argument('--no-first-run')
                 options.set_argument('--no-default-browser-check')
+                options.set_argument('--no-singleton')
 
         options.set_argument('--disable-gpu')
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-blink-features=AutomationControlled')
         options.set_argument('--disable-dev-shm-usage')
         options.set_argument('--disable-extensions')
+        import tempfile
+        _fetch_data_dir = os.path.join(tempfile.gettempdir(), 'Cellium_WebFetch_Profile')
+        os.makedirs(_fetch_data_dir, exist_ok=True)
+        options.set_argument(f'--user-data-dir={_fetch_data_dir}')
         options.set_argument('--profile-directory=Default')
         options.set_argument('--disable-plugins-discovery')
         options.set_argument('--disable-infobars')
@@ -123,8 +136,6 @@ class WebFetch(BaseCell):
         options.headless(is_headless)
 
         if is_headless:
-            options.no_imgs(True)
-            options.set_argument('--blink-settings=imagesEnabled=false')
             options.set_argument('--disable-remote-fonts')
             options.set_argument('--mute-audio')
             options.set_argument('--disable-background-networking')
@@ -275,13 +286,17 @@ class WebFetch(BaseCell):
             return {"success": False, "error": str(e)}
 
     def _set_headless(self, headless: bool):
-        """设置 headless 模式（需要重启浏览器生效）"""
         if self._headless != headless:
+            old_mode = "headless" if self._headless else "可视化"
+            new_mode = "headless" if headless else "可视化"
             self._headless = headless
-            # 关闭现有浏览器，下次会重新创建
-            if self._page:
-                self._close_page()
-            logger.info(f"[WebFetch] headless 模式已设置为: {headless}")
+            
+            had_browser = self._browser is not None
+            self._close_page()
+            self._current_url = None
+            self._browser_port = None
+            
+            logger.info(f"[WebFetch] 模式切换: {old_mode} → {new_mode}，浏览器已关闭")
 
     def _get_page(self, force_recreate: bool = False, max_retries: int = 3):
         """获取或创建页面（带复用、健康检查和重试机制）
@@ -338,7 +353,39 @@ class WebFetch(BaseCell):
                     self._browser = Chromium(addr_or_opts=co)
                     if self._browser is None:
                         raise RuntimeError("Chromium 浏览器创建失败")
-                    self._page = self._browser.latest_tab
+                    
+                    browser_ready = False
+                    for warmup in range(3):
+                        try:
+                            time.sleep(0.3)
+                            test_url = self._browser.address
+                            if not test_url:
+                                continue
+                            _ = self._browser.latest_tab
+                            if self._page is None:
+                                self._page = self._browser.latest_tab
+                            test_page_url = self._page.url if self._page else None
+                            if self._page and hasattr(self._page, 'driver'):
+                                _ = self._page.driver
+                            browser_ready = True
+                            break
+                        except (AttributeError, TypeError) as we:
+                            logger.debug(f"[WebFetch] 浏览器预热 {warmup+1}/3: {we}")
+                            continue
+                    
+                    if not browser_ready:
+                        raise RuntimeError("浏览器启动后无法建立连接")
+                    
+                    try:
+                        if hasattr(self._browser, 'address') and self._browser.address:
+                            addr_parts = self._browser.address.split(':')
+                            if len(addr_parts) == 2:
+                                self._browser_port = int(addr_parts[1])
+                    except Exception as e:
+                        logger.debug(f"[WebFetch] 获取端口失败: {e}")
+                    
+                    if self._page is None:
+                        self._page = self._browser.latest_tab
                     if self._page is None:
                         self._page = self._browser.new_tab()
                         if self._page is None:
@@ -901,19 +948,6 @@ class WebFetch(BaseCell):
             return {"success": False, "error": str(e)}
 
     def _cmd_insight(self, url: str = None, mode: str = "auto", query: str = None) -> Dict[str, Any]:
-        """
-        理解层抓取：返回结构化摘要而非全文
-
-        Args:
-            url: 页面URL（可选，默认使用当前页面）
-            mode: "structure" | "search" | "summary" | "auto"（默认auto）
-                  structure - 提取heading树+链接统计
-                  search    - 关键词定位锚点
-                  summary   - 快速摘要（标题+前几段）
-                  auto      - 根据query自动选择
-        Returns:
-            结构化分析结果，上限约2KB
-        """
         if not url:
             url = self._current_url
             logger.info(f"[WebFetch:insight] 未提供url，使用当前页面: {url}")
@@ -929,7 +963,6 @@ class WebFetch(BaseCell):
                     "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
                 }
 
-            # 如果url是当前页面，复用已有页面
             if url == self._current_url and self._page and self._is_page_alive():
                 page = self._page
                 logger.info(f"[WebFetch:insight] 复用当前页面: {url}")
@@ -955,9 +988,10 @@ class WebFetch(BaseCell):
 
             return {"success": True, "type": "insight", **result}
         except Exception as e:
-            return {"success": False, "error": f"Insight failed: {str(e)}"}
+            error_str = str(e)
+            logger.error(f"[WebFetch:insight] 浏览器操作失败: {error_str}")
+            return {"success": False, "error": f"Insight failed: {error_str}"}
         finally:
-            # 只有不是复用当前页面时才关闭
             if page and page != self._page:
                 try:
                     page.quit()
@@ -1262,11 +1296,14 @@ class WebFetch(BaseCell):
             self._set_headless(headless)
             mode = "headless（后台）" if headless else "可视化（显示窗口）"
             
-            message = f"已切换到 {mode} 模式"
-            if had_open_page:
-                message += "，已关闭当前页面以便下次使用新模式打开"
-            else:
-                message += "，下次打开页面时生效"
+            try:
+                page = self._get_page(force_recreate=True)
+                browser_info = f" (端口: {self._browser_port})" if self._browser_port else ""
+                message = f"✅ 已切换到 {mode} 模式，浏览器已启动{browser_info}"
+            except Exception as e:
+                message = f"✅ 已切换到 {mode} 模式，浏览器已关闭"
+                message += f"\n⚠️ 预启动浏览器失败: {str(e)}"
+                message += "\n下次使用命令时会自动以新模式启动浏览器"
             
             return {
                 "success": True,
@@ -1278,101 +1315,119 @@ class WebFetch(BaseCell):
             return {"success": False, "error": str(e)}
 
     def _cmd_get_screenshot(self, full_page: bool = False, selector: str = None) -> dict:
-        """
-        获取当前页面截图
-
-        Args:
-            full_page: 是否截取整页（默认 False）
-            selector: CSS 选择器或 xpath，指定则只截取该元素
-
-        Returns:
-            {"success": bool, "file_path": str, "base64_image": str, "format": str}
-        """
         import concurrent.futures
 
-        def _do_screenshot():
-            if not self._get_working_browser_path():
-                return {
-                    **self._browser_unavailable_error(),
-                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
-                }
+        if not self._get_working_browser_path():
+            return {
+                **self._browser_unavailable_error(),
+                "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+            }
+
+        if not self._page or not self._current_url:
+            return {
+                "success": False,
+                "error": "没有可截图的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
+                "hint": "screenshot 需要先有打开的页面才能截取",
+            }
+
+        try:
             page = self._get_page()
+        except Exception as e:
+            return {"success": False, "error": f"浏览器不可用: {str(e)}"}
 
-            # 固定保存路径：workspace/web_fetch_screenshots/域名_时间戳.png
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(page.url)
-                domain = parsed.netloc.replace(':', '_') if parsed.netloc else 'unknown'
-                # 清理域名中的特殊字符
-                domain = ''.join(c if c.isalnum() or c in '-_.' else '_' for c in domain)
-                if not domain:
-                    domain = 'unknown'
-            except Exception:
+        try:
+            page.set.window.size(1920, 1080)
+        except Exception:
+            pass
+
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(page.url)
+            domain = parsed.netloc.replace(':', '_') if parsed.netloc else 'unknown'
+            domain = ''.join(c if c.isalnum() or c in '-_.' else '_' for c in domain)
+            if not domain:
                 domain = 'unknown'
+        except Exception:
+            domain = 'unknown'
 
-            workspace_dir = os.path.join("workspace", "web_fetch_screenshots")
-            os.makedirs(workspace_dir, exist_ok=True)
-            timestamp = int(time.time())
-            file_path = os.path.join(workspace_dir, f"{domain}_{timestamp}.png")
+        workspace_dir = os.path.join("workspace", "web_fetch_screenshots")
+        os.makedirs(workspace_dir, exist_ok=True)
+        timestamp = int(time.time())
+        file_path = os.path.join(workspace_dir, f"{domain}_{timestamp}.png")
 
-            # 如果指定了 selector，截取特定元素
-            if selector:
+        captured_page = page
+        captured_selector = selector
+        captured_file_path = file_path
+
+        def _do_screenshot():
+            if captured_selector:
                 try:
-                    element = page.ele(selector, timeout=3)
+                    element = captured_page.ele(captured_selector, timeout=3)
                     if element:
-                        element.get_screenshot(path=file_path)
-                        element_desc = selector
+                        element.get_screenshot(path=captured_file_path)
+                        return {"success": True, "element": captured_selector}
                     else:
-                        return {"success": False, "error": f"未找到元素: {selector}"}
+                        return {"success": False, "error": f"未找到元素: {captured_selector}"}
                 except Exception as e:
                     return {"success": False, "error": f"截取元素失败: {str(e)}"}
             else:
-                page.get_screenshot(path=file_path, full_page=full_page)
-                element_desc = "full_page" if full_page else "viewport"
+                try:
+                    captured_page.get_screenshot(path=captured_file_path, full_page=full_page)
+                    element_desc = "full_page" if full_page else "viewport"
+                    return {"success": True, "element": element_desc}
+                except Exception as e:
+                    return {"success": False, "error": f"截图失败: {str(e)}"}
 
-            # 同时返回 base64
-            with open(file_path, "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-
-            return {
-                "success": True,
-                "file_path": file_path,
-                "element": element_desc if selector else None,
-                "base64_image": encoded_string,
-                "format": "png"
-            }
-
-        # 使用线程池执行截图，防止浏览器卡死导致主线程阻塞
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_do_screenshot)
-                return future.result(timeout=30)  # 30秒超时
+                result = future.result(timeout=30)
+                if result.get("success"):
+                    with open(file_path, "rb") as image_file:
+                        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    return {
+                        "success": True,
+                        "file_path": file_path,
+                        "element": result.get("element"),
+                        "base64_image": encoded_string,
+                        "format": "png"
+                    }
+                return result
         except concurrent.futures.TimeoutError:
-            logger.error("[WebFetch] 截图超时，浏览器可能无响应")
-            # 尝试关闭浏览器，下次会重新创建
+            logger.error("[WebFetch] 截图超时")
             self._close_page()
             return {"success": False, "error": "截图超时（30秒），浏览器已重置"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _cmd_find_qrcode(self) -> dict:
-        """
-        智能查找页面中的二维码元素
-        返回可能包含二维码的元素选择器列表
-        """
         import concurrent.futures
 
-        def _do_find():
-            if not self._get_working_browser_path():
-                return {
-                    **self._browser_unavailable_error(),
-                    "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
-                }
+        if not self._get_working_browser_path():
+            return {
+                **self._browser_unavailable_error(),
+                "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
+            }
+
+        if not self._page or not self._current_url:
+            return {
+                "success": False,
+                "error": "没有可查找的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
+                "hint": "find_qrcode 需要先有打开的页面才能查找",
+            }
+
+        try:
             page = self._get_page()
+        except Exception as e:
+            return {"success": False, "error": f"浏览器不可用: {str(e)}"}
+
+        captured_page = page
+
+        def _do_find():
             found_elements = []
 
             try:
-                js_result = page.run_js("""
+                js_result = captured_page.run_js("""
                     return Array.from(document.querySelectorAll('img, canvas')).map(el => {
                         const rect = el.getBoundingClientRect();
                         return {
@@ -1421,7 +1476,7 @@ class WebFetch(BaseCell):
             except Exception as e:
                 logger.debug(f"[WebFetch] JS 查询失败，回退到传统方式: {e}")
                 try:
-                    elements = page.eles('css:.qrcode, #qrcode, img[src*="qr"], img[alt*="二维码"]')
+                    elements = captured_page.eles('css:.qrcode, #qrcode, img[src*="qr"], img[alt*="二维码"]')
                     for el in elements:
                         try:
                             if el.states.is_displayed:
@@ -1761,7 +1816,7 @@ class WebFetch(BaseCell):
             wait_after: 执行后等待秒数
 
         Returns:
-            {"success": bool, "result": Any, "error": str}
+            {"success": bool, "result": Any, "type": str, "error": str}
         """
         if not script:
             return {"success": False, "error": "需要提供 script 参数"}
@@ -1769,14 +1824,61 @@ class WebFetch(BaseCell):
         try:
             page = self._get_page()
             result = page.run_js(script)
-            page.wait(wait_after)
-            return {
-                "success": True,
-                "result": result,
-                "hint": f"JS 已执行，等待 {wait_after}s"
-            }
+            
+            result_type = type(result).__name__
+            
+            if result is None:
+                return {
+                    "success": True,
+                    "result": None,
+                    "type": "null",
+                    "hint": f"JS 执行成功，返回 null（可能是未定义的属性或方法）",
+                }
+            elif isinstance(result, (dict, list)):
+                import json
+                try:
+                    json_str = json.dumps(result, ensure_ascii=False, default=str)
+                    if len(json_str) > 1000:
+                        json_str = json_str[:1000] + "...(截断)"
+                    return {
+                        "success": True,
+                        "result": result,
+                        "type": result_type,
+                        "preview": json_str,
+                        "length": len(str(result)),
+                        "hint": f"JS 已执行，返回 {result_type} 类型",
+                    }
+                except:
+                    pass
+            elif isinstance(result, str):
+                preview = result if len(result) <= 200 else result[:200] + "..."
+                return {
+                    "success": True,
+                    "result": result,
+                    "type": "string",
+                    "preview": preview,
+                    "length": len(result),
+                    "hint": f"JS 已执行，返回字符串（长度={len(result)}）",
+                }
+            else:
+                return {
+                    "success": True,
+                    "result": result,
+                    "type": result_type,
+                    "value": str(result),
+                    "hint": f"JS 已执行，返回 {result_type} 类型",
+                }
+                
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            error_msg = str(e)
+            if "JavaScript" in error_msg or "syntax" in error_msg.lower():
+                hint = "JS 语法错误，请检查脚本"
+            elif "timeout" in error_msg.lower():
+                hint = "JS 执行超时"
+            else:
+                hint = "JS 执行失败"
+            
+            return {"success": False, "error": error_msg, "hint": hint}
 
     def _cmd_find_button(self, keyword: str = None) -> dict:
         """
@@ -1790,8 +1892,27 @@ class WebFetch(BaseCell):
         """
         import concurrent.futures
 
-        def _do_find():
+        if not self._get_working_browser_path():
+            return {
+                **self._browser_unavailable_error(),
+                "hint": "该命令需要浏览器操控能力。",
+            }
+
+        if not self._page or not self._current_url:
+            return {
+                "success": False,
+                "error": "没有可查找的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
+            }
+
+        try:
             page = self._get_page()
+        except Exception as e:
+            return {"success": False, "error": f"浏览器不可用: {str(e)}"}
+
+        captured_page = page
+        captured_keyword = keyword
+
+        def _do_find():
             buttons = []
 
             js_code = """
@@ -1882,13 +2003,13 @@ class WebFetch(BaseCell):
             """
 
             try:
-                elements = page.run_js(js_code)
-                keyword_lower = (keyword or '').lower()
+                elements = captured_page.run_js(js_code)
+                keyword_lower = (captured_keyword or '').lower()
 
                 # 如果有关键词，先深度搜索包含关键词的元素
                 keyword_elements = []
                 if keyword_lower:
-                    keyword_elements = page.run_js("""
+                    keyword_elements = captured_page.run_js("""
                         const results = [];
                         const keyword = arguments[0];
                         if (!keyword) return results;
@@ -2018,7 +2139,7 @@ class WebFetch(BaseCell):
                 return {
                     "success": True,
                     "buttons": [],
-                    "hint": f"未找到包含'{keyword}'的按钮，建议先调用 find_button 查看所有可用按钮"
+                    "hint": f"未找到包含'{captured_keyword}'的按钮，建议先调用 find_button 查看所有可用按钮"
                 }
 
             return {

@@ -33,97 +33,6 @@ class HardConstraint:
     force_stop: bool = False   # 是否强制终止
 
 
-class HardConstraintTemplates:
-    """
-    强约束模板库
-
-    设计原则：
-      - HARD CONSTRAINTS：不可违反的判定标准
-      - CONTROL ACTION：具体行为规则（MUST DO / MUST NOT DO）
-      - CONTEXT HINT：可选的上下文提示
-      - token ≤ 80
-    """
-
-    # ===== REDIRECT 约束 =====
-    # 三段结构，总计 ≤ 80 tokens
-    REDIRECT_HARD = """[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: REDIRECT
-MUST: Change strategy, use different tool.
-MUST NOT: Repeat same tool, continue same path.
-[CONTEXT HINT]
-Current approach may be stuck."""
-
-    REDIRECT_FORBIDDEN_TOOLS = """[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: REDIRECT
-MUST: Use {forbidden_tools}, switch approach.
-MUST NOT: Repeat {last_tool}.
-[CONTEXT HINT]
-Try {suggested_tools}."""
-
-    # ===== COMPRESS 约束 =====
-    COMPRESS_HARD = """[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: COMPRESS
-MUST: Summarize in ≤{max_tokens} tokens, bullet points.
-MUST NOT: Repeat details, expand new ideas.
-[CONTEXT HINT]
-Context saturated. Prioritize key facts."""
-
-    # ===== TERMINATE 约束 =====
-    TERMINATE_HARD = """[HARD CONSTRAINTS]
-You MUST follow termination signal. This is FINAL.
-[CONTROL ACTION]
-Action: TERMINATE
-MUST: Stop immediately, provide summary + next steps.
-MUST NOT: Continue exploration, request more input.
-[FAILURE CONDITIONS]
-- If you continue after this signal = FAILED
-- If you ignore summary request = FAILED"""
-
-    # ===== COMPRESS + REDIRECT 融合约束 =====
-    COMPRESS_REDIRECT_HARD = """[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: COMPRESS + REDIRECT
-MUST: Summarize first (≤{max_tokens} tokens), then change tool.
-MUST NOT: Repeat details, use same tool.
-[CONTEXT HINT]
-Stuck + context saturated."""
-
-    # ===== RETRY 约束 =====
-    RETRY_HARD = """[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: RETRY
-MUST: Keep direction, adjust prompt/params.
-MUST NOT: Repeat exact same approach.
-[CONTEXT HINT]
-Minor stuck. Try refinement."""
-
-    # ===== COMPRESS + RETRY 融合约束 =====
-    COMPRESS_RETRY_HARD = """[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: COMPRESS + RETRY
-MUST: Summarize first (≤{max_tokens} tokens), then refine approach.
-MUST NOT: Repeat details, use exact same params.
-[CONTEXT HINT]
-Stuck + need refinement."""
-
-    # ===== CONTINUE 约束（无约束）=====
-    CONTINUE_HARD = ""
-
-    @classmethod
-    def get_template(cls, action: str) -> str:
-        """获取指定 action 的模板"""
-        return getattr(cls, action.upper() + "_HARD", cls.CONTINUE_HARD)
-
-
 class FailureConditionBuilder:
     """Failure Conditions 构建器"""
 
@@ -502,6 +411,105 @@ class GeneEvolution:
         return avoid_cue
     
     @classmethod
+    def _extract_avoid_cue_from_gene_content(cls, content: str) -> Optional[str]:
+        import re
+        avoid_match = re.search(r'\[AVOID\]\s*\n((?:\s*-\s*.+\n?)+)', content)
+        if avoid_match:
+            items = [line.strip().lstrip('- ').strip() for line in avoid_match.group(1).strip().split('\n') if line.strip()]
+            if items:
+                return " | ".join(items)
+        
+        must_not_match = re.search(r'MUST NOT:\s*(.+?)(?:\n|$)', content)
+        if must_not_match:
+            return must_not_match.group(1).strip()
+        
+        return None
+
+    @classmethod
+    def _evolve_existing_gene(cls, task_type: str, avoid_cue: str, state: "LoopState") -> bool:
+        if not TaskSignalMatcher._repository or not avoid_cue:
+            return False
+        
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query=f"gene:{task_type}",
+                schema_type="control_gene",
+                top_k=1
+            )
+            
+            if not results:
+                logger.info("[GeneEvolution] 未找到目标 Gene，将创建新 Gene")
+                return False
+            
+            gene = results[0]
+            content = gene.get("content", "")
+            metadata = gene.get("metadata", {})
+            
+            if avoid_cue in content:
+                logger.info("[GeneEvolution] 避免项已存在于 Gene 中，跳过更新")
+                return True
+            
+            avoid_section = "[AVOID]"
+            if avoid_section in content:
+                content = content.replace(
+                    avoid_section,
+                    f"{avoid_section}\n- {avoid_cue[:80]}"
+                )
+            else:
+                content += f"\n\n[AVOID]\n- {avoid_cue[:80]}"
+            
+            current_version = metadata.get("version", 1)
+            new_version = current_version + 1
+            
+            evolution_history = metadata.get("evolution_history", [])
+            evolution_history.append({
+                "version": new_version,
+                "change": f"evolve: {avoid_cue[:40]}",
+                "at": datetime.now().isoformat(),
+            })
+            
+            usage_count = metadata.get("usage_count", 0) + 1
+            failure_count = metadata.get("failure_count", 0)
+            
+            TaskSignalMatcher._repository.upsert_memory(
+                title=gene.get("title", f"Gene: {task_type}"),
+                content=content,
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=gene.get("memory_key", f"gene:{task_type}"),
+                metadata={
+                    **metadata,
+                    "version": new_version,
+                    "evolution_history": evolution_history,
+                    "usage_count": usage_count,
+                    "failure_count": failure_count,
+                    "last_evolved_at": datetime.now().isoformat(),
+                    "evolved": True,
+                }
+            )
+            
+            TaskSignalMatcher._cache_loaded = False
+            
+            try:
+                from app.server.routes.ws_event_manager import ws_publish_event
+                ws_publish_event(
+                    "gene_evolved",
+                    {
+                        "task_type": task_type,
+                        "version": new_version,
+                        "title": f"Gene: {task_type}",
+                        "change": avoid_cue[:50],
+                    }
+                )
+            except Exception as e:
+                logger.debug("[GeneEvolution] 发送 WebSocket 事件失败: %s", e)
+            
+            return True
+        except Exception as e:
+            logger.error("[GeneEvolution] 进化 Gene 失败: %s", e)
+            return False
+    
+    @classmethod
     def _update_recent_results(cls, metadata: Dict, success: bool, reward: float, elapsed_ms: int):
         recent_results = metadata.get("recent_results", [])
         recent_results.append({
@@ -649,7 +657,32 @@ class GeneEvolution:
             pass
         
         return None
-    
+
+    @classmethod
+    def _get_all_genes(cls) -> List[Dict[str, Any]]:
+        if not TaskSignalMatcher._repository:
+            return []
+        
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query="gene:",
+                schema_type="control_gene",
+                top_k=50
+            )
+            
+            genes = []
+            for item in results:
+                meta = item.get("metadata", {})
+                genes.append({
+                    "task_type": meta.get("task_type", ""),
+                    "version": meta.get("version", 1),
+                    "title": item.get("title", ""),
+                    "memory_key": item.get("memory_key", ""),
+                })
+            return genes
+        except Exception:
+            return []
+
     @classmethod
     def build_gene_creation_prompt(cls, state: "LoopState", user_input: str) -> str:
         context_lines = []
@@ -718,16 +751,13 @@ MUST NOT: <应该避免的错误做法>
     
     @classmethod
     def parse_agent_gene_response(cls, response: str) -> Optional[Dict[str, Any]]:
-        """解析 Agent 创建的 Gene"""
         import re
         
         if not response or not response.strip():
             return None
         
-        # 提取 gene 代码块
         gene_match = re.search(r'```gene\s*\n(.*?)\n```', response, re.DOTALL)
         if not gene_match:
-            # 尝试没有代码块标记的情况
             gene_match = re.search(r'\[HARD CONSTRAINTS\](.*)', response, re.DOTALL)
             if not gene_match:
                 return None
@@ -735,37 +765,45 @@ MUST NOT: <应该避免的错误做法>
         else:
             content = gene_match.group(1).strip()
         
-        # 检查内容是否有效（至少要有任务类型和 MUST/MUST NOT）
         if not content or len(content) < 50:
             return None
         
-        # 提取任务类型
+        mode_match = re.search(r'\[MODE\]:\s*(EVOLVE|CREATE)', content, re.IGNORECASE)
+        mode = "create"
+        target_task_type = None
+        if mode_match:
+            mode = mode_match.group(1).lower()
+        
+        target_match = re.search(r'\[TARGET\]:\s*(.+?)(?:\n|$)', content)
+        if target_match:
+            target_val = target_match.group(1).strip()
+            if target_val and target_val.lower() != "new":
+                target_task_type = target_val
+        
         task_type_match = re.search(r'\[任务类型\]:\s*(.+?)(?:\n|$)', content)
         task_type = task_type_match.group(1).strip() if task_type_match else None
         
-        # 检查 MUST 和 MUST NOT 是否存在
         has_must = re.search(r'MUST:', content) is not None
         has_must_not = re.search(r'MUST NOT:', content) is not None
         
-        # 必须有任务类型和至少一个 MUST/MUST NOT
         if not task_type or (not has_must and not has_must_not):
             return None
         
-        # 规范化任务类型（用于 memory_key）
         task_type_normalized = re.sub(r'[^\w\u4e00-\u9fff]+', '_', task_type).lower().strip('_')
         if not task_type_normalized or task_type_normalized == 'unknown':
             return None
         
-        # 提取信号词（从任务类型和用户输入推断）
         signals = [task_type_normalized]
         
         return {
             "task_type": task_type_normalized,
             "content": content,
             "signals": signals,
-            "forbidden_tools": [],  # Agent 可以后续通过进化添加
+            "forbidden_tools": [],
             "preferred_tools": [],
             "source": "agent_created",
+            "mode": mode,
+            "target_task_type": target_task_type,
         }
     
     @classmethod
@@ -780,6 +818,7 @@ MUST NOT: <应该避免的错误做法>
             memory_key = f"gene:{task_type}"
             
             existing_history = []
+            existing_version = 0
             existing_usage = 0
             existing_success = 0
             existing_failure = 0
@@ -787,14 +826,17 @@ MUST NOT: <应该避免的错误做法>
             try:
                 existing = TaskSignalMatcher._repository.get_by_memory_key(memory_key)
                 if existing:
-                    existing_history = existing.get("metadata", {}).get("evolution_history", [])
-                    existing_usage = existing.get("metadata", {}).get("usage_count", 0)
-                    existing_success = existing.get("metadata", {}).get("success_count", 0)
-                    existing_failure = existing.get("metadata", {}).get("failure_count", 0)
+                    existing_meta = existing.get("metadata", {})
+                    existing_history = existing_meta.get("evolution_history", [])
+                    existing_version = existing_meta.get("version", 0)
+                    existing_usage = existing_meta.get("usage_count", 0)
+                    existing_success = existing_meta.get("success_count", 0)
+                    existing_failure = existing_meta.get("failure_count", 0)
             except Exception:
                 pass
             
-            new_version = len(existing_history) + 1
+            base_version = max(existing_version, len(existing_history))
+            new_version = base_version + 1
             is_update = new_version > 1
             
             evolution_history = existing_history + [{
@@ -925,72 +967,106 @@ MUST NOT: <应该避免的错误做法>
 
             context_str = "\n".join(context_lines) if context_lines else "无具体错误信息"
 
-            existing_section = ""
-            if existing_gene:
-                existing_section = f"""
+            all_genes = cls._get_all_genes()
+            
+            genes_list_section = ""
+            if all_genes:
+                genes_list_section = "\n【现有 Gene 列表】\n"
+                for g in all_genes:
+                    genes_list_section += f"  - [{g['task_type']}] v{g['version']} ({g['title']})\n"
+                genes_list_section += "\n请判断当前任务与哪个 Gene 最相关：\n"
+                genes_list_section += "  - 如果高度相关（同一类任务），选择 EVOLVE 模式进化该 Gene\n"
+                genes_list_section += "  - 如果不相关或需要全新规则，选择 CREATE 模式新建 Gene\n"
 
-【现有 Gene】
+            existing_content = ""
+            if existing_gene:
+                existing_content = f"""
+
+【最匹配的现有 Gene 内容】
 ```
 {existing_gene['content'][:500]}
 ```"""
 
-            # 构建给 LLM 的提示
-            prompt = f"""基于以下运行失败信息，直接创建 Gene（不要解释，只输出 Gene）：
+            prompt = f"""你是 Gene 进化系统。分析以下失败信息，判断是进化现有 Gene 还是创建新 Gene。
 
 【用户输入】
 {user_input[:200]}
 
 【运行失败分析】
 {context_str}
-{existing_section}
+{genes_list_section}
+{existing_content}
 
-基于以上信息，创建一个指导规则 Gene。必须严格按照以下格式输出，不要添加任何解释：
+请按以下格式输出（只输出代码块，不要其他内容）：
 
 ```gene
+[MODE]: <EVOLVE 或 CREATE>
+[TARGET]: <如果是 EVOLVE，填写要进化的 task_type；如果是 CREATE，填 new>
 [HARD CONSTRAINTS]
-[任务类型]: <简短描述任务类型，如"网络搜索"、"文件操作">
+[任务类型]: <简短描述任务类型>
 [CONTROL ACTION]
 MUST: <应该采取的正确做法>
 MUST NOT: <应该避免的错误做法>
 [AVOID]
 - <具体的避免事项1>
 - <具体的避免事项2>
-```
-
-只输出 gene 代码块，不要输出任何其他内容。"""
+```"""
 
             # 3. 调用 LLM（带重试）
             logger.info("[GeneEvolution] 调用 LLM 创建 Gene")
             messages = [{"role": "user", "content": prompt}]
             
             response = None
-            for attempt in range(2):  # 最多重试2次
+            for attempt in range(2):
                 try:
                     response = await llm_engine.chat(
                         messages=messages, 
                         max_tokens=800,
                         temperature=0.3
                     )
-                    if response and response.content and response.content.strip():
+                    raw_content = getattr(response, 'content', None) or ''
+                    logger.info(f"[GeneEvolution] LLM 原始返回 (尝试 {attempt + 1}/2): {repr(raw_content[:500])}")
+                    if response and raw_content and raw_content.strip():
                         break
-                    logger.warning(f"[GeneEvolution] LLM 返回为空，尝试 {attempt + 1}/2")
+                    logger.warning(f"[GeneEvolution] LLM 返回为空，尝试 {attempt + 1}/2 | response={type(response).__name__} | content={repr(raw_content[:200]) if raw_content else 'None'}")
                 except Exception as e:
                     logger.warning(f"[GeneEvolution] LLM 调用失败，尝试 {attempt + 1}/2: {e}")
-                    if attempt == 1:
-                        return False
 
-            if not response or not response.content or not response.content.strip():
-                logger.warning("[GeneEvolution] LLM 返回为空，放弃创建 Gene")
+            final_content = getattr(response, 'content', None) or ''
+            if not response or not final_content or not final_content.strip():
+                logger.warning(f"[GeneEvolution] LLM 返回为空，放弃创建 Gene | response={response is not None} | content={repr(final_content[:200]) if final_content else 'None'}")
                 return False
+
+            logger.info(f"[GeneEvolution] LLM 返回成功 | 长度={len(final_content)} | 内容预览: {final_content[:300]}...")
 
             # 4. 解析并保存 Gene
             gene_data = cls.parse_agent_gene_response(response.content)
             if gene_data:
-                success = cls.save_agent_created_gene(gene_data)
-                if success:
-                    logger.info("[GeneEvolution] LLM 创建 Gene 成功 | task_type=%s", gene_data.get("task_type"))
+                mode = gene_data.get("mode", "create")
+                target = gene_data.get("target_task_type")
+                
+                if mode == "evolve" and target:
+                    logger.info("[GeneEvolution] LLM 选择进化模式 | target=%s", target)
+                    avoid_cue = cls._extract_avoid_cue_from_gene_content(gene_data.get("content", ""))
+                    if avoid_cue:
+                        success = cls._evolve_existing_gene(target, avoid_cue, state)
+                        if success:
+                            logger.info("[GeneEvolution] 进化 Gene 成功 | target=%s", target)
+                        else:
+                            logger.warning("[GeneEvolution] 进化 Gene 失败，尝试创建新 Gene")
+                            gene_data["task_type"] = target
+                            success = cls.save_agent_created_gene(gene_data)
+                    else:
+                        logger.warning("[GeneEvolution] 无法提取进化内容，创建新 Gene")
+                        success = cls.save_agent_created_gene(gene_data)
                 else:
-                    logger.warning("[GeneEvolution] 保存 Gene 失败")
+                    logger.info("[GeneEvolution] LLM 选择新建模式 | task_type=%s", gene_data.get("task_type"))
+                    success = cls.save_agent_created_gene(gene_data)
+                
+                if success:
+                    logger.info("[GeneEvolution] Gene 操作成功 | mode=%s | task_type=%s", mode, gene_data.get("task_type"))
+                else:
+                    logger.warning("[GeneEvolution] Gene 操作失败")
                 return success
             else:
                 logger.warning("[GeneEvolution] 无法从 LLM 响应中解析 Gene")
