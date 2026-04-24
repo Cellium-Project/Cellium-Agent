@@ -198,8 +198,9 @@ class WebSearch(BaseCell):
             if not self._check_engine_accessible(engine):
                 continue
             health = self._engine_health.get(engine, 'unknown')
-            if health == 'unknown':
-                logger.info(f"[WebSearch:auto] 选择 {engine} (状态: unknown, 首次尝试)")
+            # unknown 或 red 状态都允许尝试（每次新搜索都重试）
+            if health in ('unknown', 'red'):
+                logger.info(f"[WebSearch:auto] 选择 {engine} (状态: {health}, 尝试搜索)")
                 return engine
 
         logger.info(f"[WebSearch:auto] 默认选择 baidu")

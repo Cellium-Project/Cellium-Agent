@@ -208,7 +208,7 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
 
         mock_gene_evolution.extract_avoid_cue.return_value = None  
         mock_gene_evolution.should_prompt_agent_for_gene.return_value = True 
-        mock_gene_evolution.build_gene_creation_prompt.return_value = "[系统提示] 请创建 Gene"
+        mock_gene_evolution._get_existing_gene.return_value = None
 
         evaluator = FeedbackEvaluator()
         state = Mock(spec=LoopState)
@@ -227,7 +227,8 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         mock_gene_evolution.should_prompt_agent_for_gene.assert_called_once()
         # 验证设置了 Gene 创建标记
         self.assertTrue(state.needs_agent_gene_creation)
-        self.assertEqual(state.gene_creation_prompt, "[系统提示] 请创建 Gene")
+        # 验证提示包含系统提示标记
+        self.assertIn("[系统提示]", state.gene_creation_prompt)
         # 不应该调用自动更新
         mock_gene_evolution.update_gene_from_failure.assert_not_called()
 

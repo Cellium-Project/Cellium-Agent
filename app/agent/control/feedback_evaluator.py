@@ -152,25 +152,49 @@ class FeedbackEvaluator:
 
     def evaluate_with_gene_evolution(self, state: LoopState, task_type: str = "", user_input: str = "") -> float:
         reward = self.evaluate(state)
-        
+
         from .hard_constraints import GeneEvolution
-        
-        if reward < 0.5:
-            avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
-            
-            # 混合策略：判断是否提示 Agent 创建 Gene
-            if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
-                # 返回一个特殊标记，让上层知道需要提示 Agent
-                state.needs_agent_gene_creation = True
-                state.gene_creation_prompt = GeneEvolution.build_gene_creation_prompt(state, user_input)
-                logger.info("[GeneEvolution] 需要提示 Agent 创建 Gene")
-            elif task_type and avoid_cue:
-                # 自动更新已有 Gene
-                GeneEvolution.update_gene_from_failure(task_type, avoid_cue, state, reward)
-        elif reward >= 0.5 and task_type:
-            GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
-        
+
+        try:
+            if reward < 0.5:
+                avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
+
+                # 混合策略：判断是否触发 Gene 创建
+                if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
+                    # 1. 标记需要后台创建 Gene
+                    state.needs_agent_gene_creation = True
+                    # 2. 给主 Agent 的提示：只要求查看 Gene
+                    state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input)
+                    logger.info("[GeneEvolution] 将后台创建 Gene，并提示 Agent 查看")
+                elif task_type and avoid_cue:
+                    # 自动更新已有 Gene
+                    GeneEvolution.update_gene_from_failure(task_type, avoid_cue, state, reward)
+            elif reward >= 0.5 and task_type:
+                GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
+        except Exception as e:
+            logger.warning("[GeneEvolution] Gene evolution failed: %s", e)
+
         return reward
+
+    def _build_gene_view_prompt(self, state: LoopState, user_input: str) -> str:
+        """构建提示 Agent 查看 Gene 的提示（不创建）"""
+        from .hard_constraints import GeneEvolution
+
+        # 获取现有 Gene 信息
+        existing_gene = GeneEvolution._get_existing_gene(user_input)
+
+        if existing_gene:
+            return f"""[系统提示]
+检测到任务执行遇到困难。已有相关 Gene 记录，请先查看：
+
+使用命令：memory get_gene task_type={existing_gene['task_type']}
+
+查看后根据 Gene 中的指导继续执行任务。"""
+        else:
+            return """[系统提示]
+检测到任务执行遇到困难。系统将自动分析并创建指导规则。
+
+请继续尝试完成任务，系统会根据执行情况优化策略。"""
 
     def explain(self, state: LoopState) -> Dict[str, Any]:
         success = self._is_round_success(state)

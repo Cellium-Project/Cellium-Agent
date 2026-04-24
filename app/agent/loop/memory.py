@@ -67,6 +67,14 @@ class MemoryManager:
             "timestamp": datetime.now().isoformat()
         })
 
+    def add_system_message(self, content: str):
+        """添加系统消息"""
+        self.messages.append({
+            "role": "system",
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+
     def add_tool_call(self, tool_name: str, arguments: dict, tool_call_id: str = None) -> str:
         if not tool_call_id:
             self.tool_call_counter += 1

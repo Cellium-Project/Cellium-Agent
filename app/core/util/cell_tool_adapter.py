@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 EXEMPTED_NAMES: Set[str] = {
     "component",        # ComponentBuilder — 需要创建文件
     "skill_installer",  # SkillInstaller — 需要安装包
+    "skill_manager",    # SkillManager — 只读操作，无需沙箱
     "web_query",        # WebQuery — 需要网络请求
     "qq_files",         # QQFiles — 需要访问主进程的 ChannelManager
     "telegram_files",   # TelegramFiles — 需要访问主进程的 ChannelManager
@@ -143,7 +144,13 @@ class CellToolAdapter(BaseTool):
                 class_name = type(self._cell).__name__
 
                 if source_file:
-                    sandbox.init_component(source_file, class_name)
+                    success = sandbox.init_component(source_file, class_name)
+                    if not success:
+                        logger.warning(
+                            "[CellToolAdapter] %s 沙箱初始化失败，回退到直接执行",
+                            self.name,
+                        )
+                        return self._execute_direct(command, *args, **kwargs)
                 else:
                     logger.warning(
                         "[CellToolAdapter] %s 无法获取源文件，回退到直接执行",
@@ -153,7 +160,9 @@ class CellToolAdapter(BaseTool):
 
             if isinstance(command, dict):
                 all_args = dict(command)
-                cmd_name = (all_args.pop("command") or "").strip()
+                cmd_name = all_args.pop("command", None)
+                if cmd_name:
+                    cmd_name = cmd_name.strip()
                 if not cmd_name:
                     cmd_name = self._infer_command(all_args)
 
@@ -175,9 +184,10 @@ class CellToolAdapter(BaseTool):
             return result
 
         except Exception as e:
+            import traceback
             logger.error(
-                "[CellToolAdapter] %s 沙箱执行失败，回退到直接执行: %s",
-                self.name, e,
+                "[CellToolAdapter] %s 沙箱执行失败，回退到直接执行: %s\n%s",
+                self.name, e, traceback.format_exc()
             )
             # 沙箱失败时回退到直接执行
             return self._execute_direct(command, *args, **kwargs)
@@ -188,7 +198,9 @@ class CellToolAdapter(BaseTool):
             if isinstance(command, dict):
                 # ── LLM 模式：自行处理（不走 super）──
                 all_args = dict(command)
-                cmd_name = (all_args.pop("command") or "").strip()
+                cmd_name = all_args.pop("command", None)
+                if cmd_name:
+                    cmd_name = cmd_name.strip()
 
                 if not cmd_name:
                     cmd_name = self._infer_command(all_args)

@@ -206,7 +206,15 @@ class XxxTool(BaseCell):
 
 ### 关键组件
 - `skill_installer` - 安装/卸载/更新 Skill
+  - `skill_installer.install(name="skill_name")` - 从模板创建新 Skill
+  - `skill_installer.install(source_dir="/path/to/skills")` - 批量安装目录下所有 Skill（自动识别子目录中的 SKILL.md）
+  - `skill_installer.install(name="skill_name", source_dir="/path/to/skill")` - 从指定目录安装单个 Skill
+  - `skill_installer.uninstall(name="skill_name")` - 卸载 Skill
+  - `skill_installer.update(name="skill_name", content="...")` - 更新 Skill
 - `skill_manager` - 获取 Skill 列表和元信息（只读）
+  - `skill_manager.list()` - 列出所有已安装 Skill
+  - `skill_manager.get_info(name="skill_name")` - 获取指定 Skill 信息
+  - `skill_manager.search(query="keyword")` - 搜索 Skill
 
 ---
 

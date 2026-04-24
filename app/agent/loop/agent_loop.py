@@ -399,6 +399,22 @@ class AgentLoop:
             return success
         return False
 
+    async def _create_gene_in_background(self, user_input: str, state: "LoopState"):
+        """后台创建 Gene，不阻塞主流程"""
+        try:
+            from app.agent.control.hard_constraints import GeneEvolution
+            success = await GeneEvolution.create_gene_with_llm(
+                user_input=user_input,
+                state=state,
+                llm_engine=self.llm
+            )
+            if success:
+                logger.info("[AgentLoop] 后台创建 Gene 成功")
+            else:
+                logger.warning("[AgentLoop] 后台创建 Gene 失败")
+        except Exception as e:
+            logger.error("[AgentLoop] 后台创建 Gene 出错: %s", e)
+
     def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
         for msg in reversed(memory.get_messages()):
             if msg.get("role") == "assistant" and msg.get("content"):
@@ -1292,14 +1308,31 @@ class AgentLoop:
                         reward = self.control_loop.end_round(self._loop_state)
                         logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
 
-                    # Gene 创建：检查是否需要提示 Agent 创建 Gene
+                    # Gene 创建：后台创建 Gene + 提示 Agent 查看
                     if self._loop_state and getattr(self._loop_state, 'needs_agent_gene_creation', False):
+                        user_input_for_gene = getattr(self._loop_state, 'user_input', '')
                         gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
+
+                        # 1. 后台调用 LLM 创建 Gene（不阻塞主流程）
+                        if user_input_for_gene and self.llm:
+                            logger.info("[AgentLoop] 后台调用 LLM 创建 Gene")
+                            # 创建异步任务，不等待完成
+                            try:
+                                from app.agent.control.hard_constraints import GeneEvolution
+                                # 启动后台任务，不 await
+                                asyncio.create_task(self._create_gene_in_background(
+                                    user_input_for_gene, self._loop_state
+                                ))
+                            except Exception as e:
+                                logger.error("[AgentLoop] 启动后台 Gene 创建失败: %s", e)
+
+                        # 2. 将查看提示添加到对话中
                         if gene_prompt:
-                            logger.info("[AgentLoop] 提示 Agent 创建 Gene")
-                            yield {"type": "gene_creation_prompt", "prompt": gene_prompt}
-                            # 重置标记，等待 Agent 响应
-                            self._loop_state.needs_agent_gene_creation = False
+                            logger.info("[AgentLoop] 提示 Agent 查看 Gene")
+                            effective_memory.add_system_message(gene_prompt)
+
+                        # 重置标记
+                        self._loop_state.needs_agent_gene_creation = False
 
                     # Learning: 迭代级别反馈更新
                     if self.learning and self._loop_state:

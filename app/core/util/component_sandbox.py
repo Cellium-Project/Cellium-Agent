@@ -281,13 +281,18 @@ class ComponentSandbox:
         if not self.module_path or not self.class_name:
             logger.error("[ComponentSandbox] module_path and class_name required")
             return False
+        
+        logger.debug("[ComponentSandbox] Initializing %s from %s", self.class_name, self.module_path)
             
         try:
             self._sandbox.start(self.module_path, self.class_name, self.init_args, project_root)
             self._initialized = True
+            logger.debug("[ComponentSandbox] Successfully initialized %s", self.class_name)
             return True
         except Exception as e:
-            logger.error("[ComponentSandbox] Failed to initialize: %s", e)
+            import traceback
+            logger.error("[ComponentSandbox] Failed to initialize %s: %s\n%s", 
+                        self.class_name, e, traceback.format_exc())
             self._initialized = False
             return False
 

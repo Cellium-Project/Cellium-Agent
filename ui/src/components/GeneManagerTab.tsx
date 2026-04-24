@@ -98,6 +98,20 @@ export const GeneManagerTab: React.FC = () => {
     loadGenes();
   }, [loadGenes]);
 
+  // 监听 Gene 创建/更新事件，实时刷新列表
+  useEffect(() => {
+    const handleGeneCreated = (event: CustomEvent) => {
+      console.log('[GeneManager] Gene created event received:', event.detail);
+      // 刷新 Gene 列表
+      loadGenes();
+    };
+
+    window.addEventListener('gene-created', handleGeneCreated as EventListener);
+    return () => {
+      window.removeEventListener('gene-created', handleGeneCreated as EventListener);
+    };
+  }, [loadGenes]);
+
   const filteredGenes = useMemo(() => {
     if (!filterQuery.trim()) return genes;
     const query = filterQuery.toLowerCase();

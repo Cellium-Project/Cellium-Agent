@@ -667,7 +667,7 @@ class GeneEvolution:
             recent_decisions = state.decision_trace[-3:]
             context_lines.append("最近决策:")
             for d in recent_decisions:
-                context_lines.append(f"  - {d.action_type}: {d.reason or 'no reason'}")
+                context_lines.append(f"  - {d.action_type}: {d.stop_reason or 'no reason'}")
         
         context_str = "\n".join(context_lines) if context_lines else "无具体错误信息"
         
@@ -721,6 +721,9 @@ MUST NOT: <应该避免的错误做法>
         """解析 Agent 创建的 Gene"""
         import re
         
+        if not response or not response.strip():
+            return None
+        
         # 提取 gene 代码块
         gene_match = re.search(r'```gene\s*\n(.*?)\n```', response, re.DOTALL)
         if not gene_match:
@@ -732,14 +735,26 @@ MUST NOT: <应该避免的错误做法>
         else:
             content = gene_match.group(1).strip()
         
+        # 检查内容是否有效（至少要有任务类型和 MUST/MUST NOT）
+        if not content or len(content) < 50:
+            return None
+        
         # 提取任务类型
         task_type_match = re.search(r'\[任务类型\]:\s*(.+?)(?:\n|$)', content)
-        task_type = task_type_match.group(1).strip() if task_type_match else "unknown"
+        task_type = task_type_match.group(1).strip() if task_type_match else None
+        
+        # 检查 MUST 和 MUST NOT 是否存在
+        has_must = re.search(r'MUST:', content) is not None
+        has_must_not = re.search(r'MUST NOT:', content) is not None
+        
+        # 必须有任务类型和至少一个 MUST/MUST NOT
+        if not task_type or (not has_must and not has_must_not):
+            return None
         
         # 规范化任务类型（用于 memory_key）
         task_type_normalized = re.sub(r'[^\w\u4e00-\u9fff]+', '_', task_type).lower().strip('_')
-        if not task_type_normalized:
-            task_type_normalized = "custom_task"
+        if not task_type_normalized or task_type_normalized == 'unknown':
+            return None
         
         # 提取信号词（从任务类型和用户输入推断）
         signals = [task_type_normalized]
@@ -810,11 +825,181 @@ MUST NOT: <应该避免的错误做法>
             )
             
             TaskSignalMatcher._cache_loaded = False
+            
+            # 发送 WebSocket 事件通知前端 Gene 已创建/更新
+            try:
+                from app.server.routes.ws_event_manager import ws_publish_event
+                ws_publish_event(
+                    "gene_created",
+                    {
+                        "task_type": task_type,
+                        "version": new_version,
+                        "is_update": is_update,
+                        "title": f"Gene: {task_type}",
+                        "content_preview": content[:200] + "..." if len(content) > 200 else content,
+                    }
+                )
+            except Exception as e:
+                logger.debug("[GeneEvolution] 发送 WebSocket 事件失败: %s", e)
+            
             return True
             
         except Exception:
             return False
-    
+
+    @classmethod
+    async def create_gene_with_llm(cls, user_input: str, state: "LoopState", llm_engine) -> bool:
+        """
+        独立调用 LLM 创建 Gene，不占用主 Agent 轮次
+
+        Args:
+            user_input: 用户输入
+            state: 当前循环状态
+            llm_engine: LLM 引擎实例
+
+        Returns:
+            是否成功创建 Gene
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not TaskSignalMatcher._repository:
+            logger.warning("[GeneEvolution] 记忆系统未初始化，无法创建 Gene")
+            return False
+
+        try:
+            # 1. 获取现有 Gene 信息
+            existing_gene = cls._get_existing_gene(user_input)
+            
+            # 检查是否最近刚创建过 Gene（避免重复创建）
+            if existing_gene:
+                created_at = existing_gene.get('metadata', {}).get('created_at', '')
+                if created_at:
+                    from datetime import datetime, timedelta
+                    try:
+                        created_time = datetime.fromisoformat(created_at)
+                        if datetime.now() - created_time < timedelta(minutes=5):
+                            logger.info("[GeneEvolution] 最近已创建过 Gene，跳过")
+                            return True
+                    except:
+                        pass
+
+            # 2. 构建完整的运行上下文
+            context_lines = []
+
+            # 2.1 错误信息
+            if state.last_error:
+                context_lines.append(f"【最后错误】{state.last_error[:300]}")
+
+            # 2.2 工具执行历史（最近3个）
+            if state.tool_traces:
+                context_lines.append("\n【工具执行历史】")
+                for i, trace in enumerate(state.tool_traces[-3:], 1):
+                    tool_name = trace.get("tool", "unknown")
+                    success = trace.get("success", False)
+                    result = trace.get("result", {})
+                    error = result.get("error", "") if isinstance(result, dict) else ""
+                    context_lines.append(f"  {i}. {tool_name}: {'成功' if success else '失败'}")
+                    if error:
+                        context_lines.append(f"     错误: {error[:150]}")
+
+            # 2.3 决策轨迹（最近3个）
+            if state.decision_trace:
+                context_lines.append("\n【决策轨迹】")
+                for i, decision in enumerate(state.decision_trace[-3:], 1):
+                    action = decision.action_type
+                    reason = decision.stop_reason or "无"
+                    context_lines.append(f"  {i}. 动作: {action}")
+                    if decision.stop_reason:
+                        context_lines.append(f"     原因: {reason[:150]}")
+
+            # 2.4 特征状态
+            if state.features:
+                context_lines.append("\n【执行特征】")
+                if state.features.stuck_iterations > 0:
+                    context_lines.append(f"  - 停滞轮数: {state.features.stuck_iterations}")
+                if state.features.repetition_score > 0.3:
+                    context_lines.append(f"  - 重复程度: {state.features.repetition_score:.2f}")
+                if hasattr(state.features, 'consecutive_failures') and state.features.consecutive_failures > 0:
+                    context_lines.append(f"  - 连续失败: {state.features.consecutive_failures}")
+
+            context_str = "\n".join(context_lines) if context_lines else "无具体错误信息"
+
+            existing_section = ""
+            if existing_gene:
+                existing_section = f"""
+
+【现有 Gene】
+```
+{existing_gene['content'][:500]}
+```"""
+
+            # 构建给 LLM 的提示
+            prompt = f"""基于以下运行失败信息，直接创建 Gene（不要解释，只输出 Gene）：
+
+【用户输入】
+{user_input[:200]}
+
+【运行失败分析】
+{context_str}
+{existing_section}
+
+基于以上信息，创建一个指导规则 Gene。必须严格按照以下格式输出，不要添加任何解释：
+
+```gene
+[HARD CONSTRAINTS]
+[任务类型]: <简短描述任务类型，如"网络搜索"、"文件操作">
+[CONTROL ACTION]
+MUST: <应该采取的正确做法>
+MUST NOT: <应该避免的错误做法>
+[AVOID]
+- <具体的避免事项1>
+- <具体的避免事项2>
+```
+
+只输出 gene 代码块，不要输出任何其他内容。"""
+
+            # 3. 调用 LLM（带重试）
+            logger.info("[GeneEvolution] 调用 LLM 创建 Gene")
+            messages = [{"role": "user", "content": prompt}]
+            
+            response = None
+            for attempt in range(2):  # 最多重试2次
+                try:
+                    response = await llm_engine.chat(
+                        messages=messages, 
+                        max_tokens=800,
+                        temperature=0.3
+                    )
+                    if response and response.content and response.content.strip():
+                        break
+                    logger.warning(f"[GeneEvolution] LLM 返回为空，尝试 {attempt + 1}/2")
+                except Exception as e:
+                    logger.warning(f"[GeneEvolution] LLM 调用失败，尝试 {attempt + 1}/2: {e}")
+                    if attempt == 1:
+                        return False
+
+            if not response or not response.content or not response.content.strip():
+                logger.warning("[GeneEvolution] LLM 返回为空，放弃创建 Gene")
+                return False
+
+            # 4. 解析并保存 Gene
+            gene_data = cls.parse_agent_gene_response(response.content)
+            if gene_data:
+                success = cls.save_agent_created_gene(gene_data)
+                if success:
+                    logger.info("[GeneEvolution] LLM 创建 Gene 成功 | task_type=%s", gene_data.get("task_type"))
+                else:
+                    logger.warning("[GeneEvolution] 保存 Gene 失败")
+                return success
+            else:
+                logger.warning("[GeneEvolution] 无法从 LLM 响应中解析 Gene")
+                return False
+
+        except Exception as e:
+            logger.error("[GeneEvolution] 创建 Gene 时出错: %s", e)
+            return False
+
     @classmethod
     def record_success(cls, task_type: str, reward: float = 1.0, elapsed_ms: int = 0):
         if not TaskSignalMatcher._repository or not task_type:
