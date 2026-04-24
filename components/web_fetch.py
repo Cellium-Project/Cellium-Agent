@@ -52,6 +52,8 @@ class WebFetch(BaseCell):
     }
 
     MAX_HTTP_CACHE_SIZE = 5 * 1024 * 1024  # 5MB
+    IDLE_TIMEOUT = 300  # 空闲超时时间（秒），5分钟
+    HEALTH_CHECK_TIMEOUT = 5  # 健康检查超时时间（秒）
 
     def __init__(self):
         super().__init__()
@@ -66,6 +68,10 @@ class WebFetch(BaseCell):
         self._browser_port = None
         self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
         self._lock = threading.Lock()
+        self._last_used_time: float = 0
+        self._idle_timer: Optional[threading.Thread] = None
+        self._idle_stop_event = threading.Event()
+        self._creation_count = 0
 
     @property
     def cell_name(self) -> str:
@@ -98,11 +104,7 @@ class WebFetch(BaseCell):
             options.set_browser_path(resolved_browser_path)
             # Edge 浏览器特殊处理：使用唯一端口避免冲突
             if 'msedge' in resolved_browser_path.lower() or 'edge' in resolved_browser_path.lower():
-                if self._browser_port is None:
-                    # 基于实例ID生成端口 (10000-65535)
-                    port_hash = int(self._instance_id, 16) % 50000
-                    self._browser_port = 10000 + port_hash + random.randint(0, 1000)
-                options.set_argument(f'--remote-debugging-port={self._browser_port}')
+                options.set_argument('--remote-debugging-port=0')
                 options.set_argument('--no-first-run')
                 options.set_argument('--no-default-browser-check')
 
@@ -282,7 +284,7 @@ class WebFetch(BaseCell):
             logger.info(f"[WebFetch] headless 模式已设置为: {headless}")
 
     def _get_page(self, force_recreate: bool = False, max_retries: int = 3):
-        """获取或创建页面（带复用和重试机制）
+        """获取或创建页面（带复用、健康检查和重试机制）
 
         Args:
             force_recreate: 强制重建浏览器页面
@@ -290,57 +292,81 @@ class WebFetch(BaseCell):
         """
         with self._lock:
             if force_recreate:
-                self._close_page()
+                self._close_page_internal()
+                self._stop_idle_timer()
 
-            if self._page is None or not self._is_page_alive():
-                self._close_page()
-                browser_path = self._get_working_browser_path()
-                if not browser_path:
-                    raise RuntimeError("没有可用的浏览器后端")
+            if self._page is not None:
+                if self._health_check():
+                    self._update_last_used_time()
+                    self._start_idle_timer()
+                    return self._page
+                else:
+                    logger.info("[WebFetch] 健康检查失败，关闭旧实例准备重建")
+                    self._close_page_internal()
 
-                last_error = None
-                for attempt in range(max_retries):
-                    try:
-                        from DrissionPage import Chromium
+            self._close_page_internal()
+            browser_path = self._get_working_browser_path()
+            if not browser_path:
+                raise RuntimeError("没有可用的浏览器后端")
 
-                        if attempt == 0 and self._browser_port:
-                            # 第一次：尝试连接已存在的浏览器
-                            try:
-                                self._browser = Chromium(f"127.0.0.1:{self._browser_port}")
-                                self._page = self._browser.latest_tab
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    from DrissionPage import Chromium
+
+                    if attempt == 0 and self._browser_port:
+                        try:
+                            self._browser = Chromium(f"127.0.0.1:{self._browser_port}")
+                            self._page = self._browser.latest_tab
+                            if self._health_check():
                                 logger.info(f"[WebFetch] 复用已有浏览器 (端口: {self._browser_port})")
+                                self._update_last_used_time()
+                                self._start_idle_timer()
                                 return self._page
-                            except Exception as e:
-                                logger.debug(f"[WebFetch] 连接已有浏览器失败: {e}")
-                        elif attempt > 0:
-                            # 重试时：更换端口
-                            logger.info(f"[WebFetch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
-                            self._browser_port = None
-                            time.sleep(1)
+                            else:
+                                logger.warning("[WebFetch] 复用的浏览器健康检查失败")
+                                self._close_page_internal()
+                        except Exception as e:
+                            logger.debug(f"[WebFetch] 连接已有浏览器失败: {e}")
+                            self._close_page_internal()
+                    elif attempt > 0:
+                        logger.info(f"[WebFetch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
+                        self._browser_port = None
+                        time.sleep(1)
 
-                        co = self._build_options(browser_path=browser_path)
-                        self._browser = Chromium(addr_or_opts=co)
-                        if self._browser is None:
-                            raise RuntimeError("Chromium 浏览器创建失败")
-                        self._page = self._browser.latest_tab
+                    co = self._build_options(browser_path=browser_path)
+                    self._browser = Chromium(addr_or_opts=co)
+                    if self._browser is None:
+                        raise RuntimeError("Chromium 浏览器创建失败")
+                    self._page = self._browser.latest_tab
+                    if self._page is None:
+                        self._page = self._browser.new_tab()
                         if self._page is None:
-                            self._page = self._browser.new_tab()
-                            if self._page is None:
-                                raise RuntimeError("无法获取浏览器标签页")
-                        logger.info(f"[WebFetch] 浏览器页面创建成功 (端口: {self._browser_port})")
-                        return self._page
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(f"[WebFetch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                        self._close_page()
+                            raise RuntimeError("无法获取浏览器标签页")
+                    
+                    self._creation_count += 1
+                    self._update_last_used_time()
+                    self._start_idle_timer()
+                    logger.info(f"[WebFetch] 浏览器页面创建成功 (端口: {self._browser_port}, 累计创建: {self._creation_count})")
+                    return self._page
+                except AttributeError as e:
+                    last_error = e
+                    logger.warning(f"[WebFetch] 浏览器创建失败 AttributeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    self._close_page_internal()
+                except TypeError as e:
+                    last_error = e
+                    logger.warning(f"[WebFetch] 浏览器创建失败 TypeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    self._close_page_internal()
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[WebFetch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    self._close_page_internal()
 
-                # 所有重试都失败
-                logger.error(f"[WebFetch] 浏览器创建最终失败: {last_error}")
-                self._working_browser_path = None
-                self._working_browser_name = None
-                self._browser_probe_failed = False
-                raise RuntimeError(f"浏览器初始化失败: {last_error}")
-            return self._page
+            logger.error(f"[WebFetch] 浏览器创建最终失败: {last_error}")
+            self._working_browser_path = None
+            self._working_browser_name = None
+            self._browser_probe_failed = False
+            raise RuntimeError(f"浏览器初始化失败: {last_error}")
 
     def _is_page_alive(self) -> bool:
         """检查页面是否仍然可用"""
@@ -353,7 +379,75 @@ class WebFetch(BaseCell):
             logger.debug(f"[WebFetch] 页面连接检查失败: {e}")
         return False
 
-    def _close_page(self):
+    def _health_check(self) -> bool:
+        """健康检查：ping 浏览器实例是否正常响应
+        
+        Returns:
+            True: 浏览器健康可用
+            False: 浏览器异常，需要重建
+        """
+        if self._page is None or self._browser is None:
+            logger.debug("[WebFetch] 健康检查：无浏览器实例")
+            return False
+        
+        try:
+            url = self._page.url
+            if url is None:
+                logger.debug("[WebFetch] 健康检查：url 为 None")
+                return False
+            
+            _ = self._page.driver
+            logger.debug("[WebFetch] 健康检查通过")
+            return True
+        except AttributeError as e:
+            logger.warning("[WebFetch] 健康检查失败（AttributeError）: %s", e)
+            return False
+        except TypeError as e:
+            logger.warning("[WebFetch] 健康检查失败（TypeError）: %s", e)
+            return False
+        except Exception as e:
+            logger.warning("[WebFetch] 健康检查失败: %s", e)
+            return False
+
+    def _update_last_used_time(self):
+        """更新最后使用时间"""
+        self._last_used_time = time.time()
+
+    def _start_idle_timer(self):
+        """启动空闲清理定时器（后台线程）"""
+        if self._idle_timer is not None and self._idle_timer.is_alive():
+            return
+        
+        self._idle_stop_event.clear()
+        
+        def _idle_monitor():
+            while not self._idle_stop_event.is_set():
+                time.sleep(60)
+                if self._idle_stop_event.is_set():
+                    break
+                
+                with self._lock:
+                    if self._page is None:
+                        continue
+                    
+                    idle_time = time.time() - self._last_used_time
+                    if idle_time > self.IDLE_TIMEOUT:
+                        logger.info("[WebFetch] 浏览器空闲超时 (%.0f秒)，自动关闭", idle_time)
+                        self._close_page_internal()
+        
+        self._idle_timer = threading.Thread(target=_idle_monitor, daemon=True, name="WebFetchIdleMonitor")
+        self._idle_timer.start()
+        logger.debug("[WebFetch] 空闲监控线程已启动")
+
+    def _stop_idle_timer(self):
+        """停止空闲清理定时器"""
+        if self._idle_timer is not None and self._idle_timer.is_alive():
+            self._idle_stop_event.set()
+            self._idle_timer.join(timeout=2)
+            logger.debug("[WebFetch] 空闲监控线程已停止")
+
+    def _close_page_internal(self):
+        """内部关闭方法（不加锁，由调用者保证线程安全）"""
         if self._page:
             try:
                 self._page.quit()
@@ -369,6 +463,46 @@ class WebFetch(BaseCell):
             finally:
                 self._browser = None
         self._browser_port = None
+        self._last_used_time = 0
+
+    def _close_page(self):
+        """关闭浏览器页面（公开方法，带锁）"""
+        with self._lock:
+            self._stop_idle_timer()
+            self._close_page_internal()
+
+    def __del__(self):
+        """析构时确保关闭浏览器"""
+        try:
+            self._stop_idle_timer()
+            if self._page or self._browser:
+                self._close_page_internal()
+        except Exception:
+            pass
+
+    def _safe_browser_operation(self, operation: callable, *args, **kwargs):
+        """安全执行浏览器操作，失败时自动恢复
+        
+        Args:
+            operation: 要执行的操作函数
+            *args, **kwargs: 操作参数
+            
+        Returns:
+            操作结果，失败返回 None
+        """
+        try:
+            return operation(*args, **kwargs)
+        except AttributeError as e:
+            logger.warning("[WebFetch] 操作失败 AttributeError: %s，尝试恢复", e)
+            self._close_page()
+            return None
+        except TypeError as e:
+            logger.warning("[WebFetch] 操作失败 TypeError: %s，尝试恢复", e)
+            self._close_page()
+            return None
+        except Exception as e:
+            logger.warning("[WebFetch] 操作失败: %s", e)
+            return None
 
     def _new_page(self):
         """创建新页面（强制新建）"""

@@ -311,8 +311,14 @@ class ToolExecutor:
         """更新工具表（热插拔后调用）"""
         self.tools = tools
 
-    async def execute(self, tool_call) -> Dict[str, Any]:
-        """执行工具调用（异步包装，避免阻塞事件循环）"""
+    async def execute(self, tool_call, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """执行工具调用（异步包装，避免阻塞事件循环）
+        
+        Args:
+            tool_call: 工具调用信息
+            session_id: 当前会话 ID（可选）
+            platform_context: 平台上下文信息（可选，包含 target_id 等）
+        """
         import asyncio
         from concurrent.futures import ThreadPoolExecutor
         from app.core.util.component_tool_registry import get_component_tool_registry
@@ -328,8 +334,8 @@ class ToolExecutor:
             logger.warning("[ToolExecutor] 工具刷新失败: %s", e)
 
         logger.info(
-            "[ToolExecutor] execute | name=%s | available=%s",
-            tool_name, list(self.tools.keys()),
+            "[ToolExecutor] execute | name=%s | session=%s | available=%s",
+            tool_name, session_id or "N/A", list(self.tools.keys()),
         )
 
         if tool_name not in self.tools:
@@ -339,16 +345,16 @@ class ToolExecutor:
 
         tool_instance = self.tools[tool_name]
 
-        # 在线程池中执行同步工具，避免阻塞事件循环
         def _run_tool():
-            if hasattr(tool_instance, "execute"):
+            if hasattr(tool_instance, "execute_with_context"):
+                return tool_instance.execute_with_context(arguments, session_id=session_id, platform_context=platform_context)
+            elif hasattr(tool_instance, "execute"):
                 return tool_instance.execute(arguments)
             elif callable(tool_instance):
                 return tool_instance(**arguments)
             return {"error": f"Tool {tool_name} is not callable"}
 
         try:
-            # 使用默认 executor 在线程中执行同步工具
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, _run_tool)
             return result

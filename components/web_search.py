@@ -13,6 +13,7 @@ import urllib.parse
 import hashlib
 import threading
 from functools import lru_cache
+from typing import Optional
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 from app.core.interface.base_cell import BaseCell
@@ -123,6 +124,13 @@ class WebSearch(BaseCell):
         self._browser_port = None
         self._browser_path = None
         self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+        self._last_used_time: float = 0
+        self._idle_timer: Optional[threading.Thread] = None
+        self._idle_stop_event = threading.Event()
+        self._creation_count = 0
+
+    IDLE_TIMEOUT = 300
+    HEALTH_CHECK_TIMEOUT = 5
 
     @property
     def cell_name(self) -> str:
@@ -163,7 +171,7 @@ class WebSearch(BaseCell):
         return await loop.run_in_executor(None, lambda: self._cmd_search(keywords, max_results, wait_time, engine))
 
     def _quick_resolve(self, url: str) -> str:
-        """快速解析跳转链接（通过 HEAD 请求获取真实 URL）"""
+        """快速解析跳转链接"""
         if not url or not isinstance(url, str):
             return url
         if 'baidu.com/link?url=' in url or 'google.com/url?' in url:
@@ -201,7 +209,6 @@ class WebSearch(BaseCell):
             if not self._check_engine_accessible(engine):
                 continue
             health = self._engine_health.get(engine, 'unknown')
-            # unknown 或 red 状态都允许尝试（每次新搜索都重试）
             if health in ('unknown', 'red'):
                 logger.info(f"[WebSearch:auto] 选择 {engine} (状态: {health}, 尝试搜索)")
                 return engine
@@ -222,10 +229,7 @@ class WebSearch(BaseCell):
         if browser_path:
             options.set_browser_path(browser_path)
             if 'msedge' in browser_path.lower() or 'edge' in browser_path.lower():
-                if self._browser_port is None:
-                    port_hash = int(self._instance_id, 16) % 50000
-                    self._browser_port = 10000 + port_hash + random.randint(0, 1000)
-                options.set_argument(f'--remote-debugging-port={self._browser_port}')
+                options.set_argument('--remote-debugging-port=0')
                 options.set_argument('--no-first-run')
                 options.set_argument('--no-default-browser-check')
         if self._user_agent is None:
@@ -267,6 +271,153 @@ class WebSearch(BaseCell):
         return self._page
 
     def _close_page(self):
+        with self._lock:
+            self._stop_idle_timer()
+            self._close_page_internal()
+
+    def __del__(self):
+        try:
+            self._stop_idle_timer()
+            if self._page or self._browser:
+                self._close_page_internal()
+        except Exception:
+            pass
+
+    def _safe_browser_operation(self, operation: callable, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except AttributeError as e:
+            logger.warning("[WebSearch] 操作失败 AttributeError: %s，尝试恢复", e)
+            self._close_page()
+            return None
+        except TypeError as e:
+            logger.warning("[WebSearch] 操作失败 TypeError: %s，尝试恢复", e)
+            self._close_page()
+            return None
+        except Exception as e:
+            logger.warning("[WebSearch] 操作失败: %s", e)
+            return None
+
+    def _get_or_create_page(self, force_recreate: bool = False, max_retries: int = 3):
+        with self._lock:
+            if force_recreate:
+                self._close_page_internal()
+                self._stop_idle_timer()
+
+            if self._page is not None:
+                if self._health_check():
+                    self._update_last_used_time()
+                    self._start_idle_timer()
+                    return self._page
+                else:
+                    logger.info("[WebSearch] 健康检查失败，关闭旧实例准备重建")
+                    self._close_page_internal()
+
+            self._close_page_internal()
+            last_error = None
+
+            for attempt in range(max_retries):
+                try:
+                    from DrissionPage import Chromium, ChromiumOptions
+
+                    if attempt > 0:
+                        logger.info(f"[WebSearch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
+                        self._browser_port = None
+                        time.sleep(1)
+
+                    co = self._get_options()
+                    self._browser = Chromium(addr_or_opts=co)
+                    self._page = self._browser.latest_tab
+                    if self._page is None:
+                        self._page = self._browser.new_tab()
+                        if self._page is None:
+                            raise RuntimeError("无法获取浏览器标签页")
+
+                    self._creation_count += 1
+                    self._update_last_used_time()
+                    self._start_idle_timer()
+                    logger.info(f"[WebSearch] 浏览器页面创建成功 (端口: {self._browser_port}, 累计创建: {self._creation_count})")
+                    return self._page
+                except AttributeError as e:
+                    last_error = e
+                    logger.warning(f"[WebSearch] 浏览器创建失败 AttributeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    self._close_page_internal()
+                except TypeError as e:
+                    last_error = e
+                    logger.warning(f"[WebSearch] 浏览器创建失败 TypeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    self._close_page_internal()
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[WebSearch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    self._close_page_internal()
+
+            logger.error(f"[WebSearch] 浏览器创建最终失败: {last_error}")
+            raise last_error
+
+    def _is_page_alive(self) -> bool:
+        """检查页面是否仍然可用"""
+        try:
+            if self._page is None:
+                return False
+            _ = self._page.url
+            _ = self._page.driver
+            return True
+        except Exception as e:
+            logger.debug(f"[WebSearch] 页面连接检查失败: {e}")
+            return False
+
+    def _health_check(self) -> bool:
+        if self._page is None or self._browser is None:
+            logger.debug("[WebSearch] 健康检查：无浏览器实例")
+            return False
+        try:
+            url = self._page.url
+            if url is None:
+                logger.debug("[WebSearch] 健康检查：url 为 None")
+                return False
+            _ = self._page.driver
+            logger.debug("[WebSearch] 健康检查通过")
+            return True
+        except AttributeError as e:
+            logger.warning("[WebSearch] 健康检查失败（AttributeError）: %s", e)
+            return False
+        except TypeError as e:
+            logger.warning("[WebSearch] 健康检查失败（TypeError）: %s", e)
+            return False
+        except Exception as e:
+            logger.warning("[WebSearch] 健康检查失败: %s", e)
+            return False
+
+    def _update_last_used_time(self):
+        self._last_used_time = time.time()
+
+    def _start_idle_timer(self):
+        if self._idle_timer is not None and self._idle_timer.is_alive():
+            return
+        self._idle_stop_event.clear()
+        def _idle_monitor():
+            while not self._idle_stop_event.is_set():
+                time.sleep(60)
+                if self._idle_stop_event.is_set():
+                    break
+                with self._lock:
+                    if self._page is None:
+                        continue
+                    idle_time = time.time() - self._last_used_time
+                    if idle_time > self.IDLE_TIMEOUT:
+                        logger.info("[WebSearch] 浏览器空闲超时 (%.0f秒)，自动关闭", idle_time)
+                        self._close_page_internal()
+        self._idle_timer = threading.Thread(target=_idle_monitor, daemon=True, name="WebSearchIdleMonitor")
+        self._idle_timer.start()
+        logger.debug("[WebSearch] 空闲监控线程已启动")
+
+    def _stop_idle_timer(self):
+        if self._idle_timer is not None and self._idle_timer.is_alive():
+            self._idle_stop_event.set()
+            self._idle_timer.join(timeout=2)
+            logger.debug("[WebSearch] 空闲监控线程已停止")
+
+    def _close_page_internal(self):
         if self._page:
             try:
                 self._page.quit()
@@ -282,58 +433,7 @@ class WebSearch(BaseCell):
             finally:
                 self._browser = None
         self._browser_port = None
-
-    def _get_or_create_page(self, force_recreate: bool = False, max_retries: int = 3):
-        """获取或创建页面
-
-        Args:
-            force_recreate: 强制重建浏览器页面
-            max_retries: 最大重试次数
-        """
-        with self._lock:
-            if force_recreate:
-                self._close_page()
-
-            if self._page is None or not self._is_page_alive():
-                self._close_page()
-                last_error = None
-
-                for attempt in range(max_retries):
-                    try:
-                        from DrissionPage import Chromium, ChromiumOptions
-
-                        # 重试时：更换端口
-                        if attempt > 0:
-                            logger.info(f"[WebSearch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
-                            self._browser_port = None
-                            import time
-                            time.sleep(1)
-
-                        co = self._get_options()
-                        self._browser = Chromium(addr_or_opts=co)
-                        self._page = self._browser.latest_tab
-                        logger.info(f"[WebSearch] 浏览器页面创建成功 (端口: {self._browser_port})")
-                        return self._page
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(f"[WebSearch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                        self._close_page()
-
-                logger.error(f"[WebSearch] 浏览器创建最终失败: {last_error}")
-                raise last_error
-            return self._page
-
-    def _is_page_alive(self) -> bool:
-        """检查页面是否仍然可用"""
-        try:
-            if self._page is None:
-                return False
-            _ = self._page.url
-            _ = self._page.driver
-            return True
-        except Exception as e:
-            logger.debug(f"[WebSearch] 页面连接检查失败: {e}")
-            return False
+        self._last_used_time = 0
 
     def _extract_links_generic(self, page, engine: str):
         """通用链接提取方法，适用于所有搜索引擎"""
@@ -371,7 +471,6 @@ class WebSearch(BaseCell):
 
                         if href and title and len(title) > 5:
                             if engine == 'bing':
-                                # Bing 摘要可能在多个位置，尝试多种选择器
                                 desc_elem = (item.ele('.b_lineclamp2', timeout=0.3) or
                                             item.ele('.b_lineclamp3', timeout=0.3) or
                                             item.ele('p', timeout=0.3))
@@ -645,7 +744,6 @@ class WebSearch(BaseCell):
                 if eng not in engines_to_try and eng in self.SEARCH_ENGINES:
                     engines_to_try.append(eng)
 
-        # 检查缓存（使用实际会尝试的第一个引擎作为缓存键）
         cache_check_engine = engines_to_try[0] if engines_to_try else cache_engine
         cached = self._get_cached_result(keywords, cache_check_engine)
         if cached:
@@ -654,7 +752,6 @@ class WebSearch(BaseCell):
         
         logger.info(f"[WebSearch] 将尝试以下引擎: {engines_to_try}")
 
-        # 依次尝试每个引擎
         last_error = None
         for idx, engine in enumerate(engines_to_try):
             try:

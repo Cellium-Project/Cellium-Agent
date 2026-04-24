@@ -183,12 +183,20 @@ class AgentLoop:
             self._session_notes_cache[session_id] = SessionNotes(session_id, notes_dir=self._notes_dir)
         return self._session_notes_cache[session_id]
 
-    def _load_memory_config(self, memory_dir: str):
-        """
-        加载记忆配置
+    def _get_session_platform_context(self, session_id: str) -> Dict[str, Any]:
+        try:
+            from app.agent.loop.session_manager import get_session_manager
+            session_mgr = get_session_manager()
+            session_info = session_mgr.get(session_id)
+            
+            if session_info and hasattr(session_info, "platform_context"):
+                return session_info.platform_context
+        except Exception as e:
+            logger.debug("[AgentLoop] 获取平台上下文失败: %s", e)
+        return {}
 
-        修复：使用 AgentConfig 单例，而非独立读取文件
-        """
+    def _load_memory_config(self, memory_dir: str):
+
         # 默认配置
         self._mem_config = {
             "short_term": {
@@ -206,13 +214,11 @@ class AgentLoop:
         }
 
         try:
-            # 使用 AgentConfig 单例获取配置
             from app.core.util.agent_config import get_config
             config = get_config()
             mem_config = config.get_section("memory")
 
             if mem_config:
-                # 深度合并配置
                 for key in ["short_term", "session_compact", "long_term"]:
                     if key in mem_config:
                         if key not in self._mem_config:
@@ -600,7 +606,12 @@ class AgentLoop:
             )
         else:
             try:
-                result = await self._tool_executor.execute(tool_call)
+                platform_context = self._get_session_platform_context(effective_session)
+                result = await self._tool_executor.execute(
+                    tool_call,
+                    session_id=effective_session,
+                    platform_context=platform_context
+                )
                 duration_ms = (time.time() - t0) * 1000
                 self._event_publisher.publish_tool_call_end(
                     session_id=effective_session,

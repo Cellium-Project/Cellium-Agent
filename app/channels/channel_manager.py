@@ -348,6 +348,15 @@ class ChannelManager:
         from app.agent.loop.session_manager import get_session_manager
         session_mgr = get_session_manager()
         session_info = session_mgr.get_or_create(message.session_id)
+        session_info.platform_context = {
+            "platform": message.platform,
+            "user_id": message.user_id,
+            "group_id": message.group_id,
+            "channel_id": message.channel_id,
+            "guild_id": message.guild_id,
+            "message_type": message.message_type,
+            "target_id": self._resolve_target_id(message),
+        }
         if adapter:
             try:
                 is_file = await adapter.handle_file_message(message)

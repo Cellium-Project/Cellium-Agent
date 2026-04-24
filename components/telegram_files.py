@@ -43,6 +43,57 @@ class TelegramFiles(BaseCell):
             print(f"[TelegramFiles] Failed to get adapter: {e}")
             return None
 
+    def execute_with_context(self, arguments: Dict[str, Any], session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """执行工具调用（带平台上下文）"""
+        command = arguments.get("command", "")
+        
+        self._last_platform_context = platform_context or {}
+        
+        if command == "download":
+            return self._cmd_download(
+                file_id=arguments.get("file_id", ""),
+                filename=arguments.get("filename")
+            )
+        elif command == "send_file":
+            return self._cmd_send_file(
+                file_path=arguments.get("file_path", ""),
+                chat_id=arguments.get("chat_id"),
+                caption=arguments.get("caption", "")
+            )
+        elif command == "send_image":
+            return self._cmd_send_image(
+                image_path=arguments.get("image_path", ""),
+                chat_id=arguments.get("chat_id"),
+                caption=arguments.get("caption", "")
+            )
+        elif command == "list":
+            return self._cmd_list(folder=arguments.get("folder", ""))
+        else:
+            return {"success": False, "error": f"未知命令: {command}"}
+
+    def _get_platform_context(self) -> Dict[str, Any]:
+        """获取当前会话的平台上下文"""
+        if hasattr(self, "_last_platform_context"):
+            return self._last_platform_context
+        
+        try:
+            from app.agent.loop.session_manager import get_session_manager
+            session_mgr = get_session_manager()
+            
+            sessions = session_mgr.list_sessions(active_only=True)
+            if not sessions:
+                return {}
+            
+            latest_session = sessions[0]
+            session_info = session_mgr.get(latest_session["session_id"])
+            
+            if session_info and hasattr(session_info, "platform_context"):
+                return session_info.platform_context
+            return {}
+        except Exception as e:
+            print(f"[TelegramFiles] Failed to get platform context: {e}")
+            return {}
+
     # ============================================================
     # 文件下载
     # ============================================================
@@ -118,8 +169,8 @@ class TelegramFiles(BaseCell):
 
     def _cmd_send_file(
         self,
-        chat_id: str,
         file_path: str,
+        chat_id: str = None,
         caption: str = ""
     ) -> Dict[str, Any]:
         """
@@ -130,8 +181,8 @@ class TelegramFiles(BaseCell):
         - 转发文件给 Telegram 用户或群
 
         Args:
-            chat_id: 聊天 ID（从消息中获取）
             file_path: 本地文件的完整路径
+            chat_id: 聊天 ID（可选，默认自动获取当前会话）
             caption: 文件说明文字（可选）
 
         Returns:
@@ -147,6 +198,17 @@ class TelegramFiles(BaseCell):
         if not file_path_obj.exists():
             return {"success": False, "error": f"文件不存在: {file_path}"}
 
+        if chat_id is None:
+            context = self._get_platform_context()
+            if not context:
+                return {"success": False, "error": "无法获取当前会话信息，请确保是通过 Telegram 平台接收的消息"}
+            
+            chat_id = context.get("user_id") or context.get("group_id")
+            if not chat_id:
+                return {"success": False, "error": "无法获取目标聊天 ID"}
+            
+            print(f"[TelegramFiles] 自动获取会话信息: chat_id={chat_id}")
+
         try:
             import concurrent.futures
 
@@ -158,7 +220,6 @@ class TelegramFiles(BaseCell):
                 finally:
                     loop.close()
 
-            # 判断是图片还是普通文件
             mime_type = self._get_mime_type(file_path)
             if mime_type and mime_type.startswith("image/"):
                 send_coro = adapter.send_photo(chat_id, str(file_path), caption)
@@ -178,8 +239,8 @@ class TelegramFiles(BaseCell):
 
     def _cmd_send_image(
         self,
-        chat_id: str,
         image_path: str,
+        chat_id: str = None,
         caption: str = ""
     ) -> Dict[str, Any]:
         """
@@ -190,8 +251,8 @@ class TelegramFiles(BaseCell):
         - 发送截图或照片到 Telegram
 
         Args:
-            chat_id: 聊天 ID（从消息中获取）
             image_path: 本地图片的完整路径
+            chat_id: 聊天 ID（可选，默认自动获取当前会话）
             caption: 图片说明文字（可选）
 
         Returns:
@@ -206,6 +267,17 @@ class TelegramFiles(BaseCell):
         file_path_obj = Path(image_path)
         if not file_path_obj.exists():
             return {"success": False, "error": f"图片不存在: {image_path}"}
+
+        if chat_id is None:
+            context = self._get_platform_context()
+            if not context:
+                return {"success": False, "error": "无法获取当前会话信息，请确保是通过 Telegram 平台接收的消息"}
+            
+            chat_id = context.get("user_id") or context.get("group_id")
+            if not chat_id:
+                return {"success": False, "error": "无法获取目标聊天 ID"}
+            
+            print(f"[TelegramFiles] 自动获取会话信息: chat_id={chat_id}")
 
         try:
             import concurrent.futures

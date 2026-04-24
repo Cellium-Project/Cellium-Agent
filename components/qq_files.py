@@ -43,6 +43,58 @@ class QQFiles(BaseCell):
             print(f"[QQFiles] Failed to get adapter: {e}")
             return None
 
+    def execute_with_context(self, arguments: Dict[str, Any], session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """执行工具调用（带平台上下文）"""
+        command = arguments.get("command", "")
+        
+        self._last_platform_context = platform_context or {}
+        
+        if command == "download":
+            return self._cmd_download(
+                url=arguments.get("url", ""),
+                filename=arguments.get("filename"),
+                folder=arguments.get("folder", "")
+            )
+        elif command == "send_file":
+            return self._cmd_send_file(
+                file_path=arguments.get("file_path", ""),
+                target_id=arguments.get("target_id"),
+                is_group=arguments.get("is_group")
+            )
+        elif command == "send_image":
+            return self._cmd_send_image(
+                image_path=arguments.get("image_path", ""),
+                target_id=arguments.get("target_id"),
+                is_group=arguments.get("is_group")
+            )
+        elif command == "list":
+            return self._cmd_list(folder=arguments.get("folder", ""))
+        else:
+            return {"success": False, "error": f"未知命令: {command}"}
+
+    def _get_platform_context(self) -> Dict[str, Any]:
+        """获取当前会话的平台上下文"""
+        if hasattr(self, "_last_platform_context"):
+            return self._last_platform_context
+        
+        try:
+            from app.agent.loop.session_manager import get_session_manager
+            session_mgr = get_session_manager()
+            
+            sessions = session_mgr.list_sessions(active_only=True)
+            if not sessions:
+                return {}
+            
+            latest_session = sessions[0]
+            session_info = session_mgr.get(latest_session["session_id"])
+            
+            if session_info and hasattr(session_info, "platform_context"):
+                return session_info.platform_context
+            return {}
+        except Exception as e:
+            print(f"[QQFiles] Failed to get platform context: {e}")
+            return {}
+
     # ============================================================
     # 文件下载
     # ============================================================
@@ -113,9 +165,9 @@ class QQFiles(BaseCell):
 
     def _cmd_send_file(
         self,
-        target_id: str,
         file_path: str,
-        is_group: bool = False
+        target_id: str = None,
+        is_group: bool = None
     ) -> Dict[str, Any]:
         """
         发送本地文件到 QQ
@@ -125,9 +177,9 @@ class QQFiles(BaseCell):
         - 转发文件给 QQ 用户或群
 
         Args:
-            target_id: 用户 OpenID 或群 OpenID（从消息中获取）
             file_path: 本地文件的完整路径
-            is_group: 是否是群聊（默认 False，私聊）
+            target_id: 用户 OpenID 或群 OpenID（可选，默认自动获取当前会话）
+            is_group: 是否是群聊（可选，默认自动检测）
 
         Returns:
             {"success": True, "message": "文件发送成功"}
@@ -142,6 +194,21 @@ class QQFiles(BaseCell):
         if not file_path_obj.exists():
             return {"success": False, "error": f"文件不存在: {file_path}"}
 
+        if target_id is None or is_group is None:
+            context = self._get_platform_context()
+            if not context:
+                return {"success": False, "error": "无法获取当前会话信息，请确保是通过 QQ 平台接收的消息"}
+            
+            if target_id is None:
+                target_id = context.get("target_id")
+                if not target_id:
+                    return {"success": False, "error": "无法获取目标用户 ID"}
+            
+            if is_group is None:
+                is_group = context.get("message_type") == "group"
+            
+            print(f"[QQFiles] 自动获取会话信息: target_id={target_id}, is_group={is_group}")
+
         try:
             import concurrent.futures
 
@@ -153,7 +220,6 @@ class QQFiles(BaseCell):
                 finally:
                     loop.close()
 
-            # send_file_message 内部已包含上传逻辑，直接调用即可
             send_coro = adapter.send_file_message(target_id, file_path, is_group)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 send_future = executor.submit(_run_in_new_loop, send_coro)
@@ -168,9 +234,9 @@ class QQFiles(BaseCell):
 
     def _cmd_send_image(
         self,
-        target_id: str,
         image_path: str,
-        is_group: bool = False
+        target_id: str = None,
+        is_group: bool = None
     ) -> Dict[str, Any]:
         """
         发送本地图片到 QQ
@@ -180,9 +246,9 @@ class QQFiles(BaseCell):
         - 发送截图或照片到 QQ
 
         Args:
-            target_id: 用户 OpenID 或群 OpenID（从消息中获取）
             image_path: 本地图片的完整路径
-            is_group: 是否是群聊（默认 False，私聊）
+            target_id: 用户 OpenID 或群 OpenID（可选，默认自动获取当前会话）
+            is_group: 是否是群聊（可选，默认自动检测）
 
         Returns:
             {"success": True, "message": "图片发送成功"}
@@ -192,6 +258,21 @@ class QQFiles(BaseCell):
         adapter = self._get_adapter()
         if not adapter:
             return {"success": False, "error": "QQ 服务未启动"}
+
+        if target_id is None or is_group is None:
+            context = self._get_platform_context()
+            if not context:
+                return {"success": False, "error": "无法获取当前会话信息，请确保是通过 QQ 平台接收的消息"}
+            
+            if target_id is None:
+                target_id = context.get("target_id")
+                if not target_id:
+                    return {"success": False, "error": "无法获取目标用户 ID"}
+            
+            if is_group is None:
+                is_group = context.get("message_type") == "group"
+            
+            print(f"[QQFiles] 自动获取会话信息: target_id={target_id}, is_group={is_group}")
 
         try:
             import concurrent.futures

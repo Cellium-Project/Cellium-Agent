@@ -38,6 +38,7 @@ class SessionInfo:
         self.last_active = time.time()
         self.message_count = 0
         self.flash_mode = flash_mode
+        self.platform_context: Dict[str, Any] = {}
 
     def touch(self):
         """更新最后活跃时间"""
