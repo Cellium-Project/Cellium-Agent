@@ -60,12 +60,15 @@ class MemoryManager:
             "timestamp": datetime.now().isoformat()
         })
 
-    def add_assistant_message(self, content: str):
-        self.messages.append({
+    def add_assistant_message(self, content: str, reasoning_content: str = None):
+        msg = {
             "role": "assistant",
             "content": content,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        if reasoning_content:
+            msg["reasoning_content"] = reasoning_content
+        self.messages.append(msg)
 
     def add_system_message(self, content: str):
         """添加系统消息"""
@@ -99,6 +102,7 @@ class MemoryManager:
         self,
         tool_calls_data: List[Dict],
         content: str = None,
+        reasoning_content: str = None,
     ) -> List[str]:
         tool_calls = []
         tool_call_ids = []
@@ -123,12 +127,15 @@ class MemoryManager:
                 }
             })
 
-        self.messages.append({
+        msg = {
             "role": "assistant",
             "content": content or None,
             "tool_calls": tool_calls,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        if reasoning_content:
+            msg["reasoning_content"] = reasoning_content
+        self.messages.append(msg)
 
         logger.debug(
             "[MemoryManager] 批量添加 tool_calls | count=%d | content_len=%d",

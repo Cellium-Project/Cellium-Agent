@@ -38,6 +38,7 @@ class ChatResponse:
     model: str = ""
     finish_reason: str = ""
     usage: Dict[str, int] = field(default_factory=dict)
+    reasoning_content: Optional[str] = None  # 用于 thinking 模式的推理内容
 
     @property
     def has_tool_calls(self) -> bool:
@@ -621,12 +622,18 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             message = choice.message
 
             content = message.content
+            
+            # 提取 reasoning_content（用于 thinking 模式）
+            reasoning_content = None
+            if hasattr(message, 'reasoning_content'):
+                reasoning_content = message.reasoning_content
 
             logger.info(
-                "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s",
+                "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s | has_reasoning=%s",
                 choice.finish_reason,
                 (content or "(空)")[:200],
                 hasattr(message, 'tool_calls') and bool(message.tool_calls),
+                reasoning_content is not None,
             )
 
             tool_calls = []
@@ -659,6 +666,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 model=getattr(raw_response, 'model', ''),
                 finish_reason=choice.finish_reason or '',
                 usage=usage,
+                reasoning_content=reasoning_content,
             )
 
         if isinstance(raw_response, str):

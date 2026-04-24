@@ -18,6 +18,8 @@ models:
   # ---- DeepSeek ----
   deepseek-chat:     [128000, 8192, true]
   deepseek-reasoner: [128000, 65536, true]
+  deepseek-v4-flash: [1000000, 384000, true]
+  deepseek-v4-pro:   [1000000, 384000, true]
 
   # ---- 通义千问 (Qwen) ----
   qwen-turbo:       [131072, 8192, true]

@@ -1106,7 +1106,10 @@ class AgentLoop:
                         if after_json_text:
                             yield {"type": "content_chunk", "content": after_json_text}
                         if not self.flash_mode:
-                            effective_memory.add_assistant_message(response.content or "")
+                            effective_memory.add_assistant_message(
+                                response.content or "",
+                                reasoning_content=response.reasoning_content
+                            )
 
                         # 同步 Hybrid 状态并发送事件
                         hybrid_event = self._sync_hybrid_state()
@@ -1229,6 +1232,7 @@ class AgentLoop:
                         tool_call_ids = effective_memory.add_tool_calls_batch(
                             tool_calls_data,
                             content=content_for_memory,
+                            reasoning_content=response.reasoning_content,
                         )
                         # 更新 tool_calls_info 中的 tool_call_id 为实际写入的 ID
                         for idx, info in enumerate(tool_calls_info):
@@ -1363,7 +1367,10 @@ class AgentLoop:
                 if hasattr(response, 'finish_reason') and response.finish_reason == "length":
                     logger.info("[AgentLoop] 输出被截断 (finish_reason=length)，继续迭代补充...")
                     if not self.flash_mode:
-                        effective_memory.add_assistant_message(response.content or "")
+                        effective_memory.add_assistant_message(
+                            response.content or "",
+                            reasoning_content=response.reasoning_content
+                        )
                     yield {"type": "thinking", "content": "输出被截断，正在补充..."}
                     continue
 
@@ -1376,7 +1383,10 @@ class AgentLoop:
                     help_text = AutoHintManager.format_tool_help(tool_defs)
                     logger.info("[AgentLoop] 检测到工具帮助请求，注入工具定义")
                     if not self.flash_mode:
-                        effective_memory.add_assistant_message(response.content or "")
+                        effective_memory.add_assistant_message(
+                            response.content or "",
+                            reasoning_content=response.reasoning_content
+                        )
                         effective_memory.add_user_message(
                             f"[系统] 以下是可用工具的完整定义，请参考后重新执行操作：\n\n{help_text}"
                         )
@@ -1390,7 +1400,10 @@ class AgentLoop:
                 if is_looping:
                     logger.warning("[AgentLoop] 检测到循环重复输出")
                     if not self.flash_mode:
-                        effective_memory.add_assistant_message(content)
+                        effective_memory.add_assistant_message(
+                            content,
+                            reasoning_content=response.reasoning_content
+                        )
                     is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
                     if is_json_thinking and reasoning_text:
                         yield {"type": "thinking", "content": reasoning_text}
@@ -1435,7 +1448,10 @@ class AgentLoop:
                     )
 
                 if not self.flash_mode:
-                    effective_memory.add_assistant_message(content)
+                    effective_memory.add_assistant_message(
+                        content,
+                        reasoning_content=response.reasoning_content
+                    )
                 is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
                 if is_json_thinking and reasoning_text:
                     yield {"type": "thinking", "content": reasoning_text}
