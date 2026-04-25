@@ -11,11 +11,13 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2FmacOS%2FLinux-blue)]()
 
-**这是一个 AI Agent 框架**
+**这是一个自进化AI Agent**
 
 [English](README_EN.md) | 中文
 
 </div>
+
+> **传统 Agent 重复犯错、陷入死循环、不会总结经验。所以我们选择让Agent无限进化**
 
 基于微内核架构（EventBus + DI + BaseTool），支持任意 OpenAI 兼容 API
 

@@ -11,11 +11,13 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2FmacOS%2FLinux-blue)]()
 
-**An AI Agent Framework**
+**A Self-Evolving AI Agent**
 
 English | [中文](README.md)
 
 </div>
+
+> **Traditional Agents repeat mistakes, get stuck in loops, and never learn from experience. That's why we chose to make Agents evolve infinitely.**
 
 Based on microkernel architecture (EventBus + DI + BaseTool), supporting any OpenAI-compatible API.
 
