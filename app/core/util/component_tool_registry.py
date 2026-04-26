@@ -244,7 +244,7 @@ class ComponentToolRegistry:
 
     def register(self, cell: ICell) -> Optional[CellToolAdapter]:
         """
-        注册一个组件到工具注册表（注册前自动审查）
+        注册一个组件到工具注册表
         
         Args:
             cell: 已实例化的 BaseCell 子类
@@ -269,33 +269,22 @@ class ComponentToolRegistry:
         from app.core.util.component_auditor import get_auditor
         audit_result = get_auditor().audit(cell)
 
-        if not audit_result.passed:
-            has_danger = any(i.get("rule") == "no_dangerous_imports" for i in audit_result.issues)
-
-            if has_danger and not self.is_trusted(tool_name):
-                from datetime import datetime
-                with self._lock:
-                    self._pending_approvals[tool_name] = {
-                        "cell": cell,
-                        "adapter": adapter,
-                        "audit_result": audit_result,
-                        "requested_at": datetime.now().isoformat(),
-                    }
-
-                logger.warning(
-                    "[ComponentToolRegistry] [待审批] %s (type=%s) | score=%d | 包含危险导入，等待用户 /trust",
-                    tool_name, adapter.component_type, audit_result.score,
-                )
-                self._audit_hints[tool_name] = self._format_approval_request_hint(tool_name, audit_result)
-                return None
+        has_danger = any(i.get("rule") == "no_dangerous_imports" for i in audit_result.issues)
+        if has_danger and not self.is_trusted(tool_name):
+            from datetime import datetime
+            with self._lock:
+                self._pending_approvals[tool_name] = {
+                    "cell": cell,
+                    "adapter": adapter,
+                    "audit_result": audit_result,
+                    "requested_at": datetime.now().isoformat(),
+                }
 
             logger.warning(
-                "[ComponentToolRegistry] [审查不通过] %s (type=%s) | score=%d | issues=%d | reason=%s",
-                tool_name, adapter.component_type,
-                audit_result.score, audit_result.issue_count,
-                "; ".join(i["rule"] for i in audit_result.issues),
+                "[ComponentToolRegistry] [待审批] %s (type=%s) | score=%d | 包含危险导入，等待用户 /trust",
+                tool_name, adapter.component_type, audit_result.score,
             )
-            self._audit_hints[tool_name] = audit_result.hint_text
+            self._audit_hints[tool_name] = self._format_approval_request_hint(tool_name, audit_result)
             return None
 
         with self._lock:
@@ -306,7 +295,25 @@ class ComponentToolRegistry:
                 )
                 return None
 
-            self._audit_hints.pop(tool_name, None)
+            adapter._audit_issues = audit_result.issues
+            adapter._audit_warnings = audit_result.warnings
+            adapter._audit_score = audit_result.score
+            adapter._audit_hint_text = audit_result.hint_text if audit_result.issues else ""
+
+            if audit_result.issues:
+                self._audit_hints[tool_name] = audit_result.hint_text
+                logger.warning(
+                    "[ComponentToolRegistry] [注册但有警告] %s (type=%s) | score=%d | issues=%d | 已存储修复建议",
+                    tool_name, adapter.component_type,
+                    audit_result.score, audit_result.issue_count,
+                )
+            else:
+                if tool_name in self._audit_hints:
+                    self._audit_hints.pop(tool_name, None)
+                    logger.info(
+                        "[ComponentToolRegistry] [修复完成] %s (type=%s, score=%d)",
+                        tool_name, adapter.component_type, audit_result.score,
+                    )
 
             existed = tool_name in self._registry
             self._registry[tool_name] = adapter
@@ -314,10 +321,6 @@ class ComponentToolRegistry:
 
             action = "更新" if existed else "注册"
             cmds = list(adapter.get_commands().keys())
-            logger.info(
-                "[ComponentToolRegistry] [%sOK] %s (type=%s, commands=%s, audit_score=%d)",
-                action, tool_name, adapter.component_type, cmds, audit_result.score,
-            )
             
             self._on_tool_registered(tool_name, adapter, is_new=not existed)
 
@@ -337,7 +340,6 @@ class ComponentToolRegistry:
 
     @staticmethod
     def _format_approval_request_hint(tool_name: str, audit_result) -> str:
-        """生成「请求用户信任」提示（注入给 LLM，让它转达给用户）"""
         danger_issues = [i for i in audit_result.issues if i.get("rule") == "no_dangerous_imports"]
         imports_list = []
         for issue in danger_issues:

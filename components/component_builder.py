@@ -362,6 +362,8 @@ class ComponentBuilder(BaseCell):
             pass
 
         result = []
+        components_with_issues = []
+
         for cname, cell in sorted(all_cells.items()):
             cmds = all_cmds.get(cname, {})
             entry = {
@@ -372,11 +374,26 @@ class ComponentBuilder(BaseCell):
                 "is_tool_registered": cname in registered_tools,
                 "has_help": hasattr(cell, "_cmd_help"),
             }
+
+            try:
+                from app.core.util.component_tool_registry import get_component_tool_registry
+                reg = get_component_tool_registry()
+                adapter = reg.get(cname)
+                if adapter and hasattr(adapter, '_audit_issues') and adapter._audit_issues:
+                    entry["has_issues"] = True
+                    entry["issue_count"] = len(adapter._audit_issues)
+                    entry["audit_score"] = getattr(adapter, '_audit_score', 0)
+                    entry["audit_hint"] = getattr(adapter, '_audit_hint_text', "")[:500]  # 截断显示
+                    components_with_issues.append(cname)
+                else:
+                    entry["has_issues"] = False
+            except Exception:
+                entry["has_issues"] = False
+
             if show_commands:
                 entry["commands"] = cmds
             result.append(entry)
 
-        # 获取加载错误的组件
         load_errors = get_load_errors()
         errors_list = []
         for file_path, error_info in load_errors.items():
@@ -386,7 +403,7 @@ class ComponentBuilder(BaseCell):
                 "error_type": error_info.get("error_type", "Error"),
             })
 
-        return {
+        response = {
             "components": result,
             "total": len(result),
             "tools_registered": len(registered_tools),
@@ -394,6 +411,16 @@ class ComponentBuilder(BaseCell):
             "load_errors": errors_list,
             "error_count": len(errors_list),
         }
+
+        if components_with_issues:
+            response["components_with_issues"] = components_with_issues
+            response["fix_hint"] = (
+                f"检测到 {len(components_with_issues)} 个组件存在问题。"
+                "使用 component.info(name='<组件名>') 查看详细修复建议，"
+                "或使用 file.edit 直接修改组件文件。"
+            )
+
+        return response
 
     def _cmd_info(self, name: str) -> Dict[str, Any]:
         """查看指定组件的详细信息"""
@@ -426,7 +453,7 @@ class ComponentBuilder(BaseCell):
             except Exception:
                 pass
 
-        return {
+        result = {
             "name": cell.cell_name,
             "class": type(cell).__name__,
             "source_file": source_file,
@@ -436,6 +463,28 @@ class ComponentBuilder(BaseCell):
             "has_help": hasattr(cell, "_cmd_help"),
             "code_preview": code_preview,
         }
+
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            reg = get_component_tool_registry()
+            adapter = reg.get(name)
+            if adapter and hasattr(adapter, '_audit_issues') and adapter._audit_issues:
+                result["has_issues"] = True
+                result["audit_score"] = getattr(adapter, '_audit_score', 0)
+                result["audit_issues"] = adapter._audit_issues
+                result["audit_warnings"] = getattr(adapter, '_audit_warnings', [])
+                result["full_audit_hint"] = getattr(adapter, '_audit_hint_text', "")
+                result["fix_guide"] = (
+                    "此组件存在规范问题。请查看 audit_issues 了解具体问题，"
+                    "然后使用 file.edit 修改组件文件。修复后调用 component.reload() 重新加载。"
+                )
+            else:
+                result["has_issues"] = False
+                result["audit_status"] = "通过"
+        except Exception:
+            pass
+
+        return result
 
     def _cmd_template(self, style: str = "minimal") -> Dict[str, Any]:
         """

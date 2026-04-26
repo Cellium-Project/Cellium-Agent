@@ -406,6 +406,13 @@ def load_components(
             logger.info(f"[Component] [{status}] {info['class_name']} "
                        f"(cell={instance.cell_name}, cmds={len(instance.get_commands())})")
                         
+        except ImportError as e:
+            if "组件文件不存在" in str(e):
+                logger.warning(f"[Component] 组件文件已删除，从配置移除: {module_path}")
+                unregister_from_config(module_path)
+            else:
+                logger.error(f"[Component] 加载失败 {module_path}: {e}", exc_info=True)
+            failed.append(module_path)
         except Exception as e:
             logger.error(f"[Component] 加载失败 {module_path}: {e}", exc_info=True)
             failed.append(module_path)
@@ -585,6 +592,9 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             unregister_from_config(module_path)
             report["removed"].append({"name": target_name, "class": cls_name})
             logger.info(f"[HotReload] 已卸载: {target_name}")
+        
+        _loaded_files.discard(file_path)
+        _file_mtimes.pop(file_path, None)
     
     return report
 

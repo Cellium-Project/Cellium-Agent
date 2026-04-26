@@ -21,6 +21,7 @@ class AutoHintManager:
 
     def __init__(self):
         self._injected_tool_helps: Dict[str, str] = {}
+        self._shown_audit_hints: set = set()
 
     def check_security_error_and_suggest(self, tool_traces: List[Dict]) -> str:
         """
@@ -41,7 +42,7 @@ class AutoHintManager:
                 continue
             if "安全拦截" in error_msg or "Permission denied" in error_msg:
                 return (
-                    "## ⚠️ 安全策略拦截提示\n\n"
+                    "## [警告] 安全策略拦截提示\n\n"
                     "检测到命令被安全策略拦截。\n\n"
                     "**替代方案**：\n"
                     "1. 使用 `component.generate()` 创建专用组件实现所需功能\n"
@@ -62,7 +63,10 @@ class AutoHintManager:
         """
         hints = []
 
-        # 1. 注入 Skill 可用性提示
+        load_errors_hint = self._get_load_errors_hint()
+        if load_errors_hint:
+            hints.append(load_errors_hint)
+
         skill_hint = self._get_skill_hint()
         if skill_hint:
             hints.append(skill_hint)
@@ -71,13 +75,63 @@ class AutoHintManager:
             from app.core.util.component_tool_registry import get_component_tool_registry
             reg = get_component_tool_registry()
             for tname, hint_text in reg.get_all_audit_hints().items():
-                if hint_text:
+                if hint_text and tname not in self._shown_audit_hints:
                     hints.append(hint_text)
-                    logger.debug("[AutoHint] 注入审查修复建议(持续): %s", tname)
+                    self._shown_audit_hints.add(tname)
+                    logger.debug("[AutoHint] 注入审查修复建议(首次): %s", tname)
         except Exception as e:
             logger.debug("[AutoHint] 审查提示获取失败: %s", e)
 
         return "\n\n".join(hints)
+
+    def clear_audit_hint(self, tool_name: str):
+        self._shown_audit_hints.discard(tool_name)
+
+    def _get_load_errors_hint(self) -> str:
+        """
+        获取组件加载错误的提示
+
+        Returns:
+            加载错误提示文本（如果没有则返回空字符串）
+        """
+        try:
+            from app.core.util.components_loader import get_load_errors
+            load_errors = get_load_errors()
+            if not load_errors:
+                return ""
+
+            lines = [
+                "## [警告] 组件加载错误 — 需要修复",
+                "",
+                f"检测到 {len(load_errors)} 个组件文件加载失败：",
+                "",
+            ]
+
+            for idx, (file_path, error_info) in enumerate(load_errors.items(), 1):
+                file_name = error_info.get("file", "unknown")
+                error_msg = error_info.get("error", "Unknown error")
+                error_type = error_info.get("error_type", "Error")
+
+                lines.append(f"### {idx}. `{file_name}`")
+                lines.append(f"- **错误类型**: {error_type}")
+                lines.append(f"- **错误信息**: {error_msg}")
+                lines.append(f"- **文件路径**: {file_path}")
+                lines.append("")
+
+            lines.extend([
+                "---",
+                "**修复方法**：",
+                "1. 使用 `file.read` 读取有问题的组件文件",
+                "2. 根据错误信息修复代码问题（如语法错误、导入错误等）",
+                "3. 调用 `component.reload()` 重新加载组件",
+                "4. 再次调用 `component.list()` 确认错误已解决",
+                "",
+            ])
+
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug("[AutoHint] 加载错误提示获取失败: %s", e)
+            return ""
 
     def _get_skill_hint(self) -> str:
         """
@@ -209,7 +263,7 @@ class AutoHintManager:
             required = set(params.get("required", []))
 
             lines = [
-                f"### ⚠️ `{tool_name}` 工具调用修正指南",
+                f"### [警告] `{tool_name}` 工具调用修正指南",
                 "",
                 f"**你已多次调用此工具但格式不正确。请严格按照以下格式调用：**",
                 "",

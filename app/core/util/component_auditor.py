@@ -60,15 +60,18 @@ class AuditResult:
     def hint_text(self) -> str:
         """
         生成给 LLM 的修复建议文本
-        
-        当组件不合规时，将此文本注入给 LLM，
-        让它知道自己创建的组件哪里不对、如何修改。
         """
-        if self.passed:
+        if not self.issues and not self.warnings:
             return ""
 
+        has_critical = any(i.get("severity") == "critical" for i in self.issues)
+        if has_critical:
+            title = f"## [严重] 组件 `{self.component_name}` 有严重问题需修复"
+        else:
+            title = f"## [警告] 组件 `{self.component_name}` 有规范问题建议修复"
+
         lines = [
-            f"## ⚠️ 组件 `{self.component_name}` 注册被拒绝",
+            title,
             "",
             f"**类型**: {self.component_type}",
             f"**问题数**: {self.issue_count} 个（{len([i for i in self.issues if i['severity']=='critical'])} 个严重）",
@@ -76,38 +79,31 @@ class AuditResult:
             "",
         ]
 
-        # 按严重程度分组显示
         critical = [i for i in self.issues if i["severity"] == "critical"]
         error = [i for i in self.issues if i["severity"] == "error"]
 
         if critical:
-            lines.append("### 🔴 必须修复的问题")
+            lines.append("### [严重] 必须修复的问题")
             lines.append("")
             for idx, issue in enumerate(critical, 1):
-                lines.append(f"{idx}. **[{issue['rule']}]** {issue['message']}")
+                lines.append(f"{idx}. [{issue['rule']}] {issue['message']}")
                 fix = issue.get("fix", "")
                 if fix:
-                    lines.append(f"   🔧 修复方法: {fix}")
-                example = issue.get("example", "")
-                if example:
-                    lines.append(f"   📝 示例代码:")
-                    lines.append(f"```python")
-                    lines.append(example.strip())
-                    lines.append(f"```")
+                    lines.append(f"   修复方法: {fix}")
                 lines.append("")
 
         if error:
-            lines.append("### 🟡 建议修复的问题")
+            lines.append("### [建议] 建议修复的问题")
             lines.append("")
             for idx, issue in enumerate(error, 1):
-                lines.append(f"{idx}. **[{issue['rule']}]** {issue['message']}")
+                lines.append(f"{idx}. [{issue['rule']}] {issue['message']}")
                 fix = issue.get("fix", "")
                 if fix:
                     lines.append(f"   建议: {fix}")
                 lines.append("")
 
         if self.warnings:
-            lines.append("### ⚪ 提示信息")
+            lines.append("### [提示] 提示信息")
             lines.append("")
             for w in self.warnings:
                 lines.append(f"- {w}")
@@ -153,11 +149,15 @@ class ComponentAuditor:
     
     """
 
-    # 系统内置组件白名单 — 豁免部分 strict 规则
     EXEMPTED_NAMES: Set[str] = {
-        "component",        # ComponentBuilder — 系统核心组件，需要 import os/json
-        "skill_installer",  # SkillInstaller — Skill 包管理器，需要 import os 操作文件系统
-        "web_query",        # WebQuery — 网络请求组件
+        "component",
+        "skill_installer",
+        "web_query",
+        "qq_files",
+        "skill_manager",
+        "telegram_files",
+        "web_fetch",
+        "web_search",
     }
 
     # 审查规则配置
@@ -226,12 +226,12 @@ class ComponentAuditor:
         name_issues = self._check_cell_name(cell_name, skip_reserved=is_exempted)
         issues.extend(name_issues)
         
-        # ── 2. 类 docstring 审查 ──
-        doc_issues = self._check_class_docstring(cell_type, cell)
+        # ── 2. 类 docstring 审查（白名单跳过）──
+        doc_issues = self._check_class_docstring(cell_type, cell, skip=is_exempted)
         issues.extend(doc_issues)
 
         # ── 3. 命令方法审查 ──
-        cmd_issues, cmd_warnings = self._check_commands(cell)
+        cmd_issues, cmd_warnings = self._check_commands(cell, skip_docstring=is_exempted)
         issues.extend(cmd_issues)
         warnings.extend(cmd_warnings)
 
@@ -277,16 +277,18 @@ def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         critical_count = sum(1 for i in issues if i["severity"] == "critical")
         error_count = sum(1 for i in issues if i["severity"] == "error")
 
-        if self._strict:
-            passed = len(issues) == 0  # 严格模式：任何问题都不通过
-        else:
-            passed = critical_count == 0  # 非严格：只看严重问题
-
         # 扣分计算
         score -= critical_count * 25
         score -= error_count * 10
         score -= len(warnings) * 3
         score = max(0, min(100, score))
+
+        # 修改：允许有问题的组件被注册，让 LLM 能看到并修复
+        # 只要不是严重问题（critical），就允许注册
+        if self._strict:
+            passed = len(issues) == 0  # 严格模式：任何问题都不通过
+        else:
+            passed = True  # 非严格：所有组件都允许注册，但有问题的会带提示
 
         result = AuditResult(
             passed=passed,
@@ -356,8 +358,11 @@ def cell_name(self) -> str:
 
         return issues
 
-    def _check_class_docstring(self, class_name: str, cell: BaseCell) -> List[Dict]:
+    def _check_class_docstring(self, class_name: str, cell: BaseCell, skip: bool = False) -> List[Dict]:
         """检查类是否有文档说明"""
+        if skip:
+            return []
+
         issues = []
         cls_doc = type(cell).__doc__ or ""
 
@@ -367,18 +372,11 @@ def cell_name(self) -> str:
                 "severity": "error",
                 "message": f"类 {class_name} 缺少 docstring。LLM 无法了解这个组件是做什么的。",
                 "fix": "在 class 定义下方添加三引号文档，描述组件的功能、用途和使用场景。",
-                "example": '''class MyTool(BaseCell):
-    """
-    我的工具 — 一句话描述做什么
-    
-    功能说明: 详细描述这个工具能干什么
-    使用场景: 什么时候会用到这个工具
-    """''',
             })
 
         return issues
 
-    def _check_commands(self, cell: BaseCell) -> Tuple[List[Dict], List[str]]:
+    def _check_commands(self, cell: BaseCell, skip_docstring: bool = False) -> Tuple[List[Dict], List[str]]:
         """检查所有命令方法的规范性"""
         issues = []
         warnings = []
@@ -418,31 +416,19 @@ def cell_name(self) -> str:
                 })
                 continue
 
-            # docstring 检查
             doc = method.__doc__ or ""
-            if not doc.strip() or len(doc.strip()) < 10:
-                issues.append({
-                    "rule": "docstring",
-                    "severity": "error",
-                    "message": f"命令 '{cmd_name}' 的 docstring 为空或过短（<10字符）。LLM 不知道如何调用这个命令。",
-                    "fix": f"为 {method_name} 添加详细的三段式 docstring（功能描述 + Args + Returns）。",
-                    "example": '''def {}(self, some_param: str) -> Dict[str, Any]:
-    \"\"\"
-    一句话描述这个命令做什么
-    
-    Args:
-        some_param: 参数的详细说明
-        
-    Returns:
-        {{\"result\": 返回值说明}}
-    \"\"\"'''.format(method_name),
-                })
+            if not skip_docstring:
+                if not doc.strip() or len(doc.strip()) < 10:
+                    issues.append({
+                        "rule": "docstring",
+                        "severity": "error",
+                        "message": f"命令 '{cmd_name}' 的 docstring 为空或过短（<10字符）。LLM 不知道如何调用这个命令。",
+                        "fix": f"为 {method_name} 添加详细的三段式 docstring（功能描述 + Args + Returns）。",
+                    })
 
-            # 返回值签名提示（静态分析）
             sig = inspect.signature(method)
             has_return_annotation = sig.return_annotation != inspect.Parameter.empty
             
-            # 尝试从 docstring 推断返回值
             returns_dict_hint = "dict" in doc.lower() or "returns:" in doc.lower()
             
             if not has_return_annotation and not returns_dict_hint:

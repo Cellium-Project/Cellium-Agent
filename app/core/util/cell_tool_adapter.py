@@ -32,15 +32,15 @@ from app.core.interface.icell import ICell
 
 logger = logging.getLogger(__name__)
 
-# 白名单组件豁免沙箱隔离（系统核心组件，需要高权限）
 EXEMPTED_NAMES: Set[str] = {
-    "component",        # ComponentBuilder — 需要创建文件
-    "skill_installer",  # SkillInstaller — 需要安装包
-    "skill_manager",    # SkillManager — 只读操作，无需沙箱
-    "web_query",        # WebQuery — 需要网络请求
-    "web_search",       # WebSearch — 启动浏览器耗时较长，避免沙箱超时
-    "qq_files",         # QQFiles — 需要访问主进程的 ChannelManager
-    "telegram_files",   # TelegramFiles — 需要访问主进程的 ChannelManager
+    "component",
+    "skill_installer",
+    "skill_manager",
+    "web_query",
+    "web_search",
+    "qq_files",
+    "telegram_files",
+    "web_fetch",
 }
 
 # 是否启用沙箱模式（可通过配置关闭）
