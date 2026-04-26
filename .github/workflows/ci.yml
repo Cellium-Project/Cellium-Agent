@@ -122,10 +122,11 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           if [ "${{ runner.os }}" == "Linux" ]; then
-            URL="https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.12.1+20240107-x86_64-unknown-linux-gnu-install_only.tar.gz"
+            URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260303/cpython-3.12.13+20260303-x86_64-unknown-linux-gnu-install_only.tar.gz"
           else
-            URL="https://github.com/indygreg/python-build-standalone/releases/download/20240107/cpython-3.12.1+20240107-aarch64-apple-darwin-install_only.tar.gz"
+            URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260303/cpython-3.12.13+20260303-aarch64-apple-darwin-install_only.tar.gz"
           fi
+          echo "Downloading Python from: $URL"
           curl -L $URL | tar -xz -C release/runtime --strip-components=1
 
       - name: Install Dependencies (Windows)
