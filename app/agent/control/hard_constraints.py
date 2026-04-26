@@ -10,9 +10,12 @@ HardConstraintRenderer - 强约束渲染器 (PromptBuilder v3)
   5. token ≤ 80
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .loop_state import LoopState
@@ -902,9 +905,6 @@ MUST NOT: <应该避免的错误做法>
         Returns:
             是否成功创建 Gene
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         if not TaskSignalMatcher._repository:
             logger.warning("[GeneEvolution] 记忆系统未初始化，无法创建 Gene")
             return False

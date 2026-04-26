@@ -520,11 +520,7 @@ class AgentLoop:
         effective_session: str,
         effective_memory: MemoryManager,
     ) -> None:
-        """在强制压缩前持久化当前对话快照"""
-        if self.has_long_term_memory and effective_memory.get_messages():
-            last_response = self._get_last_assistant_message(effective_memory)
-            self._persist_conversation(user_input, last_response, effective_session, memory=effective_memory)
-            self._did_persist_before_compact = True
+        self._did_persist_before_compact = True
 
     def _resolve_runtime_max_tokens(self, constraint: Any) -> Optional[int]:
         """将控制约束映射为真正的 LLM 输出限制"""
@@ -701,14 +697,12 @@ class AgentLoop:
             result={"type": "response", "content": final_content, "iterations": iteration},
         )
 
-        # 持久化对话
-        if not self._did_persist_before_compact:
-            if cleanup_incomplete:
-                self._cleanup_incomplete_tool_calls(effective_memory)
-            content_to_persist = final_content or self._get_last_assistant_message(effective_memory)
-            self._persist_conversation(user_input, content_to_persist, effective_session, memory=effective_memory)
-        else:
-            self._did_persist_before_compact = False
+        # 持久化对话（始终在循环结束后存储完整内容）
+        if cleanup_incomplete:
+            self._cleanup_incomplete_tool_calls(effective_memory)
+        content_to_persist = final_content or self._get_last_assistant_message(effective_memory)
+        self._persist_conversation(user_input, content_to_persist, effective_session, memory=effective_memory)
+        self._did_persist_before_compact = False
 
         # Control Loop: 会话结束
         if self.control_loop and self._loop_state:

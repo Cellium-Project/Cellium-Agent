@@ -655,7 +655,11 @@ class WebFetch(BaseCell):
                                 "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
                                 "url": url,
                             }
-                        page.get(url, timeout=30)
+                        page.get(url, timeout=15)
+                        try:
+                            page.wait.doc_loaded(timeout=10)
+                        except Exception:
+                            pass
                         page.wait(wait_time)
                         self._current_url = url
                         self._cache_page(url, page)
@@ -669,17 +673,17 @@ class WebFetch(BaseCell):
                             "url": url,
                         }
 
-                # 返回摘要
-                body = page.ele('tag:body', timeout=2)
-                paragraphs = []
-                if body:
-                    for p in page.eles('tag:p'):
-                        txt = p.text.strip()
-                        if txt and len(txt) > 20:
-                            paragraphs.append(txt)
-                        if len(paragraphs) >= 3:
-                            break
-                text = '\n\n'.join(paragraphs)[:1500]
+                # 返回摘要 - 使用 JS 高效获取内容
+                try:
+                    text = page.run_js("return (function() { var readme = document.querySelector('.markdown-body'); if (readme) { var ps = readme.querySelectorAll('p, h1, h2, h3, li'); var result = []; for (var i = 0; i < ps.length && result.length < 10; i++) { var txt = (ps[i].innerText || '').trim(); if (txt.length > 10) result.push(txt); } return result.join('\\n\\n'); } var allPs = document.querySelectorAll('article p, main p, p'); var result = []; for (var i = 0; i < allPs.length && result.length < 10; i++) { var txt = (allPs[i].innerText || '').trim(); if (txt.length > 15 && result.indexOf(txt) === -1) result.push(txt); } return result.join('\\n\\n'); })();")
+                    if text:
+                        text = text[:2000]
+                    else:
+                        text = ""
+                except Exception as e:
+                    logger.debug(f"[WebFetch] JS 获取内容失败: {e}")
+                    text = ""
+                
                 return {
                     "success": True,
                     "url": page.url,
@@ -968,8 +972,12 @@ class WebFetch(BaseCell):
                 logger.info(f"[WebFetch:insight] 复用当前页面: {url}")
             else:
                 page = self._new_page()
-                page.get(url, timeout=30)
-                page.wait(3)
+                page.get(url, timeout=15)
+                try:
+                    page.wait.doc_loaded(timeout=10)
+                except Exception:
+                    pass
+                page.wait(2)
 
             if mode == "auto":
                 mode = "structure" if not query else "search"
@@ -1100,24 +1108,44 @@ class WebFetch(BaseCell):
                     "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
                 }
             page = self._get_page()
-            # 执行 JS 获取仅在可视区域内的文本
+            
+            if not self._current_url and not page.url:
+                return {
+                    "success": False,
+                    "error": "没有打开的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
+                    "hint": "get_viewport_text 需要先有打开的页面才能获取文本",
+                }
+            
             js_code = """
-            return Array.from(document.querySelectorAll('p, h1, h2, h3, li, span, div'))
-                .filter(el => {
-                    const rect = el.getBoundingClientRect();
-                    return rect.top >= 0 && rect.bottom <= window.innerHeight && el.innerText.length > 5;
-                })
-                .map(el => el.innerText).join('\\n');
+            (function() {
+                var scrollY = window.scrollY || window.pageYOffset || 0;
+                var vh = window.innerHeight;
+                var elements = document.querySelectorAll('p, h1, h2, h3, li, article');
+                var texts = [];
+                for (var i = 0; i < elements.length && texts.length < 50; i++) {
+                    var el = elements[i];
+                    var rect = el.getBoundingClientRect();
+                    if (rect.top >= -100 && rect.bottom <= vh + 100 && el.innerText.trim().length > 10) {
+                        texts.push(el.innerText.trim());
+                    }
+                }
+                return {text: texts.join('\\n'), scrollY: scrollY};
+            })();
             """
-            visible_text = page.run_js(js_code)
-            # 获取滚动位置（使用 JS）
-            scroll_y = page.run_js("return window.scrollY || window.pageYOffset;")
+            result = page.run_js(js_code)
+            
+            if result and isinstance(result, dict):
+                visible_text = result.get('text', '')[:2000]
+                scroll_y = result.get('scrollY', 0)
+            else:
+                visible_text = ''
+                scroll_y = 0
 
             return {
                 "success": True,
                 "current_url": page.url,
                 "title": page.title,
-                "text": visible_text[:2000],  # 限制单次返回长度
+                "text": visible_text,
                 "scroll_y": scroll_y,
                 "hint": "如需查看更多内容，请使用 read(action='scroll') 或 control(action='scroll_down') 滚动"
             }

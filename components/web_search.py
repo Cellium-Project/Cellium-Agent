@@ -244,19 +244,16 @@ class WebSearch(BaseCell):
                 options.set_argument('--no-first-run')
                 options.set_argument('--no-default-browser-check')
                 options.set_argument('--no-singleton')
+        
         if self._user_agent is None:
-            try:
-                from fake_useragent import UserAgent
-                ua = UserAgent()
-                self._user_agent = ua.random
-            except Exception:
-                self._user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            self._user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0'
+        
         options.set_argument('--disable-gpu')
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-blink-features=AutomationControlled')
         options.set_argument('--disable-dev-shm-usage')
         options.set_argument('--disable-extensions')
-        import tempfile
+        
         _search_data_dir = os.path.join(tempfile.gettempdir(), 'Cellium_WebSearch_Profile')
         os.makedirs(_search_data_dir, exist_ok=True)
         options.set_argument(f'--user-data-dir={_search_data_dir}')
@@ -265,16 +262,22 @@ class WebSearch(BaseCell):
         options.set_argument('--disable-infobars')
         options.set_argument('--disable-popup-blocking')
         options.set_argument(f'--user-agent={self._user_agent}')
-        options.set_argument('--disable-web-security')
         options.set_argument('--disable-bundled-ppapi-flash')
-        options.set_argument('--allow-running-insecure-content')
-        options.set_argument('--disable-client-side-phishing-detection')
         options.set_argument('--mute-audio')
         options.set_argument('--hide-scrollbars')
         options.set_argument('--disable-background-networking')
-        options.set_argument('--disable-canvas-audit')
-        # 设置无头模式 - 使用 headless() 方法
+        
+        options.set_argument('--disable-features=IsolateOrigins,site-per-process,ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose')
+        options.set_argument('--enable-features=NetworkService,NetworkServiceInProcess')
+        options.set_argument('--disable-site-isolation-trials')
+        options.set_argument('--window-size=1920,1080')
+        options.set_argument('--start-maximized')
+        options.set_argument('--disable-notifications')
+        options.set_argument('--disable-translate')
+        options.set_argument('--disable-save-password-bubble')
+        
         options.headless(on_off=True)
+        
         logger.info(f"[WebSearch] 浏览器配置完成，headless=True，路径: {browser_path}")
         return options
 
@@ -339,9 +342,9 @@ class WebSearch(BaseCell):
                         raise RuntimeError("Chromium 浏览器创建失败")
                     
                     browser_ready = False
-                    for warmup in range(3):
+                    for warmup in range(2):
                         try:
-                            time.sleep(0.3)
+                            time.sleep(0.2)
                             test_url = self._browser.address
                             if not test_url:
                                 continue
@@ -354,7 +357,7 @@ class WebSearch(BaseCell):
                             browser_ready = True
                             break
                         except (AttributeError, TypeError) as we:
-                            logger.debug(f"[WebSearch] 浏览器预热 {warmup+1}/5: {we}")
+                            logger.debug(f"[WebSearch] 浏览器预热 {warmup+1}/2: {we}")
                             continue
                     
                     if not browser_ready:
@@ -374,6 +377,16 @@ class WebSearch(BaseCell):
                         self._page = self._browser.new_tab()
                         if self._page is None:
                             raise RuntimeError("无法获取浏览器标签页")
+
+                    try:
+                        self._page.run_js("""
+                            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                            Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+                            window.chrome = {runtime: {}};
+                        """)
+                    except Exception as js_e:
+                        logger.debug(f"[WebSearch] 注入反检测脚本失败: {js_e}")
 
                     self._creation_count += 1
                     self._update_last_used_time()
@@ -483,13 +496,18 @@ class WebSearch(BaseCell):
         config = self.SEARCH_ENGINES.get(engine, {})
 
         try:
-            # 增加等待时间确保页面完全加载
-            page.wait(2)
-            selector = config.get('result_selector', '')
-            # 确保选择器有 css: 前缀
-            if selector and not selector.startswith('css:'):
-                selector = f'css:{selector}'
-            result_items = page.eles(selector, timeout=5)
+            if engine == 'baidu':
+                content_left = page.ele('#content_left', timeout=2)
+                if content_left:
+                    result_items = content_left.children()
+                else:
+                    result_items = []
+            else:
+                selector = config.get('result_selector', '')
+                if selector and not selector.startswith('css:'):
+                    selector = f'css:{selector}'
+                result_items = page.eles(selector, timeout=2)
+            
             logger.info(f"[WebSearch:{engine}] DOM 解析找到 {len(result_items)} 个搜索结果项")
             for item in result_items:
                 try:
@@ -498,7 +516,17 @@ class WebSearch(BaseCell):
                         link_elem = h2.ele('css:a', timeout=0.5) if h2 else item.ele('css:a', timeout=0.5)
                     elif engine == 'baidu':
                         h3 = item.ele('css:h3', timeout=0.5)
-                        link_elem = h3.ele('css:a', timeout=0.5) if h3 else item.ele('css:a', timeout=0.5)
+                        if h3:
+                            link_elem = h3.ele('css:a', timeout=0.5)
+                        else:
+                            all_links = item.eles('css:a', timeout=0.5)
+                            link_elem = None
+                            for a in all_links:
+                                href = a.attr('href') or ''
+                                text = a.text.strip() if a.text else ""
+                                if href and text and len(text) > 5 and not href.startswith('javascript:'):
+                                    link_elem = a
+                                    break
                     elif engine == 'google':
                         link_elem = item.ele('css:a', timeout=0.5)
                     elif engine == 'duckduckgo':
@@ -512,6 +540,9 @@ class WebSearch(BaseCell):
                         title = link_elem.text.strip() if link_elem.text else ""
 
                         if href and title and len(title) > 5:
+                            if href.startswith('javascript:') or 'baidu.com/baidu.php' in href:
+                                continue
+                            
                             if engine == 'bing':
                                 desc_elem = (item.ele('.b_lineclamp2', timeout=0.3) or
                                             item.ele('.b_lineclamp3', timeout=0.3) or
@@ -631,6 +662,14 @@ class WebSearch(BaseCell):
                     return self._extract_real_url_from_bing_short_link(url, page)
                 except Exception:
                     pass
+        if 'baidu.com/link?' in url:
+            try:
+                import requests
+                r = requests.head(url, allow_redirects=True, timeout=1, headers={'User-Agent': self._user_agent or 'Mozilla/5.0'})
+                if r.url and r.url != url:
+                    return r.url
+            except Exception as e:
+                logger.debug(f"[WebSearch] 百度短链接解析失败: {e}")
         return url
 
     def _score_domain(self, url: str) -> int:
@@ -775,7 +814,7 @@ class WebSearch(BaseCell):
             cache_engine = user_engine
         else:
             cache_engine = 'auto'
-            priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
+            priority_order = ['baidu', 'bing', 'duckduckgo', 'google']
             engines_to_try = []
 
             best_engine = self._select_best_engine()
@@ -863,12 +902,15 @@ class WebSearch(BaseCell):
 
             logger.info(f"[WebSearch:{engine}] 搜索 URL: {url}")
 
-            page.get(url, timeout=20)
-            page.wait.doc_loaded()
+            page.get(url, timeout=10)
+            try:
+                page.wait.doc_loaded(timeout=5)
+            except Exception as e:
+                logger.warning(f"[WebSearch:{engine}] 文档加载超时: {e}")
             if wait_time > 0:
                 page.wait(wait_time)
             import random
-            random_delay = random.uniform(1, 3)
+            random_delay = random.uniform(0.3, 0.8)
             logger.info(f"[WebSearch:{engine}] 随机延迟 {random_delay:.1f} 秒防风控")
             page.wait(random_delay)
             logger.info(f"[WebSearch:{engine}] 页面加载完成，当前 URL: {page.url}")
@@ -932,12 +974,14 @@ class WebSearch(BaseCell):
 
             if len(scored_results) < 3 and short_links:
                 logger.info(f"[WebSearch:{engine}] 启用 fallback 短链解析")
-                for link in short_links[:2]:
+                for link in short_links[:3]:
                     short_url = link['url']
                     decoded = None
 
                     if engine == 'bing':
                         decoded = self._decode_bing_url(short_url)
+                    elif engine == 'baidu':
+                        decoded = self.resolve_url(short_url)
 
                     if decoded:
                         real_url = decoded
@@ -973,12 +1017,13 @@ class WebSearch(BaseCell):
 
             results = []
             for i, r in enumerate(scored_results[:max_results]):
-                # 合并 title 和 snippet，限制总长度约200字符
                 brief = f"{r['title']} - {r.get('snippet', '')}".strip()
                 brief = re.sub(r'\s+', ' ', brief)[:200]
 
                 results.append({
                     'url': r['url'],
+                    'title': r['title'],
+                    'snippet': r.get('snippet', ''),
                     'brief': brief,
                     'score': round(r['score'] / 10, 1)
                 })

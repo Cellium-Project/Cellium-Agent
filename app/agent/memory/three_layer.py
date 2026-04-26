@@ -74,13 +74,13 @@ class ThreeLayerMemory:
         latest = self.archive.get_latest_by_session(session_id)
 
         if latest and latest.get("snapshot_hash") == snapshot_hash:
-            source_id = latest.get("id")
-        else:
-            source_id = self.archive.append_messages(
-                session_id=session_id,
-                messages=normalized_messages,
-                snapshot_hash=snapshot_hash,
-            )
+            return latest.get("id", "")
+        
+        source_id = self.archive.append_messages(
+            session_id=session_id,
+            messages=normalized_messages,
+            snapshot_hash=snapshot_hash,
+        )
 
         knowledge_items = self.extractor.extract_from_messages(user_input, response, normalized_messages)
         for index, item in enumerate(knowledge_items, 1):
