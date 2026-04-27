@@ -86,9 +86,8 @@ export const Sidebar: React.FC = () => {
             }
           } else if (data.type === 'session_deleted') {
             useAppStore.getState().removeSession(data.data.session_id);
-          } else if (data.type === 'gene_created') {
-            // Gene 创建/更新事件，通知 GeneManagerTab 刷新
-            console.log('[WS] Gene created/updated:', data.data);
+          } else if (data.type === 'gene_created' || data.type === 'gene_evolved') {
+            console.log('[WS] Gene created/updated/evolved:', data.data);
             window.dispatchEvent(new CustomEvent('gene-created', { detail: data.data }));
           }
         } catch (e) {

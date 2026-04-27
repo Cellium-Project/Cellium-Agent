@@ -183,6 +183,11 @@ class MemoryRepository:
             else:
                 merged_title = safe_title or record.get("title", "")
                 merged_content = self._merge_contents(record.get("content", ""), safe_content, schema_type=schema_type)
+            
+            existing_content = record.get("content", "")
+            existing_title = record.get("title", "")
+            content_unchanged = (merged_content == existing_content and merged_title == existing_title)
+            
             merged_tags = self._merge_tags(record.get("tags", ""), tags)
             merged_metadata = self._merge_metadata(record.get("metadata", {}), metadata)
             merged_category = category or record.get("category", "general")
@@ -208,11 +213,13 @@ class MemoryRepository:
                     "metadata": merged_metadata,
                     "sensitive": bool(record.get("sensitive")) or sensitive_state["sensitive"],
                     "sensitivity_reason": merged_reason,
-                    "updated_at": datetime.now().isoformat(),
-                    "revisions": int(record.get("revisions", 1)) + 1,
                     "embedding": self._embed_text(merged_title + "\n" + merged_content),
                 }
             )
+            
+            if not content_unchanged:
+                record["updated_at"] = datetime.now().isoformat()
+                record["revisions"] = int(record.get("revisions", 1)) + 1
             record.setdefault("merged_sources", [])
             if source_file and source_file != record.get("source_file") and source_file not in record["merged_sources"]:
                 record["merged_sources"].append(source_file)

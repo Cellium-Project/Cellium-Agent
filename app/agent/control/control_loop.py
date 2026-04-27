@@ -104,8 +104,13 @@ class ControlLoop:
             matched = TaskSignalMatcher.match(user_input)
             if matched:
                 task_type = matched.get("task_type", "")
+        
+        if not task_type and state.tool_traces:
+            last_tool = state.tool_traces[-1].get('tool_name', '')
+            if last_tool:
+                task_type = last_tool
+                logger.debug("[ControlLoop] 从工具调用推断 task_type: %s", task_type)
 
-        # 混合策略：传递 user_input 用于 Agent Gene 创建
         reward = self.evaluator.evaluate_with_gene_evolution(state, task_type, user_input)
 
         state.round_reward = reward

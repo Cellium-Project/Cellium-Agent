@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class AutoHintManager:
-    """自动提示管理器 — 在 LLM 持续失败时自动注入工具使用指南"""
+    """自动提示管理器"""
 
     def __init__(self):
         self._injected_tool_helps: Dict[str, str] = {}
@@ -120,11 +120,13 @@ class AutoHintManager:
 
             lines.extend([
                 "---",
-                "**修复方法**：",
-                "1. 使用 `file.read` 读取有问题的组件文件",
-                "2. 根据错误信息修复代码问题（如语法错误、导入错误等）",
-                "3. 调用 `component.reload()` 重新加载组件",
+                "**修复方法（由 Agent 执行）**：",
+                "1. 使用 `file` 工具读取有问题的组件文件",
+                "2. 根据错误信息修复代码问题（如语法错误、导入错误、返回结构等）",
+                "3. 调用 `component.reload(name='组件名')` 重新加载组件",
                 "4. 再次调用 `component.list()` 确认错误已解决",
+                "",
+                "注意：这是 Agent 的任务，不是用户的任务。Agent 应该主动修复组件问题。",
                 "",
             ])
 

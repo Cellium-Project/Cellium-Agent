@@ -322,7 +322,30 @@ class MemoryTool(BaseTool):
         
         try:
             memory_key = f"gene:{task_type}"
-            result = self.memory.repository.get_by_memory_key(memory_key)
+            
+            results = self.memory.repository.search_memories(
+                query=task_type,  
+                schema_type="control_gene",
+                top_k=10 
+            )
+            
+            result = None
+            for r in results:
+                if r.get("memory_key") == memory_key:
+                    result = r
+                    break
+            
+            if not result:
+                logger.debug("[MemoryTool] get_gene 方法1未找到，尝试方法2 | task_type=%s", task_type)
+                all_results = self.memory.repository.search_memories(
+                    query="gene",
+                    schema_type="control_gene",
+                    top_k=100
+                )
+                for r in all_results:
+                    if r.get("memory_key") == memory_key:
+                        result = r
+                        break
             
             if not result:
                 return {"success": False, "error": f"未找到 Gene: {task_type}"}

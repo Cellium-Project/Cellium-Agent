@@ -65,11 +65,8 @@ class CellToolAdapter(BaseTool):
         self._sandbox = None
         self._sandbox_initialized = False
 
-        # 设置 name 和 description（BaseTool 需要）
-        # tool_name 格式: "cell_name" （纯小写，与组件标识一致）
         self.name = getattr(cell, 'cell_name', type(cell).__name__.lower())
 
-        # 从类 docstring 或第一个命令描述提取工具描述
         doc = (type(cell).__doc__ or "").strip()
         if doc:
             self.description = doc.split('\n')[0].strip()
@@ -213,10 +210,9 @@ class CellToolAdapter(BaseTool):
 
                 target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}" if cmd_name else None
                 if not target_method_name or not hasattr(self._cell, target_method_name):
-                    raise ValueError(
-                        f"Command '{cmd_name}' not found in tool '{self.tool_name}'. "
-                        f"Available: {list(self.get_commands().keys())}"
-                    )
+                    available_cmds = list(self.get_commands().keys())
+                    error_msg = f"[ToolError] {self.tool_name}: unknown command '{cmd_name or 'none'}'. Available: {available_cmds}"
+                    raise ValueError(error_msg)
 
                 target_method = getattr(self._cell, target_method_name)
                 sig = inspect.signature(target_method)
@@ -342,6 +338,16 @@ class CellToolAdapter(BaseTool):
             cmd_scores[cmd_name] = score
 
         if not cmd_scores:
+            logger.warning(
+                "[CellToolAdapter] 无法推断命令 | 工具=%s | 输入参数=%s | 可用命令=%s",
+                self.name,
+                list(non_empty.keys()),
+                list(commands.keys()) if commands else "无"
+            )
+            mapped_args = self._map_common_aliases(dict(non_empty))
+            if mapped_args != non_empty:
+                logger.info("[CellToolAdapter] 尝试别名映射后重试 | 映射后=%s", mapped_args)
+                return self._infer_command_with_mapping(mapped_args, cmd_param_map, cmd_required_map)
             return ""
 
         best_cmd = max(cmd_scores, key=cmd_scores.get)
@@ -362,6 +368,47 @@ class CellToolAdapter(BaseTool):
             best_cmd, best_score, dict(cmd_scores),
         )
         return best_cmd
+
+    def _map_common_aliases(self, args: dict) -> dict:
+        alias_map = {
+            "query": ["keyword", "q", "search", "text"],
+            "url": ["link", "href", "address", "uri"],
+            "content": ["text", "data", "body", "message"],
+            "path": ["file", "filepath", "filename", "dir"],
+        }
+        
+        mapped = dict(args)
+        for standard, aliases in alias_map.items():
+            if standard not in mapped:
+                for alias in aliases:
+                    if alias in mapped:
+                        mapped[standard] = mapped.pop(alias)
+                        logger.debug("[CellToolAdapter] 参数别名映射 | %s -> %s", alias, standard)
+                        break
+        return mapped
+
+    def _infer_command_with_mapping(self, all_args: dict, cmd_param_map: dict, cmd_required_map: dict) -> str:
+        from collections import defaultdict
+        
+        cmd_scores: Dict[str, float] = defaultdict(float)
+        input_keys = set(all_args.keys())
+
+        for cmd_name, cmd_params in cmd_param_map.items():
+            overlap = input_keys & cmd_params
+            if not overlap:
+                continue
+
+            required_hits = overlap & cmd_required_map.get(cmd_name, set())
+            optional_hits = overlap - required_hits
+
+            score = len(required_hits) * 2.0 + len(optional_hits) * 1.0
+            cmd_scores[cmd_name] = score
+
+        if cmd_scores:
+            best_cmd = max(cmd_scores, key=cmd_scores.get)
+            logger.info("[CellToolAdapter] 别名映射后推断成功 | 命令=%s", best_cmd)
+            return best_cmd
+        return ""
 
     def get_commands(self) -> Dict[str, str]:
         """获取组件的所有可用命令"""

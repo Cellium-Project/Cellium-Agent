@@ -475,8 +475,11 @@ class ComponentBuilder(BaseCell):
                 result["audit_warnings"] = getattr(adapter, '_audit_warnings', [])
                 result["full_audit_hint"] = getattr(adapter, '_audit_hint_text', "")
                 result["fix_guide"] = (
-                    "此组件存在规范问题。请查看 audit_issues 了解具体问题，"
-                    "然后使用 file.edit 修改组件文件。修复后调用 component.reload() 重新加载。"
+                    "[系统提示] 此组件存在规范问题，需要你来修复：\n"
+                    "1. 查看 audit_issues 了解具体问题；\n"
+                    "2. 使用 file 工具读取并修改组件文件；\n"
+                    "3. 调用 component.reload(name='组件名') 重新加载。\n"
+                    "⚠️ 这是你的任务，你必须主动修复。"
                 )
             else:
                 result["has_issues"] = False

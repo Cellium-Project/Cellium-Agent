@@ -1256,17 +1256,25 @@ class AgentLoop:
                             arguments = event["arguments"]
                             result = event["result"]
                             duration_ms = event["duration_ms"]
+                            success = not isinstance(result, dict) or (
+                                result.get("success") is not False and result.get("error") is None
+                            )
                             trace_item = {
                                 "tool": tool_name,
                                 "arguments": arguments,
                                 "result": result,
                                 "duration_ms": duration_ms,
-                                "success": not isinstance(result, dict) or (
-                                    result.get("success") is not False and result.get("error") is None
-                                ),
+                                "success": success,
                             }
                             iteration_traces.append(trace_item)
                             tool_traces.append(trace_item)  # 同时添加到累积的 traces
+                            
+                            # 记录错误信息到 LoopState
+                            if not success and self._loop_state:
+                                error_msg = result.get("error", "") if isinstance(result, dict) else str(result)
+                                if error_msg:
+                                    self._loop_state.last_error = error_msg
+                                    logger.debug("[AgentLoop] 记录工具错误 | tool=%s | error=%s", tool_name, error_msg[:50])
                         yield event
 
                     if self._loop_state:

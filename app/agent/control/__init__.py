@@ -12,6 +12,11 @@ Control Loop Harness - LLM 控制环
   - HardConstraintRenderer: 强约束渲染器（PromptBuilder v3）
   - ThoughtParser: 思考解析器
   - HybridController: Plan-Execute-Observe-RePlan 混合控制器
+
+Gene 相关（constraint_gene 子模块）：
+  - TaskSignalMatcher: 任务信号匹配器
+  - GeneEvolution: Gene 进化系统
+  - GeneComposer: Gene 组合器
 """
 
 from .loop_state import LoopState, ControlDecision
@@ -40,6 +45,8 @@ from .hybrid_controller import (
     create_hybrid_controller,
 )
 
+from .constraint_gene import TaskSignalMatcher, GeneEvolution, GeneComposer
+
 __all__ = [
     "LoopState",
     "ControlDecision",
@@ -66,4 +73,8 @@ __all__ = [
     "HybridState",
     "Observation",
     "create_hybrid_controller",
+    # Gene 相关
+    "TaskSignalMatcher",
+    "GeneEvolution",
+    "GeneComposer",
 ]

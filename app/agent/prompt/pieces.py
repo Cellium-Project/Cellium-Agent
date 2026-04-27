@@ -29,6 +29,8 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
 
     从 memory/personality.md 加载，不存在则使用默认
     """
+    from datetime import datetime
+
     personality_path = os.path.join(memory_dir, "personality.md")
     if os.path.exists(personality_path):
         try:
@@ -39,6 +41,9 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
     else:
         content = DEFAULT_IDENTITY
 
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    content = content.replace("{{current_date}}", current_date)
+
     return PromptPiece(
         name="identity",
         content=content,
@@ -48,6 +53,8 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
 
 
 DEFAULT_IDENTITY = """# Cellium Agent
+
+- **当前日期**: {{current_date}}
 
 你是一个专业的桌面助手，擅长：
 - 执行系统命令和脚本

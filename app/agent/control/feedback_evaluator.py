@@ -12,7 +12,8 @@ FeedbackEvaluator - 分段式反馈评估器
 """
 
 import logging
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 
 from .loop_state import LoopState
 
@@ -153,46 +154,95 @@ class FeedbackEvaluator:
     def evaluate_with_gene_evolution(self, state: LoopState, task_type: str = "", user_input: str = "") -> float:
         reward = self.evaluate(state)
 
-        from .hard_constraints import GeneEvolution
+        from .constraint_gene import GeneEvolution
 
         try:
             if reward < 0.5:
+                if not task_type and state.tool_traces:
+                    last_tool = state.tool_traces[-1].get('tool_name', '')
+                    if last_tool:
+                        task_type = last_tool
+                        logger.debug("[GeneEvolution] 从工具调用推断 task_type: %s", task_type)
+                
                 avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
+                if avoid_cue and task_type:
+                    state.gene_failure_count += 1
+                    state.gene_failure_history.append({
+                        "iteration": state.iteration,
+                        "avoid_cue": avoid_cue,
+                        "error": state.last_error,
+                        "task_type": task_type,  # 记录工具名
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    # 只保留最近 3 次
+                    if len(state.gene_failure_history) > 3:
+                        state.gene_failure_history = state.gene_failure_history[-3:]
 
-                # 混合策略：判断是否触发 Gene 创建
-                if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
-                    # 1. 标记需要后台创建 Gene
-                    state.needs_agent_gene_creation = True
-                    # 2. 给主 Agent 的提示：只要求查看 Gene
-                    state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input)
-                    logger.info("[GeneEvolution] 将后台创建 Gene，并提示 Agent 查看")
-                elif task_type and avoid_cue:
-                    # 自动更新已有 Gene
-                    GeneEvolution.update_gene_from_failure(task_type, avoid_cue, state, reward)
-            elif reward >= 0.5 and task_type:
-                GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
+                    logger.info(f"[GeneEvolution] 记录失败 #{state.gene_failure_count}: tool={task_type}, cue={avoid_cue[:50]}")
+
+                    # 连续 2 次失败才触发 Gene 操作
+                    if state.gene_failure_count >= 2:
+                        failed_tools = set(h.get("task_type", "") for h in state.gene_failure_history if h.get("task_type"))
+                        
+                        if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
+                            # 1. 标记需要后台创建 Gene
+                            state.needs_agent_gene_creation = True
+                            # 2. 给主 Agent 的提示：只要求查看 Gene
+                            state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input, state.gene_failure_history)
+                            logger.info(f"[GeneEvolution] 连续2次失败，涉及工具: {failed_tools}，将后台创建 Gene")
+
+                            for tool in failed_tools:
+                                tool_cues = [h.get("avoid_cue", "") for h in state.gene_failure_history if h.get("task_type") == tool]
+                                combined_cue = "; ".join(filter(None, tool_cues)) if tool_cues else avoid_cue
+                                GeneEvolution.update_gene_from_failure(tool, combined_cue, state, reward)
+                                logger.info(f"[GeneEvolution] 更新 Gene: {tool}")
+
+                        # 重置失败计数和历史
+                        state.gene_failure_count = 0
+                        state.gene_failure_history = []
+                        logger.info("[GeneEvolution] Gene 操作完成，重置失败计数")
+            elif reward >= 0.5:
+                # 成功时重置失败计数
+                if state.gene_failure_count > 0:
+                    logger.info(f"[GeneEvolution] 任务成功，重置失败计数（之前: {state.gene_failure_count}）")
+                    state.gene_failure_count = 0
+                    state.gene_failure_history = []
+                if task_type:
+                    GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
         except Exception as e:
             logger.warning("[GeneEvolution] Gene evolution failed: %s", e)
 
         return reward
 
-    def _build_gene_view_prompt(self, state: LoopState, user_input: str) -> str:
-        """构建提示 Agent 查看 Gene 的提示（不创建）"""
-        from .hard_constraints import GeneEvolution
+    def _build_gene_view_prompt(self, state: LoopState, user_input: str, failure_history: List[Dict]) -> str:
+        """构建提示 Agent 查看 Gene 的提示（包含失败历史）"""
+        from .constraint_gene import GeneEvolution
+
+        # 构建失败历史描述
+        failure_summary = "\n".join([
+            f"  {i+1}. 第{h['iteration']}轮: {h['avoid_cue']}"
+            for i, h in enumerate(failure_history[-2:])  # 只显示最近2次
+        ])
 
         # 获取现有 Gene 信息
         existing_gene = GeneEvolution._get_existing_gene(user_input)
 
         if existing_gene:
             return f"""[系统提示]
-检测到任务执行遇到困难。已有相关 Gene 记录，请先查看：
+检测到任务连续 2 次执行失败：
+{failure_summary}
+
+已有相关 Gene 记录，请先查看：
 
 使用命令：memory get_gene task_type={existing_gene['task_type']}
 
 查看后根据 Gene 中的指导继续执行任务。"""
         else:
-            return """[系统提示]
-检测到任务执行遇到困难。系统将自动分析并创建指导规则。
+            return f"""[系统提示]
+检测到任务连续 2 次执行失败：
+{failure_summary}
+
+系统将自动分析失败原因并创建指导规则。
 
 请继续尝试完成任务，系统会根据执行情况优化策略。"""
 

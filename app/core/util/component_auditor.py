@@ -172,8 +172,8 @@ class ComponentAuditor:
             "description": "至少需要一个 _cmd_ 方法",
         },
         "docstring": {
-            "severity": "error",
-            "description": "每个 _cmd_ 方法必须有 docstring",
+            "severity": "warning",
+            "description": "每个 _cmd_ 方法应该有 docstring",
         },
         "return_dict": {
             "severity": "error",
@@ -188,8 +188,8 @@ class ComponentAuditor:
             "description": "禁止导入危险模块 (os/subprocess 等)",
         },
         "class_docstring": {
-            "severity": "error",
-            "description": "类必须有 docstring 描述功能",
+            "severity": "warning",
+            "description": "类应该有 docstring 描述功能",
         },
     }
 
@@ -227,8 +227,9 @@ class ComponentAuditor:
         issues.extend(name_issues)
         
         # ── 2. 类 docstring 审查（白名单跳过）──
-        doc_issues = self._check_class_docstring(cell_type, cell, skip=is_exempted)
+        doc_issues, doc_warnings = self._check_class_docstring(cell_type, cell, skip=is_exempted)
         issues.extend(doc_issues)
+        warnings.extend(doc_warnings)
 
         # ── 3. 命令方法审查 ──
         cmd_issues, cmd_warnings = self._check_commands(cell, skip_docstring=is_exempted)
@@ -269,26 +270,24 @@ def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         
         # ── 5. 源码安全审查（白名单跳过此项 — 系统内置组件需要 os/json 等）──
         if not is_exempted:
-            sec_issues = self._check_security(cell)
+            sec_issues, sec_warnings = self._check_security(cell)
             issues.extend(sec_issues)
+            warnings.extend(sec_warnings)
 
         # ── 计算最终结果 ──
         # 严重问题直接不通过；严格模式下 warning 也不通过
         critical_count = sum(1 for i in issues if i["severity"] == "critical")
         error_count = sum(1 for i in issues if i["severity"] == "error")
 
-        # 扣分计算
         score -= critical_count * 25
         score -= error_count * 10
         score -= len(warnings) * 3
         score = max(0, min(100, score))
 
-        # 修改：允许有问题的组件被注册，让 LLM 能看到并修复
-        # 只要不是严重问题（critical），就允许注册
         if self._strict:
-            passed = len(issues) == 0  # 严格模式：任何问题都不通过
+            passed = len(issues) == 0  
         else:
-            passed = True  # 非严格：所有组件都允许注册，但有问题的会带提示
+            passed = True 
 
         result = AuditResult(
             passed=passed,
@@ -358,23 +357,21 @@ def cell_name(self) -> str:
 
         return issues
 
-    def _check_class_docstring(self, class_name: str, cell: BaseCell, skip: bool = False) -> List[Dict]:
+    def _check_class_docstring(self, class_name: str, cell: BaseCell, skip: bool = False) -> Tuple[List[Dict], List[str]]:
         """检查类是否有文档说明"""
         if skip:
-            return []
+            return [], []
 
         issues = []
+        warnings = []
         cls_doc = type(cell).__doc__ or ""
 
         if not cls_doc.strip():
-            issues.append({
-                "rule": "class_docstring",
-                "severity": "error",
-                "message": f"类 {class_name} 缺少 docstring。LLM 无法了解这个组件是做什么的。",
-                "fix": "在 class 定义下方添加三引号文档，描述组件的功能、用途和使用场景。",
-            })
+            warnings.append(
+                f"类 {class_name} 缺少 docstring。建议在 class 定义下方添加三引号文档，描述组件的功能、用途和使用场景。"
+            )
 
-        return issues
+        return issues, warnings
 
     def _check_commands(self, cell: BaseCell, skip_docstring: bool = False) -> Tuple[List[Dict], List[str]]:
         """检查所有命令方法的规范性"""
@@ -418,40 +415,27 @@ def cell_name(self) -> str:
 
             doc = method.__doc__ or ""
             if not skip_docstring:
-                if not doc.strip() or len(doc.strip()) < 10:
-                    issues.append({
-                        "rule": "docstring",
-                        "severity": "error",
-                        "message": f"命令 '{cmd_name}' 的 docstring 为空或过短（<10字符）。LLM 不知道如何调用这个命令。",
-                        "fix": f"为 {method_name} 添加详细的三段式 docstring（功能描述 + Args + Returns）。",
-                    })
-
-            sig = inspect.signature(method)
-            has_return_annotation = sig.return_annotation != inspect.Parameter.empty
-            
-            returns_dict_hint = "dict" in doc.lower() or "returns:" in doc.lower()
-            
-            if not has_return_annotation and not returns_dict_hint:
-                warnings.append(
-                    f"命令 '{cmd_name}' 未标注返回类型。建议添加 -> Dict[str, Any] 注解或 docstring 中包含 Returns 说明。"
-                )
+                if not doc.strip():
+                    warnings.append(
+                        f"命令 '{cmd_name}' 缺少 docstring。建议添加功能描述。"
+                    )
 
         return issues, warnings
 
-    def _check_security(self, cell: BaseCell) -> List[Dict]:
+    def _check_security(self, cell: BaseCell) -> Tuple[List[Dict], List[str]]:
         """源码级安全审查：检测危险导入
 
         分级策略：
         - BANNED_IMPORTS（eval/exec 等）：完全禁止，critical 错误
-        - PROTECTED_IMPORTS（os/subprocess 等）：允许导入，warning 提示
+        - PROTECTED_IMPORTS（os/subprocess 等）：允许导入，warning 提示（不加入 issues）
           （运行时会被 ProtectedModuleProxy 拦截危险方法）
         """
         issues = []
+        warnings = []
 
         try:
             source_file = getattr(cell, '_source_file', None)
             if source_file is None:
-                # 尝试从inspect获取
                 try:
                     source_file = inspect.getfile(type(cell))
                 except TypeError:
@@ -463,12 +447,10 @@ def cell_name(self) -> str:
             tree = ast.parse(source_code)
 
             for node in ast.walk(tree):
-                # import xxx
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         module_name = alias.name.split(".")[0]
 
-                        # 完全禁止的模块（动态代码执行）
                         if module_name in BANNED_IMPORTS:
                             issues.append({
                                 "rule": "no_dangerous_imports",
@@ -477,16 +459,29 @@ def cell_name(self) -> str:
                                 "fix": "移除该导入。如果需要动态执行，请通过 shell 工具间接完成。",
                             })
 
-                        # 受保护模块（运行时拦截）—— 仅警告
                         elif module_name in PROTECTED_IMPORTS:
-                            issues.append({
-                                "rule": "protected_import",
-                                "severity": "warning",
-                                "message": f"检测到受保护导入: `import {alias.name}`。危险方法（如 os.system）将被运行时拦截。",
-                                "fix": "如需执行系统命令，请使用 shell 工具。当前导入的安全方法可正常使用。",
-                            })
+                            warnings.append(
+                                f"检测到受保护导入: `import {alias.name}`。危险方法将被运行时拦截。"
+                            )
 
-                # from xxx import yyy
+                elif isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+                        if node.args:
+                            first_arg = node.args[0]
+                            if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                                module_name = first_arg.value.split(".")[0]
+                                if module_name in BANNED_IMPORTS:
+                                    issues.append({
+                                        "rule": "no_dangerous_imports",
+                                        "severity": "critical",
+                                        "message": f"检测到动态导入禁止模块: `__import__('{first_arg.value}')`。",
+                                        "fix": "移除动态导入。使用静态 import 语句。",
+                                    })
+                                elif module_name in PROTECTED_IMPORTS:
+                                    warnings.append(
+                                        f"检测到动态导入受保护模块: `__import__('{first_arg.value}')`。"
+                                    )
+
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
                         full_path = f"{node.module}"
@@ -495,7 +490,6 @@ def cell_name(self) -> str:
                         for alias in node.names:
                             combined = f"{full_path}.{alias.name}"
 
-                            # 检查导入的是否是禁止函数
                             if alias.name in BANNED_IMPORTS or any(combined.startswith(d) for d in DANGEROUS_FROM_IMPORTS):
                                 issues.append({
                                     "rule": "no_dangerous_imports",
@@ -504,19 +498,15 @@ def cell_name(self) -> str:
                                     "fix": "移除该导入。动态代码执行不允许使用。",
                                 })
 
-                            # 受保护模块的导入 —— 仅警告
                             elif module_name in PROTECTED_IMPORTS:
-                                issues.append({
-                                    "rule": "protected_import",
-                                    "severity": "warning",
-                                    "message": f"检测到受保护导入: `from {node.module} import {alias.name}`。危险方法将被运行时拦截。",
-                                    "fix": "如需执行系统命令，请使用 shell 工具。",
-                                })
+                                warnings.append(
+                                    f"检测到受保护导入: `from {node.module} import {alias.name}`。危险方法将被运行时拦截。"
+                                )
 
         except Exception as e:
             logger.debug("[ComponentAudit] 安全审查跳过（无法读取源码）: %s", e)
 
-        return issues
+        return issues, warnings
 
 
 # ================================================================
