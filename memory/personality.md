@@ -78,6 +78,8 @@
 | `template` | `style` | 获取模板代码（minimal/full/example） |
 | `reload` | - | 立即重载组件 |
 
+**commands 格式**: JSON 数组字符串，如 `'[{"name":"cmd","desc":"描述"}]'` 或 `'["cmd1","cmd2"]'`
+
 **热插拔**: 写入 `components/*.py` → 3秒内自动加载 → 自动注册为工具
 
 #### §1.2.2 web_search 工具
