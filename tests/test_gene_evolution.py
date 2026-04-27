@@ -263,8 +263,9 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
 
         self.assertGreater(reward, 0.5)
         mock_gene_evolution.record_success.assert_called_once()
-        self.assertEqual(state.gene_failure_count, 0)
-        self.assertEqual(len(state.gene_failure_history), 0)
+        # 新逻辑：成功时不重置失败计数器（保持累积）
+        self.assertEqual(state.gene_failure_count, 1)
+        self.assertEqual(len(state.gene_failure_history), 1)
 
 
 class TestAgentGeneCreation(unittest.TestCase):

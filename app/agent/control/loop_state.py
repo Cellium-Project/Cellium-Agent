@@ -126,8 +126,8 @@ class LoopState:
     needs_agent_gene_creation: bool = False  # 是否需要提示 Agent 创建 Gene
     gene_creation_prompt: Optional[str] = None  # 提示 Agent 创建 Gene 的 Prompt
     
-    # ===== Gene 失败追踪（连续2次失败才触发） =====
-    gene_failure_count: int = 0  # 当前连续失败计数
+    # ===== Gene 失败追踪 =====
+    gene_failure_count: int = 0  # 累积失败计数
     gene_failure_history: List[Dict] = field(default_factory=list)  # 失败历史记录（最多3次）
 
     def to_dict(self) -> Dict[str, Any]:

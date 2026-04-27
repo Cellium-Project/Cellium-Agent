@@ -136,19 +136,13 @@ class CellToolAdapter(BaseTool):
 
             sandbox = ComponentSandbox.get_sandbox(self.name)
 
-            # 初始化沙箱
-            if not sandbox._initialized:
+            # 初始化沙箱（检查内部 _sandbox 是否存在）
+            if not sandbox._sandbox:
                 source_file = self._get_component_source()
                 class_name = type(self._cell).__name__
 
                 if source_file:
-                    success = sandbox.init_component(source_file, class_name)
-                    if not success:
-                        logger.warning(
-                            "[CellToolAdapter] %s 沙箱初始化失败，回退到直接执行",
-                            self.name,
-                        )
-                        return self._execute_direct(command, *args, **kwargs)
+                    sandbox.initialize(source_file, class_name)
                 else:
                     logger.warning(
                         "[CellToolAdapter] %s 无法获取源文件，回退到直接执行",

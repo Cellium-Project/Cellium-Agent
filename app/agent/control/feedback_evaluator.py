@@ -180,7 +180,6 @@ class FeedbackEvaluator:
 
                     logger.info(f"[GeneEvolution] 记录失败 #{state.gene_failure_count}: tool={task_type}, cue={avoid_cue[:50]}")
 
-                    # 连续 2 次失败才触发 Gene 操作
                     if state.gene_failure_count >= 2:
                         failed_tools = set(h.get("task_type", "") for h in state.gene_failure_history if h.get("task_type"))
                         
@@ -189,24 +188,18 @@ class FeedbackEvaluator:
                             state.needs_agent_gene_creation = True
                             # 2. 给主 Agent 的提示：只要求查看 Gene
                             state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input, state.gene_failure_history)
-                            logger.info(f"[GeneEvolution] 连续2次失败，涉及工具: {failed_tools}，将后台创建 Gene")
+                            logger.info(f"[GeneEvolution] 累积{state.gene_failure_count}次失败，涉及工具: {failed_tools}，将后台创建 Gene")
 
                             for tool in failed_tools:
                                 tool_cues = [h.get("avoid_cue", "") for h in state.gene_failure_history if h.get("task_type") == tool]
                                 combined_cue = "; ".join(filter(None, tool_cues)) if tool_cues else avoid_cue
                                 GeneEvolution.update_gene_from_failure(tool, combined_cue, state, reward)
                                 logger.info(f"[GeneEvolution] 更新 Gene: {tool}")
-
-                        # 重置失败计数和历史
+                        
                         state.gene_failure_count = 0
                         state.gene_failure_history = []
-                        logger.info("[GeneEvolution] Gene 操作完成，重置失败计数")
+                        logger.info("[GeneEvolution] Gene 触发完成，重置失败计数")
             elif reward >= 0.5:
-                # 成功时重置失败计数
-                if state.gene_failure_count > 0:
-                    logger.info(f"[GeneEvolution] 任务成功，重置失败计数（之前: {state.gene_failure_count}）")
-                    state.gene_failure_count = 0
-                    state.gene_failure_history = []
                 if task_type:
                     GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
         except Exception as e:
