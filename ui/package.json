@@ -8,8 +8,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "dompurify": "^3.4.0",
-    "i18next": "^26.0.6",
+    "dompurify": "^3.4.1",
+    "i18next": "^26.0.8",
     "i18next-browser-languagedetector": "^8.2.1",
     "marked": "^18.0.2",
     "react": "^19.2.4",
@@ -24,6 +24,6 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.1",
     "typescript": "^6.0.3",
-    "vite": "^8.0.9"
+    "vite": "^8.0.10"
   }
 }
