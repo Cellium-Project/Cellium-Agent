@@ -7,7 +7,7 @@ pydantic>=2.0.0
 python-multipart>=0.0.6
 
 # 配置文件解析
-pyyaml>=6.0
+pyyaml>=6.0.3
 
 # 中文分词（用于记忆检索增强）
 jieba>=0.42.1
