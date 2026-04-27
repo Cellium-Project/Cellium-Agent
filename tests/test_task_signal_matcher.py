@@ -388,7 +388,7 @@ class TestSemanticMatch(unittest.TestCase):
         """测试关键词不匹配时的语义匹配兜底"""
         mock_repo = MagicMock()
         # 模拟返回一个语义相似的 Gene（但不包含关键词）
-        mock_repo.search.return_value = [
+        mock_repo.search_memories.return_value = [
             {
                 "content": "[HARD CONSTRAINTS]\nDebug task detected...",
                 "metadata": {
@@ -416,7 +416,7 @@ class TestSemanticMatch(unittest.TestCase):
         """测试语义匹配阈值过滤"""
         mock_repo = MagicMock()
         # 相似度低于阈值
-        mock_repo.search.return_value = [
+        mock_repo.search_memories.return_value = [
             {
                 "content": "[HARD CONSTRAINTS]\nSome gene...",
                 "metadata": {

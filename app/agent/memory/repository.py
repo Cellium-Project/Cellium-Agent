@@ -177,8 +177,12 @@ class MemoryRepository:
 
         if existing:
             record_id, record = existing
-            merged_title = safe_title or record.get("title", "")
-            merged_content = self._merge_contents(record.get("content", ""), safe_content, schema_type=schema_type)
+            if merge_strategy == "replace":
+                merged_title = safe_title
+                merged_content = safe_content
+            else:
+                merged_title = safe_title or record.get("title", "")
+                merged_content = self._merge_contents(record.get("content", ""), safe_content, schema_type=schema_type)
             merged_tags = self._merge_tags(record.get("tags", ""), tags)
             merged_metadata = self._merge_metadata(record.get("metadata", {}), metadata)
             merged_category = category or record.get("category", "general")
@@ -323,6 +327,24 @@ class MemoryRepository:
         results = [entry for entry in merged.values() if entry]
         results.sort(key=lambda item: item.get("score", 0.0), reverse=True)
         return results[:top_k]
+
+    def search_memories(
+        self,
+        query: str,
+        *,
+        top_k: int = 3,
+        category: Optional[str] = None,
+        schema_type: Optional[str] = None,
+        include_sensitive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """search_memories 别名方法 - 为了与 ThreeLayerMemory 接口保持兼容"""
+        return self.search(
+            query=query,
+            top_k=top_k,
+            category=category,
+            schema_type=schema_type,
+            include_sensitive=include_sensitive,
+        )
 
     def _expand_date_query(self, query: str) -> str:
         """扩展日期查询：英文日期自动加上中文格式"""

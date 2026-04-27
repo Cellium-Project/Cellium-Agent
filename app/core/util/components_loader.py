@@ -557,6 +557,14 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                         if old_instance and hasattr(old_instance, "on_unload"):
                             old_instance.on_unload()
 
+                        try:
+                            from app.core.util.component_sandbox import ComponentSandbox
+                            sandbox_name = item["class_name"].lower()
+                            ComponentSandbox.reload_sandbox(sandbox_name)
+                            logger.info(f"[HotReload] 已重启沙箱: {sandbox_name}")
+                        except Exception as e:
+                            logger.warning(f"[HotReload] 重启沙箱失败 {item['class_name']}: {e}")
+
                         instance, info = _instantiate_component(item["module_path"])
                         register_cell(instance)
                         _loaded_files.add(file_path)

@@ -83,17 +83,19 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                     output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
                     
             except Exception as e:
+                error_str = str(e) or f"{type(e).__name__} (no error message)"
                 output_queue.put({
                     "status": "error",
-                    "error": str(e),
+                    "error": error_str,
                     "error_type": type(e).__name__,
                     "traceback": traceback.format_exc(),
                 })
                 
     except Exception as e:
+        error_str = str(e) or f"{type(e).__name__} (no error message)"
         output_queue.put({
             "status": "error",
-            "error": f"Failed to init component: {str(e)}",
+            "error": f"Failed to init component: {error_str}",
             "error_type": type(e).__name__,
             "traceback": traceback.format_exc(),
         })
@@ -265,6 +267,15 @@ class ComponentSandbox:
             _sandbox_instances[name] = ComponentSandbox(name)
         return _sandbox_instances[name]
 
+    @staticmethod
+    def reload_sandbox(name: str) -> 'ComponentSandbox':
+        if name in _sandbox_instances:
+            old_sandbox = _sandbox_instances[name]
+            old_sandbox.stop()
+            del _sandbox_instances[name]
+            logger.info("[ComponentSandbox] 已停止旧沙箱: %s", name)
+        return ComponentSandbox.get_sandbox(name)
+
     def init_component(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None):
         """初始化组件"""
         self.module_path = module_path
@@ -302,14 +313,20 @@ class ComponentSandbox:
         kwargs = kwargs or {}
         result = self._sandbox.execute(command, *args, **kwargs)
         if result.get("status") == "error":
-            raise RuntimeError(result.get("error", "Unknown error"))
+            error_msg = result.get("error", "Unknown error")
+            if not error_msg or error_msg == "None":
+                error_msg = f"Sandbox execution failed (status=error, command={command})"
+            raise RuntimeError(error_msg)
         return result.get("result")
 
     def get_commands(self) -> list:
-        """获取组件支持的命令列表"""
+        """获取组件命令列表"""
         result = self._sandbox.get_commands()
         if result.get("status") == "error":
-            raise RuntimeError(result.get("error", "Unknown error"))
+            error_msg = result.get("error", "Unknown error")
+            if not error_msg or error_msg == "None":
+                error_msg = "Sandbox get_commands failed (status=error)"
+            raise RuntimeError(error_msg)
         return result.get("commands", [])
 
     @property

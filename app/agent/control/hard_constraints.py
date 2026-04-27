@@ -230,7 +230,7 @@ MUST NOT: Rely on single source, copy without understanding
     def _semantic_match(cls, user_input: str) -> Optional[Dict[str, Any]]:
         """基于向量相似度的语义匹配"""
         try:
-            results = cls._repository.search(
+            results = cls._repository.search_memories(
                 query=user_input,
                 top_k=3,
                 schema_type="control_gene",
@@ -429,7 +429,114 @@ class GeneEvolution:
         return None
 
     @classmethod
+    def _gene_exists(cls, task_type: str) -> bool:
+        """检查指定 task_type 的 Gene 是否存在"""
+        if not TaskSignalMatcher._repository or not task_type:
+            return False
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query=f"gene:{task_type}",
+                schema_type="control_gene",
+                top_k=1,
+            )
+            for r in results:
+                if r.get("memory_key") == f"gene:{task_type}":
+                    return True
+            return False
+        except Exception:
+            return False
+
+    @classmethod
+    def _update_gene(
+        cls,
+        gene: Dict[str, Any],
+        task_type: str,
+        new_content: str,
+        change_description: str,
+        is_failure: bool = False,
+        reward: float = 0.0,
+        elapsed_ms: int = 0,
+    ) -> bool:
+        """更新 Gene 的通用方法
+        
+        Args:
+            gene: 现有的 Gene 数据
+            task_type: 任务类型
+            new_content: 新的 Gene 内容
+            change_description: 变更描述（用于 evolution_history）
+            is_failure: 是否是失败更新（影响统计）
+            reward: 奖励值（用于更新 recent_results）
+            elapsed_ms: 耗时（用于更新 recent_results）
+        
+        Returns:
+            是否更新成功
+        """
+        if not TaskSignalMatcher._repository:
+            return False
+        
+        try:
+            metadata = gene.get("metadata", {})
+            
+            current_version = metadata.get("version", 1)
+            new_version = current_version + 1
+            
+            evolution_history = metadata.get("evolution_history", [])
+            evolution_history.append({
+                "version": new_version,
+                "change": change_description[:40],
+                "at": datetime.now().isoformat(),
+            })
+            
+            usage_count = metadata.get("usage_count", 0) + 1
+            success_count = metadata.get("success_count", 0)
+            
+            if is_failure:
+                failure_count = metadata.get("failure_count", 0) + 1
+            else:
+                failure_count = metadata.get("failure_count", 0)
+            
+            success_rate = success_count / max(usage_count, 1)
+            
+            # 构建 metadata 更新
+            metadata_updates = {
+                "version": new_version,
+                "evolution_history": evolution_history,
+                "usage_count": usage_count,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "success_rate": success_rate,
+                "evolved": True,
+            }
+            
+            if is_failure and elapsed_ms > 0:
+                result_updates = cls._update_recent_results(metadata, False, reward, elapsed_ms)
+                metadata_updates.update(result_updates)
+                metadata_updates["last_failure_at"] = datetime.now().isoformat()
+            else:
+                metadata_updates["last_evolved_at"] = datetime.now().isoformat()
+            
+            TaskSignalMatcher._repository.upsert_memory(
+                title=gene.get("title", f"Gene: {task_type}"),
+                content=new_content,
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=gene.get("memory_key", f"gene:{task_type}"),
+                metadata={
+                    **metadata,
+                    **metadata_updates,
+                }
+            )
+            
+            TaskSignalMatcher._cache_loaded = False
+            
+            return True
+        except Exception as e:
+            logger.error("[GeneEvolution] 更新 Gene 失败: %s", e)
+            return False
+
+    @classmethod
     def _evolve_existing_gene(cls, task_type: str, avoid_cue: str, state: "LoopState") -> bool:
+        """通过 LLM 进化现有 Gene（添加避免项）"""
         if not TaskSignalMatcher._repository or not avoid_cue:
             return False
         
@@ -446,68 +553,49 @@ class GeneEvolution:
             
             gene = results[0]
             content = gene.get("content", "")
-            metadata = gene.get("metadata", {})
             
             if avoid_cue in content:
                 logger.info("[GeneEvolution] 避免项已存在于 Gene 中，跳过更新")
                 return True
             
+            # 更新内容：添加避免项
             avoid_section = "[AVOID]"
             if avoid_section in content:
-                content = content.replace(
+                new_content = content.replace(
                     avoid_section,
                     f"{avoid_section}\n- {avoid_cue[:80]}"
                 )
             else:
-                content += f"\n\n[AVOID]\n- {avoid_cue[:80]}"
+                new_content = f"{content}\n\n[AVOID]\n- {avoid_cue[:80]}"
             
-            current_version = metadata.get("version", 1)
-            new_version = current_version + 1
-            
-            evolution_history = metadata.get("evolution_history", [])
-            evolution_history.append({
-                "version": new_version,
-                "change": f"evolve: {avoid_cue[:40]}",
-                "at": datetime.now().isoformat(),
-            })
-            
-            usage_count = metadata.get("usage_count", 0) + 1
-            failure_count = metadata.get("failure_count", 0)
-            
-            TaskSignalMatcher._repository.upsert_memory(
-                title=gene.get("title", f"Gene: {task_type}"),
-                content=content,
-                schema_type="control_gene",
-                category="task_strategy",
-                memory_key=gene.get("memory_key", f"gene:{task_type}"),
-                metadata={
-                    **metadata,
-                    "version": new_version,
-                    "evolution_history": evolution_history,
-                    "usage_count": usage_count,
-                    "failure_count": failure_count,
-                    "last_evolved_at": datetime.now().isoformat(),
-                    "evolved": True,
-                }
+            # 使用通用方法更新 Gene
+            success = cls._update_gene(
+                gene=gene,
+                task_type=task_type,
+                new_content=new_content,
+                change_description=f"evolve: {avoid_cue}",
+                is_failure=False,
             )
             
-            TaskSignalMatcher._cache_loaded = False
+            if success:
+                # 发送 WebSocket 事件
+                try:
+                    from app.server.routes.ws_event_manager import ws_publish_event
+                    metadata = gene.get("metadata", {})
+                    new_version = metadata.get("version", 1) + 1
+                    ws_publish_event(
+                        "gene_evolved",
+                        {
+                            "task_type": task_type,
+                            "version": new_version,
+                            "title": f"Gene: {task_type}",
+                            "change": avoid_cue[:50],
+                        }
+                    )
+                except Exception as e:
+                    logger.debug("[GeneEvolution] 发送 WebSocket 事件失败: %s", e)
             
-            try:
-                from app.server.routes.ws_event_manager import ws_publish_event
-                ws_publish_event(
-                    "gene_evolved",
-                    {
-                        "task_type": task_type,
-                        "version": new_version,
-                        "title": f"Gene: {task_type}",
-                        "change": avoid_cue[:50],
-                    }
-                )
-            except Exception as e:
-                logger.debug("[GeneEvolution] 发送 WebSocket 事件失败: %s", e)
-            
-            return True
+            return success
         except Exception as e:
             logger.error("[GeneEvolution] 进化 Gene 失败: %s", e)
             return False
@@ -547,6 +635,7 @@ class GeneEvolution:
     
     @classmethod
     def update_gene_from_failure(cls, task_type: str, avoid_cue: str, state: "LoopState", reward: float = 0.0):
+        """失败后自动更新 Gene（添加避免项）"""
         if not TaskSignalMatcher._repository or not avoid_cue:
             return
         
@@ -556,60 +645,36 @@ class GeneEvolution:
                 schema_type="control_gene",
                 top_k=1
             )
-            
+
             if not results:
                 return
-            
+
             gene = results[0]
             content = gene.get("content", "")
-            metadata = gene.get("metadata", {})
-            
+
             if avoid_cue in content:
                 return
             
+            # 更新内容：添加避免项（使用完整 avoid_cue）
             avoid_section = "[AVOID]"
             if avoid_section in content:
-                content = content.replace(
+                new_content = content.replace(
                     avoid_section,
                     f"{avoid_section}\n- {avoid_cue}"
                 )
             else:
-                content += f"\n\n[AVOID]\n- {avoid_cue}"
+                new_content = f"{content}\n\n[AVOID]\n- {avoid_cue}"
             
-            current_version = metadata.get("version", 1)
-            new_version = current_version + 1
-            
-            evolution_history = metadata.get("evolution_history", [])
-            evolution_history.append({
-                "version": new_version,
-                "change": f"add: {avoid_cue[:40]}",
-                "at": datetime.now().isoformat(),
-            })
-            
-            usage_count = metadata.get("usage_count", 0) + 1
-            failure_count = metadata.get("failure_count", 0) + 1
-            
-            result_updates = cls._update_recent_results(metadata, False, reward, state.elapsed_ms)
-            
-            TaskSignalMatcher._repository.upsert_memory(
-                title=gene.get("title", f"Gene: {task_type}"),
-                content=content,
-                schema_type="control_gene",
-                category="task_strategy",
-                memory_key=gene.get("memory_key", f"gene:{task_type}"),
-                metadata={
-                    **metadata,
-                    "version": new_version,
-                    "evolution_history": evolution_history,
-                    "usage_count": usage_count,
-                    "failure_count": failure_count,
-                    "last_failure_at": datetime.now().isoformat(),
-                    "evolved": True,
-                    **result_updates,
-                }
+            # 使用通用方法更新 Gene（标记为失败更新）
+            cls._update_gene(
+                gene=gene,
+                task_type=task_type,
+                new_content=new_content,
+                change_description=f"add: {avoid_cue}",
+                is_failure=True,
+                reward=reward,
+                elapsed_ms=state.elapsed_ms,
             )
-            
-            TaskSignalMatcher._cache_loaded = False
             
         except Exception:
             pass
@@ -641,7 +706,7 @@ class GeneEvolution:
             return None
         
         try:
-            results = TaskSignalMatcher._repository.search(
+            results = TaskSignalMatcher._repository.search_memories(
                 query=user_input,
                 top_k=1,
                 schema_type="control_gene",
@@ -768,7 +833,8 @@ MUST NOT: <应该避免的错误做法>
         else:
             content = gene_match.group(1).strip()
         
-        if not content or len(content) < 50:
+        if not content or len(content) < 30:
+            logger.warning(f"[GeneEvolution] Gene 内容太短: {len(content)} 字符")
             return None
         
         mode_match = re.search(r'\[MODE\]:\s*(EVOLVE|CREATE)', content, re.IGNORECASE)
@@ -786,10 +852,18 @@ MUST NOT: <应该避免的错误做法>
         task_type_match = re.search(r'\[任务类型\]:\s*(.+?)(?:\n|$)', content)
         task_type = task_type_match.group(1).strip() if task_type_match else None
         
+        if not task_type and target_task_type:
+            task_type = target_task_type
+        
         has_must = re.search(r'MUST:', content) is not None
         has_must_not = re.search(r'MUST NOT:', content) is not None
         
-        if not task_type or (not has_must and not has_must_not):
+        if not task_type:
+            logger.warning(f"[GeneEvolution] 无法解析任务类型")
+            return None
+        
+        if not has_must and not has_must_not:
+            logger.warning(f"[GeneEvolution] 缺少 MUST 或 MUST NOT 约束")
             return None
         
         task_type_normalized = re.sub(r'[^\w\u4e00-\u9fff]+', '_', task_type).lower().strip('_')
@@ -827,14 +901,20 @@ MUST NOT: <应该避免的错误做法>
             existing_failure = 0
             
             try:
-                existing = TaskSignalMatcher._repository.get_by_memory_key(memory_key)
-                if existing:
-                    existing_meta = existing.get("metadata", {})
-                    existing_history = existing_meta.get("evolution_history", [])
-                    existing_version = existing_meta.get("version", 0)
-                    existing_usage = existing_meta.get("usage_count", 0)
-                    existing_success = existing_meta.get("success_count", 0)
-                    existing_failure = existing_meta.get("failure_count", 0)
+                results = TaskSignalMatcher._repository.search_memories(
+                    query=memory_key,
+                    schema_type="control_gene",
+                    top_k=1,
+                )
+                for r in results:
+                    if r.get("memory_key") == memory_key:
+                        existing_meta = r.get("metadata", {})
+                        existing_history = existing_meta.get("evolution_history", [])
+                        existing_version = existing_meta.get("version", 0)
+                        existing_usage = existing_meta.get("usage_count", 0)
+                        existing_success = existing_meta.get("success_count", 0)
+                        existing_failure = existing_meta.get("failure_count", 0)
+                        break
             except Exception:
                 pass
             
@@ -847,6 +927,11 @@ MUST NOT: <应该避免的错误做法>
                 "change": "agent_updated" if is_update else "agent_created",
                 "at": datetime.now().isoformat(),
             }]
+            
+            if existing_usage > 0:
+                success_rate = existing_success / existing_usage
+            else:
+                success_rate = 0.5  
             
             TaskSignalMatcher._repository.upsert_memory(
                 title=f"Gene: {task_type}",
@@ -864,14 +949,14 @@ MUST NOT: <应该避免的错误做法>
                     "usage_count": existing_usage,
                     "success_count": existing_success,
                     "failure_count": existing_failure,
-                    "success_rate": existing_success / max(existing_usage, 1),
+                    "success_rate": success_rate,
                     "source": "agent_created",
-                }
+                },
+                merge_strategy="replace",
             )
             
             TaskSignalMatcher._cache_loaded = False
             
-            # 发送 WebSocket 事件通知前端 Gene 已创建/更新
             try:
                 from app.server.routes.ws_event_manager import ws_publish_event
                 ws_publish_event(
@@ -913,7 +998,6 @@ MUST NOT: <应该避免的错误做法>
             # 1. 获取现有 Gene 信息
             existing_gene = cls._get_existing_gene(user_input)
             
-            # 检查是否最近刚创建过 Gene（避免重复创建）
             if existing_gene:
                 created_at = existing_gene.get('metadata', {}).get('created_at', '')
                 if created_at:
@@ -1021,14 +1105,14 @@ MUST NOT: <应该避免的错误做法>
                 try:
                     response = await llm_engine.chat(
                         messages=messages, 
-                        max_tokens=800,
+                        max_tokens=3000,
                         temperature=0.3
                     )
                     raw_content = getattr(response, 'content', None) or ''
-                    logger.info(f"[GeneEvolution] LLM 原始返回 (尝试 {attempt + 1}/2): {repr(raw_content[:500])}")
-                    if response and raw_content and raw_content.strip():
+                    logger.info(f"[GeneEvolution] LLM 原始返回 (尝试 {attempt + 1}/2): 长度={len(raw_content)} | 内容={repr(raw_content[:800])}")
+                    if response and raw_content and raw_content.strip() and len(raw_content) > 200:
                         break
-                    logger.warning(f"[GeneEvolution] LLM 返回为空，尝试 {attempt + 1}/2 | response={type(response).__name__} | content={repr(raw_content[:200]) if raw_content else 'None'}")
+                    logger.warning(f"[GeneEvolution] LLM 返回太短或为空，尝试 {attempt + 1}/2 | response={type(response).__name__} | content={repr(raw_content[:200]) if raw_content else 'None'}")
                 except Exception as e:
                     logger.warning(f"[GeneEvolution] LLM 调用失败，尝试 {attempt + 1}/2: {e}")
 
@@ -1047,18 +1131,25 @@ MUST NOT: <应该避免的错误做法>
                 
                 if mode == "evolve" and target:
                     logger.info("[GeneEvolution] LLM 选择进化模式 | target=%s", target)
-                    avoid_cue = cls._extract_avoid_cue_from_gene_content(gene_data.get("content", ""))
-                    if avoid_cue:
-                        success = cls._evolve_existing_gene(target, avoid_cue, state)
-                        if success:
-                            logger.info("[GeneEvolution] 进化 Gene 成功 | target=%s", target)
-                        else:
-                            logger.warning("[GeneEvolution] 进化 Gene 失败，尝试创建新 Gene")
-                            gene_data["task_type"] = target
-                            success = cls.save_agent_created_gene(gene_data)
-                    else:
-                        logger.warning("[GeneEvolution] 无法提取进化内容，创建新 Gene")
+                    
+                    target_exists = cls._gene_exists(target)
+                    if not target_exists:
+                        logger.warning("[GeneEvolution] LLM 要求进化不存在的 Gene=%s，改为创建新 Gene", target)
+                        gene_data["task_type"] = target
                         success = cls.save_agent_created_gene(gene_data)
+                    else:
+                        avoid_cue = cls._extract_avoid_cue_from_gene_content(gene_data.get("content", ""))
+                        if avoid_cue:
+                            success = cls._evolve_existing_gene(target, avoid_cue, state)
+                            if success:
+                                logger.info("[GeneEvolution] 进化 Gene 成功 | target=%s", target)
+                            else:
+                                logger.warning("[GeneEvolution] 进化 Gene 失败，尝试创建新 Gene")
+                                gene_data["task_type"] = target
+                                success = cls.save_agent_created_gene(gene_data)
+                        else:
+                            logger.warning("[GeneEvolution] 无法提取进化内容，创建新 Gene")
+                            success = cls.save_agent_created_gene(gene_data)
                 else:
                     logger.info("[GeneEvolution] LLM 选择新建模式 | task_type=%s", gene_data.get("task_type"))
                     success = cls.save_agent_created_gene(gene_data)
