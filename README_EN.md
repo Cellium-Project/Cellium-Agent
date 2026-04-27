@@ -37,6 +37,7 @@ Core design: Self-learning Agent driven by Control Loop, with adaptive decision 
 | Tool Usage Control | Dynamic prohibition/recommendation of tool switching, avoiding loops from repeated tool calls |
 | Sensitive Info Control | Auto-detect and redact sensitive info like private keys, tokens, passwords; supports write blocking |
 | Component Hot-Plug | Files in app/components/ automatically load and take effect within 3 seconds |
+| Component Sandbox Security | Four-layer protection: AST static check + process isolation + transparent path mapping + dangerous method interception |
 | Event-Driven Architecture | Publish-subscribe pattern based on EventBus, loose coupling between components |
 | Flash Mode | Skip memory injection to accelerate simple tasks |
 | Multi-Channel Access | Support external platforms like QQ (currently supports QQ Bot, Telegram, more coming), unified message routing, file transfer and injection through ChannelManager |
@@ -317,6 +318,19 @@ Uses **segmented design**, first distinguishing success/failure, then optimizing
 | LearningIntegration | Learning module integration, Policy selection and parameter injection |
 | EventBus | Event bus, loose coupling communication between components |
 | BaseTool | Tool base class, declarative command registration pattern |
+
+### Component Sandbox Security
+
+Agent-written component code runs in an isolated sandbox environment with four-layer security protection:
+
+| Layer | Mechanism | Function |
+|-------|-----------|----------|
+| **AST Static Check** | Scan dangerous imports before compilation | Block eval/exec/__import__ and other dynamic code execution |
+| **Process Isolation** | Components run in separate subprocess | Crash won't affect main process, communicate via Queue |
+| **Transparent Path Mapping** | All file operations mapped to sandbox_root | C:/Windows → sandbox_root/C_/Windows, prevent path traversal |
+| **Dangerous Method Interception** | Runtime interception of os.system/subprocess | Block system command execution, protect host security |
+
+Component code can use `open()`, `os.listdir()` normally, but all paths are transparently mapped to the `sandbox_root/` folder in the project directory, preventing access to real system files. Meanwhile, dangerous methods like `os.system()`, `subprocess.run()` are intercepted at runtime.
 
 ### Agent Runtime Self-State Awareness
 
