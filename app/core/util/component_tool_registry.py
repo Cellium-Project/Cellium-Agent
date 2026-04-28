@@ -144,6 +144,36 @@ class ComponentToolRegistry:
         """检查组件是否在用户信任白名单中"""
         return tool_name in self._load_trust_list()
 
+    def untrust(self, tool_name: str) -> bool:
+        """
+        从信任白名单中移除组件
+        
+        Args:
+            tool_name: 要移除的组件名称
+            
+        Returns:
+            是否成功移除
+        """
+        trusted = self._load_trust_list()
+        if tool_name in trusted:
+            trusted.discard(tool_name)
+            self._save_trust_list(trusted)
+            logger.info("[ComponentToolRegistry] 已从信任白名单移除: %s", tool_name)
+            return True
+        return False
+
+    def cleanup_trust_list(self, valid_tool_names: Set[str]) -> List[str]:
+        trusted = self._load_trust_list()
+        removed = []
+        for name in list(trusted):
+            if name not in valid_tool_names:
+                trusted.discard(name)
+                removed.append(name)
+        if removed:
+            self._save_trust_list(trusted)
+            logger.info("[ComponentToolRegistry] 已清理信任白名单中的 %d 个无效组件: %s", len(removed), removed)
+        return removed
+
     def trust(self, tool_name: str) -> Dict[str, Any]:
         """
         用户执行 /trust 命令，将组件加入信任白名单并立即注册

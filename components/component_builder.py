@@ -593,6 +593,57 @@ class MyComponent(BaseCell):
 
         return result
 
+    def _cmd_cleanup(self, dry_run: bool = True, force: bool = False) -> Dict[str, Any]:
+        """
+        清理组件系统缓存
+
+        用于解决以下问题：
+          - 组件文件已删除但系统仍提示错误
+          - 沙箱进程残留导致内存占用过高
+          - 信任白名单中有大量已删除的组件
+          - 加载错误记录堆积
+
+        Args:
+            dry_run: 预览模式（默认 True）- 只查看有哪些问题，不实际清理
+            force: 强制模式 - 包括正在运行的沙箱（可能导致执行中的任务失败）
+        """
+        from app.core.util.components_loader import clear_all_caches
+
+        report = clear_all_caches(dry_run=dry_run, force=force)
+
+        messages = []
+        if report.get("load_errors_cleared", 0) > 0:
+            messages.append(f"\u6e05\u7406\u4e86 {report['load_errors_cleared']} \u6761\u52a0\u8f7d\u9519\u8bef\u8bb0\u5f55")
+        if report.get("component_classes_cleared", 0) > 0:
+            messages.append(f"\u6e05\u7406\u4e86 {report['component_classes_cleared']} \u4e2a\u5b64\u513f\u7c7b\u5f15\u7528")
+        if report.get("sandboxes_cleared", 0) > 0:
+            messages.append(f"\u6e05\u7406\u4e86 {report['sandboxes_cleared']} \u4e2a\u6b8b\u7559\u6c99\u7bb1")
+        if report.get("sandboxes_skipped"):
+            messages.append(f"\u8df3\u8fc7 {len(report['sandboxes_skipped'])} \u4e2a\u6b63\u5728\u8fd0\u884c\u7684\u6c99\u7bb1")
+        if report.get("trust_list_cleaned"):
+            messages.append(f"\u6e05\u7406\u4e86\u4fe1\u4efb\u767d\u540d\u5355: {report['trust_list_cleaned']}")
+
+        if not messages:
+            messages.append("\u6ca1\u6709\u53d1\u73b0\u9700\u8981\u6e05\u7406\u7684\u7f13\u5b58")
+
+        result = {
+            "success": True,
+            "dry_run": dry_run,
+            "force": force,
+            "report": report,
+            "summary": "; ".join(messages),
+        }
+
+        if report.get("warnings"):
+            result["warnings"] = report["warnings"]
+
+        if dry_run:
+            result["hint"] = "\u8fd9\u662f\u9884\u89c8\u6a21\u5f0f\uff0c\u6ca1\u6709\u5b9e\u9645\u6267\u884c\u6e05\u7406\u3002\u5982\u679c\u786e\u8ba4\u65e0\u8bef\uff0c\u8bf7\u8c03\u7528 component.cleanup(dry_run=false)"
+        elif report.get("sandboxes_skipped") and not force:
+            result["hint"] = f"\u6709 {len(report['sandboxes_skipped'])} \u4e2a\u6c99\u7bb1\u6b63\u5728\u8fd0\u884c\u88ab\u8df3\u8fc7\u3002\u5982\u9700\u5f3a\u5236\u6e05\u7406\uff0c\u8bf7\u4f7f\u7528 force=true"
+
+        return result
+
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         """查询组件使用帮助（LLM 可通过此命令了解如何正确调用 component 工具）
         
@@ -613,6 +664,7 @@ class MyComponent(BaseCell):
                 {"command": "list", "args": {"show_commands": True}, "description": "列出所有已加载组件"},
                 {"command": "info", "args": {"name": "<组件名>"}, "description": "查看指定组件详情"},
                 {"command": "reload", "args": {}, "description": "手动触发热重载扫描"},
+                {"command": "cleanup", "args": {"dry_run": True}, "description": "预览/清理组件缓存"},
                 {"command": "template", "args": {"style": "minimal|full|example"}, "description": "获取标准模板代码"},
             ],
             "_notes": [
@@ -663,6 +715,16 @@ class MyComponent(BaseCell):
                     "focused_command": topic,
                     "command_description": commands.get(topic),
                     "hint": '调用示例: {"command":"reload"}',
+                },
+                "cleanup": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "hint": (
+                        '调用示例:\n'
+                        '  - {"command":"cleanup"}                    # 预览模式，查看问题\n'
+                        '  - {"command":"cleanup","dry_run":false}     # 安全清理（推荐）\n'
+                        '  - {"command":"cleanup","dry_run":false,"force":true}  # 强制清理'
+                    ),
                 },
                 "template": {
                     "focused_command": topic,

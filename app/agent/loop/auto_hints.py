@@ -55,17 +55,7 @@ class AutoHintManager:
         return ""
 
     def get_auto_tool_hints(self, tools: Dict[str, Any]) -> str:
-        """
-        获取需要自动注入的工具使用提示（优先级从高到低）
-
-        Returns:
-            需要注入的帮助文本（空字符串表示无需注入）
-        """
         hints = []
-
-        load_errors_hint = self._get_load_errors_hint()
-        if load_errors_hint:
-            hints.append(load_errors_hint)
 
         skill_hint = self._get_skill_hint()
         if skill_hint:

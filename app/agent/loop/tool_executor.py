@@ -301,11 +301,12 @@ class ToolDescriptionGenerator:
 class ToolExecutor:
     """工具执行器 — 负责查找、调度和追踪工具调用"""
 
-    def __init__(self, tools: Dict[str, Any], builtin_tools: Dict[str, Any]):
+    def __init__(self, tools: Dict[str, Any], builtin_tools: Dict[str, Any], on_tools_changed=None):
         self.tools = tools
         self._builtin_tools = builtin_tools
         self._error_tracker: Dict[str, int] = {}
         self._error_threshold: int = 3
+        self._on_tools_changed = on_tools_changed  # 工具变化时的回调
 
     def refresh_tools(self, tools: Dict[str, Any]):
         """更新工具表（热插拔后调用）"""
@@ -329,7 +330,14 @@ class ToolExecutor:
         try:
             registry = get_component_tool_registry()
             component_tools = registry.get_component_tools()
-            self.tools = {**component_tools, **self._builtin_tools}
+            new_tools = {**component_tools, **self._builtin_tools}
+            # 只在工具列表发生变化时才更新
+            if set(new_tools.keys()) != set(self.tools.keys()):
+                self.tools = new_tools
+                # 通知外部工具列表已变化
+                if self._on_tools_changed:
+                    self._on_tools_changed(self.tools)
+                logger.info("[ToolExecutor] 工具列表已更新: %d 个工具", len(self.tools))
         except Exception as e:
             logger.warning("[ToolExecutor] 工具刷新失败: %s", e)
 

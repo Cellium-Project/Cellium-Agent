@@ -149,16 +149,10 @@ class ComponentAuditor:
     
     """
 
-    EXEMPTED_NAMES: Set[str] = {
-        "component",
-        "skill_installer",
-        "web_query",
-        "qq_files",
-        "skill_manager",
-        "telegram_files",
-        "web_fetch",
-        "web_search",
-    }
+    @property
+    def EXEMPTED_NAMES(self) -> Set[str]:
+        from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
+        return EXEMPTED_NAMES
 
     # 审查规则配置
     RULES = {
@@ -216,7 +210,7 @@ class ComponentAuditor:
         except Exception:
             cell_name = ""
 
-        is_exempted = cell_name in self.EXEMPTED_NAMES
+        is_exempted = cell_name in self.EXEMPTED_NAMES if cell_name else False
 
         issues = []
         warnings = []

@@ -329,6 +329,9 @@ class ComponentSandbox:
             self._sandbox.stop()
             self._sandbox = None
 
+    def is_alive(self) -> bool:
+        return self._sandbox is not None and self._sandbox._process is not None and self._sandbox._process.is_alive()
+
     @classmethod
     def get_sandbox(cls, name: str) -> 'ComponentSandbox':
         """
@@ -343,6 +346,19 @@ class ComponentSandbox:
         if name not in _sandbox_instances:
             _sandbox_instances[name] = cls(name)
         return _sandbox_instances[name]
+
+    @classmethod
+    def _get_existing_sandbox(cls, name: str) -> Optional['ComponentSandbox']:
+        """
+        获取已存在的沙箱实例（不会创建新的）
+        
+        Args:
+            name: 组件名称
+            
+        Returns:
+            ComponentSandbox 实例，如果不存在则返回 None
+        """
+        return _sandbox_instances.get(name)
 
     @classmethod
     def reload_sandbox(cls, name: str) -> 'ComponentSandbox':
@@ -362,6 +378,42 @@ class ComponentSandbox:
             logger.debug("[ComponentSandbox] 已删除旧沙箱实例: %s", name)
         
         return cls.get_sandbox(name)
+
+    @classmethod
+    def remove_sandbox(cls, name: str) -> bool:
+        """
+        删除沙箱实例（用于组件卸载时清理缓存）
+        
+        Args:
+            name: 组件名称
+            
+        Returns:
+            是否成功删除
+        """
+        if name in _sandbox_instances:
+            sandbox = _sandbox_instances[name]
+            sandbox.stop()
+            del _sandbox_instances[name]
+            logger.info("[ComponentSandbox] 已删除沙箱实例: %s", name)
+            return True
+        return False
+
+    @classmethod
+    def get_all_sandbox_names(cls) -> list:
+        """
+        获取所有沙箱实例名称
+        
+        Returns:
+            沙箱名称列表
+        """
+        return list(_sandbox_instances.keys())
+
+    @classmethod
+    def clear_all_sandboxes(cls):
+        """清理所有沙箱实例"""
+        for name in list(_sandbox_instances.keys()):
+            cls.remove_sandbox(name)
+        logger.info("[ComponentSandbox] 已清理所有沙箱实例")
 
     def __del__(self):
         """析构时自动停止沙箱"""

@@ -430,6 +430,16 @@ def load_components(
             failed.append(module_path)
     
     logger.info(f"[Component] 加载完成: {len(loaded)} 成功, {len(failed)} 失败")
+    
+    if loaded:
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            registry = get_component_tool_registry()
+            registry.sync_from_components_loader()
+            logger.info(f"[Component] 已同步 {len(loaded)} 个组件到工具注册表")
+        except Exception as e:
+            logger.warning(f"[Component] 同步到工具注册表失败: {e}")
+    
     return loaded
 
 
@@ -608,6 +618,7 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 pass
     
     removed_files = _loaded_files - current_files
+    removed_tool_names = []
     for file_path in removed_files:
         target_name = None
         for name, cell in list(_cell_registry.items()):
@@ -619,13 +630,184 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             cls_name = type(_cell_registry[target_name]).__name__
             module_path = f"components.{pathlib.Path(file_path).stem}.{cls_name}"
             
+            # 清理沙箱缓存（修复：组件删除时沙箱实例未清理）
+            try:
+                from app.core.util.component_sandbox import ComponentSandbox
+                if target_name in ComponentSandbox.get_all_sandbox_names():
+                    ComponentSandbox.remove_sandbox(target_name)
+                    logger.debug(f"[HotReload] 已清理沙箱缓存: {target_name}")
+            except Exception as e:
+                logger.debug(f"[HotReload] 清理沙箱缓存失败 {target_name}: {e}")
+            
+            # 清理组件类引用缓存（修复：清理孤儿引用）
+            if cls_name in _component_classes:
+                del _component_classes[cls_name]
+                logger.debug(f"[HotReload] 已清理类引用缓存: {cls_name}")
+            
             unregister_cell(target_name)
             unregister_from_config(module_path)
+            removed_tool_names.append(target_name)
+            
+            # 清理工具注册表（修复：组件删除时从工具注册表移除）
+            try:
+                from app.core.util.component_tool_registry import get_component_tool_registry
+                registry = get_component_tool_registry()
+                registry.unregister(target_name)
+                logger.debug(f"[HotReload] 已从工具注册表移除: {target_name}")
+            except Exception as e:
+                logger.debug(f"[HotReload] 从工具注册表移除失败 {target_name}: {e}")
+            
+            # 清理加载错误缓存（修复：删除组件时清理错误记录）
+            if file_path in _load_errors:
+                del _load_errors[file_path]
+                logger.debug(f"[HotReload] 已清理错误缓存: {file_path}")
+            
             report["removed"].append({"name": target_name, "class": cls_name})
             logger.info(f"[HotReload] 已卸载: {target_name}")
         
         _loaded_files.discard(file_path)
         _file_mtimes.pop(file_path, None)
+    
+    # 清理信任白名单中已删除的组件（修复：信任白名单残留）
+    if removed_tool_names:
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            registry = get_component_tool_registry()
+            current_names = set(_cell_registry.keys())
+            cleaned = registry.cleanup_trust_list(current_names)
+            if cleaned:
+                logger.info(f"[HotReload] 已清理信任白名单: {cleaned}")
+        except Exception as e:
+            logger.debug(f"[HotReload] 清理信任白名单失败: {e}")
+    
+    # 同步到工具注册表（修复：确保新增/更新的组件能被 Agent 使用）
+    if report.get("added") or report.get("updated"):
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            registry = get_component_tool_registry()
+            registry.sync_from_components_loader()
+            added_count = len(report.get("added", []))
+            updated_count = len(report.get("updated", []))
+            logger.info(f"[HotReload] 已同步到工具注册表: {added_count} 新增, {updated_count} 更新")
+        except Exception as e:
+            logger.warning(f"[HotReload] 同步到工具注册表失败: {e}")
+    
+    return report
+
+
+# ============================================================
+# 缓存清理 API
+# ============================================================
+
+def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, Any]:
+    """
+    手动清理所有组件相关缓存
+    
+    用于解决系统级缓存问题，如：
+    - 组件删除后仍提示错误
+    - 沙箱实例残留
+    - 信任白名单过期
+    
+    Args:
+        force: 是否强制清理（包括正在运行的沙箱）
+        dry_run: 是否只预览，不实际执行
+    
+    Returns:
+        清理结果报告
+    """
+    global _load_errors, _component_classes
+    
+    report = {
+        "dry_run": dry_run,
+        "load_errors_cleared": 0,
+        "component_classes_cleared": 0,
+        "sandboxes_cleared": 0,
+        "sandboxes_skipped": [],
+        "trust_list_cleaned": [],
+        "warnings": [],
+    }
+    
+    # 1. 清理加载错误缓存（安全）
+    if _load_errors:
+        report["load_errors_cleared"] = len(_load_errors)
+        if not dry_run:
+            _load_errors.clear()
+            logger.info(f"[CacheCleanup] 已清理 {report['load_errors_cleared']} 条加载错误缓存")
+    
+    # 2. 清理组件类引用缓存（安全，只清理孤儿引用）
+    current_classes = {type(cell).__name__ for cell in _cell_registry.values()}
+    orphaned = [name for name in list(_component_classes.keys()) if name not in current_classes]
+    report["component_classes_cleared"] = len(orphaned)
+    if orphaned and not dry_run:
+        for name in orphaned:
+            del _component_classes[name]
+        logger.info(f"[CacheCleanup] 已清理 {len(orphaned)} 个孤儿类引用")
+    
+    # 3. 清理沙箱缓存（需要检查是否正在运行）
+    try:
+        from app.core.util.component_sandbox import ComponentSandbox
+        all_sandboxes = ComponentSandbox.get_all_sandbox_names()
+        current_names = set(_cell_registry.keys())
+        stale_sandboxes = [name for name in all_sandboxes if name not in current_names]
+        
+        for name in stale_sandboxes:
+            # 获取已存在的沙箱实例（不会创建新的）
+            sandbox = ComponentSandbox._get_existing_sandbox(name)
+            if sandbox is None:
+                continue
+            
+            # 检查沙箱是否正在执行命令
+            is_busy = sandbox.is_alive()
+            
+            if is_busy and not force:
+                report["sandboxes_skipped"].append(name)
+                report["warnings"].append(f"沙箱 {name} 可能正在运行，跳过清理（使用 force=True 强制清理）")
+                continue
+            
+            if not dry_run:
+                ComponentSandbox.remove_sandbox(name)
+            report["sandboxes_cleared"] += 1
+            
+        if stale_sandboxes:
+            logger.info(f"[CacheCleanup] {'[预览] ' if dry_run else ''}发现 {len(stale_sandboxes)} 个残留沙箱实例，清理 {report['sandboxes_cleared']} 个，跳过 {len(report['sandboxes_skipped'])} 个")
+    except Exception as e:
+        report["warnings"].append(f"清理沙箱缓存失败: {e}")
+        logger.warning(f"[CacheCleanup] 清理沙箱缓存失败: {e}")
+    
+    # 4. 清理信任白名单（安全，只清理不存在的）
+    try:
+        from app.core.util.component_tool_registry import get_component_tool_registry
+        registry = get_component_tool_registry()
+        current_names = set(_cell_registry.keys())
+        
+        # 先获取将要清理的列表
+        trusted = registry._load_trust_list()
+        to_remove = [name for name in trusted if name not in current_names]
+        report["trust_list_cleaned"] = to_remove
+        
+        if to_remove and not dry_run:
+            registry.cleanup_trust_list(current_names)
+            logger.info(f"[CacheCleanup] 已清理信任白名单: {to_remove}")
+    except Exception as e:
+        report["warnings"].append(f"清理信任白名单失败: {e}")
+        logger.warning(f"[CacheCleanup] 清理信任白名单失败: {e}")
+    
+    # 5. 同步工具注册表（清理已删除组件的工具）
+    if not dry_run:
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            registry = get_component_tool_registry()
+            for tool_name in list(registry.get_all_names()):
+                if tool_name not in _cell_registry and tool_name not in registry.RESERVED_TOOL_NAMES:
+                    registry.unregister(tool_name)
+                    logger.info(f"[CacheCleanup] 已从工具注册表移除: {tool_name}")
+        except Exception as e:
+            report["warnings"].append(f"同步工具注册表失败: {e}")
+    
+    if dry_run:
+        logger.info(f"[CacheCleanup] [预览模式] 发现的问题: {report}")
+    else:
+        logger.info(f"[CacheCleanup] 缓存清理完成: {report}")
     
     return report
 

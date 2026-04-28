@@ -171,11 +171,16 @@ class AgentLoop:
         self._builtin_tools: Dict[str, Any] = tools or {}
         self.tools = dict(self._builtin_tools)
 
-        self._tool_executor = ToolExecutor(self.tools, self._builtin_tools)
+        self._tool_executor = ToolExecutor(self.tools, self._builtin_tools, on_tools_changed=self._on_tools_changed)
         self._cmd_handler = CommandHandler()
         self._auto_hints = AutoHintManager()
 
         self._tool_call_count_in_round = 0
+
+    def _on_tools_changed(self, new_tools: Dict[str, Any]):
+        """工具列表变化时的回调（由 ToolExecutor 调用）"""
+        self.tools = new_tools
+        logger.debug("[AgentLoop] 工具列表已通过回调同步: %d 个工具", len(self.tools))
 
     def _get_session_notes(self, session_id: str) -> SessionNotes:
         """获取或创建指定 session 的笔记管理器"""

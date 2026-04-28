@@ -124,10 +124,52 @@ class CellToolAdapter(BaseTool):
         1. command=str:   execute("do_something", arg1="val")
         2. command=dict:  execute({"command": "do_something", "arg1": "val"})  ← LLM 模式
         """
+        load_error = self._check_load_error()
+        if load_error:
+            return load_error
+
         if self._use_sandbox:
             return self._execute_in_sandbox(command, *args, **kwargs)
         else:
             return self._execute_direct(command, *args, **kwargs)
+
+    def _check_load_error(self) -> Optional[Dict[str, Any]]:
+        """
+        检查该组件是否有加载错误
+
+        Returns:
+            如果有加载错误，返回错误信息字典；否则返回 None
+        """
+        try:
+            from app.core.util.components_loader import get_load_errors
+            load_errors = get_load_errors()
+            if not load_errors:
+                return None
+
+            # 查找与该组件相关的错误
+            source_file = self._get_component_source()
+            if not source_file:
+                return None
+
+            for file_path, error_info in load_errors.items():
+                if file_path == source_file or error_info.get("file") == source_file:
+                    return {
+                        "success": False,
+                        "error": f"组件 '{self.name}' 加载失败: {error_info.get('error', 'Unknown error')}",
+                        "error_type": error_info.get("error_type", "LoadError"),
+                        "hint": (
+                            f"该组件文件存在加载错误，无法执行。\n"
+                            f"错误类型: {error_info.get('error_type', 'Unknown')}\n"
+                            f"请使用 file 工具检查并修复组件文件: {source_file}\n"
+                            f"修复后调用 component.reload() 重新加载"
+                        ),
+                        "_source": f"component:{self.name}",
+                        "status": "error",
+                        "load_error": True,
+                    }
+        except Exception as e:
+            logger.debug("[CellToolAdapter] 检查加载错误失败: %s", e)
+        return None
 
     def _execute_in_sandbox(self, command, *args, **kwargs) -> Dict[str, Any]:
         """在沙箱中执行组件命令"""
