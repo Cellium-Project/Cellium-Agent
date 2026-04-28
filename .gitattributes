@@ -1,4 +1,3 @@
-*.c linguist-language=C
-*.c linguist-detectable=true
-*.h linguist-language=C
-*.h linguist-detectable=true
+builder/launcher.c linguist-language=C
+builder/launcher.c linguist-detectable=true
+builder/launcher.c linguist-vendored=false
