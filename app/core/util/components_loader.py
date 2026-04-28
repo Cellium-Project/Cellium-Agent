@@ -557,13 +557,22 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                         if old_instance and hasattr(old_instance, "on_unload"):
                             old_instance.on_unload()
 
-                        try:
-                            from app.core.util.component_sandbox import ComponentSandbox
-                            sandbox_name = item["class_name"].lower()
-                            ComponentSandbox.reload_sandbox(sandbox_name)
-                            logger.info(f"[HotReload] 已重启沙箱: {sandbox_name}")
-                        except Exception as e:
-                            logger.warning(f"[HotReload] 重启沙箱失败 {item['class_name']}: {e}")
+                        from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
+                        cell_name_lower = item["class_name"].lower()
+                        use_sandbox = cell_name_lower not in EXEMPTED_NAMES
+
+                        if use_sandbox:
+                            try:
+                                from app.core.util.component_sandbox import ComponentSandbox
+                                sandbox_name = cell_name_lower
+                                ComponentSandbox.reload_sandbox(sandbox_name)
+                                logger.info(f"[HotReload] 已重启沙箱: {sandbox_name}")
+                            except Exception as e:
+                                logger.error(f"[HotReload] 重启沙箱失败 {item['class_name']}: {e}")
+                                logger.error(f"[HotReload] 组件 {item['class_name']} 热更新中止：沙箱重启失败")
+                                report["failed"] = report.get("failed", [])
+                                report["failed"].append({"name": cell_name_lower, "class": item["class_name"], "reason": f"沙箱重启失败: {e}"})
+                                continue  
 
                         instance, info = _instantiate_component(item["module_path"])
                         register_cell(instance)
