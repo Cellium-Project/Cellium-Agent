@@ -1,28 +1,19 @@
 # -*- coding: utf-8 -*-
 import os
-import sys
-
-def escape_c_string(content):
-    content = content.replace('\\', '\\\\')
-    content = content.replace('"', '\\"')
-    content = content.replace('\r\n', '\\n')
-    content = content.replace('\n', '\\n')
-    content = content.replace('\r', '')
-    content = content.replace('\t', '\\t')
-    return content
 
 def generate_launcher():
     main_py_path = os.path.join('..', 'main.py')
-    with open(main_py_path, 'r', encoding='utf-8') as f:
+    with open(main_py_path, 'rb') as f:
         main_content = f.read()
     
-    escaped = escape_c_string(main_content)
+    hex_array = ', '.join(f'0x{b:02x}' for b in main_content)
     
     c_code = '''#include <windows.h>
 #include <stdio.h>
 #include <string.h>
 
-const char* EMBEDDED_MAIN_PY = "''' + escaped + '''";
+unsigned char EMBEDDED_MAIN_PY[] = {''' + hex_array + '''};
+unsigned int EMBEDDED_MAIN_PY_LEN = sizeof(EMBEDDED_MAIN_PY);
 
 int main(int argc, char* argv[]) {
     char exePath[MAX_PATH];
@@ -43,13 +34,13 @@ int main(int argc, char* argv[]) {
     snprintf(tempPyPath, MAX_PATH, "%s__main__.py", exePath);
     DeleteFile(tempPyPath);
     
-    FILE* f = fopen(tempPyPath, "w");
+    FILE* f = fopen(tempPyPath, "wb");
     if (!f) {
         MessageBox(NULL, "Failed to create temporary file!", "Error", MB_OK | MB_ICONERROR);
         return 1;
     }
     
-    fputs(EMBEDDED_MAIN_PY, f);
+    fwrite(EMBEDDED_MAIN_PY, 1, EMBEDDED_MAIN_PY_LEN, f);
     fclose(f);
     
     snprintf(cmdLine, sizeof(cmdLine), "\\"%s\\" \\"%s\\"", pythonPath, tempPyPath);
@@ -77,26 +68,22 @@ int main(int argc, char* argv[]) {
     with open('launcher.c', 'w', encoding='utf-8') as f:
         f.write(c_code)
     
-    print(f"Generated launcher.c ({len(main_content)} chars)")
+    print(f"Generated launcher.c ({len(main_content)} bytes)")
 
 def compile_exe():
     icon_path = os.path.join('..', 'app_icon.ico')
     if os.path.exists(icon_path):
-        cmd = f'windres --input icon.rc --output icon.o 2>nul || echo 0 > icon.o'
-        os.system(cmd)
-        cmd = f'gcc -O2 -s -o CelliumAgent.exe launcher.c icon.o -mwindows'
-        print("Compiling with icon...")
+        icon_rc = 'id ICON "../app_icon.ico"'
+        with open('icon.rc', 'w') as f:
+            f.write(icon_rc)
+        os.system('windres --input icon.rc --output icon.o 2>nul || echo 0 > icon.o')
+        os.system('gcc -O2 -s -o CelliumAgent.exe launcher.c icon.o -mwindows')
+        print("Compiled with icon")
     else:
-        cmd = 'gcc -O2 -s -o CelliumAgent.exe launcher.c'
-        print("Compiling without icon...")
-    os.system(cmd)
+        os.system('gcc -O2 -s -o CelliumAgent.exe launcher.c')
+        print("Compiled without icon")
 
 if __name__ == "__main__":
     generate_launcher()
-    
-    icon_rc = 'id ICON "../app_icon.ico"'
-    with open('icon.rc', 'w') as f:
-        f.write(icon_rc)
-    
     compile_exe()
     print("Done: CelliumAgent.exe")
