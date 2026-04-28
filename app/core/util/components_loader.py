@@ -311,6 +311,18 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
     rel_path = file_path.relative_to(get_components_dir())
     module_name = f"_component_{rel_path.stem}_{hash(str(file_path)) & 0xFFFFFF}"
 
+    try:
+        cached = importlib.util.cache_from_source(str(file_path))
+        if cached and os.path.exists(cached):
+            os.remove(cached)
+            logger.debug(f"[Component] discover 阶段删除缓存: {cached}")
+    except Exception as e:
+        logger.debug(f"[Component] discover 阶段删除缓存失败: {e}")
+
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+        logger.debug(f"[Component] 清除 discover 旧模块: {module_name}")
+
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if spec is None or spec.loader is None:
         return [], {"error": f"无法加载文件: {file_path}", "file": str(file_path)}
@@ -470,7 +482,14 @@ def _instantiate_component(module_path: str) -> tuple:
             del sys.modules[key]
             logger.debug(f"[Component] 清除临时模块: {key}")
 
-    # ── 从文件重新加载 ──
+    try:
+        cached = importlib.util.cache_from_source(str(file_path))
+        if cached and os.path.exists(cached):
+            os.remove(cached)
+            logger.debug(f"[Component] 删除缓存文件: {cached}")
+    except Exception as e:
+        logger.debug(f"[Component] 删除缓存文件失败: {e}")
+
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if not spec or not spec.loader:
         raise ImportError(f"无法加载文件: {file_path}")
@@ -479,15 +498,12 @@ def _instantiate_component(module_path: str) -> tuple:
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
 
-    # 获取类
     cls = getattr(module, class_name, None)
     if cls is None:
         raise AttributeError(f"类不存在: {class_name} 在 {module_name}")
 
-    # 验证接口
     instance = cls()
 
-    # 来源信息
     source_file = ""
     try:
         source_file = inspect.getfile(cls)
@@ -513,7 +529,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
     """
     report = {"added": [], "removed": [], "updated": []}
     
-    # 当前已知的文件
     current_files = set()
     discovered = discover_components()
     
@@ -524,11 +539,11 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
         cell_name_lower = item["cls"]().__class__.__name__.lower()
         
         if file_path not in _loaded_files:
-            # 新组件
             try:
                 instance, info = _instantiate_component(item["module_path"])
                 register_cell(instance)
                 _loaded_files.add(file_path)
+                _file_mtimes[file_path] = os.path.getmtime(file_path)  # 记录 mtime
                 instance._source_file = file_path
                 
                 if hasattr(instance, "on_load"):
@@ -543,7 +558,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             except Exception as e:
                 logger.error(f"[HotReload] 加载新组件失败 {item['class_name']}: {e}")
         else:
-            # 已存在的组件 — 检查是否有变更（mtime）
             try:
                 current_mtime = os.path.getmtime(file_path)
                 if file_path in _file_mtimes and _file_mtimes[file_path] != current_mtime:
