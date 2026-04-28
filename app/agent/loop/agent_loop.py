@@ -1450,10 +1450,16 @@ class AgentLoop:
                     continue
 
                 # === 5.7 工具帮助检测 ===
-                _help_keywords = ["工具帮助", "工具定义", "参数格式", "tool_help", "tool help",
-                                  "怎么调用", "如何使用", "查看工具", "工具的参数", "不确定参数"]
+                _help_keywords = ["工具帮助", "参数格式", "tool_help", "tool help",
+                                  "怎么调用工具", "如何使用工具", "查看工具列表", "工具的参数是什么", "不确定参数怎么写"]
                 content_preview = (response.content or "").strip()[:200]
-                if not response.tool_calls and any(kw in content_preview.lower() for kw in _help_keywords):
+                content_lower = content_preview.lower()
+                is_help_request = (
+                    not response.tool_calls 
+                    and any(kw in content_lower for kw in _help_keywords)
+                    and ("?" in content_preview or "？" in content_preview or "请" in content_preview or "help" in content_lower)
+                )
+                if is_help_request:
                     tool_defs = self._get_tools_definition()
                     help_text = AutoHintManager.format_tool_help(tool_defs)
                     logger.info("[AgentLoop] 检测到工具帮助请求，注入工具定义")
