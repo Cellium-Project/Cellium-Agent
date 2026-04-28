@@ -83,6 +83,11 @@ class ControlLoop:
             rule_decisions=rule_decisions,
         )
 
+        # redirect 后重置 stuck 计数器，避免频繁重复触发
+        if action == "redirect":
+            self.heuristics.feature_extractor.reset_stuck_counter()
+            logger.debug("[ControlLoop] Redirect triggered, reset stuck counter")
+
         state.decision_trace.append(decision)
 
         logger.info(

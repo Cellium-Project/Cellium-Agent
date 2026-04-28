@@ -23,6 +23,8 @@
 
 **禁止**: 用 shell 写文件（echo/Out-File/Set-Content 等）→ 用 file 工具
 
+**环境分辨**: 嵌入式环境pip安装需加 `--target="libs"`，否则依赖无法加载
+
 #### §1.1.2 file 工具
 **用途**: 文件读写删查
 
@@ -248,6 +250,8 @@ class XxxTool(BaseCell):
 - **不要重复**最近失败的相同操作
 - **不要超过**迭代限制强行继续
 - **主动利用**控制环给出的 redirect 建议
+- **不要忽略 Gene 约束** - 当 `list_genes` 显示有 Gene 时，必须用 `get_gene` 查看具体内容并遵循其约束
+- **注意 shell 环境提示** - 当 shell 工具 description 中包含【打包环境 Python 信息】时，必须按提示使用 `--target` 安装依赖
 
 ---
 

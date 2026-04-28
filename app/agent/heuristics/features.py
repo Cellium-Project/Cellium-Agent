@@ -167,6 +167,9 @@ class FeatureExtractor:
         self._stuck_counter = 0
         self._last_progress_score = 0.0
 
+    def reset_stuck_counter(self):
+        self._stuck_counter = 0
+
     # ============================================================
     #  循环检测方法
     # ============================================================

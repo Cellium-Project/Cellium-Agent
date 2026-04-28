@@ -719,6 +719,20 @@ class AgentLoop:
                 stuck_iterations=stuck_iters,
             )
 
+        if self._loop_state and self.llm:
+            try:
+                from app.agent.control import analyze_session_for_gene
+                asyncio.create_task(analyze_session_for_gene(
+                    user_input=user_input,
+                    tool_traces=tool_traces,
+                    loop_state=self._loop_state,
+                    llm_engine=self.llm,
+                    total_time_ms=total_time,
+                    final_content=final_content
+                ))
+            except Exception as e:
+                logger.debug(f"[AgentLoop] Gene post-session analysis failed: {e}")
+
         return {
             "type": "done",
             "content": final_content,
@@ -758,7 +772,6 @@ class AgentLoop:
             error=stop_event.get("reason") != "user_cancelled",
         )
 
-        # 补充 stop 相关字段
         done_event["stop_reason"] = stop_event.get("reason")
         done_event["stop_type"] = stop_event.get("type")
         done_event["action"] = stop_event.get("action")

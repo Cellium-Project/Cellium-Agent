@@ -46,6 +46,7 @@ from .hybrid_controller import (
 )
 
 from .constraint_gene import TaskSignalMatcher, GeneEvolution, GeneComposer
+from .gene_post_session import GenePostSessionAnalyzer, analyze_session_for_gene
 
 __all__ = [
     "LoopState",
@@ -77,4 +78,7 @@ __all__ = [
     "TaskSignalMatcher",
     "GeneEvolution",
     "GeneComposer",
+    # 会话后 Gene 分析
+    "GenePostSessionAnalyzer",
+    "analyze_session_for_gene",
 ]
