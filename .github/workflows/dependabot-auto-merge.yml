@@ -1,26 +1,17 @@
-# Dependabot 自动合并工作流
-# 当 Dependabot PR 通过 CI 测试后，自动合并小版本更新
-#
-# 安全策略：
-# - 只自动合并 patch/minor 版本更新
-# - 敏感依赖（crypto/auth 等）需要人工审核
-# - 必须等待 CI 测试通过
-
-name: Dependabot Auto-Merge
+name: Dependabot Review
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write      # 用于合并 PR
-  pull-requests: write # 用于评论 PR
-  checks: read         # 用于读取 CI 状态
+  contents: read
+  pull-requests: write
+  checks: read
 
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    # 只处理 Dependabot 创建的 PR
     if: github.actor == 'dependabot[bot]'
     steps:
       - name: Dependabot metadata
@@ -29,60 +20,39 @@ jobs:
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      # 等待所有 CI 检查完成
       - name: Wait for all CI checks
         uses: lewagon/wait-on-check-action@v1.7.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
-          running-workflow-name: 'Dependabot Auto-Merge'
+          running-workflow-name: 'Dependabot Review'
 
-      # 获取 CI 检查结果
       - name: Check CI status
         id: check-ci
         run: |
-          # 获取所有 checks 状态，检查是否有失败的
           failed_checks=$(gh pr checks "$PR_URL" --json name,state -q '.[] | select(.state=="FAILURE") | .name')
           if [ -n "$failed_checks" ]; then
-            echo "❌ 以下 CI 检查未通过:"
-            echo "$failed_checks"
             echo "ci_status=FAILURE" >> $GITHUB_OUTPUT
-            exit 1
+          else
+            echo "ci_status=SUCCESS" >> $GITHUB_OUTPUT
           fi
-          echo "ci_status=SUCCESS" >> $GITHUB_OUTPUT
-          echo "✅ 所有 CI 检查通过"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 排除特定敏感依赖的自动合并
-      - name: Check sensitive dependencies
-        id: check-sensitive
+      - name: Check high-risk dependencies
+        id: check-risk
         run: |
-          # 定义敏感依赖列表（与 dependabot.yml 的 exclude-patterns 保持一致）
-          SENSITIVE_DEPS="requests|urllib3|cryptography|pyjwt|authlib"
+          HIGH_RISK_DEPS="openai|fastapi|pydantic|websockets|uvicorn"
           deps="${{ steps.metadata.outputs.dependency-names }}"
           
-          if echo "$deps" | grep -qiE "$SENSITIVE_DEPS"; then
-            echo "⚠️ 检测到安全敏感依赖: $deps"
-            echo "is_sensitive=true" >> $GITHUB_OUTPUT
+          if echo "$deps" | grep -qiE "$HIGH_RISK_DEPS"; then
+            echo "is_high_risk=true" >> $GITHUB_OUTPUT
           else
-            echo "is_sensitive=false" >> $GITHUB_OUTPUT
+            echo "is_high_risk=false" >> $GITHUB_OUTPUT
           fi
 
-      # 如果是 patch 或 minor 版本更新，且 CI 通过，且非敏感依赖，自动合并
-      - name: Enable auto-merge for Dependabot PRs
-        if: |
-          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-           steps.metadata.outputs.update-type == 'version-update:semver-minor') &&
-          steps.check-sensitive.outputs.is_sensitive == 'false'
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 在 PR 中评论更新信息
       - name: Comment on PR
         uses: actions/github-script@v9
         with:
@@ -92,19 +62,20 @@ jobs:
             const dependencyNames = '${{ steps.metadata.outputs.dependency-names }}';
             const prevVersion = '${{ steps.metadata.outputs.previous-version }}';
             const newVersion = '${{ steps.metadata.outputs.new-version }}';
-            const isSensitive = '${{ steps.check-sensitive.outputs.is_sensitive }}';
+            const isHighRisk = '${{ steps.check-risk.outputs.is_high_risk }}';
             const ciStatus = '${{ steps.check-ci.outputs.ci_status }}';
 
-            // 确定处理状态文本
             let actionText = '';
-            if (isSensitive === 'true') {
-              actionText = '🔒 安全敏感依赖，需要人工审核';
-            } else if (updateType === 'version-update:semver-major') {
-              actionText = '⚠️ 大版本更新，需要人工审核';
-            } else if (ciStatus !== 'SUCCESS') {
+            let riskWarning = '';
+            
+            if (isHighRisk === 'true') {
+              riskWarning = '\n\n⚠️ **注意：这是高风险依赖更新，请人工仔细审查后再合并！**';
+            }
+            
+            if (ciStatus !== 'SUCCESS') {
               actionText = '❌ CI 未通过，需要人工处理';
             } else {
-              actionText = '✅ 小版本更新，CI 通过后将自动合并';
+              actionText = '✅ CI 检查通过';
             }
 
             const body = `🤖 **Dependabot 更新信息**
@@ -112,7 +83,15 @@ jobs:
             - **依赖**: ${dependencyNames}
             - **更新类型**: ${updateType}
             - **版本变化**: ${prevVersion} → ${newVersion}
-            - **处理状态**: ${actionText}
+            - **CI 状态**: ${actionText}
+            - **处理方式**: 🔒 需要人工审查后手动合并${riskWarning}
+
+            ---
+            **审查清单：**
+            - [ ] 检查版本变更是否包含 breaking changes
+            - [ ] 确认与项目代码的兼容性
+            - [ ] 运行测试验证
+            - [ ] 检查 Python 版本要求
             `;
 
             github.rest.issues.createComment({
