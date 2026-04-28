@@ -156,15 +156,18 @@ class FeedbackEvaluator:
 
         from .constraint_gene import GeneEvolution
 
+        logger.info(f"[GeneEvolution] evaluate_with_gene_evolution called | reward={reward:.2f} | task_type={task_type} | user_input={user_input[:50] if user_input else 'empty'}")
+
         try:
             if reward < 0.5:
                 if not task_type and state.tool_traces:
-                    last_tool = state.tool_traces[-1].get('tool_name', '')
+                    last_tool = state.tool_traces[-1].get('tool', '')
                     if last_tool:
                         task_type = last_tool
                         logger.debug("[GeneEvolution] 从工具调用推断 task_type: %s", task_type)
                 
                 avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
+                logger.info(f"[GeneEvolution] extract_avoid_cue result | avoid_cue={avoid_cue[:50] if avoid_cue else 'None'} | task_type={task_type}")
                 if avoid_cue and task_type:
                     state.gene_failure_count += 1
                     state.gene_failure_history.append({
@@ -184,9 +187,7 @@ class FeedbackEvaluator:
                         failed_tools = set(h.get("task_type", "") for h in state.gene_failure_history if h.get("task_type"))
                         
                         if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
-                            # 1. 标记需要后台创建 Gene
                             state.needs_agent_gene_creation = True
-                            # 2. 给主 Agent 的提示：只要求查看 Gene
                             state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input, state.gene_failure_history)
                             logger.info(f"[GeneEvolution] 累积{state.gene_failure_count}次失败，涉及工具: {failed_tools}，将后台创建 Gene")
 

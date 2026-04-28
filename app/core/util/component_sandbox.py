@@ -29,6 +29,22 @@ from typing import Any, Dict, Optional
 
 from app.core.util.protected_modules import ProtectedContext
 
+
+def ensure_import(module_name: str, project_root: str = None) -> Any:
+    import importlib
+    
+    if project_root:
+        libs_dir = os.path.join(project_root, "libs")
+        if os.path.exists(libs_dir) and libs_dir not in sys.path:
+            sys.path.insert(0, libs_dir)
+    
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        import importlib.machinery
+        importlib.machinery.PathFinder.invalidate_caches()
+        return importlib.import_module(module_name)
+
 logger = logging.getLogger(__name__)
 
 # 沙箱超时（秒）
@@ -46,71 +62,76 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
         if project_root and project_root not in sys.path:
             sys.path.insert(0, project_root)
 
+        libs_dir = os.path.join(project_root, "libs")
+        if os.path.exists(libs_dir) and libs_dir not in sys.path:
+            sys.path.insert(0, libs_dir)
+
         with ProtectedContext():
-            # 定义允许的 builtins（白名单）
-            allowed_builtins = {
-                'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'tuple', 'set',
-                'print', 'range', 'enumerate', 'zip', 'map', 'filter', 'sum', 'min', 'max',
-                'abs', 'round', 'pow', 'divmod', 'chr', 'ord', 'hex', 'oct', 'bin',
-                'isinstance', 'issubclass', 'hasattr', 'getattr', 'setattr', 'delattr',
-                'type', 'id', 'repr', 'format', 'sorted', 'reversed', 'open',
-                'Exception', 'BaseException', 'TypeError', 'ValueError', 'KeyError',
-                'IndexError', 'AttributeError', 'RuntimeError', 'StopIteration',
-                'True', 'False', 'None', 'Ellipsis', 'NotImplemented',
-                'bytes', 'bytearray', 'memoryview', 'frozenset',
-                'iter', 'next', 'slice', 'super', 'object', 'staticmethod', 'classmethod',
-                'property', 'vars', 'locals', 'globals', '__import__',
-            }
-
             import builtins
-            safe_builtins = {k: v for k, v in builtins.__dict__.items() if k in allowed_builtins}
-
             import importlib.util
+
+            def sandbox_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if libs_dir and os.path.exists(libs_dir) and libs_dir not in sys.path:
+                    sys.path.insert(0, libs_dir)
+
+                try:
+                    return builtins.__import__(name, globals, locals, fromlist, level)
+                except ImportError:
+                    import importlib.machinery
+                    importlib.machinery.PathFinder.invalidate_caches()
+                    return builtins.__import__(name, globals, locals, fromlist, level)
+
             spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
             module = importlib.util.module_from_spec(spec)
 
-            module.__dict__['__builtins__'] = safe_builtins
+            module.__dict__['__builtins__'] = builtins.__dict__
+            module.__dict__['__import__'] = sandbox_import
 
             spec.loader.exec_module(module)
             component_class = getattr(module, class_name)
             component = component_class(**init_args)
-            
-            output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
-            
-            while True:
-                try:
-                    request = input_queue.get(timeout=SANDBOX_TIMEOUT)
-                    if request is None:
-                        break
-                    
-                    action = request.get("action")
-                    
-                    if action == "execute":
-                        command = request.get("command", "")
-                        args = request.get("args", [])
-                        kwargs = request.get("kwargs", {})
-                        result = component.execute(command, *args, **kwargs)
-                        output_queue.put({"status": "ok", "result": result})
-                        
-                    elif action == "get_commands":
-                        commands = component.get_commands()
-                        output_queue.put({"status": "ok", "commands": commands})
-                        
-                    elif action == "ping":
-                        output_queue.put({"status": "pong"})
-                    
-                    else:
-                        output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
-                        
-                except Exception as e:
-                    error_str = str(e) or f"{type(e).__name__} (no error message)"
-                    output_queue.put({
-                        "status": "error",
-                        "error": error_str,
-                        "error_type": type(e).__name__,
-                        "traceback": traceback.format_exc(),
-                    })
-                
+
+        output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
+
+        while True:
+            try:
+                request = input_queue.get(timeout=SANDBOX_TIMEOUT)
+                if request is None:
+                    break
+
+                action = request.get("action")
+
+                if action == "execute":
+                    if project_root and project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+                    if libs_dir and os.path.exists(libs_dir) and libs_dir not in sys.path:
+                        sys.path.insert(0, libs_dir)
+
+                    command = request.get("command", "")
+                    args = request.get("args", [])
+                    kwargs = request.get("kwargs", {})
+                    result = component.execute(command, *args, **kwargs)
+                    output_queue.put({"status": "ok", "result": result})
+
+                elif action == "get_commands":
+                    commands = component.get_commands()
+                    output_queue.put({"status": "ok", "commands": commands})
+
+                elif action == "ping":
+                    output_queue.put({"status": "pong"})
+
+                else:
+                    output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
+
+            except Exception as e:
+                error_str = str(e) or f"{type(e).__name__} (no error message)"
+                output_queue.put({
+                    "status": "error",
+                    "error": error_str,
+                    "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
+                })
+
     except Exception as e:
         error_str = str(e) or f"{type(e).__name__} (no error message)"
         output_queue.put({
@@ -142,15 +163,16 @@ class SandboxProcess:
         self._module_path = None
         self._class_name = None
 
-    def start(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None):
+    def start(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None, retry: int = 2):
         """
         启动沙箱进程并初始化组件
-        
+
         Args:
             module_path: 组件文件路径
             class_name: 组件类名
             init_args: 初始化参数
             project_root: 项目根目录
+            retry: 初始化失败重试次数
         """
         if self._process is not None and self._process.is_alive():
             return
@@ -160,49 +182,60 @@ class SandboxProcess:
         init_args = init_args or {}
         project_root = project_root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-        self._input_queue = multiprocessing.Queue()
-        self._output_queue = multiprocessing.Queue()
-
-        self._process = multiprocessing.Process(
-            target=_sandbox_worker,
-            args=(self._input_queue, self._output_queue, module_path, class_name, init_args, project_root)
-        )
-        self._process.start()
-
-        logger.debug("[Sandbox] Process started, pid=%s", self._process.pid)
-
-        # 等待初始化结果
-        try:
-            init_result = self._output_queue.get(timeout=self._timeout)
-            if init_result.get("status") == "ok":
-                self._initialized = True
-                logger.info("[Sandbox] Component initialized: %s", init_result.get("cell_name"))
-            else:
-                error = init_result.get("error", "Unknown error")
-                logger.error("[Sandbox] Component init failed: %s", error)
+        last_error = None
+        for attempt in range(retry + 1):
+            if attempt > 0:
+                logger.info(f"[Sandbox] Retrying initialization (attempt {attempt + 1}/{retry + 1})")
                 self.stop()
-                raise RuntimeError(f"Sandbox init failed: {error}")
-        except Exception as e:
-            logger.error("[Sandbox] Timeout waiting for init: %s", e)
+                import time
+                time.sleep(0.5)
+
+            self._input_queue = multiprocessing.Queue()
+            self._output_queue = multiprocessing.Queue()
+
+            self._process = multiprocessing.Process(
+                target=_sandbox_worker,
+                args=(self._input_queue, self._output_queue, module_path, class_name, init_args, project_root)
+            )
+            self._process.start()
+
+            logger.debug("[Sandbox] Process started, pid=%s", self._process.pid)
+
+            try:
+                init_result = self._output_queue.get(timeout=self._timeout)
+                if init_result.get("status") == "ok":
+                    self._initialized = True
+                    logger.info("[Sandbox] Component initialized: %s", init_result.get("cell_name"))
+                    break
+                else:
+                    last_error = init_result.get("error", "Unknown error")
+                    logger.error("[Sandbox] Component init failed: %s", last_error)
+            except Exception as e:
+                last_error = str(e)
+                logger.error("[Sandbox] Timeout waiting for init: %s", last_error)
+        else:
             self.stop()
-            raise
+            raise RuntimeError(f"Sandbox init failed after {retry + 1} attempts: {last_error}")
 
     def execute(self, command: str, *args, **kwargs) -> Any:
         """
         在沙箱中执行命令
-        
+
         Args:
             command: 命令名
             *args: 位置参数
             **kwargs: 关键字参数
-            
+
         Returns:
             命令执行结果
-            
+
         Raises:
             RuntimeError: 沙箱未初始化或执行失败
         """
-        if not self._initialized or not self._process or not self._process.is_alive():
+        if not self._initialized:
+            raise RuntimeError("Sandbox not initialized (init never succeeded)")
+        if not self._process or not self._process.is_alive():
+            logger.error("[Sandbox] Process is dead | pid=%s | module=%s", self._process.pid if self._process else None, self._module_path)
             raise RuntimeError("Sandbox not initialized or process dead")
 
         # 发送执行请求

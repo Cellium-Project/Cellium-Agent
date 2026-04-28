@@ -1,257 +1,199 @@
 # -*- coding: utf-8 -*-
 import logging
-import asyncio
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-
-from .constraint_gene import GeneEvolution, TaskSignalMatcher
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class GenePostSessionAnalyzer:
-    def __init__(self, llm_engine=None):
-        self.llm = llm_engine
+
+    # 权重配置
+    WEIGHT_FAIL = 0.30      # 失败权重
+    WEIGHT_STUCK = 0.30     # 停滞权重
+    WEIGHT_REPETITION = 0.25  # 重复权重
+    WEIGHT_ITERATION = 0.15   # 迭代次数权重
+
+    # 阈值配置
+    THRESHOLD_TRIGGER = 0.55   # 强触发阈值
+    THRESHOLD_WARNING = 0.40   # 警告阈值
+    THRESHOLD_DELTA = 0.12     # 恶化速度阈值
+    
+    def __init__(self):
+        self._prev_score = 0.0
+
+    def reset_score(self):
+        self._prev_score = 0.0 
     
     def calculate_complexity_score(
         self,
         tool_traces: List[Dict[str, Any]],
         loop_state,
         total_time_ms: int = 0
-    ) -> int:
-        score = 0
-        
+    ) -> float:
+        """计算异常评分 (0.0-1.0)
+        score = w1 * fail_score + w2 * stuck_score + w3 * repetition_score + w4 * iteration_score
+        """
         iterations = len(tool_traces)
-        if iterations > 5:
-            score += 1
-        if iterations > 10:
-            score += 1
-        
-        failed_tools = [t for t in tool_traces if not t.get("success", True)]
-        if failed_tools:
-            score += 2
-        
-        unique_tools = set(t.get("tool") for t in tool_traces if t.get("tool"))
-        if len(unique_tools) >= 3:
-            score += 1
-        
+        failed_count = sum(1 for t in tool_traces if not t.get("success", True))
+        fail_score = min(failed_count / 4.0, 1.0)
+
+        stuck_score = 0.0
+        repetition_score = 0.0
+
         if loop_state and loop_state.features:
-            if loop_state.features.stuck_iterations > 2:
-                score += 1
-            if loop_state.features.repetition_score > 0.5:
-                score += 1
-        
-        if total_time_ms > 30000:
-            score += 1
-        
-        return score
-    
-    def should_analyze(self, score: int) -> bool:
-        return score >= 3
-    
-    def build_analysis_context(
-        self,
-        user_input: str,
-        tool_traces: List[Dict[str, Any]],
-        loop_state,
-        final_content: str = ""
-    ) -> Dict[str, Any]:
-        indicators = {
-            "iterations": len(tool_traces),
-            "stuck_iterations": 0,
-            "repetition_score": 0.0,
-            "had_redirect": False
-        }
-        
-        if loop_state:
-            if loop_state.features:
-                indicators["stuck_iterations"] = loop_state.features.stuck_iterations
-                indicators["repetition_score"] = loop_state.features.repetition_score
-            if loop_state.decision_trace:
-                indicators["had_redirect"] = any(
-                    d.action_type == "redirect" for d in loop_state.decision_trace
-                )
-        
-        return {
-            "user_input": user_input,
-            "final_response": final_content[:200],
-            "complexity_indicators": indicators
-        }
-    
-    async def analyze_with_llm(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.llm:
-            return {"should_create": False, "reason": "no_llm"}
-        
-        prompt = self._build_analysis_prompt(context)
-        
-        try:
-            response = await self.llm.ainvoke(prompt)
-            return self._parse_analysis_response(response.content if hasattr(response, 'content') else str(response))
-        except Exception as e:
-            logger.error(f"[GenePostSession] LLM analysis failed: {e}")
-            return {"should_create": False, "reason": "llm_error"}
-    
-    def _build_analysis_prompt(self, context: Dict[str, Any]) -> str:
-        user_input = context.get("user_input", "")
-        indicators = context.get("complexity_indicators", {})
-        
-        all_genes = GeneEvolution._get_all_genes()
-        
-        prompt = f"""基于对话历史，判断是否需要创建或进化 Gene。
+            raw_stuck = loop_state.features.stuck_iterations
+            stuck_score = min(raw_stuck / 4.0, 1.0) 
 
-当前任务: {user_input}
+            raw_repetition = min(loop_state.features.repetition_score, 1.0)
+            repetition_score = raw_repetition ** 2
 
-执行统计:
-- 迭代次数: {indicators.get('iterations', 0)}
-- 停滞轮数: {indicators.get('stuck_iterations', 0)}
-- 重复分数: {indicators.get('repetition_score', 0):.2f}
-- 是否触发 redirect: {indicators.get('had_redirect', False)}
-"""
-        
-        if all_genes:
-            prompt += "\n现有 Gene 列表:\n"
-            for gene in all_genes[:10]:
-                prompt += f"  - [{gene['task_type']}] {gene['title']}\n"
-            prompt += "\n请判断当前任务与哪个 Gene 最相关，选择 CREATE 新建或 EVOLVE 进化现有 Gene。\n"
+        iteration_score = min(iterations / 10.0, 1.0)
+
+        score = (
+            self.WEIGHT_FAIL * fail_score +
+            self.WEIGHT_STUCK * stuck_score +
+            self.WEIGHT_REPETITION * repetition_score +
+            self.WEIGHT_ITERATION * iteration_score
+        )
+
+        return min(score, 1.0)
+    
+    def calculate_score_delta(self, current_score: float) -> float:
+        delta = current_score - self._prev_score
+        self._prev_score = current_score
+        return delta
+
+    def should_analyze(self, score: float, delta: float = 0.0) -> bool:
+        """判断是否需要分析
+
+        触发条件：
+        1. score >= 0.55：强触发
+        2. score > 0.45 且 delta > 0.12：快速恶化，提前触发
+        """
+        if score >= self.THRESHOLD_TRIGGER:
+            return True
+        if score > 0.45 and delta > self.THRESHOLD_DELTA:
+            return True
+        return False
+    
+    def get_complexity_level(self, score: float) -> str:
+        """获取复杂度等级"""
+        if score >= self.THRESHOLD_TRIGGER:
+            return "high"
+        elif score >= self.THRESHOLD_WARNING:
+            return "warning"
         else:
-            prompt += "\n当前无现有 Gene。\n"
-        
-        prompt += """
-请判断:
-1. 这个对话是否值得记录为 Gene？（复杂任务、失败经验、成功模式）
-2. 如果是，应该创建新 Gene 还是进化现有 Gene？
-3. 任务类型是什么？
-4. Gene 内容应该包含哪些约束？
-
-以 JSON 格式回复:
-{
-  "should_create": true/false,
-  "mode": "CREATE" or "EVOLVE",
-  "task_type": "任务类型标识",
-  "reason": "简要原因",
-  "insights": "关键洞察",
-  "gene_content": "完整的gene内容，包含 [HARD CONSTRAINTS]、[CONTROL ACTION]、[AVOID] 等部分"
-}
-"""
-        return prompt
-    
-    def _parse_analysis_response(self, response: str) -> Dict[str, Any]:
-        import json
-        import re
-        
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            try:
-                data = json.loads(json_match.group())
-                return {
-                    "should_create": data.get("should_create", False),
-                    "mode": data.get("mode", "CREATE"),
-                    "task_type": data.get("task_type", ""),
-                    "reason": data.get("reason", ""),
-                    "insights": data.get("insights", ""),
-                    "gene_content": data.get("gene_content", "")
-                }
-            except:
-                pass
-        
-        return {"should_create": False, "reason": "parse_error"}
-    
-    async def create_or_evolve_gene(
-        self,
-        analysis: Dict[str, Any],
-        user_input: str,
-        loop_state
-    ) -> bool:
-        if not analysis.get("should_create"):
-            return False
-        
-        task_type = analysis.get("task_type", "")
-        mode = analysis.get("mode", "CREATE")
-        gene_content = analysis.get("gene_content", "")
-        
-        if not task_type:
-            return False
-        
-        try:
-            if mode == "EVOLVE" and gene_content:
-                existing = GeneEvolution._get_existing_gene(user_input)
-                if existing:
-                    success = GeneEvolution._evolve_existing_gene(
-                        task_type=task_type,
-                        avoid_cue=gene_content,
-                        state=loop_state
-                    )
-                    if success:
-                        logger.info(f"[GenePostSession] Evolved gene: {task_type}")
-                    return success
-            
-            if gene_content:
-                gene_data = {
-                    "task_type": task_type,
-                    "content": gene_content,
-                    "signals": [task_type],
-                    "forbidden_tools": [],
-                    "preferred_tools": [],
-                    "source": "post_session_created",
-                    "mode": mode.lower()
-                }
-                success = GeneEvolution.save_agent_created_gene(gene_data)
-                if success:
-                    logger.info(f"[GenePostSession] Created gene: {task_type}")
-                return success
-            else:
-                success = await GeneEvolution.create_gene_with_llm(
-                    user_input=user_input,
-                    state=loop_state,
-                    llm_engine=self.llm
-                )
-                if success:
-                    logger.info(f"[GenePostSession] Created gene via LLM: {task_type}")
-                return success
-            
-        except Exception as e:
-            logger.error(f"[GenePostSession] Create/evolve failed: {e}")
-            return False
-    
-    async def analyze_and_create(
+            return "normal" 
+    def build_agent_gene_prompt(
         self,
         user_input: str,
         tool_traces: List[Dict[str, Any]],
         loop_state,
         total_time_ms: int = 0,
         final_content: str = ""
-    ):
+    ) -> Optional[str]:
+
         score = self.calculate_complexity_score(tool_traces, loop_state, total_time_ms)
+        delta = self.calculate_score_delta(score)
+        level = self.get_complexity_level(score)
         
-        if not self.should_analyze(score):
-            logger.debug(f"[GenePostSession] Score {score} < 3, skipping")
-            return
-        
-        # 检查是否已存在相似的 Gene（避免与运行时 Agent 创建重复）
-        existing = GeneEvolution._get_existing_gene(user_input)
-        if existing and existing.get("score", 0) > 0.85:
-            logger.debug(f"[GenePostSession] Similar gene already exists: {existing.get('task_type')}, skipping")
-            return
-        
-        # 检查 loop_state 是否标记了需要 Agent 创建 Gene（避免重复）
+        if not self.should_analyze(score, delta):
+            logger.debug(f"[GenePostSession] Score {score:.2f} (delta={delta:+.2f}) < threshold ({level}), skipping")
+            return None
+
         if loop_state and getattr(loop_state, 'needs_agent_gene_creation', False):
-            logger.debug(f"[GenePostSession] Agent will create gene, skipping post-session analysis")
-            return
+            logger.debug(f"[GenePostSession] Already prompted in this session, skipping")
+            return None
         
-        logger.info(f"[GenePostSession] Score {score} >= 3, analyzing...")
-        
-        context = self.build_analysis_context(user_input, tool_traces, loop_state, final_content)
-        analysis = await self.analyze_with_llm(context)
-        
-        if analysis.get("should_create"):
-            asyncio.create_task(
-                self.create_or_evolve_gene(analysis, user_input, loop_state)
-            )
-            logger.info(f"[GenePostSession] Triggered gene creation: {analysis.get('task_type')}")
-        else:
-            logger.debug(f"[GenePostSession] LLM decided not to create gene: {analysis.get('reason')}")
+        if loop_state:
+            loop_state.needs_agent_gene_creation = True
+
+        trigger_reason = "high_score" if score >= self.THRESHOLD_TRIGGER else "rapid_deterioration"
+        logger.info(f"[GenePostSession] Score {score:.2f} (delta={delta:+.2f}, reason={trigger_reason}) ({level}), prompting agent to evaluate gene creation...")
+
+        iterations = len(tool_traces)
+        failed_tools = [t for t in tool_traces if not t.get("success", True)]
+        unique_tools = set(t.get("tool") for t in tool_traces if t.get("tool"))
+
+        prompt_parts = [
+            "[系统提示 - Gene 创建评估]",
+            "",
+            f"本次对话异常评分: {score:.2f}/1.0 (等级: {level})",
+            f"- 迭代次数: {iterations}",
+            f"- 失败次数: {len(failed_tools)}",
+            f"- 使用工具: {', '.join(unique_tools) if unique_tools else '无'}",
+            f"- 执行时间: {total_time_ms/1000:.1f}秒",
+        ]
+
+        if loop_state:
+            if loop_state.features:
+                if loop_state.features.stuck_iterations > 0:
+                    prompt_parts.append(f"- 停滞轮数: {loop_state.features.stuck_iterations}")
+                if loop_state.features.repetition_score > 0:
+                    prompt_parts.append(f"- 重复程度: {loop_state.features.repetition_score:.2f}")
+
+        prompt_parts.extend([
+            "",
+            "请按以下步骤评估是否需要创建或更新 Gene：",
+            "1. 使用 memory list_genes 查看是否已存在相关 Gene",
+            "2. 根据本次对话的经验教训判断：",
+            "   - 如果没有相关 Gene → 创建新的",
+            "   - 如果有相关 Gene 但不完善 → 更新补充新经验",
+            "   - 如果已有 Gene 足够完善 → 无需操作",
+            "",
+            "【重要】如果决定创建或更新 Gene，必须在回复中包含以下完整格式：",
+            "",
+            "[HARD CONSTRAINTS]",
+            "[任务类型]: <简短描述任务类型，用于匹配相似任务>",
+            "[CONTROL ACTION]",
+            "MUST: <应该采取的正确做法>",
+            "MUST NOT: <应该避免的错误做法>",
+            "[AVOID]",
+            "- <具体的避免事项1>",
+            "- <具体的避免事项2>",
+            "",
+            "【重要】如果无需创建/更新 Gene，不要回复任何内容，直接结束本轮。",
+            "不要在回复中说「我理解了」或「好的」这类确认语句。"
+        ])
+
+        return "\n".join(prompt_parts)
 
 
+def generate_gene_prompt_for_agent(
+    user_input: str,
+    tool_traces: List[Dict[str, Any]],
+    loop_state,
+    total_time_ms: int = 0,
+    final_content: str = "",
+    llm_engine=None
+) -> Optional[str]:
+    """生成给主 Agent 的 Gene 创建提示
+
+    这是对外提供的主要接口函数
+
+    Args:
+        user_input: 用户输入
+        tool_traces: 工具调用轨迹
+        loop_state: 循环状态
+        total_time_ms: 总执行时间（毫秒）
+        final_content: 最终回复内容
+        llm_engine: LLM 引擎（保留参数用于兼容，但不使用）
+
+    Returns:
+        提示字符串，如果不需要创建则返回 None
+    """
+    analyzer = GenePostSessionAnalyzer()
+    prompt = analyzer.build_agent_gene_prompt(
+        user_input=user_input,
+        tool_traces=tool_traces,
+        loop_state=loop_state,
+        total_time_ms=total_time_ms,
+        final_content=final_content
+    )
+    return prompt
+
+
+# 保留旧函数名用于兼容（已弃用）
 async def analyze_session_for_gene(
     user_input: str,
     tool_traces: List[Dict[str, Any]],
@@ -260,11 +202,13 @@ async def analyze_session_for_gene(
     total_time_ms: int = 0,
     final_content: str = ""
 ):
-    analyzer = GenePostSessionAnalyzer(llm_engine)
-    await analyzer.analyze_and_create(
+    """已弃用：改为使用 generate_gene_prompt_for_agent"""
+    prompt = generate_gene_prompt_for_agent(
         user_input=user_input,
         tool_traces=tool_traces,
         loop_state=loop_state,
         total_time_ms=total_time_ms,
-        final_content=final_content
+        final_content=final_content,
+        llm_engine=llm_engine
     )
+    return prompt

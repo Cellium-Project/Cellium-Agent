@@ -111,7 +111,7 @@ class ControlLoop:
                 task_type = matched.get("task_type", "")
         
         if not task_type and state.tool_traces:
-            last_tool = state.tool_traces[-1].get('tool_name', '')
+            last_tool = state.tool_traces[-1].get('tool', '')
             if last_tool:
                 task_type = last_tool
                 logger.debug("[ControlLoop] 从工具调用推断 task_type: %s", task_type)

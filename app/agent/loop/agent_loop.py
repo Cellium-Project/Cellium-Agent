@@ -118,12 +118,15 @@ class AgentLoop:
         self.control_loop: Optional[ControlLoop] = None
         self._constraint_renderer: Optional[HardConstraintRenderer] = None
         self._loop_state: Optional[LoopState] = None
+        self._gene_post_session_analyzer = None  # Mechanism B 分析器
         if not flash_mode and self.heuristics:
             # flash_mode=False → ControlLoop + Heuristics（完整能力）
             from app.agent.control import create_control_loop
+            from app.agent.control.gene_post_session import GenePostSessionAnalyzer
             bandit_memory_path = "data/control/bandit_stats.json"
             self.control_loop = create_control_loop(memory_path=bandit_memory_path)
             self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100)
+            self._gene_post_session_analyzer = GenePostSessionAnalyzer()
             logger.info("[AgentLoop] 控制环已启用（强约束模式）")
         elif flash_mode:
             # flash_mode=True → 只用 Heuristics（轻量模式）
@@ -724,19 +727,21 @@ class AgentLoop:
                 stuck_iterations=stuck_iters,
             )
 
-        if self._loop_state and self.llm:
+        if self._loop_state:
             try:
-                from app.agent.control import analyze_session_for_gene
-                asyncio.create_task(analyze_session_for_gene(
+                from app.agent.control.gene_post_session import generate_gene_prompt_for_agent
+                gene_prompt = generate_gene_prompt_for_agent(
                     user_input=user_input,
                     tool_traces=tool_traces,
                     loop_state=self._loop_state,
-                    llm_engine=self.llm,
                     total_time_ms=total_time,
                     final_content=final_content
-                ))
+                )
+                if gene_prompt:
+                    effective_memory.add_system_message(gene_prompt)
+                    logger.info(f"[AgentLoop] Added gene creation prompt for agent to evaluate")
             except Exception as e:
-                logger.debug(f"[AgentLoop] Gene post-session analysis failed: {e}")
+                logger.debug(f"[AgentLoop] Gene post-session prompt generation failed: {e}")
 
         return {
             "type": "done",
@@ -836,6 +841,10 @@ class AgentLoop:
                 user_input=user_input,
                 available_tools=list(self.tools.keys()),
             )
+
+            # 重置 GenePostSession 评分状态（跨会话隔离）
+            if self._gene_post_session_analyzer:
+                self._gene_post_session_analyzer.reset_score()
 
             # Hybrid 控制器：每次输入重置 + 意图检测
             if self._hybrid_controller:
@@ -1343,6 +1352,30 @@ class AgentLoop:
                         reward = self.control_loop.end_round(self._loop_state)
                         logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
 
+                    # Mechanism B: 复杂任务检测（基于决策环统计）
+                    # 检测高复杂度/快速恶化场景，提示 Agent 创建 Gene
+                    if self._gene_post_session_analyzer and self._loop_state and not getattr(self._loop_state, 'needs_agent_gene_creation', False):
+                        gene_prompt = self._gene_post_session_analyzer.build_agent_gene_prompt(
+                            user_input=self._loop_state.user_input or "",
+                            tool_traces=self._loop_state.tool_traces or [],
+                            loop_state=self._loop_state,
+                            total_time_ms=self._loop_state.elapsed_ms or 0,
+                            final_content=response.content if response else ""
+                        )
+                        if gene_prompt:
+                            self._loop_state.gene_creation_prompt = gene_prompt
+                            self._loop_state.needs_agent_gene_creation = True
+                            logger.info("[AgentLoop] Mechanism B 检测到复杂任务，将提示 Agent 查看 Gene")
+                        else:
+                            # 添加详细日志帮助调试
+                            score = self._gene_post_session_analyzer.calculate_complexity_score(
+                                self._loop_state.tool_traces or [],
+                                self._loop_state,
+                                self._loop_state.elapsed_ms or 0
+                            )
+                            delta = self._gene_post_session_analyzer.calculate_score_delta(score)
+                            logger.debug(f"[AgentLoop] Mechanism B 未触发 | score={score:.2f} delta={delta:+.2f} threshold=0.7")
+
                     # Gene 创建：后台创建 Gene + 提示 Agent 查看
                     if self._loop_state and getattr(self._loop_state, 'needs_agent_gene_creation', False):
                         user_input_for_gene = getattr(self._loop_state, 'user_input', '')
@@ -1379,6 +1412,10 @@ class AgentLoop:
                             tool_call_count=tool_count,
                             stuck_iterations=stuck_iters,
                         )
+
+                    # 检查主 Agent 回复中是否包含 Gene 创建
+                    if response and response.content:
+                        self.save_agent_created_gene(response.content)
 
                     # 两级压缩（在所有工具调用结束后，按顺序执行）
                     if not self.flash_mode:

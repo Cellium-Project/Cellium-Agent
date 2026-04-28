@@ -4,6 +4,8 @@ BaseCell - 基础组件类
 提供自动命令映射、依赖注入和事件支持
 """
 
+import logging
+
 from app.core.interface.icell import ICell
 from app.core.di.container import AutoInjectMeta
 from app.core.bus import event_bus, register_component_handlers
@@ -12,11 +14,11 @@ from typing import Any, Dict
 
 
 class BaseCell(ICell, metaclass=AutoInjectMeta):
-    
+
     COMMAND_PREFIX = "_cmd_"
-    
+
     def __init__(self):
-        pass
+        self.logger = logging.getLogger(self.__class__.__name__)
     
     def on_load(self):
         """组件加载后调用，用于注册事件处理器"""

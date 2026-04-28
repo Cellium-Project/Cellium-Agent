@@ -13,7 +13,13 @@ from uvicorn.logging import AccessFormatter
 
 multiprocessing.freeze_support()
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
+
+libs_dir = os.path.join(project_root, "libs")
+if os.path.exists(libs_dir) and libs_dir not in sys.path:
+    sys.path.insert(0, libs_dir)
 
 from app.core.util.logger import setup_logger, LogMixin, install_buffer
 from app.core.di.container import setup_di_container

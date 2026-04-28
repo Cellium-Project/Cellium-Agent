@@ -72,7 +72,7 @@ class DecisionRenderer:
 请立即：
 1. 总结当前已完成的工作
 2. 说明未能完成的部分及原因
-3. 给出用户可操作的后续建议"""
+3. 给用户可操作的后续建议"""
 
     def __init__(self, verbose: bool = False):
         """

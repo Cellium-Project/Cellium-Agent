@@ -25,12 +25,26 @@ CellToolAdapter — 组件→工具适配器
 
 import inspect
 import logging
+import os
+import sys
 from typing import Any, Dict, Optional, Set
 
 from app.agent.tools.base_tool import BaseTool
 from app.core.interface.icell import ICell
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_libs_in_path():
+    possible_paths = [
+        os.path.join(os.getcwd(), "libs"),  
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "libs"),  # 项目根目录
+    ]
+    
+    for libs_dir in possible_paths:
+        if os.path.exists(libs_dir) and libs_dir not in sys.path:
+            sys.path.insert(0, libs_dir)
+            logger.debug(f"[CellToolAdapter] 添加 libs 目录到 sys.path: {libs_dir}")
 
 EXEMPTED_NAMES: Set[str] = {
     "component",
@@ -178,13 +192,21 @@ class CellToolAdapter(BaseTool):
 
             sandbox = ComponentSandbox.get_sandbox(self.name)
 
-            # 初始化沙箱（检查内部 _sandbox 是否存在）
-            if not sandbox._sandbox:
+            # 初始化沙箱（检查内部 _sandbox 是否存在且已初始化）
+            needs_init = not sandbox._sandbox or not sandbox.is_alive()
+            if needs_init:
                 source_file = self._get_component_source()
                 class_name = type(self._cell).__name__
 
                 if source_file:
-                    sandbox.initialize(source_file, class_name)
+                    try:
+                        sandbox.initialize(source_file, class_name)
+                    except Exception as e:
+                        logger.warning(
+                            "[CellToolAdapter] %s 沙箱初始化失败，回退到直接执行: %s",
+                            self.name, e,
+                        )
+                        return self._execute_direct(command, *args, **kwargs)
                 else:
                     logger.warning(
                         "[CellToolAdapter] %s 无法获取源文件，回退到直接执行",
@@ -206,7 +228,7 @@ class CellToolAdapter(BaseTool):
                     valid_params = {p for p in sig.parameters if p != "self"}
                     all_args = {k: v for k, v in all_args.items() if k in valid_params}
 
-                result = sandbox.execute(cmd_name, kwargs=all_args)
+                result = sandbox.execute(cmd_name, *[], **all_args)
             else:
                 result = sandbox.execute(command, args=list(args), kwargs=kwargs)
 
@@ -228,6 +250,9 @@ class CellToolAdapter(BaseTool):
 
     def _execute_direct(self, command, *args, **kwargs) -> Dict[str, Any]:
         """直接执行组件命令（无沙箱）"""
+        # 确保实时导入支持：libs 目录在 sys.path 中
+        _ensure_libs_in_path()
+        
         try:
             if isinstance(command, dict):
                 # ── LLM 模式：自行处理（不走 super）──

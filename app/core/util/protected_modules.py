@@ -19,9 +19,9 @@ SANDBOX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 
 # 路径相关的函数需要拦截
 PATH_SENSITIVE_FUNCTIONS = {
-    "os": ["open", "listdir", "scandir", "mkdir", "makedirs", "remove", "unlink", 
-           "rmdir", "rename", "replace", "chmod", "chown", "stat", "lstat", 
-           "access", "link", "symlink", "readlink", "getcwd", "chdir"],
+    "os": ["open", "listdir", "scandir", "mkdir", "makedirs", "remove", "unlink",
+           "rmdir", "rename", "replace", "chmod", "chown", "stat", "lstat",
+           "access", "link", "symlink", "readlink"],
     "builtins": ["open"],
 }
 

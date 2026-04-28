@@ -50,14 +50,19 @@ def _detect_embedded_python() -> Dict[str, str]:
             "pip_cmd": "安装依赖的完整命令",
         }
     """
-    # 检测是否有 runtime/python.exe（打包版结构）
+    # 检测是否有 runtime/python.exe 或 runtime/python（打包版结构）
     exe_dir = pathlib.Path(sys.executable).resolve().parent
 
     # 打包版结构：exe 在 runtime/ 目录
     if exe_dir.name == "runtime":
         project_root = exe_dir.parent
-        python_exe = exe_dir / "python.exe"
         libs_dir = project_root / "libs"
+        
+        # 跨平台 Python 可执行文件名
+        if sys.platform == "win32":
+            python_exe = exe_dir / "python.exe"
+        else:
+            python_exe = exe_dir / "python"
 
         if python_exe.exists():
             return {
