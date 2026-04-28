@@ -22,7 +22,7 @@ DrissionPage>=4.1.1.2
 openai>=2.32.0
 
 # QQ Bot WebSocket 客户端
-websockets>=12.0
+websockets>=16.0
 
 # HTTP 客户端（用于 QQ 和 Telegram 文件上传）
 httpx>=0.28.1
