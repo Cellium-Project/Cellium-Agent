@@ -83,6 +83,9 @@ class ToolDescriptionGenerator:
         """从 arguments 中提取模板变量"""
         ctx = {"tool_name": tool_name}
 
+        if not isinstance(arguments, dict):
+            return ctx
+
         path = (
             arguments.get("path")
             or arguments.get("dir_path")
@@ -182,6 +185,9 @@ class ToolDescriptionGenerator:
           3. _DESC_TEMPLATES["_default"]              — 全局兜底
           4. shell 走独立的命令解析器
         """
+        if not isinstance(arguments, dict):
+            arguments = {}
+
         # 0) 优先使用 LLM 提供的 _intent
         intent = arguments.get("_intent")
         if intent and isinstance(intent, str) and len(intent.strip()) > 0:

@@ -446,7 +446,11 @@ class ChannelManager:
             if hasattr(session_info, "pending_files") and session_info.pending_files:
                 file_info = "📎 **已收到的文件**：\n"
                 for i, f in enumerate(session_info.pending_files, 1):
-                    file_info += f"  {i}. {f['filename']} ({f['size']} bytes)\n"
+                    if not isinstance(f, dict):
+                        continue
+                    filename = f.get('filename', 'unknown')
+                    size = f.get('size', 0)
+                    file_info += f"  {i}. {filename} ({size} bytes)\n"
                     if f.get('url'):
                         file_info += f"     下载链接: {f['url']}\n"
                 content_to_agent = file_info + "\n" + content_to_agent

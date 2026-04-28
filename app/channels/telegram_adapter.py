@@ -796,11 +796,18 @@ class TelegramAdapter(ChannelAdapter):
             logger.error(f"[TelegramAdapter] Error in message handler: {e}")
 
     def extract_file_info(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw_data, dict):
+            return None
+
         message = raw_data
 
         if "photo" in message:
             photos = message["photo"]
-            photo = photos[-1] 
+            if not photos or not isinstance(photos, list):
+                return None
+            photo = photos[-1]
+            if not isinstance(photo, dict):
+                return None
             return {
                 "filename": f"photo_{photo.get('file_unique_id', 'unknown')}.jpg",
                 "url": photo.get("file_id"),  
@@ -810,6 +817,8 @@ class TelegramAdapter(ChannelAdapter):
 
         if "document" in message:
             doc = message["document"]
+            if not isinstance(doc, dict):
+                return None
             return {
                 "filename": doc.get("file_name", "file.dat"),
                 "url": doc.get("file_id"), 
@@ -824,6 +833,8 @@ class TelegramAdapter(ChannelAdapter):
         判断 Telegram 消息是否是纯文件消息
         """
         raw_data = message.raw or {}
+        if not isinstance(raw_data, dict):
+            return False
         has_file = "photo" in raw_data or "document" in raw_data
         if not has_file:
             return False

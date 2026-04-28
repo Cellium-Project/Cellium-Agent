@@ -949,7 +949,8 @@ class AgentLoop:
                     # 更新状态
                     self._loop_state.iteration = iteration
                     self._loop_state.tool_traces = tool_traces
-                    self._loop_state.last_tool_result = tool_traces[-1].get("result") if tool_traces else None
+                    last_trace = tool_traces[-1] if tool_traces else None
+                    self._loop_state.last_tool_result = last_trace.get("result") if isinstance(last_trace, dict) else None
                     self._loop_state.elapsed_ms = int((time.time() - start_time) * 1000)
 
                     # 获取决策
@@ -1217,8 +1218,10 @@ class AgentLoop:
                     # 收集本轮所有工具调用信息（先收集，再批量写入 memory）
                     tool_calls_info: List[Dict[str, Any]] = []
                     for tool_call in response.tool_calls:
-                        tool_name = tool_call.name
-                        arguments = tool_call.arguments
+                        tool_name = getattr(tool_call, 'name', '') or ''
+                        arguments = getattr(tool_call, 'arguments', None) or {}
+                        if not isinstance(arguments, dict):
+                            arguments = {}
                         forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
                         blocked_by_constraint = tool_name in forbidden_tools
 
@@ -1278,11 +1281,14 @@ class AgentLoop:
                     async for event in self._execute_tools_parallel(
                         tool_calls_info, effective_session, iteration, effective_memory
                     ):
+                        if not isinstance(event, dict):
+                            yield event
+                            continue
                         if event.get("type") == "tool_result":
-                            tool_name = event["tool"]
-                            arguments = event["arguments"]
-                            result = event["result"]
-                            duration_ms = event["duration_ms"]
+                            tool_name = event.get("tool", "")
+                            arguments = event.get("arguments", {})
+                            result = event.get("result", {})
+                            duration_ms = event.get("duration_ms", 0)
                             success = not isinstance(result, dict) or (
                                 result.get("success") is not False and result.get("error") is None
                             )
@@ -1348,7 +1354,8 @@ class AgentLoop:
 
                     # Control Loop: 每轮结束，更新 Bandit
                     if self.control_loop and self._loop_state:
-                        self._loop_state.last_tool_result = iteration_traces[-1].get("result") if iteration_traces else None
+                        last_iter_trace = iteration_traces[-1] if iteration_traces else None
+                        self._loop_state.last_tool_result = last_iter_trace.get("result") if isinstance(last_iter_trace, dict) else None
                         reward = self.control_loop.end_round(self._loop_state)
                         logger.debug("[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f", reward, self._loop_state.cumulative_reward)
 

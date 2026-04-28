@@ -291,14 +291,17 @@ class QQAdapter(ChannelAdapter):
         else:
             source = f"QQ私聊（UIN：{message.user_id}）"
 
-        # 检查是否有附件/文件
         raw_data = message.raw or {}
+        if not isinstance(raw_data, dict):
+            raw_data = {}
         attachments = raw_data.get("attachments", [])
         file_info = ""
 
-        if attachments:
+        if attachments and isinstance(attachments, list):
             file_info = "\n📎 **附件信息**：\n"
             for i, att in enumerate(attachments, 1):
+                if not isinstance(att, dict):
+                    continue
                 filename = att.get("filename") or att.get("name", "unknown")
                 file_type = att.get("content_type", "unknown")
                 size = att.get("size", 0)
@@ -481,8 +484,13 @@ class QQAdapter(ChannelAdapter):
         从 QQ 消息中提取文件信息
         支持 C2C_FILE_CREATE、GROUP_FILE_CREATE 类型，以及 attachments 字段
         """
+        if not isinstance(raw_data, dict):
+            return None
+
         msg_type = raw_data.get("t") or raw_data.get("type", "")
         data = raw_data.get("d", raw_data)
+        if not isinstance(data, dict):
+            data = raw_data
 
         if msg_type in ("C2C_FILE_CREATE", "GROUP_FILE_CREATE"):
             return {
@@ -495,12 +503,13 @@ class QQAdapter(ChannelAdapter):
         attachments = raw_data.get("attachments", [])
         if attachments and len(attachments) > 0:
             att = attachments[0]
-            return {
-                "filename": att.get("filename") or att.get("name", "unknown"),
-                "url": att.get("url"),
-                "size": att.get("size", 0),
-                "mime_type": att.get("content_type"),
-            }
+            if isinstance(att, dict):
+                return {
+                    "filename": att.get("filename") or att.get("name", "unknown"),
+                    "url": att.get("url"),
+                    "size": att.get("size", 0),
+                    "mime_type": att.get("content_type"),
+                }
 
         if raw_data.get("filename"):
             return {
@@ -516,6 +525,8 @@ class QQAdapter(ChannelAdapter):
         判断 QQ 消息是否是纯文件消息（没有用户输入的文本）
         """
         raw_data = message.raw or {}
+        if not isinstance(raw_data, dict):
+            return False
         attachments = raw_data.get("attachments", [])
         has_file = bool(attachments) or bool(raw_data.get("filename"))
         if not has_file:
