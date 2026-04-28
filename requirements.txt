@@ -16,7 +16,7 @@ jieba>=0.42.1
 pypinyin>=0.50.0
 
 # 浏览器控制（用于网页搜索和抓取）
-DrissionPage>=4.1.0
+DrissionPage>=4.1.1.2
 
 # OpenAI 兼容客户端（LLM 引擎依赖）
 openai>=1.0.0
