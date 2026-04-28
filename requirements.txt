@@ -3,7 +3,7 @@
 # Web 框架
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-pydantic>=2.0.0
+pydantic>=2.13.3
 python-multipart>=0.0.27
 
 # 配置文件解析
