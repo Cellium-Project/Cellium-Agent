@@ -92,6 +92,9 @@ class ChannelAdapter(ABC):
         """
         return None
 
+    def is_file_only_message(self, message: UnifiedMessage) -> bool:
+        return not message.content.strip()
+
     async def handle_file_message(self, message: UnifiedMessage) -> bool:
         """
         处理文件消息，保存到 session

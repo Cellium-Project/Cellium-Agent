@@ -818,3 +818,14 @@ class TelegramAdapter(ChannelAdapter):
             }
 
         return None
+
+    def is_file_only_message(self, message: UnifiedMessage) -> bool:
+        """
+        判断 Telegram 消息是否是纯文件消息
+        """
+        raw_data = message.raw or {}
+        has_file = "photo" in raw_data or "document" in raw_data
+        if not has_file:
+            return False
+        caption = raw_data.get("caption", "").strip()
+        return not caption

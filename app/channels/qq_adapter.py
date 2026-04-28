@@ -479,20 +479,49 @@ class QQAdapter(ChannelAdapter):
     def extract_file_info(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         从 QQ 消息中提取文件信息
-        支持 C2C_FILE_CREATE 和 GROUP_FILE_CREATE 类型
+        支持 C2C_FILE_CREATE、GROUP_FILE_CREATE 类型，以及 attachments 字段
         """
         msg_type = raw_data.get("t") or raw_data.get("type", "")
         data = raw_data.get("d", raw_data)
 
-        # 检查是否是文件消息类型
-        if msg_type in ("C2C_FILE_CREATE", "GROUP_FILE_CREATE") or raw_data.get("filename"):
+        if msg_type in ("C2C_FILE_CREATE", "GROUP_FILE_CREATE"):
             return {
                 "filename": data.get("filename") or raw_data.get("filename", "unknown"),
                 "url": data.get("url") or raw_data.get("url"),
                 "size": data.get("size") or raw_data.get("size", 0),
                 "mime_type": data.get("content_type") or raw_data.get("content_type"),
             }
+
+        attachments = raw_data.get("attachments", [])
+        if attachments and len(attachments) > 0:
+            att = attachments[0]
+            return {
+                "filename": att.get("filename") or att.get("name", "unknown"),
+                "url": att.get("url"),
+                "size": att.get("size", 0),
+                "mime_type": att.get("content_type"),
+            }
+
+        if raw_data.get("filename"):
+            return {
+                "filename": raw_data.get("filename", "unknown"),
+                "url": raw_data.get("url"),
+                "size": raw_data.get("size", 0),
+                "mime_type": raw_data.get("content_type"),
+            }
         return None
+
+    def is_file_only_message(self, message: UnifiedMessage) -> bool:
+        """
+        判断 QQ 消息是否是纯文件消息（没有用户输入的文本）
+        """
+        raw_data = message.raw or {}
+        attachments = raw_data.get("attachments", [])
+        has_file = bool(attachments) or bool(raw_data.get("filename"))
+        if not has_file:
+            return False
+        content = raw_data.get("content", "").strip()
+        return not content
 
     async def _heartbeat(self, interval: int):
         while self._running:

@@ -364,8 +364,9 @@ class ChannelManager:
                     file_info = adapter.extract_file_info(message.raw) if message.raw else None
                     filename = file_info.get("filename", "unknown") if file_info else "unknown"
                     logger.info(f"[ChannelManager] File received via {message.platform}: {filename}")
-                    self._schedule_file_followup_notice(message, session_info)
-                    return
+                    if adapter.is_file_only_message(message):
+                        self._schedule_file_followup_notice(message, session_info)
+                        return
             except Exception as e:
                 logger.error(f"[ChannelManager] File message handling failed: {e}")
 
