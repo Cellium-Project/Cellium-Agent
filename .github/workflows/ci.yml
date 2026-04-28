@@ -204,17 +204,6 @@ jobs:
           fi
         shell: bash
 
-      - name: Create Launcher (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          $lines = @(
-            '@echo off',
-            'cd /d %~dp0',
-            'start "" "CelliumAgent.exe"'
-          )
-          $lines | Out-File -FilePath "release/Start-Cellium.bat" -Encoding ascii
-        shell: pwsh
-
       - name: Create Launcher (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -284,11 +273,11 @@ jobs:
 
             ### 使用 / Usage
             **中文**: 解压后运行对应平台的启动脚本即可。
-            - Windows: 双击 `CelliumAgent.exe` 或 `Start-Cellium.bat`
+            - Windows: 双击 `CelliumAgent.exe`
             - Linux/macOS: `./start-cellium.sh`
 
             **English**: Extract and run the launcher for your platform.
-            - Windows: Double-click `CelliumAgent.exe` or `Start-Cellium.bat`
+            - Windows: Double-click `CelliumAgent.exe`
             - Linux/macOS: Run `./start-cellium.sh`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

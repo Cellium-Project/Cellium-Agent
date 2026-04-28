@@ -1,0 +1,2 @@
+builder/*.c linguist-language=C
+builder/*.c linguist-detectable=true
