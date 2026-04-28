@@ -54,7 +54,7 @@ DANGEROUS_METHODS: Dict[str, Set[str]] = {
         "getoutput", "getstatusoutput",
     },
     "shutil": {
-        "rmtree", "move", "copy2", "copytree",
+        "rmtree",
     },
 }
 
