@@ -240,9 +240,14 @@ class SessionManager:
                                 tool_calls_data = []
                                 for tc in tool_calls:
                                     original_tc_id = tc.get("id", "")
+                                    args_str = tc.get("function", {}).get("arguments", "{}")
+                                    try:
+                                        arguments = json.loads(args_str)
+                                    except json.JSONDecodeError:
+                                        arguments = {"_parse_error": f"无效的 arguments JSON: {args_str[:100] if args_str else 'empty'}"}
                                     tool_calls_data.append({
                                         "tool_name": tc.get("function", {}).get("name", ""),
-                                        "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")),
+                                        "arguments": arguments,
                                         "tool_call_id": original_tc_id,
                                     })
                                 memory.add_tool_calls_batch(
