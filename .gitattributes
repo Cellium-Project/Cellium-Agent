@@ -1,2 +1,4 @@
-builder/*.c linguist-language=C
-builder/*.c linguist-detectable=true
+*.c linguist-language=C
+*.c linguist-detectable=true
+*.h linguist-language=C
+*.h linguist-detectable=true
