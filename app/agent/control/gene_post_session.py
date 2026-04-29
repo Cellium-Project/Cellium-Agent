@@ -111,26 +111,27 @@ class GenePostSessionAnalyzer:
         trigger_reason = "high_score" if score >= self.THRESHOLD_TRIGGER else "rapid_deterioration"
         logger.info(f"[GenePostSession] Score {score:.2f} (delta={delta:+.2f}, reason={trigger_reason}) ({level}), prompting agent to evaluate gene creation...")
 
-        iterations = len(tool_traces)
-        failed_tools = [t for t in tool_traces if not t.get("success", True)]
-        unique_tools = set(t.get("tool") for t in tool_traces if t.get("tool"))
+        from .constraint_gene.matcher import TaskSignalMatcher
+        matched = TaskSignalMatcher.match(user_input)
+        inferred_task_type = matched.get("task_type", "") if matched else ""
+        
+        if not inferred_task_type and tool_traces:
+            last_tool = tool_traces[-1].get("tool", "")
+            if last_tool:
+                inferred_task_type = last_tool
 
         prompt_parts = [
             "[系统提示 - Gene 创建评估]",
             "",
             f"本次对话异常评分: {score:.2f}/1.0 (等级: {level})",
-            f"- 迭代次数: {iterations}",
-            f"- 失败次数: {len(failed_tools)}",
-            f"- 使用工具: {', '.join(unique_tools) if unique_tools else '无'}",
-            f"- 执行时间: {total_time_ms/1000:.1f}秒",
         ]
 
-        if loop_state:
-            if loop_state.features:
-                if loop_state.features.stuck_iterations > 0:
-                    prompt_parts.append(f"- 停滞轮数: {loop_state.features.stuck_iterations}")
-                if loop_state.features.repetition_score > 0:
-                    prompt_parts.append(f"- 重复程度: {loop_state.features.repetition_score:.2f}")
+        if inferred_task_type:
+            prompt_parts.extend([
+                f"推断的任务类型: {inferred_task_type}",
+                "",
+                "【重要】创建 Gene 时，任务类型字段必须使用上述推断的类型，或基于对话内容自行确定一个具体的任务类型。",
+            ])
 
         prompt_parts.extend([
             "",
@@ -144,7 +145,7 @@ class GenePostSessionAnalyzer:
             "【Gene 标准格式 - 必须严格遵循】",
             "content字段格式：",
             "  [HARD CONSTRAINTS]",
-            "  [任务类型]: 简短描述（如：文件操作容错）",
+            "  [任务类型]: <必须填写具体的任务类型>",
             "  ",
             "  [CONTROL ACTION]",
             "  MUST: 必须执行的操作",
@@ -155,12 +156,20 @@ class GenePostSessionAnalyzer:
             "  - 避免事项2",
             "",
             "存储命令（必须包含所有字段）：",
-            "  memory.store(title=..., content=..., schema_type=control_gene, memory_key=gene:...)",
+            "  memory.store(title=..., content=..., schema_type=control_gene, memory_key=gene:<任务类型>)",
             "",
             "【关键要求】",
             "- content必须以[HARD CONSTRAINTS]开头",
+            "- [任务类型]字段必须填写，不能为空",
             "- 必须包含[任务类型]、[CONTROL ACTION]、[AVOID]三个段落",
-            "- ≤5工具调用 | content≤300token"
+            "- memory_key格式必须为 gene:<任务类型>",
+            "- ≤5工具调用 | content≤300token",
+            "",
+            "【输出约束 - 必须遵守】",
+            "- 本次任务仅处理 Gene 的创建/进化/查询，不执行任何其他操作",
+            "- 回复内容只包含 Gene 相关工作：查询结果、创建/进化的 Gene 内容、或'无需创建'的判断",
+            "- 禁止输出与 Gene 无关的任何内容（如对用户问题的回答、额外建议、闲聊等）",
+            "- 如果判断无需创建或进化 Gene，直接回复'无需创建Gene'即可，不要输出其他内容",
         ])
 
         return "\n".join(prompt_parts)

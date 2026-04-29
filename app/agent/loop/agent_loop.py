@@ -889,7 +889,8 @@ class AgentLoop:
                     logger.warning(f"[AgentLoop] 注入补充消息失败: {e}")
 
                 # === 在迭代开始前执行待处理的压缩 ===
-                if not self.flash_mode and self._session_compactor.has_pending_compact():
+                is_gene_processing = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
+                if not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact():
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
                     yield {"type": "thinking", "content": "正在压缩会话记忆..."}
                     self._persist_snapshot_before_compact(user_input, effective_session, effective_memory)
@@ -963,7 +964,7 @@ class AgentLoop:
                         _pending_system_injection = ctrl_injection
                     _force_stop = constraint.force_stop
 
-                    if decision.force_memory_compact and not self.flash_mode:
+                    if decision.force_memory_compact and not self.flash_mode and not is_gene_processing:
                         logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
                         yield {"type": "thinking", "content": "正在根据控制决策压缩上下文..."}
                         self._persist_snapshot_before_compact(user_input, effective_session, effective_memory)
@@ -1435,7 +1436,8 @@ class AgentLoop:
                         self.save_agent_created_gene(response.content)
 
                     # 两级压缩（在所有工具调用结束后，按顺序执行）
-                    if not self.flash_mode:
+                    # Gene 处理轮次跳过压缩，避免丢失 Gene 评估上下文
+                    if not self.flash_mode and not is_gene_processing:
                         # 第一级：快速压缩 tool_result
                         if effective_memory.should_compact():
                             saved = effective_memory.compact_tool_results()

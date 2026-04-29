@@ -154,6 +154,75 @@ class MemoryTool(BaseTool):
             return {"success": False, "error": "内容不能为空"}
 
         try:
+            final_metadata = metadata or {}
+            
+            if schema_type == "control_gene":
+                import re
+                from datetime import datetime
+                
+                task_type_match = re.search(r'\[任务类型\]:\s*(.+?)(?:\n|$)', content)
+                task_type = task_type_match.group(1).strip() if task_type_match else ""
+                
+                if not task_type and memory_key.startswith("gene:"):
+                    task_type = memory_key[5:]
+                
+                if task_type:
+                    task_type_normalized = re.sub(r'[^\w\u4e00-\u9fff]+', '_', task_type).lower().strip('_')
+                    
+                    if task_type_normalized:
+                        existing_gene = None
+                        try:
+                            results = self.memory.search_memories(
+                                query=f"gene:{task_type_normalized}",
+                                schema_type="control_gene",
+                                top_k=1,
+                            )
+                            for r in results:
+                                if r.get("memory_key") == f"gene:{task_type_normalized}":
+                                    existing_gene = r
+                                    break
+                        except Exception:
+                            pass
+                        
+                        existing_meta = existing_gene.get("metadata", {}) if existing_gene else {}
+                        existing_version = existing_meta.get("version", 0)
+                        existing_history = existing_meta.get("evolution_history", [])
+                        existing_usage = existing_meta.get("usage_count", 0)
+                        existing_success = existing_meta.get("success_count", 0)
+                        existing_failure = existing_meta.get("failure_count", 0)
+                        
+                        base_version = max(existing_version, len(existing_history))
+                        new_version = base_version + 1
+                        is_update = new_version > 1
+                        
+                        evolution_history = existing_history + [{
+                            "version": new_version,
+                            "change": "agent_updated" if is_update else "agent_created",
+                            "at": datetime.now().isoformat(),
+                        }]
+                        
+                        final_metadata = {
+                            "task_type": task_type_normalized,
+                            "signals": [task_type_normalized],
+                            "forbidden_tools": [],
+                            "preferred_tools": [],
+                            "version": new_version,
+                            "evolution_history": evolution_history,
+                            "usage_count": existing_usage,
+                            "success_count": existing_success,
+                            "failure_count": existing_failure,
+                            "success_rate": existing_success / existing_usage if existing_usage > 0 else 0.5,
+                            "source": "agent_created",
+                            **final_metadata,
+                        }
+                        
+                        if not memory_key:
+                            memory_key = f"gene:{task_type_normalized}"
+                        
+                        category = "task_strategy"
+                        
+                        logger.info("[MemoryTool] control_gene 自动补充 metadata | task_type=%s | version=%d", task_type_normalized, new_version)
+
             result = self.memory.upsert_memory(
                 title=title.strip(),
                 content=content.strip(),
@@ -161,13 +230,35 @@ class MemoryTool(BaseTool):
                 tags=tags or "",
                 schema_type=schema_type or "general",
                 memory_key=memory_key or "",
-                metadata=metadata or {},
+                metadata=final_metadata,
                 allow_sensitive=allow_sensitive,
-                merge_strategy="merge",
+                merge_strategy="replace" if schema_type == "control_gene" else "merge",
             )
             if not result.get("success"):
                 return {"success": False, "error": result.get("error", "写入失败")}
             logger.info("[MemoryTool] store | title=%s | action=%s", title[:40], result.get("action"))
+
+            if schema_type == "control_gene":
+                try:
+                    from app.agent.control.constraint_gene.matcher import TaskSignalMatcher
+                    TaskSignalMatcher._cache_loaded = False
+                except Exception:
+                    pass
+
+                try:
+                    from app.server.routes.ws_event_manager import ws_publish_event
+                    ws_publish_event(
+                        "gene_created",
+                        {
+                            "task_type": task_type_normalized if task_type_normalized else "",
+                            "version": new_version if task_type_normalized else 1,
+                            "is_update": is_update if task_type_normalized else False,
+                            "title": title.strip(),
+                            "content_preview": content.strip()[:200] + "..." if len(content.strip()) > 200 else content.strip(),
+                        }
+                    )
+                except Exception:
+                    pass
             return {
                 "success": True,
                 "action": result.get("action"),

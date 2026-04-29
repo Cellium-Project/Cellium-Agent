@@ -69,7 +69,7 @@ class FileTool(BaseTool):
         "|------|------|------|\n"
         "| read | 读文件，支持 offset/limit 分页 | 大文件先用 insight |\n"
         "| write | 写文件 | mode: overwrite/append/create |\n"
-        "| edit | 编辑文件 | **必须先 read** |\n"
+        "| edit | 编辑文件 | **必须先 read**，occurrence 指定第几处匹配 |\n"
         "| truncate | 原子删除指定行范围 | start/end 为行号，end=None 删到末尾 |\n"
         "| create | 批量创建多文件 | files 为 {路径:内容} 字典 |\n"
         "| delete | 删除文件或目录 | recursive=True 删除非空目录 |\n"
@@ -237,7 +237,7 @@ class FileTool(BaseTool):
         except Exception as e:
             return {"success": False, "error": f"写入失败 ({type(e).__name__}): {e}"}
 
-    def _cmd_edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> Dict[str, Any]:
+    def _cmd_edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False, occurrence: int = 0) -> Dict[str, Any]:
         """编辑文件
 
         Args:
@@ -245,6 +245,8 @@ class FileTool(BaseTool):
             old_string: 要替换的字符串
             new_string: 替换后的字符串
             replace_all: 是否替换所有匹配（默认 False）
+            occurrence: 替换第几处匹配（从0开始，默认0替换第一处），
+                       仅在 replace_all=False 且有多处匹配时生效
         """
         if not path:
             return {"success": False, "error": "未提供 path 参数", "hint": '示例: {"command":"edit","path":"D:\\\\test.py","old_string":"hello","new_string":"hello world"}'}
@@ -288,13 +290,28 @@ class FileTool(BaseTool):
 
         matches = file_state.content.count(actual_old_string)
         if matches > 1 and not replace_all:
-            return {"success": False, "error": f"找到 {matches} 处匹配，但 replace_all 为 false。设置 replace_all: true 可替换所有匹配"}
-
-        old_content = file_state.content
-        if replace_all:
+            if occurrence < 0 or occurrence >= matches:
+                return {
+                    "success": False,
+                    "error": f"找到 {matches} 处匹配，occurrence={occurrence} 超出范围 [0, {matches-1}]",
+                    "hint": f"使用 occurrence 参数指定替换第几处（0-{matches-1}），或设置 replace_all: true 替换所有",
+                }
+            old_content = file_state.content
+            idx = -1
+            for i in range(occurrence + 1):
+                idx = old_content.find(actual_old_string, idx + 1)
+                if idx == -1:
+                    break
+            if idx == -1:
+                return {"success": False, "error": f"定位第 {occurrence} 处匹配失败"}
+            new_content = old_content[:idx] + new_string + old_content[idx + len(actual_old_string):]
+            action = f"替换了第 {occurrence} 处匹配（共 {matches} 处）"
+        elif replace_all:
+            old_content = file_state.content
             new_content = old_content.replace(actual_old_string, new_string)
             action = f"替换了 {matches} 处"
         else:
+            old_content = file_state.content
             new_content = old_content.replace(actual_old_string, new_string, 1)
             action = "替换了 1 处"
 
