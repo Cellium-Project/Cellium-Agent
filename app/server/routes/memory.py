@@ -209,3 +209,17 @@ async def merge_memories(body: MemoryMergeRequest):
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "冲突合并失败"))
     return result
+
+
+@router.get("/archive/{entry_id}")
+async def get_archive_entry(entry_id: str):
+    """根据 entry_id 获取 archive 中的完整对话记录"""
+    memory = _get_memory_service()
+    if not memory.archive:
+        raise HTTPException(status_code=503, detail="Archive 系统未初始化")
+
+    record = memory.archive.get_by_id(entry_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Archive 记录不存在: {entry_id}")
+
+    return record

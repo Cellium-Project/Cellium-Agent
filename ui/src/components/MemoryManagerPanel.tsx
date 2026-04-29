@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { API, fetchJSON, postJSON, putJSON } from '../utils/api';
 import type { MemoryQueryResponse, MemoryRecord, MemorySummary } from '../types';
@@ -41,6 +42,18 @@ interface MemoryEditorState {
   memory_key: string;
   metadataText: string;
   allow_sensitive: boolean;
+}
+
+interface ArchiveEntry {
+  id: string;
+  time: string;
+  session_id: string;
+  messages: Array<{
+    role: string;
+    content: string;
+    timestamp?: string;
+    tool_calls?: any[];
+  }>;
 }
 
 const EMPTY_EDITOR: MemoryEditorState = {
@@ -97,6 +110,8 @@ export const MemoryManagerPanel: React.FC = () => {
   const [editorMode, setEditorMode] = useState<EditorMode>(null);
   const [editingMemory, setEditingMemory] = useState<MemoryRecord | null>(null);
   const [editor, setEditor] = useState<MemoryEditorState>(EMPTY_EDITOR);
+  const [archiveModal, setArchiveModal] = useState<{ open: boolean; entry: ArchiveEntry | null; loading: boolean; error: string }>({ open: false, entry: null, loading: false, error: '' });
+  const [isArchiveClosing, setIsArchiveClosing] = useState(false);
 
   const summaryCards = useMemo(() => {
     if (!summary) return [];
@@ -274,6 +289,25 @@ export const MemoryManagerPanel: React.FC = () => {
     setEditorMode('edit');
   };
 
+  const openArchiveModal = async (entryId: string) => {
+    setIsArchiveClosing(false);
+    setArchiveModal({ open: true, entry: null, loading: true, error: '' });
+    try {
+      const entry = await fetchJSON<ArchiveEntry>(API.memoryArchive(entryId));
+      setArchiveModal({ open: true, entry, loading: false, error: '' });
+    } catch (err: any) {
+      setArchiveModal({ open: true, entry: null, loading: false, error: err.message || t('memoryManager.loadArchiveFailed') });
+    }
+  };
+
+  const closeArchiveModal = () => {
+    setIsArchiveClosing(true);
+    setTimeout(() => {
+      setArchiveModal({ open: false, entry: null, loading: false, error: '' });
+      setIsArchiveClosing(false);
+    }, 150);
+  };
+
   const closeEditor = () => {
     setEditorMode(null);
     setEditingMemory(null);
@@ -447,6 +481,16 @@ export const MemoryManagerPanel: React.FC = () => {
                     <span>memory_key: {item.memory_key || t('common.dash')}</span>
                     <span>{t('memoryManager.revisions')}: {item.revisions}</span>
                     {item.sensitivity_reason && <span>{t('memoryManager.desensitized')}: {item.sensitivity_reason}</span>}
+                    {(item.metadata?.archive_entry_id || item.metadata?.archive_id) && (
+                      <span className="memory-archive-link">
+                        <button
+                          className="btn-link btn-sm"
+                          onClick={() => openArchiveModal(item.metadata?.archive_entry_id || item.metadata?.archive_id)}
+                        >
+                          {t('memoryManager.viewArchive')} →
+                        </button>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="memory-item-actions">
@@ -508,6 +552,57 @@ export const MemoryManagerPanel: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Archive Modal */}
+      {archiveModal.open && createPortal(
+        <div className={`archive-detail-modal ${isArchiveClosing ? 'closing' : ''}`}>
+          <div className="modal-overlay" onClick={closeArchiveModal} />
+          <div className="modal-content archive-modal">
+            <div className="modal-header">
+              <h3>{t('memoryManager.archiveDetail')}</h3>
+              <button className="btn-close" onClick={closeArchiveModal}>
+                <Icons.X size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {archiveModal.loading && (
+                <div className="archive-loading">{t('common.loading')}</div>
+              )}
+              {archiveModal.error && (
+                <div className="archive-error">{archiveModal.error}</div>
+              )}
+              {archiveModal.entry && (
+                <div className="archive-content">
+                  <div className="archive-meta">
+                    <span><strong>ID:</strong> {archiveModal.entry.id}</span>
+                    <span><strong>{t('memoryManager.session')}:</strong> {archiveModal.entry.session_id}</span>
+                    <span><strong>{t('memoryManager.time')}:</strong> {formatDateTime(archiveModal.entry.time, t)}</span>
+                  </div>
+                  <div className="archive-messages">
+                    {archiveModal.entry.messages?.map((msg, idx) => (
+                      <div key={idx} className={`archive-message ${msg.role}`}>
+                        <div className="archive-message-role">{msg.role}</div>
+                        <pre className="archive-message-content">{msg.content}</pre>
+                        {msg.tool_calls && (
+                          <div className="archive-message-tools">
+                            <strong>{t('memoryManager.toolCalls')}:</strong>
+                            {msg.tool_calls.map((tool: any, tidx: number) => (
+                              <div key={tidx} className="archive-tool-call">
+                                <code>{tool.function?.name}</code>: {tool.function?.arguments}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

@@ -536,7 +536,13 @@
     "actionCompleted": "{{action}} \"{{title}}\" succeeded",
     "actionFailed": "{{action}} \"{{title}}\" failed",
     "processing": "Processing...",
-    "paginationInfo": "Items {{start}}-{{end}} of {{total}}"
+    "paginationInfo": "Items {{start}}-{{end}} of {{total}}",
+    "viewArchive": "View Conversation",
+    "archiveDetail": "Full Conversation",
+    "loadArchiveFailed": "Failed to load archive",
+    "session": "Session",
+    "time": "Time",
+    "toolCalls": "Tool Calls"
   },
   "skill": {
     "refresh": "Refresh Index",

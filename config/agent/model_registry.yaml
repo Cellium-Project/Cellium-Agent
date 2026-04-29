@@ -7,7 +7,7 @@ models:
   gpt-4-turbo:      [128000, 4096, true]
   gpt-3.5-turbo:    [16385, 4096, true]
   o3-mini:          [200000, 10000, true]
-  gpt-5.4:          [1050000, 12800, true]  
+  gpt-5.4:          [1000000, 12800, true]  
   gpt-5.4-mini:     [400000, 12800, true]
   gpt-4.1:          [1048576, 32768, true]  
 
@@ -59,9 +59,36 @@ models:
   glm-4-long:       [1000000, 4096, true]
   glm-4.5:          [128000, 18192, true]
   glm-4.7:          [128000, 18192, true]
-  glm-5:            [200000, 18192, true]
-  glm-5.1:          [200000, 18192, true]
-  glm-5-code:       [200000, 18192, true]
+  glm-5:            [200000, 128000, true]
+  glm-5-turbo:      [200000, 128000, true]
+  glm-5.1:          [200000, 128000, true]
+
+  # ---- MiniMax ----
+  minimax-m2:              [204800, 16384, true]
+  minimax-m2.1:            [204800, 16384, true]
+  minimax-m2.1-lightning:  [204800, 16384, true]
+  minimax-m2.5:            [204800, 16384, true]
+  minimax-m2.5-highspeed:  [204800, 16384, true]
+  minimax-m2.7:            [204800, 131072, true]
+  minimax-m2.7-highspeed:  [204800, 16384, true]
+
+  # ---- Moonshot (Kimi) ----
+  kimi-k2.5:               [262144, 8192, true]
+  kimi-k2.6:               [262144, 8192, true]
+
+  # ---- 字节跳动 (豆包/Doubao) ----
+
+  doubao-seed-2.0-pro:     [252144, 131072, true]
+  doubao-seed-2.0-lite:    [252144, 131072, true]
+  doubao-seed-2.0-mini:    [252144, 32768, true]
+  doubao-seed-2.0-code:    [252144, 131072, true]
+
+  doubao-pro:              [252144, 8192, true]
+  doubao-lite:             [131072, 8192, true]
+
+  # ---- 小米 (MiMo) ----
+  mimo-v2.5:        [1000000, 8192, true]    
+  mimo-v2.5-pro:    [1000000, 32768, true]     
 
   # ---- 通用兜底 ----
-  default:          [32768, 18096, true]
+  default:          [32768, 8096, true]

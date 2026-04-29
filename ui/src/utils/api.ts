@@ -41,6 +41,7 @@ export const API = {
   memoryDetail: (memoryId: string) => `${API_BASE}/memories/${memoryId}`,
   memoryForget: `${API_BASE}/memories/actions/forget`,
   memoryMerge: `${API_BASE}/memories/actions/merge`,
+  memoryArchive: (entryId: string) => `${API_BASE}/memories/archive/${entryId}`,
 
   // Logs
   logs: `${API_BASE}/logs`,

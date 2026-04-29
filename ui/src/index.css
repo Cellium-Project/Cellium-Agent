@@ -1343,6 +1343,159 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
     font-family: inherit;
 }
 
+/* 数字输入框自定义样式 */
+input[type="number"] {
+    padding-right: 28px;
+}
+
+/* 隐藏默认的 spin button */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+}
+
+/* Firefox */
+input[type="number"] {
+    -moz-appearance: textfield;
+}
+
+/* 自定义数字输入框容器 */
+.number-input-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    width: 100%;
+}
+
+.number-input-wrapper input[type="number"] {
+    width: 100%;
+    padding-right: 28px;
+}
+
+/* 自定义 spin buttons */
+.number-input-controls {
+    position: absolute;
+    right: 2px;
+    top: 2px;
+    bottom: 2px;
+    width: 22px;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border-primary);
+}
+
+.number-input-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 1;
+    transition: all 0.15s ease;
+    padding: 0;
+}
+
+.number-input-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.number-input-btn:active {
+    background: var(--bg-active);
+}
+
+.number-input-btn:first-child {
+    border-bottom: 1px solid var(--border-primary);
+    border-radius: 0 4px 0 0;
+}
+
+.number-input-btn:last-child {
+    border-radius: 0 0 4px 0;
+}
+
+.number-input-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: var(--bg-secondary);
+}
+
+.number-input-wrapper input[type="number"]:disabled {
+    background: var(--bg-tertiary);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+}
+
+/* 自定义复选框样式 */
+input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border-primary);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    position: relative;
+    transition: all 0.15s ease;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+
+input[type="checkbox"]:hover {
+    border-color: var(--accent-primary);
+    background: var(--bg-hover);
+}
+
+input[type="checkbox"]:checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 45%;
+    width: 4px;
+    height: 8px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+input[type="checkbox"]:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--bg-tertiary);
+    border-color: var(--border-secondary);
+}
+
+input[type="checkbox"]:disabled:checked {
+    background: var(--text-tertiary);
+    border-color: var(--text-tertiary);
+}
+
+/* 复选框标签样式 */
+.checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.checkbox-label.disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 select {
     padding: 10px 32px 10px 12px;
     border: 1px solid var(--border-secondary);
@@ -2024,6 +2177,159 @@ input:focus, select:focus, textarea:focus {
     color: var(--text-muted);
 }
 
+/* Archive link in memory item */
+.memory-archive-link {
+  margin-left: auto;
+}
+
+.memory-archive-link .btn-link {
+  background: transparent;
+  border: none;
+  color: var(--accent-primary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 8px;
+  text-decoration: underline;
+}
+
+.memory-archive-link .btn-link:hover {
+  color: var(--accent-primary-hover);
+}
+
+/* Archive Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal-content {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  max-width: 900px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.archive-modal {
+  max-width: 800px;
+}
+
+.archive-loading,
+.archive-error {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.archive-error {
+  color: var(--accent-danger);
+}
+
+.archive-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.archive-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.archive-message {
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.archive-message.user {
+  border-left: 4px solid var(--accent-primary);
+}
+
+.archive-message.assistant {
+  border-left: 4px solid var(--accent-success);
+}
+
+.archive-message-role {
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.archive-message-content {
+  padding: 12px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.archive-message-tools {
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border-secondary);
+  font-size: 12px;
+}
+
+.archive-tool-call {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  font-family: monospace;
+}
+
+.archive-tool-call code {
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
 .memory-pagination-controls {
     display: flex;
     align-items: center;
@@ -2488,11 +2794,12 @@ input:focus, select:focus, textarea:focus {
     align-items: center;
     justify-content: center;
     border-radius: 4px;
-    transition: background 0.2s;
+    transition: all 0.2s;
 }
 
 .skill-detail-modal .btn-close:hover {
-    background: var(--bg-secondary);
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }
 
 .skill-detail-modal .modal-body {
@@ -2528,10 +2835,175 @@ input:focus, select:focus, textarea:focus {
     background: var(--bg-secondary);
     border: 1px solid var(--border-primary);
     border-radius: 6px;
-    padding: 12px;
+}
+
+/* Archive Detail Modal - reuses skill-detail-modal styles */
+.archive-detail-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    pointer-events: none;
+    animation: modalFadeIn 0.2s ease-out;
+}
+
+.archive-detail-modal.closing {
+    animation: modalFadeOut 0.15s ease-in forwards;
+}
+
+.archive-detail-modal .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    pointer-events: auto;
+    z-index: 1;
+}
+
+.archive-detail-modal .modal-content {
+    position: relative;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 800px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    z-index: 2;
+    animation: modalSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.archive-detail-modal.closing .modal-content {
+    animation: modalSlideOut 0.15s ease-in forwards;
+}
+
+.archive-detail-modal .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.archive-detail-modal .modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.archive-detail-modal .btn-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: all 0.2s;
+}
+
+.archive-detail-modal .btn-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.archive-detail-modal .modal-body {
+    padding: 20px;
+}
+
+/* Archive specific styles */
+.archive-loading,
+.archive-error {
+    padding: 40px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.archive-error {
+    color: var(--accent-danger);
+}
+
+.archive-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 20px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.archive-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.archive-message {
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.archive-message.user {
+    border-left: 4px solid var(--accent-primary);
+}
+
+.archive-message.assistant {
+    border-left: 4px solid var(--accent-success);
+}
+
+.archive-message-role {
+    padding: 8px 12px;
+    background: var(--bg-secondary);
     font-size: 12px;
-    overflow-x: auto;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.archive-message-content {
+    padding: 12px;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
     max-height: 300px;
+    overflow-y: auto;
+}
+
+.archive-message-tools {
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-primary);
+    font-size: 12px;
+}
+
+.archive-tool-call {
+    margin-top: 6px;
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    border-radius: 6px;
+    font-family: monospace;
+}
+
+.archive-tool-call code {
+    color: var(--accent-primary);
+    font-weight: 600;
 }
 
 .loading-indicator {

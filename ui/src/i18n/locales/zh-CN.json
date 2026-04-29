@@ -548,7 +548,13 @@
     "actionCompleted": "{{action}}「{{title}}」成功",
     "actionFailed": "{{action}}「{{title}}」失败",
     "processing": "处理中...",
-    "paginationInfo": "第 {{start}}-{{end}} 条，共 {{total}} 条"
+    "paginationInfo": "第 {{start}}-{{end}} 条，共 {{total}} 条",
+    "viewArchive": "查看对话",
+    "archiveDetail": "完整对话记录",
+    "loadArchiveFailed": "加载 Archive 失败",
+    "session": "会话",
+    "time": "时间",
+    "toolCalls": "工具调用"
   },
   "skill": {
     "refresh": "刷新索引",

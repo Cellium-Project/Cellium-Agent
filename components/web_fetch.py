@@ -280,7 +280,7 @@ class WebFetch(BaseCell):
                     "mode": "http",
                     "current_page": 0,
                     "total_pages": total_pages,
-                    "hint": f"共 {total_pages} 页，当前第 1 页 | fetch(action='next') 下一页 | fetch(action='goto', page=N) 跳转",
+                    "hint": f"【分页阅读】共 {total_pages} 页，当前第 1 页 | 下一页: {{\"command\":\"fetch\",\"action\":\"next\"}} | 跳转: {{\"command\":\"fetch\",\"action\":\"goto\",\"page\":页码}}",
                 }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -689,7 +689,7 @@ class WebFetch(BaseCell):
                     "url": page.url,
                     "title": page.title,
                     "text": text,
-                    "hint": "如需继续阅读: read(action='scroll') 或 read(action='find', keyword='xxx')"
+                    "hint": "【下一步操作】如需继续阅读，请调用: {\"command\":\"read\",\"action\":\"scroll\"} (向下滚动) 或 {\"command\":\"read\",\"action\":\"find\",\"keyword\":\"关键词\"} (搜索关键词)"
                 }
 
             elif action == "scroll":
@@ -716,7 +716,7 @@ class WebFetch(BaseCell):
                     "success": True,
                     "url": page.url,
                     "text": visible_text[:2000],
-                    "hint": "继续: read(action='scroll') 或 read(action='find', keyword='xxx')"
+                    "hint": "【下一步操作】继续滚动请调用: {\"command\":\"read\",\"action\":\"scroll\"} | 搜索内容请调用: {\"command\":\"read\",\"action\":\"find\",\"keyword\":\"关键词\"}"
                 }
 
             elif action == "find":
@@ -735,18 +735,18 @@ class WebFetch(BaseCell):
                     parent = element.parent()
                     context = parent.text if parent else element.text
                     return {
-                        "success": True,
-                        "found": True,
-                        "url": page.url,
-                        "text": context[:1000] if context else "",
-                        "hint": "继续: read(action='scroll') 或 read(action='find', keyword='xxx')"
-                    }
+                    "success": True,
+                    "found": True,
+                    "url": page.url,
+                    "text": context[:1000] if context else "",
+                    "hint": "【下一步操作】继续搜索请调用: {\"command\":\"read\",\"action\":\"find\",\"keyword\":\"另一个关键词\"} | 滚动页面请调用: {\"command\":\"read\",\"action\":\"scroll\"}"
+                }
                 return {
                     "success": True,
                     "found": False,
                     "url": page.url,
                     "text": "",
-                    "hint": "未找到关键词，尝试其他词或使用 read(action='structure') 查看目录"
+                    "hint": "【未找到】尝试其他关键词，或调用 {\"command\":\"read\",\"action\":\"structure\"} 查看页面目录结构"
                 }
 
             elif action == "structure":
@@ -762,7 +762,7 @@ class WebFetch(BaseCell):
                     "success": True,
                     "url": page.url,
                     "text": headings_text,
-                    "hint": "使用 read(action='find', keyword='章节标题') 跳转到对应位置"
+                    "hint": "【下一步操作】跳转到章节请调用: {\"command\":\"read\",\"action\":\"find\",\"keyword\":\"章节标题\"}"
                 }
 
             else:
@@ -800,7 +800,7 @@ class WebFetch(BaseCell):
                 "mode": "http",
                 "current_page": next_page,
                 "total_pages": total_pages,
-                "hint": f"共 {total_pages} 页，当前第 {next_page + 1} 页 | fetch(action='next') 下一页 | fetch(action='prev') 上一页 | fetch(action='goto', page=N) 跳转",
+                "hint": f"【分页阅读】共 {total_pages} 页，当前第 {next_page + 1} 页 | 上一页: {{\"command\":\"fetch\",\"action\":\"prev\"}} | 下一页: {{\"command\":\"fetch\",\"action\":\"next\"}} | 跳转: {{\"command\":\"fetch\",\"action\":\"goto\",\"page\":页码}}",
             }
 
         elif action == "prev":
@@ -816,7 +816,7 @@ class WebFetch(BaseCell):
                 "mode": "http",
                 "current_page": prev_page,
                 "total_pages": total_pages,
-                "hint": f"共 {total_pages} 页，当前第 {prev_page + 1} 页 | fetch(action='next') 下一页 | fetch(action='prev') 上一页 | fetch(action='goto', page=N) 跳转",
+                "hint": f"【分页阅读】共 {total_pages} 页，当前第 {prev_page + 1} 页 | 上一页: {{\"command\":\"fetch\",\"action\":\"prev\"}} | 下一页: {{\"command\":\"fetch\",\"action\":\"next\"}} | 跳转: {{\"command\":\"fetch\",\"action\":\"goto\",\"page\":页码}}",
             }
 
         elif action == "goto":
@@ -834,7 +834,7 @@ class WebFetch(BaseCell):
                 "mode": "http",
                 "current_page": target,
                 "total_pages": total_pages,
-                "hint": f"共 {total_pages} 页，当前第 {page} 页 | fetch(action='next') 下一页 | fetch(action='prev') 上一页 | fetch(action='goto', page=N) 跳转",
+                "hint": f"【分页阅读】共 {total_pages} 页，当前第 {page} 页 | 上一页: {{\"command\":\"fetch\",\"action\":\"prev\"}} | 下一页: {{\"command\":\"fetch\",\"action\":\"next\"}} | 跳转: {{\"command\":\"fetch\",\"action\":\"goto\",\"page\":页码}}",
             }
 
         elif action == "search":
@@ -856,7 +856,7 @@ class WebFetch(BaseCell):
                     "found": False,
                     "keyword": keyword,
                     "total_pages": total_pages,
-                    "hint": f"未找到 '{keyword}'，共 {total_pages} 页 | fetch(action='next') 下一页 | fetch(action='goto', page=N) 跳转",
+                    "hint": f"【未找到】'{keyword}' 在 {total_pages} 页中均未找到 | 尝试其他关键词或调用 {{\"command\":\"fetch\",\"action\":\"goto\",\"page\":页码}} 跳转",
                 }
             return {
                 "success": True,
@@ -864,7 +864,7 @@ class WebFetch(BaseCell):
                 "keyword": keyword,
                 "match_count": len(matches),
                 "matches": matches,
-                "hint": f"在 {len(matches)} 页中找到 '{keyword}' | 使用 fetch(action='goto', page=N) 跳转到对应页面",
+                "hint": f"【搜索成功】在 {len(matches)} 页中找到 '{keyword}' | 跳转: {{\"command\":\"fetch\",\"action\":\"goto\",\"page\":页码}}",
             }
 
         else:
@@ -1113,7 +1113,7 @@ class WebFetch(BaseCell):
                 return {
                     "success": False,
                     "error": "没有打开的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
-                    "hint": "get_viewport_text 需要先有打开的页面才能获取文本",
+                    "hint": "【提示】先调用 {\"command\":\"read\",\"action\":\"open\",\"url\":\"页面URL\"} 打开页面",
                 }
             
             js_code = """
@@ -1147,7 +1147,7 @@ class WebFetch(BaseCell):
                 "title": page.title,
                 "text": visible_text,
                 "scroll_y": scroll_y,
-                "hint": "如需查看更多内容，请使用 read(action='scroll') 或 control(action='scroll_down') 滚动"
+                "hint": "【下一步操作】查看更多内容请调用: {\"command\":\"read\",\"action\":\"scroll\"} 或 {\"command\":\"control\",\"action\":\"scroll_down\"}"
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1279,7 +1279,7 @@ class WebFetch(BaseCell):
                 "found": False,
                 "keyword": keyword,
                 "error": "未找到相关关键词",
-                "hint": "尝试使用不同的关键词，或使用 get_structure 查看页面目录"
+                "hint": "【未找到】尝试其他关键词，或调用 {\"command\":\"read\",\"action\":\"structure\"} 查看页面目录"
             }
         except Exception as e:
             error_msg = str(e)
@@ -1288,7 +1288,7 @@ class WebFetch(BaseCell):
                 return {
                     "success": False,
                     "error": "页面元素定位失败，可能是动态内容未完全加载",
-                    "hint": "建议先等待页面加载完成，或使用 read(action='scroll') 滚动后再搜索"
+                    "hint": "【建议】等待页面加载完成，或调用 {\"command\":\"read\",\"action\":\"scroll\"} 滚动后再搜索"
                 }
             return {"success": False, "error": f"搜索失败: {error_msg}"}
 
@@ -1355,7 +1355,7 @@ class WebFetch(BaseCell):
             return {
                 "success": False,
                 "error": "没有可截图的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
-                "hint": "screenshot 需要先有打开的页面才能截取",
+                "hint": "【提示】先调用 {\"command\":\"read\",\"action\":\"open\",\"url\":\"页面URL\"} 打开页面",
             }
 
         try:
@@ -1441,7 +1441,7 @@ class WebFetch(BaseCell):
             return {
                 "success": False,
                 "error": "没有可查找的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
-                "hint": "find_qrcode 需要先有打开的页面才能查找",
+                "hint": "【提示】先调用 {\"command\":\"read\",\"action\":\"open\",\"url\":\"页面URL\"} 打开页面",
             }
 
         try:
@@ -1525,14 +1525,14 @@ class WebFetch(BaseCell):
                     "success": True,
                     "found_count": 0,
                     "elements": [],
-                    "hint": "未找到二维码，建议：1) 先截图查看页面内容 get_screenshot() 2) 或滚动页面查找 read(action='scroll') 3) 部分网站需先点击'扫码登录'按钮"
+                    "hint": "【未找到】建议: 1) 截图查看 {\"command\":\"screenshot\"} 2) 滚动查找 {\"command\":\"read\",\"action\":\"scroll\"} 3) 点击'扫码登录'按钮 {\"command\":\"control\",\"action\":\"click\",\"selector\":\"按钮选择器\"}"
                 }
 
             return {
                 "success": True,
                 "found_count": len(found_elements),
                 "elements": found_elements[:5],
-                "hint": "使用 get_screenshot(selector='选择器') 截取二维码"
+                "hint": "【下一步操作】截取二维码请调用: {\"command\":\"screenshot\",\"selector\":\"二维码选择器\"}"
             }
 
         try:
@@ -2167,13 +2167,13 @@ class WebFetch(BaseCell):
                 return {
                     "success": True,
                     "buttons": [],
-                    "hint": f"未找到包含'{captured_keyword}'的按钮，建议先调用 find_button 查看所有可用按钮"
+                    "hint": f"【未找到】未找到包含'{captured_keyword}'的按钮，调用 {{\"command\":\"find_button\"}} 查看所有可用按钮"
                 }
 
             return {
                 "success": True,
                 "buttons": buttons,
-                "hint": "使用 control(action='js_action', selector='选择器', value='click') 点击按钮"
+                "hint": "【下一步操作】点击按钮请调用: {\"command\":\"control\",\"action\":\"js_action\",\"selector\":\"按钮选择器\",\"value\":\"click\"}"
             }
 
         try:
@@ -2234,13 +2234,13 @@ class WebFetch(BaseCell):
                             "success": False,
                             "error": f"Element not found: {selector}",
                             "detail": f"尝试的方式: {' | '.join(selector_tried)}",
-                            "hint": "推荐使用 js_action 命令（纯JS实现，更可靠）：control(action='js_action', selector='选择器', value='click')"
+                            "hint": "【建议】使用纯JS点击更可靠: {\"command\":\"control\",\"action\":\"js_action\",\"selector\":\"选择器\",\"value\":\"click\"}"
                         }
                     
                     # 检查元素是否可见
                     try:
                         if hasattr(element, 'states') and not element.states.is_displayed:
-                            return {"success": False, "error": f"Element not visible: {selector}", "hint": "元素存在但不可见，可能需要滚动页面或等待加载"}
+                            return {"success": False, "error": f"Element not visible: {selector}", "hint": "【建议】元素不可见，调用 {\"command\":\"read\",\"action\":\"scroll\"} 滚动页面或等待加载"}
                     except:
                         pass  # 某些元素可能没有 states 属性
                     
