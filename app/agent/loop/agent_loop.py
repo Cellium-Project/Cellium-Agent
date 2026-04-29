@@ -865,8 +865,7 @@ class AgentLoop:
 
             yield {"type": "thinking", "content": "正在思考..."}
 
-            self._tool_call_count_in_round = 0  # 重置轮次工具调用计数
-            _pending_system_injection = system_injection  # 外部平台注入的引导文本
+            self._tool_call_count_in_round = 0
 
             while True:
                 # === 检查并注入补充消息 ===
@@ -934,8 +933,8 @@ class AgentLoop:
                 _pending_guidance_msg = None
                 _force_stop = False
                 _active_constraint = None
+                _pending_system_injection = system_injection
 
-                # Control Loop: 每轮决策
                 if self.control_loop and self._loop_state:
                     # 更新状态
                     self._loop_state.iteration = iteration
