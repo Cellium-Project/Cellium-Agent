@@ -503,6 +503,24 @@ class MemoryRepository:
         new_tags = self._merge_tags(record.get("tags", ""), tags) if tags is not None else record.get("tags", "")
         new_metadata = self._merge_metadata(record.get("metadata", {}), metadata or {})
 
+        if new_schema == "control_gene" or record.get("schema_type") == "control_gene":
+            existing_version = new_metadata.get("version", 0)
+            new_version = existing_version + 1
+            new_metadata["version"] = new_version
+
+            evolution_history = new_metadata.get("evolution_history", [])
+            evolution_history.append({
+                "version": new_version,
+                "change": "agent_updated",
+                "at": datetime.now().isoformat(),
+            })
+            new_metadata["evolution_history"] = evolution_history
+
+            if new_title and not new_title.endswith(f"(v{new_version})"):
+                import re
+                new_title = re.sub(r'\s*\(v\d+\)\s*$', '', new_title)
+                new_title = f"{new_title} (v{new_version})"
+
         sensitive_state = self._sanitize_sensitive_content(new_title, new_content, allow_sensitive=allow_sensitive)
         if sensitive_state["blocked"]:
             return {"success": False, "error": f"检测到高风险敏感信息，已拒绝更新: {sensitive_state['reason']}"}

@@ -159,13 +159,18 @@ class FeedbackEvaluator:
         logger.info(f"[GeneEvolution] evaluate_with_gene_evolution called | reward={reward:.2f} | task_type={task_type} | user_input={user_input[:50] if user_input else 'empty'}")
 
         try:
+            # 在 Gene 处理轮次中不触发 Mechanism A
+            if getattr(state, 'gene_processing_done', False):
+                logger.debug("[GeneEvolution] Gene 处理轮次中，跳过失败检测")
+                return reward
+
             if reward < 0.5:
                 if not task_type and state.tool_traces:
                     last_tool = state.tool_traces[-1].get('tool', '')
                     if last_tool:
                         task_type = last_tool
                         logger.debug("[GeneEvolution] 从工具调用推断 task_type: %s", task_type)
-                
+
                 avoid_cue = GeneEvolution.extract_avoid_cue(state, reward)
                 logger.info(f"[GeneEvolution] extract_avoid_cue result | avoid_cue={avoid_cue[:50] if avoid_cue else 'None'} | task_type={task_type}")
                 if avoid_cue and task_type:
@@ -174,10 +179,9 @@ class FeedbackEvaluator:
                         "iteration": state.iteration,
                         "avoid_cue": avoid_cue,
                         "error": state.last_error,
-                        "task_type": task_type,  # 记录工具名
+                        "task_type": task_type,
                         "timestamp": datetime.now().isoformat(),
                     })
-                    # 只保留最近 3 次
                     if len(state.gene_failure_history) > 3:
                         state.gene_failure_history = state.gene_failure_history[-3:]
 
@@ -185,9 +189,10 @@ class FeedbackEvaluator:
 
                     if state.gene_failure_count >= 2:
                         failed_tools = set(h.get("task_type", "") for h in state.gene_failure_history if h.get("task_type"))
-                        
+
                         if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
                             state.needs_agent_gene_creation = True
+                            state.gene_creation_source = "failure" 
                             state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input, state.gene_failure_history)
                             logger.info(f"[GeneEvolution] 累积{state.gene_failure_count}次失败，涉及工具: {failed_tools}，将后台创建 Gene")
 
@@ -212,13 +217,11 @@ class FeedbackEvaluator:
         """构建提示 Agent 查看 Gene 的提示（包含失败历史）"""
         from .constraint_gene import GeneEvolution
 
-        # 构建失败历史描述
         failure_summary = "\n".join([
             f"  {i+1}. 第{h['iteration']}轮: {h['avoid_cue']}"
-            for i, h in enumerate(failure_history[-2:])  # 只显示最近2次
+            for i, h in enumerate(failure_history[-2:])  
         ])
 
-        # 获取现有 Gene 信息
         existing_gene = GeneEvolution._get_existing_gene(user_input)
 
         if existing_gene:

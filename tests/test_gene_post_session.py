@@ -200,6 +200,8 @@ class TestBuildAgentGenePrompt:
         assert "[系统提示 - Gene 创建评估]" in prompt
         assert "异常评分:" in prompt
         assert "[HARD CONSTRAINTS]" in prompt
+        assert "【Gene 标准格式" in prompt
+        assert "[任务类型]" in prompt
 
     def test_prompt_generation_low_score(self):
         analyzer = GenePostSessionAnalyzer()

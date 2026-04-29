@@ -71,6 +71,9 @@ class XxxTool(BaseCell):
 | 长期记忆 | 跨会话 | FTS5 检索，需主动调用 memory 工具 |
 | 人格记忆 | 永久 | 本文件 |
 
+### 记忆查看
+user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archive(entry_id='...')` 查看当时回复
+
 ---
 
 ## §5 SKILL SYSTEM

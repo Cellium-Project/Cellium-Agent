@@ -59,7 +59,7 @@ class MemoryTool(BaseTool):
                         "schema_type": {
                             "type": "string",
                             "description": "结构化 schema 类型",
-                            "enum": ["general", "profile", "project", "issue"],
+                            "enum": ["general", "profile", "project", "issue", "control_gene"],
                         },
                         "tags": {"type": "string", "description": "逗号分隔标签"},
                         "source": {"type": "string", "description": "[update/delete] 记忆来源 ID"},

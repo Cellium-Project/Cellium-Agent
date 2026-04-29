@@ -429,6 +429,13 @@ class AgentLoop:
         except Exception as e:
             logger.error("[AgentLoop] 后台创建 Gene 出错: %s", e)
 
+    def _on_gene_task_done(self, task):
+        """Gene 后台任务完成回调，处理未捕获的异常"""
+        try:
+            task.result()  # 获取结果，如果有异常会抛出
+        except Exception as e:
+            logger.error("[AgentLoop] Gene 后台任务异常: %s", e)
+
     def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
         for msg in reversed(memory.get_messages()):
             if msg.get("role") == "assistant" and msg.get("content"):
@@ -726,22 +733,6 @@ class AgentLoop:
                 tool_call_count=len([t for t in tool_traces if t.get("tool")]),
                 stuck_iterations=stuck_iters,
             )
-
-        if self._loop_state:
-            try:
-                from app.agent.control.gene_post_session import generate_gene_prompt_for_agent
-                gene_prompt = generate_gene_prompt_for_agent(
-                    user_input=user_input,
-                    tool_traces=tool_traces,
-                    loop_state=self._loop_state,
-                    total_time_ms=total_time,
-                    final_content=final_content
-                )
-                if gene_prompt:
-                    effective_memory.add_system_message(gene_prompt)
-                    logger.info(f"[AgentLoop] Added gene creation prompt for agent to evaluate")
-            except Exception as e:
-                logger.debug(f"[AgentLoop] Gene post-session prompt generation failed: {e}")
 
         return {
             "type": "done",
@@ -1206,6 +1197,21 @@ class AgentLoop:
                     self._tool_call_count_in_round += len(response.tool_calls)
                     self._session_compactor.track_tool_call()
 
+                    # Gene 处理轮次：计数工具调用，限制最多 5 次
+                    if self._loop_state and getattr(self._loop_state, 'gene_processing_done', False):
+                        self._loop_state.gene_tool_call_count += len(response.tool_calls)
+                        if self._loop_state.gene_tool_call_count > 5:
+                            logger.warning("[AgentLoop] Gene 处理轮次工具调用超过 5 次，强制结束")
+                            # 添加警告消息并结束 Gene 处理
+                            effective_memory.add_system_message(
+                                "[系统] Gene 评估工具调用次数过多，请简要说明当前进展后结束。"
+                            )
+                            # 重置 Gene 处理标记，让正常流程结束
+                            self._loop_state.gene_creation_source = ""
+                            self._loop_state.gene_creation_prompt = None
+                            self._loop_state.gene_processing_done = False
+                            self._loop_state.gene_tool_call_count = 0
+
                     # LLM 在工具调用前输出的文本内容（interim content）
                     interim_content = (response.content or "").strip()
                     if interim_content:
@@ -1361,7 +1367,11 @@ class AgentLoop:
 
                     # Mechanism B: 复杂任务检测（基于决策环统计）
                     # 检测高复杂度/快速恶化场景，提示 Agent 创建 Gene
-                    if self._gene_post_session_analyzer and self._loop_state and not getattr(self._loop_state, 'needs_agent_gene_creation', False):
+                    # 注意：在 Gene 处理轮次中（gene_processing_done=True）不触发新的检测
+                    is_gene_processing = getattr(self._loop_state, 'gene_processing_done', False)
+                    if (self._gene_post_session_analyzer and self._loop_state 
+                        and not getattr(self._loop_state, 'needs_agent_gene_creation', False)
+                        and not is_gene_processing):
                         gene_prompt = self._gene_post_session_analyzer.build_agent_gene_prompt(
                             user_input=self._loop_state.user_input or "",
                             tool_traces=self._loop_state.tool_traces or [],
@@ -1372,6 +1382,7 @@ class AgentLoop:
                         if gene_prompt:
                             self._loop_state.gene_creation_prompt = gene_prompt
                             self._loop_state.needs_agent_gene_creation = True
+                            self._loop_state.gene_creation_source = "complexity"  # 标记为复杂任务触发（主Agent处理）
                             logger.info("[AgentLoop] Mechanism B 检测到复杂任务，将提示 Agent 查看 Gene")
                         else:
                             # 添加详细日志帮助调试
@@ -1383,28 +1394,28 @@ class AgentLoop:
                             delta = self._gene_post_session_analyzer.calculate_score_delta(score)
                             logger.debug(f"[AgentLoop] Mechanism B 未触发 | score={score:.2f} delta={delta:+.2f} threshold=0.7")
 
-                    # Gene 创建：后台创建 Gene + 提示 Agent 查看
+                    # Gene 创建：根据来源选择处理方式
                     if self._loop_state and getattr(self._loop_state, 'needs_agent_gene_creation', False):
                         user_input_for_gene = getattr(self._loop_state, 'user_input', '')
                         gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
+                        gene_source = getattr(self._loop_state, 'gene_creation_source', '')
 
-                        # 1. 后台调用 LLM 创建 Gene（不阻塞主流程）
-                        if user_input_for_gene and self.llm:
-                            logger.info("[AgentLoop] 后台调用 LLM 创建 Gene")
-                            # 创建异步任务，不等待完成
-                            try:
-                                from app.agent.control.hard_constraints import GeneEvolution
-                                # 启动后台任务，不 await
-                                asyncio.create_task(self._create_gene_in_background(
-                                    user_input_for_gene, self._loop_state
-                                ))
-                            except Exception as e:
-                                logger.error("[AgentLoop] 启动后台 Gene 创建失败: %s", e)
-
-                        # 2. 将查看提示添加到对话中
-                        if gene_prompt:
-                            logger.info("[AgentLoop] 提示 Agent 查看 Gene")
-                            effective_memory.add_system_message(gene_prompt)
+                        if gene_source == "failure":
+                            # Mechanism A: 累计失败 -> 纯后台创建，不干扰主 Agent
+                            logger.info("[AgentLoop] Mechanism A: 累计失败触发，后台创建 Gene")
+                            if user_input_for_gene and self.llm:
+                                try:
+                                    from app.agent.control.hard_constraints import GeneEvolution
+                                    task = asyncio.create_task(self._create_gene_in_background(
+                                        user_input_for_gene, self._loop_state
+                                    ))
+                                    task.add_done_callback(self._on_gene_task_done)
+                                except Exception as e:
+                                    logger.error("[AgentLoop] 后台 Gene 创建失败: %s", e)
+                        elif gene_source == "complexity":
+                            # Mechanism B: 复杂任务 -> 主 Agent 处理（在最终回复后）
+                            # 这里只记录，不立即处理，等待最终回复后触发
+                            logger.info("[AgentLoop] Mechanism B: 复杂任务触发，将在最终回复后由主 Agent 处理")
 
                         # 重置标记
                         self._loop_state.needs_agent_gene_creation = False
@@ -1538,6 +1549,31 @@ class AgentLoop:
                     yield {"type": "thinking", "content": reasoning_text}
                 if after_json_text:
                     yield {"type": "content_chunk", "content": after_json_text}
+
+                # Mechanism B: 复杂任务触发，在最终回复后由主 Agent 处理 Gene
+                if self._loop_state and getattr(self._loop_state, 'gene_creation_source', '') == "complexity":
+                    gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
+                    if gene_prompt and not getattr(self._loop_state, 'gene_processing_done', False):
+                        logger.info("[AgentLoop] Mechanism B: 触发 Gene 评估轮次")
+                        effective_memory.add_system_message(gene_prompt)
+                        # 添加助手回复到 memory
+                        effective_memory.add_assistant_message(
+                            content,
+                            reasoning_content=response.reasoning_content
+                        )
+                        # 标记 Gene 处理已触发
+                        self._loop_state.gene_processing_done = True
+                        # 触发一次额外的 LLM 调用让主 Agent 处理 Gene
+                        yield {"type": "thinking", "content": "正在评估是否需要创建或进化 Gene..."}
+                        # 继续循环，让 LLM 处理 Gene 提示
+                        continue
+                    elif getattr(self._loop_state, 'gene_processing_done', False):
+                        # Gene 处理已完成，清除标记并结束
+                        logger.info("[AgentLoop] Mechanism B: Gene 评估完成")
+                        self._loop_state.gene_creation_source = ""
+                        self._loop_state.gene_creation_prompt = None
+                        self._loop_state.gene_processing_done = False
+                        self._loop_state.gene_tool_call_count = 0  # 重置工具调用计数
 
                 # 统一收尾
                 done_event = self._finalize_session(

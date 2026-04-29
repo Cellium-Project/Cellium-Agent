@@ -41,14 +41,8 @@ class ControlDecision:
     force_memory_compact: bool = False
     context_trim_level: str = "normal"  # normal / aggressive / minimal
 
-    # 参数化决策（替代 policy 字符串，为中期演进准备）
+    # 参数化决策
     params: Dict[str, Any] = field(default_factory=dict)
-    # 示例:
-    # {
-    #     "stuck_threshold": 3,
-    #     "repetition_threshold": 3,
-    #     "compress_ratio": 0.8,
-    # }
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典"""
@@ -125,10 +119,13 @@ class LoopState:
     # ===== Gene 创建状态 =====
     needs_agent_gene_creation: bool = False  # 是否需要提示 Agent 创建 Gene
     gene_creation_prompt: Optional[str] = None  # 提示 Agent 创建 Gene 的 Prompt
-    
+    gene_creation_source: str = ""  # Gene 创建来源: "failure"=累计失败触发, "complexity"=复杂任务触发
+    gene_processing_done: bool = False  # Gene 处理是否已完成（防止重复处理）
+    gene_tool_call_count: int = 0  # 当前任务工具调用计数（用于复杂度评估）
+
     # ===== Gene 失败追踪 =====
     gene_failure_count: int = 0  # 累积失败计数
-    gene_failure_history: List[Dict] = field(default_factory=list)  # 失败历史记录（最多3次）
+    gene_failure_history: List[Dict] = field(default_factory=list) 
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（用于持久化）"""

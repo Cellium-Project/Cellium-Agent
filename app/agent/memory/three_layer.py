@@ -82,6 +82,17 @@ class ThreeLayerMemory:
             snapshot_hash=snapshot_hash,
         )
 
+        try:
+            answer_summary = response[:500] if len(response) > 500 else response
+            self.repository.store_user_question(
+                question=user_input,
+                answer_summary=answer_summary,
+                archive_entry_id=source_id,
+                session_id=session_id,
+            )
+        except Exception as e:
+            logger.warning("[ThreeLayerMemory] 存储用户问题失败: %s", e)
+
         knowledge_items = self.extractor.extract_from_messages(user_input, response, normalized_messages)
         for index, item in enumerate(knowledge_items, 1):
             if self.extractor.is_noise(item.get("content", "")):
@@ -153,7 +164,9 @@ class ThreeLayerMemory:
 
         enriched = []
         for item in results:
-            archive_id = item.get("metadata", {}).get("archive_id")
+            metadata = item.get("metadata", {})
+            # 优先使用 archive_id，如果不存在则使用 archive_entry_id
+            archive_id = metadata.get("archive_id") or metadata.get("archive_entry_id")
             raw_conversation = self.archive.get_by_id(archive_id) if include_raw and archive_id else None
             if item.get("id"):
                 self.repository.increment_usage(item["id"])

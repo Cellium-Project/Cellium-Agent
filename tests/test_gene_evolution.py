@@ -194,8 +194,9 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         state.token_budget = 10000
         state.features = None
         state.elapsed_ms = 5000
-        state.gene_failure_count = 0  
+        state.gene_failure_count = 0
         state.gene_failure_history = []
+        state.gene_processing_done = False
 
         reward = evaluator.evaluate_with_gene_evolution(state, "test_task")
 
@@ -227,6 +228,7 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         state.elapsed_ms = 5000
         state.gene_failure_count = 1  
         state.gene_failure_history = [{"iteration": 4, "avoid_cue": "DON'T: First"}]
+        state.gene_processing_done = False
 
         reward = evaluator.evaluate_with_gene_evolution(state, "test_task", "测试输入")
 
@@ -256,8 +258,9 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         state.token_budget = 10000
         state.features = None
         state.elapsed_ms = 3000
-        state.gene_failure_count = 1  
+        state.gene_failure_count = 1
         state.gene_failure_history = [{"iteration": 2, "avoid_cue": "test"}]
+        state.gene_processing_done = False
 
         reward = evaluator.evaluate_with_gene_evolution(state, "test_task")
 
