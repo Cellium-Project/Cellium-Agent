@@ -42,8 +42,11 @@ class MemoryTool(BaseTool):
                         "command": {
                             "type": "string",
                             "description": "要执行的命令",
-                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene"],
+                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive"],
                         },
+                        "entry_id": {"type": "string", "description": "[read_archive] Archive entry ID，用于读取完整对话历史"},
+                        "page": {"type": "integer", "description": "[read_archive] 页码，默认 1"},
+                        "page_size": {"type": "integer", "description": "[read_archive] 每页字符数，默认 2000"},
                         "task_type": {"type": "string", "description": "[get_gene] Gene 任务类型"},
                         "query": {"type": "string", "description": "[search/forget] 搜索关键词或问题"},
                         "title": {"type": "string", "description": "[store/update] 记忆标题"},
@@ -104,20 +107,28 @@ class MemoryTool(BaseTool):
 
             items = []
             for item in results:
-                items.append(
-                    {
-                        "id": item.get("id"),
-                        "title": item.get("title", ""),
-                        "score": round(float(item.get("score", 0)), 4),
-                        "category": item.get("category", "?"),
-                        "note_type": item.get("note_type", ""),
-                        "schema_type": item.get("schema_type", "general"),
-                        "memory_key": item.get("memory_key", ""),
-                        "tags": item.get("tags", ""),
-                        "content": item.get("content", "")[:500],
-                        "source": item.get("source_file", ""),
-                    }
-                )
+                metadata = item.get("metadata", {})
+                result_item = {
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "score": round(float(item.get("score", 0)), 4),
+                    "category": item.get("category", "?"),
+                    "note_type": item.get("note_type", ""),
+                    "schema_type": item.get("schema_type", "general"),
+                    "memory_key": item.get("memory_key", ""),
+                    "tags": item.get("tags", ""),
+                    "content": item.get("content", "")[:500],
+                    "source": item.get("source_file", ""),
+                }
+
+                if metadata.get("memory_type") == "user_question":
+                    entry_id = metadata.get("archive_entry_id")
+                    if entry_id:
+                        result_item["archive_entry_id"] = entry_id
+                        result_item["hint"] = f"使用 memory.read_archive(entry_id='{entry_id}') 查看完整对话"
+
+                items.append(result_item)
+
             logger.info("[MemoryTool] search | query=%s | found=%d", query[:50], len(items))
             return {"success": True, "found": len(items), "query": query, "results": items}
         except Exception as e:
@@ -365,6 +376,75 @@ class MemoryTool(BaseTool):
         except Exception as e:
             logger.error("[MemoryTool] get_gene 失败 | error=%s", e)
             return {"success": False, "error": f"查询失败: {e}"}
+
+    def _cmd_read_archive(self, entry_id: str, page: int = 1, page_size: int = 2000) -> dict:
+        """读取 Archive 中的最终助手回复（支持分页）"""
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+        if not entry_id:
+            return {"success": False, "error": "需要提供 entry_id"}
+
+        page = max(1, page)
+        page_size = max(500, min(page_size, 8000)) 
+
+        try:
+            record = self.memory.archive.get_by_id(entry_id)
+            if not record:
+                return {"success": False, "error": f"未找到 Archive entry: {entry_id}"}
+
+            messages = record.get("messages", [])
+
+            assistant_response = None
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    assistant_response = msg.get("content", "")
+                    break
+
+            if not assistant_response:
+                return {"success": False, "error": "未找到助手回复"}
+
+            total_chars = len(assistant_response)
+            total_pages = (total_chars + page_size - 1) // page_size
+
+            start_idx = (page - 1) * page_size
+            end_idx = min(start_idx + page_size, total_chars)
+
+            if start_idx >= total_chars:
+                return {
+                    "success": True,
+                    "entry_id": entry_id,
+                    "page": page,
+                    "page_size": page_size,
+                    "total_pages": total_pages,
+                    "total_chars": total_chars,
+                    "answer": "",
+                    "has_more": False,
+                    "message": f"页码超出范围 (共 {total_pages} 页)",
+                }
+
+            paginated_answer = assistant_response[start_idx:end_idx]
+            has_more = end_idx < total_chars
+
+            result = {
+                "success": True,
+                "entry_id": entry_id,
+                "session_id": record.get("session_id"),
+                "time": record.get("time"),
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "total_chars": total_chars,
+                "answer": paginated_answer,
+                "has_more": has_more,
+            }
+
+            if has_more:
+                result["next_page_hint"] = f"使用 memory.read_archive(entry_id='{entry_id}', page={page + 1}) 查看下一页"
+
+            return result
+        except Exception as e:
+            logger.error("[MemoryTool] read_archive 失败 | error=%s", e)
+            return {"success": False, "error": f"读取失败: {e}"}
 
     # ================================================================
     # 内部方法

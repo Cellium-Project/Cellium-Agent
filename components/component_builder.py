@@ -85,12 +85,10 @@ class ComponentBuilder(BaseCell):
                 if isinstance(parsed, list):
                     for item in parsed:
                         if isinstance(item, str):
-                            # 简单字符串作为命令名
                             cmd_list.append({"name": item, "desc": f"执行 {item} 操作"})
                         elif isinstance(item, dict):
                             cmd_list.append(item)
             except json.JSONDecodeError:
-                # 非 JSON 格式时，解析失败，返回错误提示而非盲目分割
                 return {
                     "error": "commands 参数格式错误：必须是 JSON 数组格式",
                     "hint": (
@@ -104,7 +102,6 @@ class ComponentBuilder(BaseCell):
         if not cmd_list:
             cmd_list = [{"name": "execute", "desc": f"执行{description or cell_name}的主要功能"}]
 
-        # 验证命令名必须是合法 Python 标识符
         for cmd in cmd_list:
             cn = cmd.get("name", "execute")
             if not cn or not cn.isidentifier():
@@ -124,7 +121,6 @@ class ComponentBuilder(BaseCell):
                 "existing_file": str(file_path),
             }
 
-        # ── 生成命令方法代码 ──
         methods_parts = []
         for cmd in cmd_list:
             cn = cmd.get("name", "execute")
@@ -338,17 +334,36 @@ class ComponentBuilder(BaseCell):
             ),
         }
 
-    def _cmd_list(self, show_commands: bool = True) -> Dict[str, Any]:
+    def _cmd_list(
+        self,
+        show_commands: bool = False,
+        search: str = "",
+        page: int = 1,
+        page_size: int = 10,
+    ) -> Dict[str, Any]:
         """
         列出所有已注册的组件及其命令
-        
+
         Args:
-            show_commands: 是否显示每个组件的命令详情（默认 true）
-            
+            show_commands: 是否显示每个组件的命令详情（默认 false）
+            search: 按组件名模糊匹配（不区分大小写）
+            page: 页码（从 1 开始）
+            page_size: 每页数量（默认 10）
+
         Returns:
-            {"components": [{name, class, command_count, commands, is_tool}], "total": N}
-        
-        使用: component.list() 或 component.list(show_commands=false)
+            {
+                "components": [{name, class, command_count, commands, is_tool}],
+                "total": N,
+                "page": 当前页,
+                "total_pages": 总页数,
+                "has_next": 是否有下一页,
+                "has_prev": 是否有上一页
+            }
+
+        使用:
+            component.list()
+            component.list(show_commands=false)
+            component.list(search="file", page=1, page_size=5)
         """
         all_cells = get_all_cells()
         all_cmds = get_all_commands()
@@ -361,7 +376,7 @@ class ComponentBuilder(BaseCell):
         except Exception:
             pass
 
-        result = []
+        all_components = []
         components_with_issues = []
 
         for cname, cell in sorted(all_cells.items()):
@@ -383,7 +398,7 @@ class ComponentBuilder(BaseCell):
                     entry["has_issues"] = True
                     entry["issue_count"] = len(adapter._audit_issues)
                     entry["audit_score"] = getattr(adapter, '_audit_score', 0)
-                    entry["audit_hint"] = getattr(adapter, '_audit_hint_text', "")[:500]  # 截断显示
+                    entry["audit_hint"] = getattr(adapter, '_audit_hint_text', "")[:500]
                     components_with_issues.append(cname)
                 else:
                     entry["has_issues"] = False
@@ -392,7 +407,26 @@ class ComponentBuilder(BaseCell):
 
             if show_commands:
                 entry["commands"] = cmds
-            result.append(entry)
+            all_components.append(entry)
+
+        if search:
+            search_lower = search.lower()
+            all_components = [
+                c for c in all_components
+                if search_lower in c["name"].lower()
+            ]
+
+        total = len(all_components)
+        page_size = max(1, min(page_size, 50)) 
+        page = max(1, page)
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+        if page > total_pages:
+            page = total_pages
+
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_components = all_components[start_idx:end_idx]
 
         load_errors = get_load_errors()
         errors_list = []
@@ -404,8 +438,13 @@ class ComponentBuilder(BaseCell):
             })
 
         response = {
-            "components": result,
-            "total": len(result),
+            "components": paginated_components,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_prev": page > 1,
             "tools_registered": len(registered_tools),
             "components_dir": str(get_components_dir()),
             "load_errors": errors_list,
@@ -700,9 +739,18 @@ class MyComponent(BaseCell):
                 "list": {
                     "focused_command": topic,
                     "command_description": commands.get(topic),
+                    "params": {
+                        "show_commands": "是否显示命令详情（默认 false）",
+                        "search": "按组件名模糊匹配（不区分大小写）",
+                        "page": "页码（从 1 开始，默认 1）",
+                        "page_size": "每页数量（默认 10，最大 50）",
+                    },
                     "hint": (
-                        '调用示例: {"command":"list"} 或 {"command":"list","list_show_commands":true}\n'
-                        '注意：使用 list_show_commands 参数而非 show_commands'
+                        '调用示例:\n'
+                        '  - {"command":"list"}\n'
+                        '  - {"command":"list","show_commands":false}\n'
+                        '  - {"command":"list","search":"file","page":1,"page_size":5}\n'
+                        '返回: components, total, page, total_pages, has_next, has_prev'
                     ),
                 },
                 "info": {

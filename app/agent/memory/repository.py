@@ -272,6 +272,64 @@ class MemoryRepository:
             "sensitive": sensitive_state["sensitive"],
         }
 
+    def store_user_question(
+        self,
+        question: str,
+        answer_summary: str,
+        archive_entry_id: str,
+        session_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        存储用户问题及其关联的 archive entry
+
+        Args:
+            question: 用户问题
+            answer_summary: 答案摘要（用于长期记忆搜索）
+            archive_entry_id: archive entry ID，用于查看完整答案
+            session_id: 会话 ID
+            metadata: 额外元数据
+
+        Returns:
+            {"success": True, "id": ...}
+        """
+        if not question or not question.strip():
+            return {"success": False, "error": "问题不能为空"}
+        if not answer_summary or not answer_summary.strip():
+            return {"success": False, "error": "答案摘要不能为空"}
+        if not archive_entry_id:
+            return {"success": False, "error": "archive_entry_id 不能为空"}
+
+        meta = dict(metadata or {})
+        meta["archive_entry_id"] = archive_entry_id
+        meta["session_id"] = session_id
+        meta["memory_type"] = "user_question"
+
+        return self.upsert_memory(
+            title=question[:200], 
+            content=answer_summary,
+            category="qa", 
+            schema_type="general",
+            memory_key=f"qa:{question[:100]}",
+            metadata=meta,
+            merge_strategy="create_new", 
+        )
+
+    def get_archive_entry_by_question(self, question_record_id: str) -> Optional[str]:
+        """
+        根据问题记录 ID 获取关联的 archive entry ID
+
+        Args:
+            question_record_id: 问题记录的 ID
+
+        Returns:
+            archive entry ID 或 None
+        """
+        record = self._get_catalog_record(question_record_id)
+        if record and record.get("metadata", {}).get("memory_type") == "user_question":
+            return record["metadata"].get("archive_entry_id")
+        return None
+
     def search(
         self,
         query: str,

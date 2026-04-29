@@ -83,7 +83,27 @@ class CellToolAdapter(BaseTool):
 
         doc = (type(cell).__doc__ or "").strip()
         if doc:
-            self.description = doc.split('\n')[0].strip()
+            if len(doc) <= 400:
+                self.description = doc
+            else:
+                truncated = doc[:400]
+                last_period = max(
+                    truncated.rfind('。'),
+                    truncated.rfind('.'),
+                    truncated.rfind('\n')
+                )
+                if last_period > 100:
+                    truncated = truncated[:last_period + 1]
+
+                commands = cell.get_commands()
+                cmd_list = ", ".join(list(commands.keys())[:5])
+
+                self.description = (
+                    f"{truncated}\n"
+                    f"... (截断)\n\n"
+                    f"命令: {cmd_list}\n"
+                    f"用 {self.name}.help() 查看完整文档"
+                )
         else:
             commands = cell.get_commands()
             if commands:

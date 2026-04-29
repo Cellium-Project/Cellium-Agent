@@ -361,9 +361,19 @@ def cell_name(self) -> str:
         cls_doc = type(cell).__doc__ or ""
 
         if not cls_doc.strip():
-            warnings.append(
-                f"类 {class_name} 缺少 docstring。建议在 class 定义下方添加三引号文档，描述组件的功能、用途和使用场景。"
-            )
+            issues.append({
+                "rule": "has_class_docstring",
+                "severity": "error",
+                "message": f"类 {class_name} 缺少 docstring。",
+                "fix": '在 class 定义下方添加三引号文档，描述组件的功能、用途和使用场景。',
+                "example": '''class MyComponent(BaseCell):
+    """
+    组件功能描述
+
+    详细说明组件的用途、使用场景和关键特性。
+    """
+    ...''',
+            })
 
         return issues, warnings
 
