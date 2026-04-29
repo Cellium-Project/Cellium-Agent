@@ -9,23 +9,27 @@ logger = logging.getLogger(__name__)
 
 def get_call_signature(call: Dict) -> str:
     """
-    生成工具调用的唯一签名（工具+命令）
+    生成工具调用的唯一签名（工具+命令+关键参数）
 
     用于区分同一工具的不同操作，例如：
       - memory:store ≠ memory:search ≠ memory:update
       - component:generate ≠ component:list
-      - file:/path/a.txt ≠ file:/path/b.txt
+      - file:read:/a.txt ≠ file:write:/a.txt:hash(abc)
       - shell:ls ≠ shell:pwd
 
-    自动检测：如果 arguments 中包含 command 参数，则使用它作为签名的一部分
+    签名策略：
+      - 读操作：路径/查询参数（读同一内容=重复）
+      - 写操作：路径 + 内容摘要（写不同内容≠重复）
+      - 编辑操作：路径 + 目标内容摘要
 
     Args:
         call: 工具调用记录，包含 tool/tool_name 和 arguments/args
 
     Returns:
-        签名字符串，格式为 "tool_name:command" 或仅 "tool_name"
+        签名字符串
     """
-    # 防御性检查：处理 None 或非字典类型
+    import hashlib
+
     if not call or not isinstance(call, dict):
         return "unknown"
 
@@ -35,28 +39,57 @@ def get_call_signature(call: Dict) -> str:
     if not isinstance(args, dict):
         args = {}
 
-    # 通用检测：如果参数中有 command 字段，则使用它区分不同操作
-    # 这适用于所有使用 command 参数的工具（组件工具 + 内置工具如 memory）
+    def _content_hash(content: str, length: int = 8) -> str:
+        if not content:
+            return ""
+        return hashlib.md5(content.encode('utf-8', errors='replace')).hexdigest()[:length]
+
     if "command" in args:
         command = args.get("command", "default")
+
+        if tool_name == "file":
+            path = args.get("path", args.get("file", ""))
+
+            if command == "read":
+                return f"{tool_name}:read:{path}"
+            elif command == "write":
+                content = args.get("content", "")
+                h = _content_hash(content)
+                return f"{tool_name}:write:{path}:{h}"
+            elif command == "edit":
+                old_str = args.get("old_string", "")
+                h = _content_hash(old_str)
+                return f"{tool_name}:edit:{path}:{h}"
+            elif command == "list":
+                dir_path = args.get("dir_path", ".")
+                return f"{tool_name}:list:{dir_path}"
+            elif command == "delete":
+                return f"{tool_name}:delete:{path}"
+            elif command == "truncate":
+                start = args.get("start", 0)
+                end = args.get("end", "")
+                return f"{tool_name}:truncate:{path}:{start}-{end}"
+            elif command == "insight":
+                mode = args.get("mode", "structure")
+                query = args.get("query", "")[:30]
+                return f"{tool_name}:insight:{path}:{mode}:{query}"
+            else:
+                return f"{tool_name}:{command}:{path}"
+
         return f"{tool_name}:{command}"
 
-    # 特殊处理：file 工具使用路径区分
     if tool_name == "file":
         path = args.get("path", args.get("file", ""))
         return f"{tool_name}:{path}"
 
-    # 特殊处理：shell 工具使用命令内容区分
     if tool_name == "shell":
         cmd = args.get("command", args.get("cmd", ""))[:80]
         return f"{tool_name}:{cmd}"
 
-    # 特殊处理：web_fetch 工具使用 action 参数区分不同操作
     if tool_name == "web_fetch":
         action = args.get("action", "open")
         return f"{tool_name}:{action}"
 
-    # 其他工具：仅返回工具名（保持当前行为）
     return tool_name
 
 
