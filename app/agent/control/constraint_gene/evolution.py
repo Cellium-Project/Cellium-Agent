@@ -809,7 +809,7 @@ MUST NOT: <应该避免的错误做法>
             gene = results[0]
             metadata = gene.get("metadata", {})
 
-            usage_count = metadata.get("usage_count", 0) + 1
+            usage_count = metadata.get("usage_count", 0)
             success_count = metadata.get("success_count", 0) + 1
 
             result_updates = cls._update_recent_results(metadata, True, reward, elapsed_ms)
@@ -822,9 +822,8 @@ MUST NOT: <应该避免的错误做法>
                 memory_key=gene.get("memory_key", f"gene:{task_type}"),
                 metadata={
                     **metadata,
-                    "usage_count": usage_count,
                     "success_count": success_count,
-                    "success_rate": success_count / usage_count,
+                    "success_rate": success_count / max(usage_count, 1),
                     "last_success_at": datetime.now().isoformat(),
                     **result_updates,
                 }

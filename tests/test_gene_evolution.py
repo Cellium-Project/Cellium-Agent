@@ -145,9 +145,9 @@ class TestGeneEvolution(unittest.TestCase):
 
         mock_repo.upsert_memory.assert_called_once()
         call_args = mock_repo.upsert_memory.call_args
-        self.assertEqual(call_args.kwargs["metadata"]["usage_count"], 6)
+        self.assertEqual(call_args.kwargs["metadata"]["usage_count"], 5)
         self.assertEqual(call_args.kwargs["metadata"]["success_count"], 4)
-        self.assertEqual(call_args.kwargs["metadata"]["success_rate"], 4/6)
+        self.assertEqual(call_args.kwargs["metadata"]["success_rate"], 4/5)
         self.assertIn("recent_results", call_args.kwargs["metadata"])
         self.assertEqual(call_args.kwargs["metadata"]["consecutive_success"], 1)
 

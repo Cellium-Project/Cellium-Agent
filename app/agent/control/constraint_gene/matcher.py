@@ -198,6 +198,14 @@ MUST NOT: Rely on single source, copy without understanding
             if best_match:
                 metadata = best_match.get("metadata", {})
                 task_type = metadata.get("task_type", "unknown")
+                
+                try:
+                    if cls._repository and best_match.get("id"):
+                        cls._repository.increment_usage(best_match["id"])
+                        logger.debug(f"[TaskSignalMatcher] Gene 使用次数增加 | task_type={task_type}")
+                except Exception:
+                    pass
+                
                 return {
                     "task_type": task_type,
                     "gene_template": best_match.get("content", ""),
