@@ -15,7 +15,7 @@ permissions:
   pull-requests: write  
 
 env:
-  VERSION: "1.1.2.27"
+  VERSION: "1.1.2.28"
   PY_VER: "3.12.10"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
