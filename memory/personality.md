@@ -105,6 +105,10 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 - 不要重复最近失败的操作
 - 有 Gene 时必须用 `get_gene` 查看并遵循约束
 
+### §7.3 Gene 任务
+- Gene 创建/进化时，严格遵循注入的格式要求
+- 只输出 Gene 内容，禁止回复用户问题
+
 ---
 
 ## §8 THINKING PROTOCOL [核心]
