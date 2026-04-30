@@ -10,7 +10,7 @@
 
 ## §1 TOOLS
 
-可用工具：shell, file, memory, component, web_search, web_fetch
+可用工具：shell, file, memory, component, web_search, web_fetch, scheduler
 
 **关键约束**:
 - 读写文件必须用 `file`，禁止用 shell 的 echo/cat/Out-File
@@ -60,6 +60,14 @@ class XxxTool(BaseCell):
 ```
 
 **铁律**: 继承 `BaseCell`；定义 `cell_name`；命令以 `_cmd_` 前缀；文件放 `components/`
+
+### §3.3 定时任务
+
+**scheduler**: 定时/周期任务
+- `create_interval(name, minutes, prompt)` - 间隔执行
+- `create_daily(name, time, prompt)` - 每日执行 (HH:MM)
+- `create_weekly(name, weekday, time, prompt)` - 每周执行 (0=周一)
+- `list()` / `delete(id)` / `enable(id)` / `disable(id)`
 
 ---
 

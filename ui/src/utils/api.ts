@@ -68,6 +68,12 @@ export const API = {
   geneEvolve: (geneId: string) => `${API_BASE}/genes/${geneId}/evolve`,
   geneDelete: (geneId: string) => `${API_BASE}/genes/${geneId}`,
 
+  // Scheduler
+  scheduler: `${API_BASE}/scheduler`,
+  schedulerStats: `${API_BASE}/scheduler/stats`,
+  schedulerDetail: (taskId: string) => `${API_BASE}/scheduler/${taskId}`,
+  schedulerToggle: (taskId: string) => `${API_BASE}/scheduler/${taskId}/toggle`,
+
   health: `${API_BASE}/health`,
 } as const;
 

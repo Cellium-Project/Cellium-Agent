@@ -32,6 +32,8 @@ export interface Message {
   toolTraces?: ToolTrace[];
   htmlContent?: string | null;
   timeline?: TimelineSegment[];  // ★ 新增：有序时间线
+  type?: 'scheduler_trigger';  // 特殊消息类型
+  schedulerTaskName?: string;  // 定时任务名称
 }
 
 export interface HistoryResponse {
@@ -74,6 +76,15 @@ export interface SSEEvent {
   suggestions?: string[];
   // Hybrid 状态
   phase?: string;
+  // 定时任务标记
+  scheduler_task?: boolean;
+  // 定时任务信息
+  scheduler_task_info?: {
+    task_id: string;
+    task_name: string;
+    triggered_at: string;
+    run_count: number;
+  };
 }
 
 // Model Config

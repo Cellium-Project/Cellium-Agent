@@ -55,6 +55,7 @@ EXEMPTED_NAMES: Set[str] = {
     "qq_files",
     "telegram_files",
     "web_fetch",
+    "scheduler",
 }
 
 # 是否启用沙箱模式（可通过配置关闭）
@@ -356,6 +357,83 @@ class CellToolAdapter(BaseTool):
                 "command": cmd_name if isinstance(command, dict) else command,
                 "_source": f"component:{self.name}",
                 "status": "error",
+            }
+
+    def execute_with_context(self, arguments: Dict[str, Any], session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """带上下文执行命令（由 ToolExecutor 调用）
+        
+        Args:
+            arguments: 命令参数字典
+            session_id: 当前会话 ID
+            platform_context: 平台上下文（如 target_id）
+        """
+        load_error = self._check_load_error()
+        if load_error:
+            return load_error
+        
+        all_args = dict(arguments) if isinstance(arguments, dict) else {}
+        
+        cmd_name = all_args.pop("command", None)
+        if cmd_name:
+            cmd_name = cmd_name.strip()
+        
+        if not cmd_name:
+            cmd_name = self._infer_command(all_args)
+        
+        if not cmd_name:
+            return {
+                "success": False,
+                "error": "无法推断命令，请显式指定 command 参数",
+                "_source": f"component:{self.name}",
+            }
+        
+        target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}"
+        if not hasattr(self._cell, target_method_name):
+            available_cmds = list(self.get_commands().keys())
+            return {
+                "success": False,
+                "error": f"未知命令 '{cmd_name}'，可用: {available_cmds}",
+                "_source": f"component:{self.name}",
+            }
+        
+        target_method = getattr(self._cell, target_method_name)
+        sig = inspect.signature(target_method)
+        valid_params = {p for p in sig.parameters if p != "self"}
+        
+        cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
+        
+        if session_id and "session_id" in valid_params:
+            cleaned_args["session_id"] = session_id
+        
+        if platform_context and "platform_context" in valid_params:
+            cleaned_args["platform_context"] = platform_context
+        
+        logger.info(
+            "[CellToolAdapter] execute_with_context | 命令=%s | session=%s | 参数=%s",
+            cmd_name, session_id, list(cleaned_args.keys()),
+        )
+        
+        try:
+            result = self._cell.execute(cmd_name, **cleaned_args)
+            
+            if not isinstance(result, dict):
+                result = {"result": result}
+            
+            result.setdefault("_source", f"component:{self.name}")
+            return result
+            
+        except Exception as e:
+            import traceback
+            logger.error(
+                "[CellToolAdapter] execute_with_context 失败: %s\n%s",
+                e, traceback.format_exc()
+            )
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "command": cmd_name,
+                "_source": f"component:{self.name}",
             }
 
     def _infer_command(self, all_args: dict) -> str:

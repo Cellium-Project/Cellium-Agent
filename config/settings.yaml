@@ -18,3 +18,4 @@ enabled_components:
 - components.telegram_files.TelegramFiles
 - components.skill_manager.SkillManager
 - components.web_search.WebSearch
+- components.scheduler.Scheduler

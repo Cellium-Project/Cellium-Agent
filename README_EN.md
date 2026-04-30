@@ -41,6 +41,7 @@ Core design: Self-learning Agent driven by Control Loop, with adaptive decision 
 | Event-Driven Architecture | Publish-subscribe pattern based on EventBus, loose coupling between components |
 | Flash Mode | Skip memory injection to accelerate simple tasks |
 | Multi-Channel Access | Support external platforms like QQ (currently supports QQ Bot, Telegram, more coming), unified message routing, file transfer and injection through ChannelManager |
+| Scheduled Tasks | Support interval tasks, daily tasks, weekly tasks. Create tasks via natural language, Agent executes and pushes results to the corresponding platform when triggered |
 
 ## Quick Start
 
@@ -541,6 +542,25 @@ components/
     │   └── SKILL.md
     └── _index.json           # Index file (auto-generated)
 ```
+
+### Scheduled Tasks (scheduler)
+
+![Scheduled Tasks](tests/img/scheduler.png)
+
+Three task types are supported:
+
+| Type | Description | Example |
+|------|-------------|---------|
+| Interval Task | Execute at fixed intervals | Remind to drink water every 30 minutes |
+| Daily Task | Execute at a fixed time every day | Send daily report at 9 AM |
+| Weekly Task | Execute at a fixed time every week | Send weekly report at 10 AM every Monday |
+
+**Usage**: Create scheduled tasks via natural language. When triggered, Agent automatically executes the task content. Supports complex task scenarios:
+- "Check server status and report results every hour"
+- "Query today's weather at 8 AM every day"
+- "Summarize this week's work progress every Friday at 5 PM"
+
+Task execution results are automatically pushed to the platform where the task was created (WebUI/QQ/Telegram).
 
 ## Directory Structure
 

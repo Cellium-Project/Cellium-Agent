@@ -29,12 +29,40 @@ class BaseCell(ICell, metaclass=AutoInjectMeta):
         return self.__class__.__name__.lower()
     
     def execute(self, command: str, *args, **kwargs) -> Any:
-        # 清理命令名（去除可能的特殊字符）
         command = command.strip().strip('>"\'')
         method_name = f"{self.COMMAND_PREFIX}{command}"
         if hasattr(self, method_name):
             return getattr(self, method_name)(*args, **kwargs)
         raise CommandNotFoundError(command, self.cell_name)
+    
+    def execute_with_context(self, arguments: Dict[str, Any], session_id: str = None, platform_context: Dict[str, Any] = None) -> Any:
+        """带上下文执行命令（由 ToolExecutor 调用）
+        
+        Args:
+            arguments: 命令参数字典，包含 'command' 和其他参数
+            session_id: 当前会话 ID
+            platform_context: 平台上下文（如 target_id）
+        """
+        command = arguments.get("command", "")
+        if not command:
+            return {"error": "Missing 'command' in arguments"}
+        
+        command = command.strip().strip('>"\'')
+        method_name = f"{self.COMMAND_PREFIX}{command}"
+        
+        if not hasattr(self, method_name):
+            raise CommandNotFoundError(command, self.cell_name)
+        
+        kwargs = {k: v for k, v in arguments.items() if k != "command"}
+        
+        if session_id:
+            kwargs["session_id"] = session_id
+        
+        if platform_context:
+            kwargs["platform_context"] = platform_context
+        
+        method = getattr(self, method_name)
+        return method(**kwargs)
     
     def get_commands(self) -> Dict[str, str]:
         commands = {}

@@ -20,6 +20,7 @@ from app.server.routes.channels import router as channels_router
 from app.server.routes.session_events import router as session_events_router
 from app.server.routes.skills import router as skills_router
 from app.server.routes.gene import router as gene_router
+from app.server.routes.scheduler import router as scheduler_router
 
 
 @asynccontextmanager
@@ -31,6 +32,36 @@ async def lifespan_context(app: FastAPI):
         import logging
         platforms = ", ".join(channel_mgr.list_platforms())
         logging.getLogger(__name__).info(f"[Channel] 通道已在启动时自动连接: {platforms}")
+    
+    from app.core.scheduler import get_scheduler_manager, start_executor
+    from app.agent.loop import AgentLoopManager
+    
+    scheduler_manager = get_scheduler_manager()
+    scheduler_manager.start()
+    await scheduler_manager.start_loop()
+    
+    loop_manager = AgentLoopManager.get_instance()
+    start_executor(loop_manager)
+    
+    import asyncio
+    import sys
+    import os
+    
+    async def open_browser_delayed():
+        await asyncio.sleep(0.1)
+        try:
+            import webbrowser
+            from app.core.util.agent_config import get_config
+            cfg = get_config()
+            host = cfg.get("server.host", "127.0.0.1")
+            port = cfg.get("server.port", 18000)
+            webbrowser.open(f"http://{host}:{port}")
+        except Exception:
+            pass
+    
+    if sys.platform == "win32" or sys.platform == "darwin" or os.environ.get("DISPLAY"):
+        asyncio.create_task(open_browser_delayed())
+    
     yield
 
 
@@ -70,10 +101,22 @@ def create_app() -> FastAPI:
     app.include_router(session_events_router)
     app.include_router(skills_router)
     app.include_router(gene_router)
+    app.include_router(scheduler_router)
 
     html_dir = cfg.get("server.static_dir") or os.path.join(os.path.dirname(__file__), "..", "..", "html")
     if os.path.exists(html_dir):
-        app.mount("/", StaticFiles(directory=html_dir, html=True), name="static")
+        app.mount("/assets", StaticFiles(directory=os.path.join(html_dir, "assets")), name="assets")
+        app.mount("/font", StaticFiles(directory=os.path.join(html_dir, "font")), name="font")
+        
+        from fastapi.responses import FileResponse
+        
+        @app.get("/")
+        async def serve_index():
+            return FileResponse(os.path.join(html_dir, "index.html"))
+        
+        @app.get("/logo.png")
+        async def serve_logo():
+            return FileResponse(os.path.join(html_dir, "logo.png"))
 
     @app.middleware("http")
     async def _suppress_favicon(request, call_next):

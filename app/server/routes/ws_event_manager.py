@@ -178,10 +178,6 @@ class WSConnectionManager:
 
     async def broadcast(self, message: WSMessage):
         """广播到所有客户端"""
-        if self._is_duplicate_event(message.data):
-            logger.debug(f"[WSManager] 事件已推送过，跳过广播 | event_id={message.data.get('event_id')}")
-            return
-
         if not self._clients:
             logger.debug("[WSManager] 无客户端，跳过广播")
             return
@@ -279,11 +275,14 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
 
     async def _do_publish():
         manager = WSConnectionManager.get_instance_sync()
+        
         if session_id:
-            await manager.send_to_session(session_id, message)
+            if session_id in manager._session_clients and manager._session_clients[session_id]:
+                await manager.send_to_session(session_id, message)
+            else:
+                await manager.broadcast(message)
         else:
             await manager.broadcast(message)
-        logger.debug("[WSManager] 推送事件 | type=%s | session=%s", event_type, session_id)
 
     try:
         loop = asyncio.get_event_loop()

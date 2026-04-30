@@ -214,7 +214,11 @@ class ChannelManager:
                     break
                 try:
                     event_type = event.get("type")
-                    if event_type == "thinking":
+                    if event_type == "scheduler_task_start":
+                        task_name = event.get("task_name", "未命名任务")
+                        task_id = event.get("task_id", "unknown")
+                        await safe_send(f"⏰ **定时任务触发**: {task_name}")
+                    elif event_type == "thinking":
                         thinking_content = event.get("content", "Thinking...")
                         if thinking_content:
                             await safe_send(f"> 💭 **Thinking**: {thinking_content}")
@@ -286,6 +290,43 @@ class ChannelManager:
         self._channel_task_consumers[session_id] = asyncio.create_task(
             self._consume_channel_task_queue(message, session_id, queue)
         )
+
+    def start_scheduler_task_queue_consumer(self, platform_context: Dict[str, Any], session_id: str, queue: asyncio.Queue, task_info: Dict[str, Any] = None):
+        """
+        为定时任务启动队列消费者
+        
+        Args:
+            platform_context: 平台上下文信息
+            session_id: 会话 ID
+            queue: 事件队列
+            task_info: 定时任务信息（可选）
+        """
+        message = UnifiedMessage(
+            platform=platform_context.get("platform", "unknown"),
+            user_id=platform_context.get("user_id", ""),
+            content="[定时任务]",
+            message_type=platform_context.get("message_type", "c2c"),
+            msg_id=f"scheduler_{int(time.time())}",
+            group_id=platform_context.get("group_id"),
+            channel_id=platform_context.get("channel_id"),
+            guild_id=platform_context.get("guild_id"),
+        )
+        
+        if task_info:
+            task_name = task_info.get("task_name", "未命名任务")
+            task_id = task_info.get("task_id", "unknown")
+            scheduler_notice = {
+                "type": "scheduler_task_start",
+                "task_name": task_name,
+                "task_id": task_id,
+            }
+            try:
+                queue.put_nowait(scheduler_notice)
+            except Exception as e:
+                logger.warning(f"[ChannelManager] Failed to enqueue scheduler notice: {e}")
+        
+        self._ensure_channel_task_consumer(message, session_id, queue)
+        logger.info(f"[ChannelManager] 已为定时任务启动队列消费者 | session={session_id} | platform={message.platform}")
 
     async def _start_channel_task(self, message: UnifiedMessage, session_id: str, content_to_agent: str, session_memory, system_injection: Optional[str]):
         from app.server.task_manager import get_task_manager

@@ -243,7 +243,19 @@ interface ChatMessageProps {
 }
 
 export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
+  const { t } = useTranslation();
   const isUser = message.role === 'user';
+  
+  if (message.type === 'scheduler_trigger') {
+    return (
+      <div className="message-row scheduler-trigger">
+        <div className="scheduler-trigger-bubble">
+          <Icons.Clock size={16} />
+          <span>{t('common.schedulerTrigger')}：{message.schedulerTaskName}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`message-row ${message.role}`}>

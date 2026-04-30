@@ -685,6 +685,12 @@ class MemoryRepository:
         record_id = str(identifier)
         if record_id.isdigit():
             self.searcher.increment_usage(rowid=int(record_id))
+            record = self._get_catalog_record(record_id)
+            if record:
+                metadata = record.get("metadata", {})
+                metadata["usage_count"] = metadata.get("usage_count", 0) + 1
+                record["metadata"] = metadata
+                self._save_catalog()
 
     def get_record(self, identifier: str) -> Optional[Dict[str, Any]]:
         return self._public_record(str(identifier))

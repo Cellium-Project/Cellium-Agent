@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../stores/appStore';
 import { API, patchJSON } from '../utils/api';
 import { Icons } from './Icons';
-import type { Session } from '../types';
+import type { Session, TimelineSegment, ToolTrace } from '../types';
 
 function formatTimeAgo(isoStr: string, t: (key: string) => string): string {
   try {
@@ -16,6 +16,11 @@ function formatTimeAgo(isoStr: string, t: (key: string) => string): string {
   } catch {
     return '';
   }
+}
+
+interface SchedulerContext {
+  timeline: TimelineSegment[];
+  traces: ToolTrace[];
 }
 
 /** 根据元数据生成显示名称 */
@@ -39,6 +44,8 @@ export const Sidebar: React.FC = () => {
     setShowSettingsPage,
     showSettingsPage,
   } = useAppStore();
+  
+  const schedulerContextRef = useRef<SchedulerContext>({ timeline: [], traces: [] });
 
   useEffect(() => {
     fetchSessions();
@@ -74,6 +81,134 @@ export const Sidebar: React.FC = () => {
           if (data.type === 'pong') return;
           if (data.type === 'connected') {
             console.log('[WS] Connected:', data.message);
+            return;
+          }
+          if (data.type === 'chat_event') {
+            if (data.data?.scheduler_task) {
+              const eventSessionId = data.data.session_id;
+              const { currentSessionId, addMessage, updateStreamingMessage, setIsStreaming } = useAppStore.getState();
+              const ctx = schedulerContextRef.current;
+              
+              if (currentSessionId === eventSessionId) {
+                if (data.data.type === 'hybrid_phase') {
+                  ctx.timeline = [];
+                  ctx.traces = [];
+                  setIsStreaming(true);
+                  updateStreamingMessage({
+                    role: 'assistant',
+                    content: '',
+                    toolTraces: [],
+                    timeline: [],
+                  });
+                  
+                  if (data.data.scheduler_task_info) {
+                    const info = data.data.scheduler_task_info;
+                    addMessage({
+                      role: 'user',
+                      content: '',
+                      type: 'scheduler_trigger',
+                      schedulerTaskName: info.task_name,
+                    });
+                  }
+                }
+                
+                if (data.data.type === 'thinking') {
+                  const content = data.data.content || '';
+                  const isSystemDefault = ['正在思考...', '正在压缩会话记忆...', '正在根据控制决策压缩上下文...', 
+                                            '分析结果中...', '输出被截断，正在补充...', '正在分析工具定义...']
+                                            .includes(content);
+                  if (!isSystemDefault && content.trim()) {
+                    ctx.timeline.push({ kind: 'thinking', content });
+                    updateStreamingMessage({
+                      role: 'assistant',
+                      content: '',
+                      toolTraces: ctx.traces,
+                      timeline: [...ctx.timeline],
+                    });
+                  }
+                }
+                
+                if (data.data.type === 'tool_start' && data.data.tool && data.data.arguments) {
+                  ctx.timeline.push({
+                    kind: 'tool',
+                    tool: data.data.tool,
+                    arguments: data.data.arguments,
+                    duration_ms: 0,
+                    description: data.data.description,
+                    status: 'running',
+                    call_id: data.data.call_id,
+                  });
+                  ctx.traces.push({
+                    tool: data.data.tool,
+                    arguments: data.data.arguments,
+                    duration_ms: 0,
+                    description: data.data.description,
+                    call_id: data.data.call_id,
+                  });
+                  updateStreamingMessage({
+                    role: 'assistant',
+                    content: '',
+                    toolTraces: [...ctx.traces],
+                    timeline: [...ctx.timeline],
+                  });
+                }
+                
+                if (data.data.type === 'tool_result') {
+                  const targetCallId = data.data.call_id;
+                  if (targetCallId) {
+                    for (let i = ctx.timeline.length - 1; i >= 0; i--) {
+                      const seg = ctx.timeline[i];
+                      if (seg.kind === 'tool' && seg.call_id === targetCallId && seg.status === 'running') {
+                        seg.status = 'done';
+                        seg.duration_ms = data.data.duration_ms || 0;
+                        seg.result = data.data.result;
+                        break;
+                      }
+                    }
+                    for (let i = ctx.traces.length - 1; i >= 0; i--) {
+                      if (ctx.traces[i].call_id === targetCallId) {
+                        ctx.traces[i] = {
+                          ...ctx.traces[i],
+                          result: data.data.result,
+                          duration_ms: data.data.duration_ms || 0,
+                        };
+                        break;
+                      }
+                    }
+                    updateStreamingMessage({
+                      role: 'assistant',
+                      content: '',
+                      toolTraces: [...ctx.traces],
+                      timeline: [...ctx.timeline],
+                    });
+                  }
+                }
+                
+                if (data.data.type === 'content_chunk' && data.data.content) {
+                  const { streamingMessage: currentStreaming } = useAppStore.getState();
+                  const currentContent = currentStreaming?.content || '';
+                  updateStreamingMessage({
+                    role: 'assistant',
+                    content: currentContent + data.data.content,
+                    toolTraces: ctx.traces,
+                    timeline: ctx.timeline,
+                  });
+                } else if (data.data.type === 'done') {
+                  const { streamingMessage: finalStreaming } = useAppStore.getState();
+                  const finalContent = finalStreaming?.content || data.data.content || '';
+                  if (finalContent.trim()) {
+                    addMessage({
+                      role: 'assistant',
+                      content: finalContent,
+                      toolTraces: ctx.traces,
+                      timeline: ctx.timeline,
+                    });
+                  }
+                  updateStreamingMessage(null);
+                  setIsStreaming(false);
+                }
+              }
+            }
             return;
           }
           if (data.type === 'session_created') {

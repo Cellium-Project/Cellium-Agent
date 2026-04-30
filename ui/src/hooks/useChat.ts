@@ -152,7 +152,13 @@ export function useChat() {
 
   const handleChatEvent = useCallback((event: SSEEvent, ctx: ReturnType<typeof buildStreamingContext>, sessionId: string, connectionId: number) => {
     if (connectionId !== connectionIdRef.current) return;
+    
+    if (event.scheduler_task) {
+      return;
+    }
+    
     if (event.session_id && event.session_id !== sessionId) return;
+    
     if (event.event_id && event.event_id > ctx.lastEventId) {
       ctx.lastEventId = event.event_id;
       lastEventIdBySessionRef.current[sessionId] = event.event_id;

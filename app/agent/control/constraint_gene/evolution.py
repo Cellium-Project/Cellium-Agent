@@ -107,7 +107,7 @@ class GeneEvolution:
                 "at": datetime.now().isoformat(),
             })
 
-            usage_count = metadata.get("usage_count", 0) + 1
+            usage_count = metadata.get("usage_count", 0)
             success_count = metadata.get("success_count", 0)
 
             if is_failure:
@@ -115,7 +115,7 @@ class GeneEvolution:
             else:
                 failure_count = metadata.get("failure_count", 0)
 
-            success_rate = success_count / max(usage_count, 1)
+            success_rate = success_count / max(usage_count, 1) if usage_count > 0 else 0.0
 
             metadata_updates = {
                 "version": new_version,

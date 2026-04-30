@@ -1726,3 +1726,113 @@ class AgentLoop:
                 )
             except Exception as bus_e:
                 logger.warning("[AgentLoop] 发布持久化错误事件失败: %s", bus_e)
+
+    async def run_scheduler_task(
+        self,
+        task_info: Dict[str, Any],
+        session_id: str = None,
+    ) -> Dict[str, Any]:
+        """
+        执行定时任务（与用户对话使用相同的 AgentLoop 流程）
+
+        Args:
+            task_info: 定时任务信息
+                - task_id: 任务ID
+                - task_name: 任务名称
+                - prompt: 任务提示词
+                - triggered_at: 触发时间
+                - run_count: 执行次数
+            session_id: 会话ID
+
+        Returns:
+            执行结果
+        """
+        task_id = task_info.get("task_id", "unknown")
+        task_name = task_info.get("task_name", "未命名任务")
+        prompt = task_info.get("prompt", "")
+        triggered_at = task_info.get("triggered_at", "")
+        run_count = task_info.get("run_count", 0)
+
+        effective_session = session_id or self.session_id
+
+        logger.info(
+            "[AgentLoop] 执行定时任务 | task_id=%s | name=%s | session=%s | run_count=%d",
+            task_id, task_name, effective_session, run_count
+        )
+
+        scheduler_context = f"""[定时任务触发]
+任务ID: {task_id}
+任务名称: {task_name}
+触发时间: {triggered_at}
+执行次数: {run_count}
+
+任务内容:
+{prompt}
+
+---
+请执行上述定时任务。"""
+
+        scheduler_task_info = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "triggered_at": triggered_at,
+            "run_count": run_count,
+        }
+
+        try:
+            result = {"type": "error", "content": "", "iterations": 0, "tool_traces": []}
+            event_counter = 0
+            first_event = True
+            
+            async for event in self.run_stream(scheduler_context, session_id=effective_session):
+                event_counter += 1
+                decorated_event = {
+                    **event,
+                    "event_id": event_counter,
+                    "session_id": effective_session,
+                    "scheduler_task": True,
+                }
+                
+                if first_event:
+                    decorated_event["scheduler_task_info"] = scheduler_task_info
+                    first_event = False
+                
+                try:
+                    from app.server.routes.ws_event_manager import ws_publish_event
+                    ws_publish_event("chat_event", decorated_event, session_id=None)
+                except Exception as ws_e:
+                    logger.debug("[AgentLoop] WebSocket 推送失败: %s", ws_e)
+                
+                if event["type"] == "done":
+                    result = event
+                elif event["type"] in {"stopped", "control_loop_stop", "heuristic_stop"}:
+                    result = {
+                        **result,
+                        **event,
+                        "content": event.get("content", result.get("content", "")),
+                        "iterations": event.get("iteration", result.get("iterations", 0)),
+                        "tool_traces": event.get("tool_traces", result.get("tool_traces", [])),
+                    }
+                elif event["type"] == "error":
+                    raise Exception(event.get("error", "AgentLoop stream error"))
+
+            return {
+                "success": True,
+                "task_id": task_id,
+                "task_name": task_name,
+                "result": result,
+                "executed_at": triggered_at,
+            }
+
+        except Exception as e:
+            logger.error(
+                "[AgentLoop] 定时任务执行失败 | task_id=%s | error=%s",
+                task_id, str(e)
+            )
+            return {
+                "success": False,
+                "task_id": task_id,
+                "task_name": task_name,
+                "error": str(e),
+                "executed_at": triggered_at,
+            }
