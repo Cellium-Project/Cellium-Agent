@@ -589,16 +589,24 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                             try:
                                 from app.core.util.component_sandbox import ComponentSandbox
                                 sandbox_name = cell_name_lower
-                                ComponentSandbox.reload_sandbox(sandbox_name)
-                                logger.info(f"[HotReload] 已重启沙箱: {sandbox_name}")
+                                sandbox = ComponentSandbox.reload_sandbox(sandbox_name)
+                                sandbox.initialize(str(file_path), item["class_name"])
+                                logger.info(f"[HotReload] 已重启并初始化沙箱: {sandbox_name}")
+                                instance = sandbox
+                                info = {
+                                    "class_name": item["class_name"],
+                                    "module_path": item["module_path"],
+                                    "source_file": str(file_path),
+                                    "is_new": False,
+                                }
                             except Exception as e:
                                 logger.error(f"[HotReload] 重启沙箱失败 {item['class_name']}: {e}")
                                 logger.error(f"[HotReload] 组件 {item['class_name']} 热更新中止：沙箱重启失败")
                                 report["failed"] = report.get("failed", [])
                                 report["failed"].append({"name": cell_name_lower, "class": item["class_name"], "reason": f"沙箱重启失败: {e}"})
-                                continue  
-
-                        instance, info = _instantiate_component(item["module_path"])
+                                continue
+                        else:
+                            instance, info = _instantiate_component(item["module_path"])
                         register_cell(instance)
                         _loaded_files.add(file_path)
                         _file_mtimes[file_path] = current_mtime
@@ -751,17 +759,15 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
         stale_sandboxes = [name for name in all_sandboxes if name not in current_names]
         
         for name in stale_sandboxes:
-            # 获取已存在的沙箱实例（不会创建新的）
             sandbox = ComponentSandbox._get_existing_sandbox(name)
             if sandbox is None:
                 continue
             
-            # 检查沙箱是否正在执行命令
-            is_busy = sandbox.is_alive()
-            
+            is_busy = sandbox.is_busy()
+
             if is_busy and not force:
                 report["sandboxes_skipped"].append(name)
-                report["warnings"].append(f"沙箱 {name} 可能正在运行，跳过清理（使用 force=True 强制清理）")
+                report["warnings"].append(f"沙箱 {name} 正在执行命令，跳过清理（使用 force=True 强制清理）")
                 continue
             
             if not dry_run:

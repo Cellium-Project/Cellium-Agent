@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 ActionBandit - Action-based Bandit
-
-核心升级（v3）：
-  1. Heuristic → bias 模式（Bandit 主导学习）
-  2. 新增 retry action
-  3. n-step return reward（短期序列优化）
 """
 
 import json
@@ -18,8 +13,6 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-
-# Action 类型：新增 retry
 ACTION_TYPES = ["continue", "retry", "redirect", "compress", "terminate"]
 ACTION_PRIORITY = ["continue", "retry", "compress", "redirect", "terminate"]
 

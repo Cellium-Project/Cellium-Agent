@@ -162,6 +162,7 @@ class SandboxProcess:
         self._initialized = False
         self._module_path = None
         self._class_name = None
+        self._is_executing = False 
 
     def start(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None, retry: int = 2):
         """
@@ -238,26 +239,28 @@ class SandboxProcess:
             logger.error("[Sandbox] Process is dead | pid=%s | module=%s", self._process.pid if self._process else None, self._module_path)
             raise RuntimeError("Sandbox not initialized or process dead")
 
-        # 发送执行请求
-        self._input_queue.put({
-            "action": "execute",
-            "command": command,
-            "args": args,
-            "kwargs": kwargs
-        })
-
-        # 等待结果
+        self._is_executing = True
         try:
-            result = self._output_queue.get(timeout=self._timeout)
-            if result.get("status") == "ok":
-                return result.get("result")
-            else:
-                error = result.get("error", "Unknown error")
-                error_type = result.get("error_type", "Error")
-                raise RuntimeError(f"[{error_type}] {error}")
-        except Exception as e:
-            logger.error("[Sandbox] Command execution failed: %s", e)
-            raise
+            self._input_queue.put({
+                "action": "execute",
+                "command": command,
+                "args": args,
+                "kwargs": kwargs
+            })
+
+            try:
+                result = self._output_queue.get(timeout=self._timeout)
+                if result.get("status") == "ok":
+                    return result.get("result")
+                else:
+                    error = result.get("error", "Unknown error")
+                    error_type = result.get("error_type", "Error")
+                    raise RuntimeError(f"[{error_type}] {error}")
+            except Exception as e:
+                logger.error("[Sandbox] Command execution failed: %s", e)
+                raise
+        finally:
+            self._is_executing = False
 
     def get_commands(self) -> list:
         """获取组件支持的命令列表"""
@@ -285,15 +288,29 @@ class SandboxProcess:
         except:
             return False
 
+    def is_busy(self) -> bool:
+        if self._is_executing:
+            return True
+        
+        if not self._initialized or not self._process or not self._process.is_alive():
+            return False
+        
+        try:
+            self._input_queue.put({"action": "ping"})
+            result = self._output_queue.get(timeout=2)
+            if result.get("status") == "pong":
+                return False
+        except:
+            pass
+        
+        return True
+
     def stop(self):
         """停止沙箱进程"""
         if self._process and self._process.is_alive():
             try:
-                # 发送终止信号
                 self._input_queue.put(None)
-                # 等待进程结束
                 self._process.join(timeout=5)
-                # 强制终止
                 if self._process.is_alive():
                     self._process.terminate()
                     self._process.join(timeout=2)
@@ -364,6 +381,12 @@ class ComponentSandbox:
 
     def is_alive(self) -> bool:
         return self._sandbox is not None and self._sandbox._process is not None and self._sandbox._process.is_alive()
+
+    def is_busy(self) -> bool:
+        """检查沙箱是否正在执行命令"""
+        if not self._sandbox:
+            return False
+        return self._sandbox.is_busy()
 
     @classmethod
     def get_sandbox(cls, name: str) -> 'ComponentSandbox':

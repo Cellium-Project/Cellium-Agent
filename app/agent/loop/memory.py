@@ -167,6 +167,28 @@ class MemoryManager:
         messages = self._truncate_long_tool_contents(messages)
         return self._fix_message_sequence(messages)
 
+    def remove_system_messages_by_content(self, content_substring: str) -> int:
+        """移除包含指定内容的系统消息
+
+        Args:
+            content_substring: 内容子字符串，用于匹配要移除的系统消息
+
+        Returns:
+            移除的消息数量
+        """
+        original_count = len(self.messages)
+        self.messages = [
+            msg for msg in self.messages
+            if not (
+                msg.get("role") == "system"
+                and content_substring in msg.get("content", "")
+            )
+        ]
+        removed_count = original_count - len(self.messages)
+        if removed_count > 0:
+            logger.debug(f"[MemoryManager] 移除了 {removed_count} 条系统消息")
+        return removed_count
+
     def _truncate_long_tool_contents(self, messages: List[Dict]) -> List[Dict]:
         """截断过长的工具结果内容"""
         for msg in messages:
