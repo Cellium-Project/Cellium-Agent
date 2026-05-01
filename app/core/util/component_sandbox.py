@@ -91,6 +91,12 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
             component_class = getattr(module, class_name)
             component = component_class(**init_args)
 
+            if hasattr(component, "on_load"):
+                try:
+                    component.on_load()
+                except Exception as e:
+                    logger.warning("[Sandbox] on_load failed: %s", e)
+
         output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
 
         while True:

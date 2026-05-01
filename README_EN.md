@@ -42,6 +42,7 @@ Core design: Self-learning Agent driven by Control Loop, with adaptive decision 
 | Flash Mode | Skip memory injection to accelerate simple tasks |
 | Multi-Channel Access | Support external platforms like QQ (currently supports QQ Bot, Telegram, more coming), unified message routing, file transfer and injection through ChannelManager |
 | Scheduled Tasks | Support interval tasks, daily tasks, weekly tasks. Create tasks via natural language, Agent executes and pushes results to the corresponding platform when triggered |
+| Background Component Events | Components can run in background and actively trigger Agent execution, supporting real-time scenarios (e.g., crypto price monitoring, real-time data push, Agent auto-analysis) |
 
 ## Quick Start
 
@@ -561,6 +562,18 @@ Three task types are supported:
 - "Summarize this week's work progress every Friday at 5 PM"
 
 Task execution results are automatically pushed to the platform where the task was created (WebUI/QQ/Telegram).
+
+### Background Component Event Trigger
+
+Components can run in the background and actively trigger Agent execution, enabling real-time data push and auto-analysis.
+
+**Real-time Scenario Examples**:
+- Crypto price monitoring: Push data when price breaks threshold, Agent auto-analyzes trends
+- Server status monitoring: Push alerts when CPU/memory is abnormal, Agent generates diagnostic reports
+- Real-time news subscription: Push when keyword news detected, Agent auto-summarizes key points
+- Database change listening: Push when critical data changes, Agent executes corresponding logic
+
+Event trigger results are automatically pushed to the corresponding session (WebUI/QQ/Telegram).
 
 ## Directory Structure
 

@@ -15,7 +15,7 @@ permissions:
   pull-requests: write  
 
 env:
-  VERSION: "1.2.2.31"
+  VERSION: "1.2.2.32"
   PY_VER: "3.12.10"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -82,13 +82,25 @@ jobs:
           kill $PID || true
 
   build:
-    name: Build for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build for ${{ matrix.os }}${{ matrix.arch && format(' ({0})', matrix.arch) || '' }}
+    runs-on: ${{ matrix.runner }}
     needs: [test]
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: Windows
+            runner: windows-latest
+            arch: x64
+          - os: Linux
+            runner: ubuntu-latest
+            arch: x64
+          - os: Linux
+            runner: ubuntu-24.04-arm
+            arch: arm64
+          - os: macOS
+            runner: macos-latest
+            arch: arm64
 
     steps:
       - uses: actions/checkout@v6
@@ -121,7 +133,9 @@ jobs:
       - name: Get Unix Runtime (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          if [ "${{ runner.os }}" == "Linux" ]; then
+          if [ "${{ matrix.os }}" == "Linux" ] && [ "${{ matrix.arch }}" == "arm64" ]; then
+            URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260303/cpython-3.12.13+20260303-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+          elif [ "${{ matrix.os }}" == "Linux" ]; then
             URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260303/cpython-3.12.13+20260303-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
           else
             URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260303/cpython-3.12.13+20260303-aarch64-apple-darwin-install_only_stripped.tar.gz"
@@ -141,6 +155,11 @@ jobs:
       - name: Install Dependencies (Unix)
         if: runner.os != 'Windows'
         run: |
+          if [ "${{ matrix.arch }}" == "arm64" ] && [ "${{ matrix.os }}" == "Linux" ]; then
+            echo "ARM64 Linux: ensuring build tools available"
+            sudo apt-get update || true
+            sudo apt-get install -y build-essential || true
+          fi
           python -m pip install setuptools wheel --target release/libs
           python -m pip install -r requirements.txt --target release/libs
           python -m pip install exceptiongroup --target release/libs
@@ -227,8 +246,10 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          if [ "${{ matrix.os }}" == "macos-latest" ]; then
+          if [ "${{ matrix.os }}" == "macOS" ]; then
             PKG_NAME="Cellium-Agent-macOS"
+          elif [ "${{ matrix.arch }}" == "arm64" ]; then
+            PKG_NAME="Cellium-Agent-Linux-ARM64"
           else
             PKG_NAME="Cellium-Agent-Linux"
           fi
@@ -268,7 +289,8 @@ jobs:
 
             ### 下载 / Download
             - **Windows**: `Cellium-Agent-Windows.zip`
-            - **Linux**: `Cellium-Agent-Linux.tar.gz`
+            - **Linux (x64)**: `Cellium-Agent-Linux.tar.gz`
+            - **Linux (ARM64)**: `Cellium-Agent-Linux-ARM64.tar.gz`
             - **macOS**: `Cellium-Agent-macOS.tar.gz`
 
             ### 使用 / Usage
@@ -279,5 +301,15 @@ jobs:
             **English**: Extract and run the launcher for your platform.
             - Windows: Double-click `CelliumAgent.exe`
             - Linux/macOS: Run `./start-cellium.sh`
+
+            ### 注意 / Notes
+            **Linux ARM64**: 如需使用网页搜索功能，请安装 Chromium 浏览器：
+            ```bash
+            sudo apt install chromium-browser
+            ```
+            **Linux ARM64**: For web search feature, install Chromium:
+            ```bash
+            sudo apt install chromium-browser
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

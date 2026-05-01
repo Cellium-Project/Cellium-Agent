@@ -44,8 +44,8 @@ _intent: "正在{动作}：{对象}"
 ```
 1. component.generate("名称", "描述")
 2. file write/edit 实现逻辑
-3. component.reload() 或等 3 秒
 ```
+组件创建后自动加载，无需手动 reload。
 
 ### §3.2 组件规范
 ```python
@@ -68,6 +68,52 @@ class XxxTool(BaseCell):
 - `create_daily(name, time, prompt)` - 每日执行 (HH:MM)
 - `create_weekly(name, weekday, time, prompt)` - 每周执行 (0=周一)
 - `list()` / `delete(id)` / `enable(id)` / `disable(id)`
+
+### §3.4 后台组件
+
+后台组件可主动通知 Agent（如监控到价格变化）。
+
+**创建后台组件**:
+```
+1. component.template(style="background")  # 获取模板
+2. file.write() 写入 components/xxx.py
+3. 实现监控逻辑（在 _background_loop 中）
+```
+
+**核心代码**:
+```python
+def _background_loop(self):
+    while self._running:
+        if self._detect_change():
+            for sid in self._target_sessions:
+                self._trigger_agent("事件消息", sid)
+        time.sleep(60)
+
+def _trigger_agent(self, message: str, session_id: str):
+    """推送消息到 Agent（自动路由到对应通道）"""
+    import httpx
+    from app.core.util.agent_config import get_config
+    cfg = get_config()
+    host, port = cfg.get("server.host", "127.0.0.1"), cfg.get("server.port", 18000)
+    httpx.post(f"http://{host}:{port}/api/component/event", json={
+        "session_id": session_id,  # default/telegram:user123/qq:group:123
+        "message": message,
+        "source": self.cell_name,
+        "event_type": "background_trigger"
+    })
+
+def _cmd_add_session(self, session_id: str = None):
+    """添加目标 session（自动注入当前对话）"""
+```
+
+**使用**:
+```
+xxx.add_session()  # 添加当前对话为通知目标
+xxx.start()        # 启动后台监控
+xxx.status()       # 查看状态
+```
+
+组件触发事件后，Agent 会收到消息并回复到该对话。
 
 ---
 

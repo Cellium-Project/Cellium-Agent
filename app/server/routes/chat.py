@@ -65,6 +65,14 @@ class StopRequest(BaseModel):
     session_id: Optional[str] = "default"
 
 
+class ComponentEventRequest(BaseModel):
+    """组件事件推送请求"""
+    session_id: str
+    message: str
+    source: Optional[str] = "component"
+    event_type: Optional[str] = "notification"
+
+
 class SessionResponse(BaseModel):
     sessions: List[dict]
     total: int
@@ -248,6 +256,134 @@ async def stop_chat(request: StopRequest):
         return {"status": "stopped", "session_id": session_id}
 
     return {"status": "not_found", "session_id": session_id}
+
+
+@router.post("/component/event")
+async def component_event(request: ComponentEventRequest):
+    """
+    组件事件推送 — 后台组件主动触发 Agent
+    
+    组件后台运行时检测到事件，通过此 API 推送消息到指定 session 的 Agent 对话。
+    复用定时任务的入口逻辑，自动路由到正确的通道（WebSocket 或外部平台）。
+    
+    使用场景:
+      - 实时监控检测到变化时通知 Agent
+      - 后台任务完成时通知 Agent
+      - 外部事件触发 Agent 执行
+    """
+    from app.agent.loop.agent_loop_manager import AgentLoopManager
+    from app.channels import ChannelManager
+    import time
+    
+    session_id = request.session_id
+    message = request.message.strip()
+    
+    if not message:
+        return {"status": "ignored", "reason": "empty_message", "session_id": session_id}
+    
+    task_mgr = get_task_manager()
+    session_mgr = get_session_manager()
+    session_info = session_mgr.get_or_create(session_id)
+    
+    # 构建组件事件上下文
+    component_context = f"""[组件事件触发]
+来源: {request.source}
+事件类型: {request.event_type}
+
+事件内容:
+{message}
+
+---
+请处理上述组件事件。"""
+    
+    # 检查是否有运行中的任务
+    if task_mgr.has_running_task(session_id):
+        queued = task_mgr.enqueue_supplement_message(session_id, {
+            "content": message,
+            "source": request.source,
+            "msg_id": f"component_{int(time.time())}",
+            "received_at": time.time(),
+            "platform": "component",
+            "message_type": "event",
+        })
+        if queued:
+            logger.info(f"[component_event] 追加到运行中任务 | session={session_id} | source={request.source}")
+            return {"status": "queued", "session_id": session_id, "mode": "supplement"}
+        else:
+            return {"status": "not_running", "session_id": session_id}
+    
+    # 获取 AgentLoop
+    agent_loop = _get_agent_loop()
+    if agent_loop is None:
+        return {"status": "error", "error": "Agent 未初始化", "session_id": session_id}
+    
+    # 提取 platform_context（复用定时任务的逻辑）
+    platform_context = None
+    if hasattr(session_info, "platform_context") and session_info.platform_context:
+        platform_context = session_info.platform_context
+        logger.debug(f"[component_event] 从 session 恢复 platform_context | session={session_id}")
+    elif ":" in session_id:
+        parts = session_id.split(":", 2)
+        if len(parts) >= 2:
+            platform = parts[0]
+            user_id = parts[1]
+            platform_context = {
+                "platform": platform,
+                "user_id": user_id,
+                "group_id": parts[2] if len(parts) > 2 else None,
+                "message_type": "group" if len(parts) > 2 else "c2c",
+            }
+            session_info.platform_context = platform_context
+            logger.debug(f"[component_event] 从 session_id 构建 platform_context | session={session_id}")
+    
+    # 根据是否有 platform_context 选择执行路径
+    if platform_context:
+        # 外部平台通道（Telegram/QQ等）
+        try:
+            channel_mgr = ChannelManager.get_instance()
+            
+            started = await task_mgr.start_task(
+                session_id=session_id,
+                agent_loop=agent_loop,
+                user_input=component_context,
+                memory=session_info.memory,
+            )
+            
+            if not started:
+                return {"status": "error", "error": "无法启动任务", "session_id": session_id}
+            
+            queue = task_mgr.get_queue(session_id)
+            if queue is None:
+                return {"status": "error", "error": "任务队列不可用", "session_id": session_id}
+            
+            task_info = {
+                "source": request.source,
+                "event_type": request.event_type,
+            }
+            channel_mgr.start_scheduler_task_queue_consumer(platform_context, session_id, queue, task_info, trigger_type="component")
+            
+            logger.info(f"[component_event] 通过外部平台启动 | session={session_id} | platform={platform_context.get('platform')}")
+            return {"status": "started", "session_id": session_id, "mode": "platform_channel", "platform": platform_context.get("platform")}
+            
+        except Exception as e:
+            logger.error(f"[component_event] 外部平台执行失败 | session={session_id} | error={e}")
+            return {"status": "error", "error": str(e), "session_id": session_id}
+    else:
+        # WebSocket 通道（WebUI）
+        try:
+            result = await agent_loop.run_scheduler_task({
+                "task_id": f"component_{request.source}",
+                "task_name": f"组件事件: {request.source}",
+                "prompt": message,
+                "triggered_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "run_count": 1,
+            }, session_id=session_id)
+            
+            logger.info(f"[component_event] 通过 WebSocket 完成 | session={session_id} | source={request.source}")
+            return {"status": "completed", "session_id": session_id, "mode": "websocket", "result": result}
+        except Exception as e:
+            logger.error(f"[component_event] WebSocket 执行失败 | session={session_id} | error={e}")
+            return {"status": "error", "error": str(e), "session_id": session_id}
 
 
 # ── 会话管理 API ───────────────────────────────────────────

@@ -317,22 +317,44 @@ class ComponentBuilder(BaseCell):
         except Exception as e:
             return {"success": False, "error": f"\u5199\u5165\u6587\u4ef6\u5931\u8d25: {e}"}
 
-        return {
-            "success": True,
-            "message": f"\u7ec4\u4ef6 '{cell_name}' \u5df2\u521b\u5efa\uff01",
-            "file_path": str(file_path),
-            "cell_name": cell_name,
-            "class_name": class_name,
-            "module_path": f"components.{name}.{class_name}",
-            "commands": [{c["name"]: c["desc"]} for c in cmd_list],
-            "has_help_method": True,
-            "has_agent_helper": True,
-            "agent_helper_note": "组件包含 _run_agent(prompt) 方法，可启动 Agent 循环执行任务",
-            "next_step": (
-                "\u7ec4\u4ef6\u5c06\u5728\u70ed\u63d2\u62cb\u7cfb\u7edf\u68c0\u6d4b\u5230\u540e\u81ea\u52a8\u52a0\u8f7d\uff08\u7ea73\u79d2\u5185\u751f\u6548\uff09"
-                "\uff0c\u6216\u8c03\u7528 component.reload() \u7acb\u5373\u52a0\u8f7d"
-            ),
-        }
+        # 自动触发重载
+        try:
+            from app.core.util.components_loader import hot_reload
+            from app.core.di.container import get_container as get_di_container
+            try:
+                container = get_di_container()
+            except Exception:
+                container = None
+            reload_result = hot_reload(container=container)
+            
+            try:
+                from app.core.util.component_tool_registry import get_component_tool_registry
+                tool_registry = get_component_tool_registry()
+                tool_registry.sync_from_components_loader()
+            except Exception:
+                pass
+                
+            return {
+                "success": True,
+                "message": f"\u7ec4\u4ef6 '{cell_name}' \u5df2\u521b\u5efa\u5e76\u52a0\u8f7d\uff01",
+                "file_path": str(file_path),
+                "cell_name": cell_name,
+                "class_name": class_name,
+                "module_path": f"components.{name}.{class_name}",
+                "commands": [{c["name"]: c["desc"]} for c in cmd_list],
+                "has_help_method": True,
+                "has_agent_helper": True,
+                "agent_helper_note": "组件包含 _run_agent(prompt) 方法，可启动 Agent 循环执行任务",
+                "reload_result": reload_result,
+            }
+        except Exception as e:
+            return {
+                "success": True,
+                "message": f"\u7ec4\u4ef6 '{cell_name}' \u5df2\u521b\u5efa\uff0c\u4f46\u91cd\u8f7d\u5931\u8d25: {e}",
+                "file_path": str(file_path),
+                "cell_name": cell_name,
+                "hint": "\u8bf7\u624b\u52a8\u8c03\u7528 component.reload()",
+            }
 
     def _cmd_list(
         self,
@@ -532,7 +554,7 @@ class ComponentBuilder(BaseCell):
         获取组件模板代码
         
         Args:
-            style: minimal / full / example
+            style: minimal / full / example / background
             
         Returns:
             {"template": 代码文本, "style": 风格名}
@@ -562,6 +584,143 @@ class MyComponent(BaseCell):
         return {"success": True, "name": self.cell_name, "commands": cmds, "notes": ["\u586b\u5199\u8be6\u7ec6\u7528\u6cd5"]}
 '''
 
+        templates["background"] = '''# -*- coding: utf-8 -*-
+"""
+\u540e\u53f0\u76d1\u63a7\u7ec4\u4ef6 \u2014 \u6301\u7eed\u8fd0\u884c\u7684\u540e\u53f0\u4efb\u52a1
+
+\u529f\u80fd:
+  - \u7ec4\u4ef6\u52a0\u8f7d\u65f6\u81ea\u52a8\u542f\u52a8\u540e\u53f0\u7ebf\u7a0b
+  - Agent \u53ef\u901a\u8fc7\u547d\u4ee4\u63a7\u5236\uff08start/stop/status\uff09
+  - \u53ef\u4e3b\u52a8\u89e6\u53d1 Agent \u6267\u884c\u4efb\u52a1
+
+\u4f7f\u7528\u573a\u666f:
+  - \u5b9e\u65f6\u76d1\u63a7\uff08\u4ef7\u683c\u3001\u65e5\u5fd7\u3001\u7cfb\u7edf\u72b6\u6001\u7b49\uff09
+  - \u5b9a\u65f6\u68c0\u67e5\uff08\u670d\u52a1\u5065\u5eb7\u68c0\u67e5\u3001\u6570\u636e\u540c\u6b65\u7b49\uff09
+  - \u4e8b\u4ef6\u89e6\u53d1\uff08\u68c0\u6d4b\u5230\u53d8\u5316\u65f6\u901a\u77e5 Agent\uff09
+"""
+
+import threading
+import time
+from typing import Any, Dict
+from app.core.interface.base_cell import BaseCell
+
+
+class BackgroundMonitor(BaseCell):
+    """\u540e\u53f0\u76d1\u63a7\u7ec4\u4ef6"""
+
+    def __init__(self):
+        super().__init__()
+        self._running = False
+        self._thread = None
+        self._counter = 0
+        self._target_sessions = []  # 目标 session 列表
+
+    @property
+    def cell_name(self) -> str:
+        return "background_monitor"
+
+    def on_load(self):
+        """\u7ec4\u4ef6\u52a0\u8f7d\u65f6\u81ea\u52a8\u542f\u52a8\u540e\u53f0\u4efb\u52a1"""
+        super().on_load()
+        self._start_background()
+
+    def on_unload(self):
+        """\u7ec4\u4ef6\u5378\u8f7d\u65f6\u505c\u6b62\u540e\u53f0\u4efb\u52a1"""
+        self._stop_background()
+
+    def _start_background(self):
+        """\u542f\u52a8\u540e\u53f0\u7ebf\u7a0b"""
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._background_loop, daemon=True)
+        self._thread.start()
+
+    def _stop_background(self):
+        """\u505c\u6b62\u540e\u53f0\u7ebf\u7a0b"""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    def _background_loop(self):
+        """\u540e\u53f0\u5faa\u73af \u2014 \u5728\u8fd9\u91cc\u5b9e\u73b0\u76d1\u63a7\u903b\u8f91"""
+        while self._running:
+            try:
+                self._counter += 1
+                # === 在这里实现你的监控逻辑 ===
+                # 示例：检测到变化时通知所有目标 session
+                # if self._detect_change():
+                #     for session_id in self._target_sessions:
+                #         self._trigger_agent("检测到变化，请处理", session_id)
+            except Exception as e:
+                self.logger.error(f"\u540e\u53f0\u4efb\u52a1\u51fa\u9519: {e}")
+            time.sleep(60)
+
+    def _trigger_agent(self, message: str, session_id: str = None):
+        """\u4e3b\u52a8\u89e6\u53d1 Agent \u6267\u884c\u4efb\u52a1
+        
+        \u63a8\u9001\u6d88\u606f\u5230\u6307\u5b9a session \u7684 Agent \u5bf9\u8bdd\uff0c\u7c7b\u4f3c\u5b9a\u65f6\u4efb\u52a1\u7684\u673a\u5236\u3002
+        - \u5982\u679c\u8be5 session \u6709\u8fd0\u884c\u4e2d\u7684\u4efb\u52a1\uff0c\u6d88\u606f\u4f1a\u8ffd\u52a0\u5230\u5f53\u524d\u4efb\u52a1
+        - \u5982\u679c\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684\u4efb\u52a1\uff0c\u4f1a\u542f\u52a8\u65b0\u4efb\u52a1
+        """
+        import httpx
+        if not session_id:
+            self.logger.warning("_trigger_agent \u9700\u8981 session_id \u53c2\u6570")
+            return {"success": False, "error": "session_id is required"}
+        try:
+            from app.core.util.agent_config import get_config
+            cfg = get_config()
+            host = cfg.get("server.host", "127.0.0.1")
+            port = cfg.get("server.port", 18000)
+            base_url = f"http://{host}:{port}"
+        except Exception:
+            base_url = "http://127.0.0.1:18000"
+        try:
+            response = httpx.post(
+                f"{base_url}/api/component/event",
+                json={"session_id": session_id, "message": message, "source": self.cell_name, "event_type": "background_trigger"},
+                timeout=10.0
+            )
+            result = response.json()
+            self.logger.info(f"\u5df2\u89e6\u53d1 Agent | session={session_id} | status={result.get(\'status\')}")
+            return {"success": True, "result": result}
+        except Exception as e:
+            self.logger.error(f"\u89e6\u53d1 Agent \u5931\u8d25: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _cmd_start(self) -> Dict[str, Any]:
+        """\u542f\u52a8\u540e\u53f0\u76d1\u63a7\u4efb\u52a1"""
+        self._start_background()
+        return {"success": True, "message": "\u540e\u53f0\u76d1\u63a7\u5df2\u542f\u52a8", "running": self._running}
+
+    def _cmd_stop(self) -> Dict[str, Any]:
+        """\u505c\u6b62\u540e\u53f0\u76d1\u63a7\u4efb\u52a1"""
+        self._stop_background()
+        return {"success": True, "message": "\u540e\u53f0\u76d1\u63a7\u5df2\u505c\u6b62", "running": self._running}
+
+    def _cmd_status(self) -> Dict[str, Any]:
+        """\u83b7\u53d6\u540e\u53f0\u76d1\u63a7\u72b6\u6001"""
+        return {
+            "running": self._running,
+            "counter": self._counter,
+            "target_sessions": self._target_sessions,
+            "thread_alive": self._thread.is_alive() if self._thread else False,
+        }
+
+    def _cmd_add_session(self, session_id: str = None) -> Dict[str, Any]:
+        """\u6dfb\u52a0\u76ee\u6807 session\uff08\u4e0d\u4f20\u5219\u4f7f\u7528\u5f53\u524d\u5bf9\u8bdd\uff09"""
+        if session_id and session_id not in self._target_sessions:
+            self._target_sessions.append(session_id)
+        return {"success": True, "target_sessions": self._target_sessions}
+
+    def _cmd_remove_session(self, session_id: str) -> Dict[str, Any]:
+        """\u79fb\u9664\u76ee\u6807 session"""
+        if session_id in self._target_sessions:
+            self._target_sessions.remove(session_id)
+        return {"success": True, "target_sessions": self._target_sessions}
+'''
+
         templates["full"] = None  # 太长不内联，下面动态读取
         templates["example"] = None
 
@@ -582,7 +741,7 @@ class MyComponent(BaseCell):
                 templates["example"] = templates["minimal"]
 
         template = templates.get(style, templates["minimal"])
-        return {"success": True, "template": template, "style": style, "available_styles": ["minimal", "full", "example"]}
+        return {"success": True, "template": template, "style": style, "available_styles": ["minimal", "full", "example", "background"]}
 
     def _cmd_reload(self) -> Dict[str, Any]:
         """手动触发热重载扫描"""

@@ -683,14 +683,26 @@ class MemoryRepository:
 
     def increment_usage(self, identifier: str):
         record_id = str(identifier)
+        record = None
+        
         if record_id.isdigit():
             self.searcher.increment_usage(rowid=int(record_id))
             record = self._get_catalog_record(record_id)
-            if record:
-                metadata = record.get("metadata", {})
-                metadata["usage_count"] = metadata.get("usage_count", 0) + 1
-                record["metadata"] = metadata
-                self._save_catalog()
+        else:
+            record = self._find_record_by_memory_key(record_id)
+        
+        if record:
+            metadata = record.get("metadata", {})
+            metadata["usage_count"] = metadata.get("usage_count", 0) + 1
+            record["metadata"] = metadata
+            self._save_catalog()
+
+    def _find_record_by_memory_key(self, memory_key: str) -> Optional[Dict[str, Any]]:
+        """通过 memory_key 查找记录"""
+        for rec in self._catalog.get("records", {}).values():
+            if rec.get("memory_key") == memory_key:
+                return rec
+        return None
 
     def get_record(self, identifier: str) -> Optional[Dict[str, Any]]:
         return self._public_record(str(identifier))

@@ -80,6 +80,17 @@ class GeneEvolution:
         except Exception:
             return False
 
+    @staticmethod
+    def _ensure_valid_usage_count(usage_count: int, success_count: int) -> int:
+        """确保 usage_count 不小于 success_count"""
+        return max(usage_count, success_count)
+
+    @staticmethod
+    def _calculate_success_rate(success_count: int, usage_count: int) -> float:
+        """计算成功率，确保结果在 0-1 范围内"""
+        valid_usage = max(usage_count, success_count, 1)
+        return min(success_count / valid_usage, 1.0) if valid_usage > 0 else 0.0
+
     @classmethod
     def _update_gene(
         cls,
@@ -115,7 +126,8 @@ class GeneEvolution:
             else:
                 failure_count = metadata.get("failure_count", 0)
 
-            success_rate = success_count / max(usage_count, 1) if usage_count > 0 else 0.0
+            usage_count = cls._ensure_valid_usage_count(usage_count, success_count)
+            success_rate = cls._calculate_success_rate(success_count, usage_count)
 
             metadata_updates = {
                 "version": new_version,
@@ -552,10 +564,8 @@ MUST NOT: <应该避免的错误做法>
                 "at": datetime.now().isoformat(),
             }]
 
-            if existing_usage > 0:
-                success_rate = existing_success / existing_usage
-            else:
-                success_rate = 0.5
+            existing_usage = cls._ensure_valid_usage_count(existing_usage, existing_success)
+            success_rate = cls._calculate_success_rate(existing_success, existing_usage) if existing_usage > 0 else 0.5
 
             TaskSignalMatcher._repository.upsert_memory(
                 title=f"Gene: {task_type}",
@@ -812,6 +822,9 @@ MUST NOT: <应该避免的错误做法>
             usage_count = metadata.get("usage_count", 0)
             success_count = metadata.get("success_count", 0) + 1
 
+            usage_count = cls._ensure_valid_usage_count(usage_count, success_count)
+            success_rate = cls._calculate_success_rate(success_count, usage_count)
+
             result_updates = cls._update_recent_results(metadata, True, reward, elapsed_ms)
 
             TaskSignalMatcher._repository.upsert_memory(
@@ -822,8 +835,9 @@ MUST NOT: <应该避免的错误做法>
                 memory_key=gene.get("memory_key", f"gene:{task_type}"),
                 metadata={
                     **metadata,
+                    "usage_count": usage_count,
                     "success_count": success_count,
-                    "success_rate": success_count / max(usage_count, 1),
+                    "success_rate": success_rate,
                     "last_success_at": datetime.now().isoformat(),
                     **result_updates,
                 }
