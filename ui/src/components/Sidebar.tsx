@@ -35,9 +35,11 @@ export const Sidebar: React.FC = () => {
     sessions,
     currentSessionId,
     sidebarCollapsed,
+    mobileSidebarOpen,
     createSession,
     switchSession,
     toggleSidebar,
+    toggleMobileSidebar,
     fetchSessions,
     updateSession,
     removeSession,
@@ -267,7 +269,11 @@ export const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+    <>
+      {/* Mobile Overlay */}
+      {mobileSidebarOpen && <div className="mobile-overlay show" onClick={toggleMobileSidebar} />}
+      
+      <div className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${mobileSidebarOpen ? 'mobile-open' : ''}`}>
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <img src="/logo.png" alt="Cellium" />
@@ -310,6 +316,7 @@ export const Sidebar: React.FC = () => {
         <span className="text-label">{t('sidebar.settings')}</span>
       </button>
     </div>
+    </>
   );
 };
 

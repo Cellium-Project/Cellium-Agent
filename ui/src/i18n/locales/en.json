@@ -123,6 +123,7 @@
   },
   "settings": {
     "title": "Settings",
+    "selectTab": "Select Settings",
     "tabs": {
       "model": "Model Config",
       "agent": "Agent Behavior",

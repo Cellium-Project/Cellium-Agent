@@ -122,6 +122,7 @@
   },
   "settings": {
     "title": "設定",
+    "selectTab": "選擇設定項",
     "tabs": {
       "model": "模型設定",
       "agent": "Agent 行為",

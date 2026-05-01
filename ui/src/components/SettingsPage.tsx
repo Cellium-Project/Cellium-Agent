@@ -1781,6 +1781,7 @@ const AppearanceSettings: React.FC = () => {
 // ═════════════════════════════════════════════════════════════
 export const SettingsPage: React.FC = () => {
   const { settingsTab, setSettingsTab, setShowSettingsPage } = useAppStore();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const renderContent = () => {
     switch (settingsTab) {
@@ -1803,19 +1804,36 @@ export const SettingsPage: React.FC = () => {
   const SETTINGS_TABS = useSettingsTabs();
   const { t } = useTranslation();
 
+  const handleTabSelect = (tabId: string) => {
+    setSettingsTab(tabId);
+    setMobileNavOpen(false);
+  };
+
+  const currentTab = SETTINGS_TABS.find(tab => tab.id === settingsTab);
+
   return (
     <div className="settings-page">
       {/* 头部 */}
       <div className="settings-header">
         <h2><Icons.Settings size={20} /> {t('settings.title')}</h2>
-        <button
-          className="btn-back-chat"
-          onClick={() => setShowSettingsPage(false)}
-          title={t('chat.backToChat')}
-        >
-          <Icons.Chat size={18} />
-          <span>{t('chat.backToChat')}</span>
-        </button>
+        <div className="settings-header-actions">
+          <button
+            className="settings-nav-toggle mobile-only"
+            onClick={() => setMobileNavOpen(true)}
+          >
+            {currentTab && <currentTab.Icon size={16} />}
+            <span>{currentTab?.label}</span>
+            <Icons.ChevronDown size={14} />
+          </button>
+          <button
+            className="btn-back-chat"
+            onClick={() => setShowSettingsPage(false)}
+            title={t('chat.backToChat')}
+          >
+            <Icons.Chat size={18} />
+            <span>{t('chat.backToChat')}</span>
+          </button>
+        </div>
       </div>
 
       <div className="settings-body">
@@ -1825,7 +1843,7 @@ export const SettingsPage: React.FC = () => {
             <button
               key={tab.id}
               className={`settings-nav-item ${settingsTab === tab.id ? 'active' : ''}`}
-              onClick={() => setSettingsTab(tab.id)}
+              onClick={() => handleTabSelect(tab.id)}
             >
               <tab.Icon size={18} />
               <span>{tab.label}</span>
@@ -1837,6 +1855,29 @@ export const SettingsPage: React.FC = () => {
         <main className="settings-content">
           {renderContent()}
         </main>
+      </div>
+
+      {/* 移动端导航抽屉 */}
+      {mobileNavOpen && <div className="settings-nav-overlay" onClick={() => setMobileNavOpen(false)} />}
+      <div className={`settings-nav-drawer ${mobileNavOpen ? 'open' : ''}`}>
+        <div className="settings-nav-drawer-header">
+          <span>{t('settings.selectTab')}</span>
+          <button onClick={() => setMobileNavOpen(false)}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="settings-nav-drawer-content">
+          {SETTINGS_TABS.map(tab => (
+            <button
+              key={tab.id}
+              className={`settings-nav-drawer-item ${settingsTab === tab.id ? 'active' : ''}`}
+              onClick={() => handleTabSelect(tab.id)}
+            >
+              <tab.Icon size={18} />
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

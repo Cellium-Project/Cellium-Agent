@@ -15,6 +15,7 @@ body {
     height: 100vh;
     overflow: hidden;
     transition: background-color 0.3s ease, color 0.3s ease;
+    padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* ── 新布局：侧边栏 + 主区 ── */
@@ -23,6 +24,7 @@ body {
     height: 100vh;
     width: 100vw;
     overflow: hidden;
+    padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* ── 侧边栏 ── */
@@ -381,6 +383,27 @@ body {
 .header-actions {
     display: flex;
     gap: 8px;
+}
+
+.chat-header-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.mobile-only {
+    display: none;
+}
+
+.settings-nav-overlay {
+    display: none;
+}
+
+.settings-nav-drawer {
+    display: none;
+}
+
+.settings-nav-toggle {
+    display: none;
 }
 
 .icon-btn {
@@ -4027,5 +4050,518 @@ input:focus, select:focus, textarea:focus {
 @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+}
+
+/* =========================================
+   移动端响应式适配
+   ========================================= */
+
+.mobile-overlay {
+    display: none;
+}
+
+.mobile-menu-btn {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .mobile-overlay.show {
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 99;
+    }
+
+    .app-layout {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        width: 100%;
+        height: auto;
+        max-height: 70vh;
+        border-right: none;
+        border-top: 1px solid var(--border-primary);
+        border-bottom: none;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        z-index: 100;
+        transform: translateY(100%);
+        transition: transform 0.3s ease;
+        overflow-y: auto;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .sidebar.mobile-open {
+        transform: translateY(0);
+    }
+
+    .sidebar.collapsed {
+        width: 100%;
+    }
+
+    .main-content {
+        margin-top: 0;
+        height: 100vh;
+    }
+
+    .sidebar-toggle {
+        display: none;
+    }
+
+    .mobile-menu-btn {
+        display: none;
+    }
+
+    .chat-header {
+        padding-left: 16px;
+        padding-right: 16px;
+    }
+
+    .chat-header-actions {
+        display: flex;
+        gap: 8px;
+    }
+
+    .chat-header-actions .icon-btn {
+        padding: 8px;
+        border-radius: 6px;
+    }
+
+    .chat-header-actions .mobile-only {
+        display: flex;
+    }
+
+    .settings-nav-toggle {
+        display: flex;
+    }
+
+    .chat-messages {
+        padding: 12px;
+    }
+
+    .message-wrapper {
+        max-width: 95%;
+    }
+
+    .chat-input-container {
+        padding: 10px 12px 14px;
+        padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    }
+
+    .chat-input-wrapper textarea {
+        font-size: 16px;
+        padding: 10px 12px;
+    }
+
+    .btn-send, .btn-stop {
+        padding: 10px 14px;
+        height: 40px;
+    }
+
+    .settings-page {
+        padding: 0;
+    }
+
+    .settings-header {
+        padding: 12px 16px;
+        height: auto;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .settings-header h2 {
+        font-size: 16px;
+    }
+
+    .btn-back-chat {
+        padding: 6px 12px;
+        font-size: 12px;
+    }
+
+    .btn-back-chat span {
+        display: none;
+    }
+
+    .settings-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .settings-nav-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-primary);
+        border-radius: 6px;
+        font-size: 12px;
+        color: var(--text-primary);
+        cursor: pointer;
+    }
+
+    .settings-body {
+        flex-direction: column;
+        overflow: hidden;
+        min-height: 0;
+    }
+
+    .settings-nav {
+        display: none;
+    }
+
+    .settings-nav-overlay {
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 200;
+    }
+
+    .settings-nav-drawer {
+        display: flex;
+        flex-direction: column;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        max-height: 70vh;
+        background: var(--bg-secondary);
+        border-top: 1px solid var(--border-primary);
+        border-radius: 16px 16px 0 0;
+        z-index: 201;
+        transform: translateY(100%);
+        transition: transform 0.3s ease;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .settings-nav-drawer.open {
+        transform: translateY(0);
+    }
+
+    .settings-nav-drawer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border-primary);
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .settings-nav-drawer-header button {
+        background: transparent;
+        border: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+        padding: 4px;
+    }
+
+    .settings-nav-drawer-content {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        padding: 12px;
+        overflow-y: auto;
+    }
+
+    .settings-nav-drawer-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding: 12px 8px;
+        background: transparent;
+        border: 1px solid var(--border-primary);
+        border-radius: 8px;
+        font-size: 11px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .settings-nav-drawer-item:active {
+        background: var(--bg-hover);
+    }
+
+    .settings-nav-drawer-item.active {
+        background: var(--bg-active);
+        border-color: var(--accent-primary);
+        color: var(--accent-primary);
+    }
+
+    .settings-nav-drawer-item span {
+        display: block;
+        text-align: center;
+    }
+
+    .settings-content {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 12px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+
+    .settings-section {
+        padding: 12px;
+    }
+
+    .settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .memory-filter-grid,
+    .memory-editor-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .scheduler-header,
+    .skill-header,
+    .gene-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+
+    .scheduler-layout {
+        flex-direction: column;
+        min-height: auto;
+        height: 100%;
+    }
+
+    .scheduler-sidebar {
+        width: 100%;
+        min-width: auto;
+        max-height: 40vh;
+        min-height: 120px;
+        border-right: none;
+        border-bottom: 1px solid var(--border-primary);
+    }
+
+    .scheduler-sidebar-header {
+        padding: 10px 12px;
+    }
+
+    .scheduler-sidebar-header h3 {
+        font-size: 14px;
+    }
+
+    .scheduler-stats-row {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .scheduler-stat {
+        padding: 4px 8px;
+        font-size: 11px;
+    }
+
+    .scheduler-stat-value {
+        font-size: 13px;
+    }
+
+    .scheduler-stat-label {
+        font-size: 9px;
+    }
+
+    .scheduler-search {
+        padding: 0 10px 8px;
+    }
+
+    .scheduler-search input {
+        padding: 8px 10px;
+        font-size: 13px;
+    }
+
+    .scheduler-task-list {
+        padding: 0 8px 8px;
+    }
+
+    .scheduler-task-item {
+        padding: 8px 10px;
+    }
+
+    .scheduler-task-icon {
+        width: 28px;
+        height: 28px;
+    }
+
+    .scheduler-task-name {
+        font-size: 12px;
+    }
+
+    .scheduler-task-meta {
+        font-size: 10px;
+    }
+
+    .scheduler-main {
+        flex: 1;
+        min-height: 0;
+    }
+
+    .scheduler-detail {
+        padding: 12px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+        min-height: 0;
+    }
+
+    .scheduler-create {
+        padding: 12px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+        min-height: 0;
+    }
+
+    .scheduler-detail-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+
+    .scheduler-detail-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+
+    .scheduler-detail-card {
+        padding: 10px;
+    }
+
+    .scheduler-detail-card-value {
+        font-size: 14px;
+    }
+
+    .scheduler-create-form .form-row {
+        grid-template-columns: 1fr;
+    }
+
+    .scheduler-task-item {
+        padding: 10px 12px;
+    }
+
+    .scheduler-task-name {
+        font-size: 13px;
+    }
+
+    .scheduler-task-meta {
+        font-size: 11px;
+    }
+
+    .tool-trace-header {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .markdown-body pre {
+        font-size: 12px;
+        padding: 10px 12px;
+    }
+
+    .markdown-body table {
+        font-size: 12px;
+        display: block;
+        overflow-x: auto;
+    }
+}
+
+@media (max-width: 480px) {
+    .sidebar-logo h1 {
+        font-size: 14px;
+    }
+
+    .session-item {
+        padding: 8px 10px;
+    }
+
+    .session-title {
+        font-size: 12px;
+    }
+
+    .chat-header-title {
+        font-size: 14px;
+    }
+
+    .message-content {
+        padding: 10px 12px;
+        font-size: 14px;
+    }
+
+    .message-avatar {
+        width: 28px;
+        height: 28px;
+        font-size: 12px;
+    }
+
+    .btn-new-chat,
+    .sidebar-settings-btn {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+
+    .status {
+        font-size: 10px;
+        padding: 3px 8px;
+    }
+
+    .input-footer {
+        font-size: 10px;
+    }
+
+    .settings-content {
+        padding: 8px;
+    }
+
+    .settings-section {
+        padding: 10px;
+        margin-bottom: 12px;
+    }
+
+    .settings-section h4 {
+        font-size: 13px;
+    }
+
+    .settings-field-label {
+        font-size: 12px;
+    }
+
+    .form-group input,
+    .form-group select,
+    .form-group textarea {
+        font-size: 16px;
+    }
+
+    .scheduler-detail-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .scheduler-detail-card {
+        padding: 8px;
+    }
+
+    .scheduler-detail-card-value {
+        font-size: 13px;
+    }
+
+    .scheduler-detail-card-label {
+        font-size: 10px;
+    }
+
+    .btn-save {
+        padding: 10px 16px;
+        font-size: 13px;
+    }
 }
 

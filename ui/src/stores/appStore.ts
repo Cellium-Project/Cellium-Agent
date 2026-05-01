@@ -38,6 +38,7 @@ interface AppState {
   statusOnline: boolean;
   showSettingsPage: boolean;
   settingsTab: string;
+  mobileSidebarOpen: boolean;
 
   // Theme & Language
   theme: Theme;
@@ -67,6 +68,7 @@ interface AppState {
   setCurrentModelId: (id: string | null) => void;
 
   toggleSidebar: () => void;
+  toggleMobileSidebar: () => void;
   setStatusOnline: (online: boolean) => void;
   setShowSettingsPage: (show: boolean) => void;
   setSettingsTab: (tab: string) => void;
@@ -106,6 +108,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   statusOnline: false,
   showSettingsPage: false,
   settingsTab: 'model',
+  mobileSidebarOpen: false,
 
   // Theme & Language Initial State
   theme: (localStorage.getItem('theme') as Theme) || 'auto',
@@ -151,6 +154,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCurrentModelId: (id) => set({ currentModelId: id }),
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  toggleMobileSidebar: () => set((state) => ({ mobileSidebarOpen: !state.mobileSidebarOpen })),
   setStatusOnline: (online) => set({ statusOnline: online }),
   setShowSettingsPage: (show) => set({ showSettingsPage: show }),
   setSettingsTab: (tab) => set({ settingsTab: tab }),
