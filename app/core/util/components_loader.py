@@ -492,13 +492,29 @@ def _instantiate_component(module_path: str) -> tuple:
             del sys.modules[key]
             logger.debug(f"[Component] 清除临时模块: {key}")
 
+    cache_removed = False
+    
     try:
         cached = importlib.util.cache_from_source(str(file_path))
         if cached and os.path.exists(cached):
             os.remove(cached)
             logger.debug(f"[Component] 删除缓存文件: {cached}")
+            cache_removed = True
     except Exception as e:
-        logger.debug(f"[Component] 删除缓存文件失败: {e}")
+        logger.debug(f"[Component] cache_from_source 失败: {e}")
+    
+    if not cache_removed:
+        pycache_dir = file_path.parent / "__pycache__"
+        if pycache_dir.exists():
+            stem = file_path.stem
+            for pattern in [f"{stem}*.pyc", f"{stem}*.pyo"]:
+                for cached_file in pycache_dir.glob(pattern):
+                    try:
+                        cached_file.unlink()
+                        logger.debug(f"[Component] 删除缓存文件(glob): {cached_file}")
+                        cache_removed = True
+                    except Exception as e:
+                        logger.debug(f"[Component] 删除缓存文件失败 {cached_file}: {e}")
 
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if not spec or not spec.loader:

@@ -349,6 +349,11 @@ class ComponentSandbox:
         self._name = name
         self._sandbox: Optional[SandboxProcess] = None
 
+    @property
+    def cell_name(self) -> str:
+        """组件名称（与 BaseCell 接口兼容）"""
+        return self._name
+
     def initialize(self, module_path: str, class_name: str, init_args: Dict = None):
         """
         初始化沙箱
