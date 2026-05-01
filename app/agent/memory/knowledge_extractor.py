@@ -113,6 +113,24 @@ class KnowledgeExtractor:
             has_specific_info = any(keyword in text_lower for keyword in ["error", "错误", "路径", "文件", "命令", "config"])
             if not has_specific_info:
                 return True
+
+        action_patterns = [
+            "然后", "接着", "下一步", "我来帮你",
+            "我来执行", "我将", "我需要", "让我来",
+            "首先", "其次", "最后", "步骤",
+            "验证", "测试", "检查", "执行",
+        ]
+        action_count = sum(1 for p in action_patterns if p in text_lower)
+        if action_count >= 2:
+            tech_keywords = [
+                "error", "错误", "路径", "文件", "config", "http", "api",
+                "函数", "变量", "参数", "配置", "代码", "模块",
+                "数据库", "服务器", "端口", "ip", "url",
+            ]
+            has_tech_info = any(kw in text_lower for kw in tech_keywords)
+            if not has_tech_info:
+                return True
+
         return False
 
     def is_duplicate(self, new_text: str, threshold: float = 0.85) -> bool:

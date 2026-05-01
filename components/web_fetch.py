@@ -97,6 +97,74 @@ class WebFetch(BaseCell):
                 return True
         return False
 
+    def _detect_gpu_available(self) -> bool:
+        """检测系统是否有可用的 GPU"""
+        try:
+            import platform
+            if platform.system() == 'Linux':
+                try:
+                    with open('/proc/driver/nvidia/version', 'r') as f:
+                        return True
+                except (FileNotFoundError, PermissionError):
+                    pass
+                
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['lspci'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        gpu_keywords = ['VGA', 'NVIDIA', 'AMD', 'Intel']
+                        for line in result.stdout.split('\n'):
+                            if any(kw in line for kw in gpu_keywords):
+                                if 'NVIDIA' in line or 'AMD' in line:
+                                    return True
+                    return False
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            
+            elif platform.system() == 'Windows':
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result.returncode == 0:
+                        lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
+                        for line in lines[1:]:
+                            if 'NVIDIA' in line or 'AMD' in line or 'Radeon' in line:
+                                return True
+                            if 'Intel' in line:
+                                return True
+                    return False
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            
+            elif platform.system() == 'Darwin':
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['system_profiler', 'SPDisplaysDataType'],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result.returncode == 0:
+                        return 'Chipset Model' in result.stdout or 'Vendor' in result.stdout
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+            
+            return False
+        except Exception as e:
+            logger.debug(f"[WebFetch] GPU 检测失败: {e}")
+            return False
+
     def _build_options(self, browser_path: Optional[str] = None, force_headless: bool = None):
         """
         获取浏览器配置
@@ -117,7 +185,17 @@ class WebFetch(BaseCell):
                 options.set_argument('--no-default-browser-check')
                 options.set_argument('--no-singleton')
 
-        options.set_argument('--disable-gpu')
+        has_gpu = self._detect_gpu_available()
+        
+        if has_gpu:
+            logger.debug("[WebFetch] 检测到 GPU，启用硬件加速")
+        else:
+            logger.info("[WebFetch] 未检测到 GPU，使用软件渲染模式")
+            options.set_argument('--disable-gpu')
+            options.set_argument('--use-gl=swiftshader')
+            options.set_argument('--disable-gpu-compositing')
+            options.set_argument('--disable-software-rasterizer')
+
         options.set_argument('--no-sandbox')
         options.set_argument('--disable-blink-features=AutomationControlled')
         options.set_argument('--disable-dev-shm-usage')
