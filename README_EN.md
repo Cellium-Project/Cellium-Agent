@@ -48,9 +48,10 @@ Core design: Self-learning Agent driven by Control Loop, with adaptive decision 
 
 ### One-Line Install (with Environment)
 
-**Windows:**
-```cmd
-curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip && powershell -Command "Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.'" && cd Cellium-Agent-Windows && CelliumAgent.exe
+### Windows
+
+```powershell
+powershell -Command "Invoke-WebRequest -Uri 'https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip' -OutFile 'Cellium-Agent-Windows.zip'; Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.' -Force; cd Cellium-Agent-Windows; .\CelliumAgent.exe"
 ```
 
 **Linux x64:**

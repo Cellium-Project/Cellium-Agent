@@ -4,8 +4,8 @@
 
 ### Windows
 
-```cmd
-curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip && powershell -Command "Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.'" && cd Cellium-Agent-Windows && CelliumAgent.exe
+```powershell
+powershell -Command "curl -LO 'https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip'; Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.' -Force; cd Cellium-Agent-Windows; .\CelliumAgent.exe"
 ```
 
 ### Linux x64
