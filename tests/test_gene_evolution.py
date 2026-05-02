@@ -235,13 +235,9 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         self.assertLess(reward, 0.5)
         mock_gene_evolution.extract_avoid_cue.assert_called_once()
         mock_gene_evolution.should_prompt_agent_for_gene.assert_called_once()
-        # 验证设置了 Gene 创建标记
         self.assertTrue(state.needs_agent_gene_creation)
-        # 验证提示包含系统提示标记
-        self.assertIn("[系统提示]", state.gene_creation_prompt)
-        # 应该调用自动更新
+        self.assertIn("[系统提示 - Gene 创建评估]", state.gene_creation_prompt)
         mock_gene_evolution.update_gene_from_failure.assert_called_once()
-        # 验证重置失败计数
         self.assertEqual(state.gene_failure_count, 0)
         self.assertEqual(len(state.gene_failure_history), 0)
 

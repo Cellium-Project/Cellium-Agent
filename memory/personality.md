@@ -159,7 +159,13 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 - 不要重复最近失败的操作
 - 有 Gene 时必须用 `get_gene` 查看并遵循约束
 
-### §7.3 Gene 任务
+### §7.3 Gene 提示响应 [强制]
+看到 **💡 经验参考** 提示时：
+- 立即执行 `memory get_gene task_type=xxx` 查看相关 Gene
+- 严格遵循 Gene 中的 MUST/MUST NOT 约束
+- **禁止忽略** Gene 提示
+
+### §7.4 Gene 创建任务
 - Gene 创建/进化时，严格遵循注入的格式要求
 - 只输出 Gene 内容，禁止回复用户问题
 

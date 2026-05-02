@@ -311,7 +311,7 @@ class ControlLoop:
         elif action == "redirect":
             redirect_suggestions = self._collect_redirect_suggestions(rule_decisions or {})
             decision.enable_redirect_guidance = True
-            decision.guidance_message = self._build_redirect_message(features, redirect_suggestions)
+            decision.guidance_message = self._build_redirect_message(features, redirect_suggestions, state)
             decision.suggested_tools = self._get_alternative_tools(state)
             decision.params["redirect_suggestions"] = redirect_suggestions
             
@@ -358,6 +358,7 @@ class ControlLoop:
         self,
         features: "DerivedFeatures",
         suggestions: Optional[List[str]] = None,
+        state: Optional[LoopState] = None,
     ) -> str:
         reasons = []
 
@@ -383,7 +384,58 @@ class ControlLoop:
             message += "- 尝试换一个工具或方法\n"
             message += "- 回顾之前的步骤，确认是否有遗漏\n"
 
+        gene_hint = self._get_gene_hint(state)
+        if gene_hint:
+            message += f"\n{gene_hint}\n"
+
         return message
+
+    def _get_gene_hint(self, state: Optional[LoopState]) -> Optional[str]:
+        if not state or not getattr(state, 'user_input', None):
+            return None
+
+        if getattr(state, 'gene_hint_shown', False):
+            logger.debug("[ControlLoop] Gene 提示已显示过，跳过")
+            return None
+
+        try:
+            from .constraint_gene import GeneEvolution
+            related_genes = GeneEvolution.get_related_genes(state.user_input, top_k=5, min_score=0.5)
+            
+            if not related_genes:
+                return None
+            
+            state.gene_hint_shown = True
+            
+            hint_lines = [
+                "\n---",
+                "**💡 经验参考**",
+                f"系统发现 {len(related_genes)} 个相关任务的历史经验记录：",
+                "",
+            ]
+            
+            for i, gene in enumerate(related_genes, 1):
+                task_type = gene.get('task_type', 'unknown')
+                score = gene.get('score', 0)
+                summary = gene.get('summary', '')
+                
+                hint_lines.append(f"{i}. **{task_type}** (相关度: {score:.0%})")
+                if summary:
+                    hint_lines.append(f"   > {summary}")
+                hint_lines.append(f"   查看: `memory get_gene task_type={task_type}`")
+                hint_lines.append("")
+            
+            hint_lines.extend([
+                "请根据当前任务情况，选择查看相关的 Gene 以获取指导。",
+                "---",
+            ])
+            
+            logger.info("[ControlLoop] 找到 %d 个相关 Gene，已标记为已显示", len(related_genes))
+            return "\n".join(hint_lines)
+        except Exception as e:
+            logger.debug("[ControlLoop] Gene 查询失败: %s", e)
+
+        return None
 
     def _get_alternative_tools(self, state: LoopState) -> List[str]:
         if not state.available_tools:

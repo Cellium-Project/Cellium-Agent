@@ -189,6 +189,46 @@ class MemoryManager:
             logger.debug(f"[MemoryManager] 移除了 {removed_count} 条系统消息")
         return removed_count
 
+    def remove_gene_system_messages(self) -> int:
+        """移除 Gene 创建评估的系统提示消息
+
+        只清理特定前缀的系统注入消息，不影响：
+        - Agent 正常的 Gene 查询结果（tool 消息）
+        - 用户消息
+        - 其他系统消息
+
+        Returns:
+            移除的消息数量
+        """
+        gene_prompt_prefixes = [
+            "[系统提示 - Gene 创建评估]",
+        ]
+
+        original_count = len(self.messages)
+        new_messages = []
+
+        for msg in self.messages:
+            if msg.get("role") != "system":
+                new_messages.append(msg)
+                continue
+
+            content = msg.get("content", "")
+
+            is_gene_prompt = False
+            for prefix in gene_prompt_prefixes:
+                if content.startswith(prefix):
+                    is_gene_prompt = True
+                    break
+
+            if not is_gene_prompt:
+                new_messages.append(msg)
+
+        self.messages = new_messages
+        removed_count = original_count - len(self.messages)
+        if removed_count > 0:
+            logger.debug(f"[MemoryManager] 移除了 {removed_count} 条 Gene 评估提示")
+        return removed_count
+
     def _truncate_long_tool_contents(self, messages: List[Dict]) -> List[Dict]:
         """截断过长的工具结果内容"""
         for msg in messages:

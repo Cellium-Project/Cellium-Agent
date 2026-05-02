@@ -365,6 +365,73 @@ class GeneEvolution:
         return None
 
     @classmethod
+    def get_related_genes(cls, user_input: str, top_k: int = 5, min_score: float = 0.5) -> List[Dict[str, Any]]:
+        """获取与用户输入相关的多个 Gene
+        
+        Args:
+            user_input: 用户输入
+            top_k: 返回的最大 Gene 数量
+            min_score: 最小相似度阈值
+            
+        Returns:
+            相关 Gene 列表，每个包含 task_type, title, score, summary
+        """
+        if not TaskSignalMatcher._repository or not user_input:
+            return []
+
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query=user_input,
+                top_k=top_k,
+                schema_type="control_gene",
+            )
+
+            genes = []
+            for item in results:
+                score = item.get("embedding_score", 0.0)
+                if score < min_score:
+                    continue
+                    
+                metadata = item.get("metadata", {})
+                content = item.get("content", "")
+                task_type = metadata.get("task_type", "")
+                
+                summary = cls._extract_gene_summary(content)
+                
+                genes.append({
+                    "task_type": task_type,
+                    "title": item.get("title", f"Gene: {task_type}"),
+                    "score": score,
+                    "summary": summary,
+                })
+            
+            return genes
+        except Exception:
+            return []
+
+    @classmethod
+    def _extract_gene_summary(cls, content: str, max_length: int = 100) -> str:
+        """从 Gene 内容中提取简要描述"""
+        if not content:
+            return ""
+        
+        hard_constraints_match = re.search(r'\[HARD CONSTRAINTS\]\s*\n(.+?)(?:\n\[|\n\n|$)', content, re.DOTALL)
+        if hard_constraints_match:
+            summary = hard_constraints_match.group(1).strip()
+            if len(summary) > max_length:
+                summary = summary[:max_length] + "..."
+            return summary
+        
+        lines = [l.strip() for l in content.split('\n') if l.strip() and not l.startswith('[')]
+        if lines:
+            summary = lines[0]
+            if len(summary) > max_length:
+                summary = summary[:max_length] + "..."
+            return summary
+        
+        return ""
+
+    @classmethod
     def _get_all_genes(cls) -> List[Dict[str, Any]]:
         if not TaskSignalMatcher._repository:
             return []
@@ -421,7 +488,7 @@ class GeneEvolution:
         else:
             existing_section = ""
 
-        prompt = f"""[系统提示]
+        prompt = f"""[系统提示 - Gene 创建评估]
 任务执行失败，请按以下步骤处理：
 
 步骤1: 使用 memory list_genes 查看所有 Gene 列表

@@ -225,7 +225,7 @@ class FeedbackEvaluator:
         existing_gene = GeneEvolution._get_existing_gene(user_input)
 
         if existing_gene:
-            return f"""[系统提示]
+            return f"""[系统提示 - Gene 创建评估]
 检测到任务连续 2 次执行失败：
 {failure_summary}
 
@@ -235,7 +235,7 @@ class FeedbackEvaluator:
 
 查看后根据 Gene 中的指导继续执行任务。"""
         else:
-            return f"""[系统提示]
+            return f"""[系统提示 - Gene 创建评估]
 检测到任务连续 2 次执行失败：
 {failure_summary}
 

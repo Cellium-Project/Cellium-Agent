@@ -1202,9 +1202,8 @@ class AgentLoop:
                         self._loop_state.gene_tool_call_count += len(response.tool_calls)
                         if self._loop_state.gene_tool_call_count > 5:
                             logger.warning("[AgentLoop] Gene 处理轮次工具调用超过 5 次，强制结束")
-                            # 添加警告消息并结束 Gene 处理
                             effective_memory.add_system_message(
-                                "[系统] Gene 评估工具调用次数过多，请简要说明当前进展后结束。"
+                                "[系统提示 - Gene 创建评估] Gene 评估工具调用次数过多，请简要说明当前进展后结束。"
                             )
                             # 重置 Gene 处理标记，让正常流程结束
                             self._loop_state.gene_creation_source = ""
@@ -1574,13 +1573,12 @@ class AgentLoop:
                         self._loop_state.gene_creation_source = ""
                         self._loop_state.gene_creation_prompt = None
                         self._loop_state.gene_processing_done = False
-                        self._loop_state.gene_tool_call_count = 0  # 重置工具调用计数
+                        self._loop_state.gene_tool_call_count = 0
 
-                        # 清理 Gene 提示，避免残留
                         if effective_memory:
-                            removed = effective_memory.remove_system_messages_by_content("[系统提示 - Gene 创建评估]")
+                            removed = effective_memory.remove_gene_system_messages()
                             if removed > 0:
-                                logger.info(f"[AgentLoop] 已清理 {removed} 条 Gene 提示系统消息")
+                                logger.info(f"[AgentLoop] 已清理 {removed} 条 Gene 相关系统消息")
 
                 # 统一收尾
                 done_event = self._finalize_session(
