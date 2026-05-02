@@ -25,6 +25,27 @@ Core design: Self-learning Agent driven by Control Loop, with adaptive decision 
 
 > Thanks to the [Strategy Gene](https://arxiv.org/abs/2604.15097) research team. This project adopts their compact experience representation method, enabling the Agent to automatically learn avoidance strategies from failures.
 
+## What Can It Do
+
+Cellium Agent is a versatile AI assistant that helps you with various tasks:
+
+| Feature | Example |
+|---------|---------|
+| **File Operations** | Read, write, search files, manage directory structures |
+| **Code Development** | Write code, debug, refactor, explain code logic |
+| **Web Search** | Search the internet for real-time information, summarize web content |
+| **Data Analysis** | Process data files, generate reports and visualizations |
+| **Automation** | Create scheduled tasks, e.g., "check weather every morning at 8 AM" |
+| **Component Extension** | Create new components via natural language to extend Agent capabilities |
+| **Multi-Platform** | Support WebUI, QQ, Telegram and other platforms |
+
+**Usage Examples**:
+- "Read all files in the workspace directory and count the number of functions in each file"
+- "Search for the latest AI technology developments, create a word component, and summarize into a report for me"
+- "Create a scheduled task to check server status every hour, and notify me automatically when the status is abnormal"
+- "Help me write a Python script to process CSV files and automatically generate data visualization charts"
+- "Create a new component to monitor stock prices and notify me automatically when the price fluctuates by more than 5%"
+
 ## Features
 
 | Feature | Description |
