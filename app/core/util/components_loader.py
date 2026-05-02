@@ -590,21 +590,23 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                     logger.info(f"[HotReload] 检测到组件更新: {item['class_name']} (mtime changed)")
                     try:
                         old_instance = None
+                        old_cell_name = None
                         for name, cell in list(_cell_registry.items()):
                             if getattr(cell, '_source_file', '') == file_path:
                                 old_instance = cell
+                                old_cell_name = name
                                 break
                         if old_instance and hasattr(old_instance, "on_unload"):
                             old_instance.on_unload()
 
                         from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
-                        cell_name_lower = item["class_name"].lower()
-                        use_sandbox = cell_name_lower not in EXEMPTED_NAMES
+                        class_name_lower = item["class_name"].lower()
+                        use_sandbox = class_name_lower not in EXEMPTED_NAMES
 
                         if use_sandbox:
                             try:
                                 from app.core.util.component_sandbox import ComponentSandbox
-                                sandbox_name = cell_name_lower
+                                sandbox_name = old_cell_name or class_name_lower
                                 sandbox = ComponentSandbox.reload_sandbox(sandbox_name)
                                 sandbox.initialize(str(file_path), item["class_name"])
                                 logger.info(f"[HotReload] 已重启并初始化沙箱: {sandbox_name}")
@@ -619,7 +621,7 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                                 logger.error(f"[HotReload] 重启沙箱失败 {item['class_name']}: {e}")
                                 logger.error(f"[HotReload] 组件 {item['class_name']} 热更新中止：沙箱重启失败")
                                 report["failed"] = report.get("failed", [])
-                                report["failed"].append({"name": cell_name_lower, "class": item["class_name"], "reason": f"沙箱重启失败: {e}"})
+                                report["failed"].append({"name": class_name_lower, "class": item["class_name"], "reason": f"沙箱重启失败: {e}"})
                                 continue
                         else:
                             instance, info = _instantiate_component(item["module_path"])

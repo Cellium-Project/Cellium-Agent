@@ -27,6 +27,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from app.core.interface.icell import ICell
 from app.core.util.protected_modules import ProtectedContext
 
 
@@ -80,6 +81,27 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                     import importlib.machinery
                     importlib.machinery.PathFinder.invalidate_caches()
                     return builtins.__import__(name, globals, locals, fromlist, level)
+
+            try:
+                cached = importlib.util.cache_from_source(module_path)
+                if cached and os.path.exists(cached):
+                    os.remove(cached)
+                    logger.debug("[Sandbox] 已删除缓存: %s", cached)
+            except Exception as e:
+                logger.debug("[Sandbox] 删除缓存失败: %s", e)
+
+            try:
+                pycache_dir = Path(module_path).parent / "__pycache__"
+                if pycache_dir.exists():
+                    stem = Path(module_path).stem
+                    for cached_file in pycache_dir.glob(f"{stem}*.pyc"):
+                        try:
+                            cached_file.unlink()
+                            logger.debug("[Sandbox] 已删除缓存(glob): %s", cached_file)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("[Sandbox] glob清理缓存失败: %s", e)
 
             spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
             module = importlib.util.module_from_spec(spec)
@@ -268,19 +290,22 @@ class SandboxProcess:
         finally:
             self._is_executing = False
 
-    def get_commands(self) -> list:
+    def get_commands(self) -> Dict[str, str]:
         """获取组件支持的命令列表"""
         if not self._initialized:
-            return []
+            return {}
 
         self._input_queue.put({"action": "get_commands"})
         try:
             result = self._output_queue.get(timeout=5)
             if result.get("status") == "ok":
-                return result.get("commands", [])
+                commands = result.get("commands", {})
+                if isinstance(commands, dict):
+                    return commands
+                return {}
         except:
             pass
-        return []
+        return {}
 
     def ping(self) -> bool:
         """检查沙箱进程是否存活"""
@@ -340,11 +365,12 @@ class SandboxProcess:
 _sandbox_instances: Dict[str, 'ComponentSandbox'] = {}
 
 
-class ComponentSandbox:
+class ComponentSandbox(ICell):
     """
     组件沙箱接口
 
     提供与 CellToolAdapter 兼容的接口，内部使用 SandboxProcess。
+    继承 ICell 以支持 tool_registry 正确注册。
     """
 
     def __init__(self, name: str):
@@ -378,10 +404,10 @@ class ComponentSandbox:
             raise RuntimeError("Sandbox not initialized")
         return self._sandbox.execute(command, *args, **kwargs)
 
-    def get_commands(self) -> list:
+    def get_commands(self) -> Dict[str, str]:
         """获取支持的命令列表"""
         if not self._sandbox:
-            return []
+            return {}
         return self._sandbox.get_commands()
 
     def stop(self):

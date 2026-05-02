@@ -388,17 +388,30 @@ class CellToolAdapter(BaseTool):
             }
         
         target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}"
-        if not hasattr(self._cell, target_method_name):
+        
+        from app.core.util.component_sandbox import ComponentSandbox
+        is_sandbox = isinstance(self._cell, ComponentSandbox)
+        
+        if is_sandbox:
+            available_cmds = self.get_commands()
+            if cmd_name not in available_cmds:
+                return {
+                    "success": False,
+                    "error": f"未知命令 '{cmd_name}'，可用: {list(available_cmds.keys())}",
+                    "_source": f"component:{self.name}",
+                }
+            valid_params = set(all_args.keys())
+        elif not hasattr(self._cell, target_method_name):
             available_cmds = list(self.get_commands().keys())
             return {
                 "success": False,
                 "error": f"未知命令 '{cmd_name}'，可用: {available_cmds}",
                 "_source": f"component:{self.name}",
             }
-        
-        target_method = getattr(self._cell, target_method_name)
-        sig = inspect.signature(target_method)
-        valid_params = {p for p in sig.parameters if p != "self"}
+        else:
+            target_method = getattr(self._cell, target_method_name)
+            sig = inspect.signature(target_method)
+            valid_params = {p for p in sig.parameters if p != "self"}
         
         cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
         
