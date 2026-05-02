@@ -68,6 +68,7 @@ class MainApplication(LogMixin):
 
         self.logger.info("=" * 50)
         self.logger.info("服务已启动: http://%s:%d", _host, _port)
+        self.logger.info("WebUI 入口: http://localhost:%d/", _port)
         self.logger.info("API 文档: http://%s:%d/docs", _host, _port)
         self.logger.info("=" * 50)
 
