@@ -56,7 +56,7 @@ Invoke-WebRequest -Uri https://github.com/Cellium-Project/Cellium-Agent/releases
 
 **Windows CMD:**
 ```cmd
-curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip && tar -xf Cellium-Agent-Windows.zip && cd Cellium-Agent-Windows && CelliumAgent.exe
+curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip && powershell -Command "Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.'" && cd Cellium-Agent-Windows && CelliumAgent.exe
 ```
 
 **Linux x64:**
