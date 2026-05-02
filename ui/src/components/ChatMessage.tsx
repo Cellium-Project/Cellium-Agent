@@ -226,13 +226,13 @@ const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
       <Collapsible
         summary={
           <span className="json-block-summary">
-            <span className="json-block-label">{escapeHtml(label)}</span>
-            <span className="json-block-preview">{escapeHtml(summaryText)}</span>
+            <span className="json-block-label">{label}</span>
+            <span className="json-block-preview">{summaryText}</span>
           </span>
         }
         defaultOpen={false}
       >
-        <pre className="json-block-content">{escapeHtml(prettyJson)}</pre>
+        <pre className="json-block-content">{prettyJson}</pre>
       </Collapsible>
     </div>
   );
@@ -376,7 +376,7 @@ const ThinkingCard: React.FC<{ content: string }> = ({ content }) => {
         }
         defaultOpen={false}
       >
-        <pre className="thinking-content">{escapeHtml(prettyContent)}</pre>
+        <pre className="thinking-content">{prettyContent}</pre>
       </Collapsible>
     </div>
   );
@@ -468,11 +468,11 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
   return (
     <>
       {trace.description && (
-        <div className="tool-description">{escapeHtml(String(trace.description))}</div>
+        <div className="tool-description">{String(trace.description)}</div>
       )}
       <div className={`tool-trace ${status === 'running' ? 'tool-running' : ''}`}>
         <div className="tool-trace-header">
-          <span className="tool-trace-name">{escapeHtml(String(trace.tool || 'unknown'))}</span>
+          <span className="tool-trace-name">{String(trace.tool || 'unknown')}</span>
           {status === 'running' && (
             <span className="tool-status-running">
               <span className="loading-pulse"></span>
@@ -483,14 +483,14 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
         </div>
         {cmdPreview && (
           <div className="tool-cmd-preview">
-            <code>{escapeHtml(cmdPreview)}</code>
+            <code>{cmdPreview}</code>
           </div>
         )}
         <Collapsible 
           summary={t('chat.paramsAndResult')} 
           defaultOpen={status === 'running' || (status === 'done' && trace.result?.error)}
         >
-          <pre className="tool-args">{escapeHtml(argsStr)}</pre>
+          <pre className="tool-args">{argsStr}</pre>
           {status !== 'running' && <div className="tool-result">{resultPreview}</div>}
           {status === 'running' && <div className="tool-result"><span className="status-dot dot-running"></span>{t('chat.waitingForResult')}</div>}
         </Collapsible>
@@ -507,7 +507,7 @@ function makeResultPreview(result: any, t?: (key: string) => string): React.Reac
     return (
       <>
         <span className="status-dot dot-error"></span>
-        <span style={{ color: 'var(--text-error)' }}>{translate('common.error')}: {escapeHtml(result.error)}</span>
+        <span style={{ color: 'var(--text-error)' }}>{translate('common.error')}: {result.error}</span>
       </>
     );
   }
@@ -530,20 +530,7 @@ function makeResultPreview(result: any, t?: (key: string) => string): React.Reac
   return (
     <>
       <span className="status-dot dot-success"></span>
-      {escapeHtml(text)}
+      {text}
     </>
   );
-}
-
-const HTML_ESCAPE_MAP: Record<string, string> = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-
-function escapeHtml(str: string): string {
-  if (!str) return '';
-  return str.replace(/[&<>"']/g, (char) => HTML_ESCAPE_MAP[char] || char);
 }
