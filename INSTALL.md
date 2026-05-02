@@ -2,13 +2,7 @@
 
 ## 一键运行 Cellium Agent
 
-### Windows PowerShell
-
-```powershell
-Invoke-WebRequest -Uri https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip -OutFile Cellium-Agent.zip; Expand-Archive -Path Cellium-Agent.zip -DestinationPath . -Force; cd Cellium-Agent-Windows; .\CelliumAgent.exe
-```
-
-### Windows CMD
+### Windows
 
 ```cmd
 curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip && powershell -Command "Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.'" && cd Cellium-Agent-Windows && CelliumAgent.exe
