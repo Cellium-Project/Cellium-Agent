@@ -412,6 +412,7 @@ async def switch_model(body: ModelSwitchRequest):
     切换当前使用的模型
 
     只需更新 llm.current_model，模型配置已存储在 llm.models 列表中
+    切换后自动重新加载引擎，立即生效
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -427,18 +428,31 @@ async def switch_model(body: ModelSwitchRequest):
 
     config.set("llm.current_model", body.name, persist=True)
 
-    logger.info(
-        "[ConfigAPI] 模型已切换 | name=%s",
-        body.name
-    )
+    logger.info("[ConfigAPI] 模型已切换 | name=%s", body.name)
 
-    return {
-        "status": "ok",
-        "message": f"已切换到模型: {body.name}",
-        "config": {
-            "current_model": body.name,
+    try:
+        reload_result = await reload_llm_engine()
+        return {
+            "status": "ok",
+            "message": f"已切换到模型: {body.name}，引擎已重新加载",
+            "config": {
+                "current_model": body.name,
+            },
+            "engine": {
+                "model": reload_result.get("model"),
+                "updated_sessions": reload_result.get("updated_sessions", 0),
+            }
         }
-    }
+    except Exception as e:
+        logger.warning("[ConfigAPI] 模型切换成功但引擎重载失败: %s", e)
+        return {
+            "status": "partial",
+            "message": f"已切换到模型: {body.name}，但引擎重载失败，新建对话生效",
+            "config": {
+                "current_model": body.name,
+            },
+            "error": str(e)
+        }
 
 
 @router.post("/model/reload-engine")
@@ -452,11 +466,11 @@ async def reload_llm_engine():
     from app.core.di.container import get_container
     from app.agent.llm.engine import create_llm_engine
     from app.agent.loop.agent_loop import AgentLoop
+    from app.agent.loop.agent_loop_manager import AgentLoopManager
 
     logger = logging.getLogger(__name__)
 
     config = _get_agent_config()
-    # 强制从文件重载 llm 配置，确保获取最新的 API key
     config.reload_section("llm")
     llm_config = config.get_section("llm")
 
@@ -468,7 +482,6 @@ async def reload_llm_engine():
 
         new_engine = create_llm_engine(llm_config)
 
-        # 更新 DI 容器中的引擎注册
         from app.agent.llm.engine import BaseLLMEngine
         container.register(BaseLLMEngine, new_engine, singleton=True)
         logger.info("[ConfigAPI] BaseLLMEngine 已重新注册 | 新模型=%s", new_engine.model)
@@ -477,13 +490,23 @@ async def reload_llm_engine():
             old_loop = container.resolve(AgentLoop)
             old_loop.llm = new_engine
             logger.info("[ConfigAPI] AgentLoop.llm 已更新 | 新模型=%s", new_engine.model)
-        else:
-            logger.warning("[ConfigAPI] AgentLoop 未注册，跳过 llm 更新")
+
+        loop_mgr = AgentLoopManager.get_instance()
+        if loop_mgr:
+            loop_mgr._llm_engine = new_engine
+            updated_count = 0
+            for session_id in list(loop_mgr._loops.keys()):
+                meta = loop_mgr._loops.get(session_id)
+                if meta and hasattr(meta.agent_loop, 'llm'):
+                    meta.agent_loop.llm = new_engine
+                    updated_count += 1
+            logger.info("[ConfigAPI] AgentLoopManager._llm_engine 已更新 | 已更新 %d 个会话", updated_count)
 
         return {
             "status": "ok",
             "message": "LLM 引擎已重新加载",
             "model": new_engine.model,
+            "updated_sessions": updated_count if loop_mgr else 0,
         }
 
     except Exception as e:
