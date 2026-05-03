@@ -66,11 +66,12 @@ class WSConnectionManager:
     - 事件去重（同一 event_id 只推送一次）
     """
     _instance: Optional["WSConnectionManager"] = None
-    _lock: Optional[asyncio.Lock] = None  # 延迟创建，避免无事件循环时初始化
+    _lock: Optional[asyncio.Lock] = None
+    _main_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def __init__(self):
         self._clients: Dict[str, WSClient] = {}
-        self._session_clients: Dict[str, Set[str]] = {}  # session_id -> set of clientids
+        self._session_clients: Dict[str, Set[str]] = {}
         self._client_counter = 0
         self._cleanup_task: Optional[asyncio.Task] = None
         self._published_event_ids: set = set()
@@ -78,18 +79,28 @@ class WSConnectionManager:
 
     @classmethod
     def _get_lock(cls) -> asyncio.Lock:
-        """延迟创建锁，确保在事件循环内初始化"""
         if cls._lock is None:
             cls._lock = asyncio.Lock()
         return cls._lock
 
     @classmethod
+    def set_main_loop(cls, loop: asyncio.AbstractEventLoop):
+        cls._main_loop = loop
+
+    @classmethod
+    def get_main_loop(cls) -> Optional[asyncio.AbstractEventLoop]:
+        return cls._main_loop
+
+    @classmethod
     async def get_instance(cls) -> "WSConnectionManager":
-        """获取单例（异步）"""
         if cls._instance is None:
             async with cls._get_lock():
                 if cls._instance is None:
                     cls._instance = cls()
+                    try:
+                        cls._main_loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        pass
                     cls._instance._start_cleanup_task()
         return cls._instance
 
@@ -269,7 +280,9 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
     """
     发布事件（同步接口，供外部调用）
 
-    注意：这是同步函数，会在新的 asyncio task 中执行发送
+    支持从任意线程调用：
+    - 主线程：使用 asyncio.create_task
+    - 线程池：使用 run_coroutine_threadsafe 调度到主循环
     """
     message = WSMessage(type=event_type, data=data, session_id=session_id)
 
@@ -284,11 +297,26 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
         else:
             await manager.broadcast(message)
 
+    loop = WSConnectionManager.get_main_loop()
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                pass
+
+    if loop is None or not loop.is_running():
+        logger.debug("[WSManager] 无可用事件循环，跳过事件推送")
+        return
+
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(_do_publish())
-        else:
-            logger.warning("[WSManager] 事件循环未运行，无法推送事件")
+        asyncio.create_task(_do_publish())
+    except RuntimeError:
+        try:
+            asyncio.run_coroutine_threadsafe(_do_publish(), loop)
+        except Exception as e:
+            logger.debug("[WSManager] 跨线程调度失败: %s", e)
     except Exception as e:
-        logger.error(f"[WSManager] 发布事件失败: {e}")
+        logger.error("[WSManager] 发布事件失败: %s", e)

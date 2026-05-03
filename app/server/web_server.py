@@ -25,6 +25,13 @@ from app.server.routes.scheduler import router as scheduler_router
 
 @asynccontextmanager
 async def lifespan_context(app: FastAPI):
+    import asyncio
+    from app.server.routes.ws_event_manager import WSConnectionManager
+    try:
+        WSConnectionManager.set_main_loop(asyncio.get_running_loop())
+    except RuntimeError:
+        pass
+
     from app.channels import ChannelManager
     channel_mgr = ChannelManager.get_instance()
     if channel_mgr.list_platforms() and not channel_mgr.is_running:
@@ -43,7 +50,6 @@ async def lifespan_context(app: FastAPI):
     loop_manager = AgentLoopManager.get_instance()
     start_executor(loop_manager)
     
-    import asyncio
     import sys
     import os
     
