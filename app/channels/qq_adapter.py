@@ -554,6 +554,7 @@ class QQAdapter(ChannelAdapter):
             while True:
                 if not self._running:
                     break
+                need_reconnect = False
                 try:
                     self._token = await self._get_access_token()
                     self._gateway_url = await self._get_gateway_url(self._token)
@@ -563,7 +564,13 @@ class QQAdapter(ChannelAdapter):
                         self._ws = ws
 
                         async for raw in ws:
-                            data = json.loads(raw)
+                            if not raw or not raw.strip():
+                                continue
+                            try:
+                                data = json.loads(raw)
+                            except json.JSONDecodeError as e:
+                                logger.debug("[QQAdapter] 非 JSON 消息，跳过: %s", raw[:100] if len(raw) > 100 else raw)
+                                continue
                             op = data.get("op")
                             d = data.get("d")
                             s = data.get("s")
@@ -576,16 +583,18 @@ class QQAdapter(ChannelAdapter):
                                 interval = d.get("heartbeat_interval", 30000)
                                 self._heartbeat_task = asyncio.create_task(self._heartbeat(interval))
 
-                                if self._session and self._session.last_seq > 1:
+                                if self._session and self._session.session_id:
+                                    logger.info("[QQAdapter] 尝试恢复会话: %s, seq=%d", self._session.session_id, self._seq)
                                     await self._send_json({
                                         "op": OpCode.RESUME,
                                         "d": {
                                             "token": f"QQBot {self._token}",
                                             "session_id": self._session.session_id,
-                                            "seq": self._session.last_seq,
+                                            "seq": self._seq,
                                         },
                                     })
                                 else:
+                                    logger.info("[QQAdapter] 新建会话")
                                     await self._send_json({
                                         "op": OpCode.IDENTIFY,
                                         "d": {
@@ -607,6 +616,9 @@ class QQAdapter(ChannelAdapter):
                                     _save_session(self._session)
                                     logger.info(f"[QQAdapter] Session ready: {self._session_id}")
 
+                                elif t == "RESUMED":
+                                    logger.info("[QQAdapter] 会话恢复成功: %s", self._session_id)
+
                                 msg = self._parse_message(t, d)
                                 if msg and self._message_handler:
                                     if asyncio.iscoroutinefunction(self._message_handler):
@@ -615,27 +627,37 @@ class QQAdapter(ChannelAdapter):
                                         self._message_handler(msg)
 
                             elif op == OpCode.RECONNECT:
-                                logger.warning("[QQAdapter] 服务端要求重连")
-                                _clear_session(self.app_id)
-                                self._session = None
+                                logger.info("[QQAdapter] 服务端要求重连，准备重连...")
+                                need_reconnect = True
+                                if self._heartbeat_task:
+                                    self._heartbeat_task.cancel()
+                                    self._heartbeat_task = None
                                 break
 
                             elif op == OpCode.INVALID_SESSION:
                                 logger.warning("[QQAdapter] 无效会话，将重新识别")
                                 _clear_session(self.app_id)
                                 self._session = None
+                                need_reconnect = True
+                                if self._heartbeat_task:
+                                    self._heartbeat_task.cancel()
+                                    self._heartbeat_task = None
                                 await asyncio.sleep(3)
                                 break
 
                 except websockets.exceptions.ConnectionClosed:
+                    logger.info("[QQAdapter] 连接关闭，准备重连...")
+                    need_reconnect = True
                     await asyncio.sleep(5)
                 except Exception as e:
                     logger.error(f"[QQAdapter] Error: {e}")
+                    need_reconnect = True
                     await asyncio.sleep(5)
 
-                self._running = False
-                if self._heartbeat_task:
-                    self._heartbeat_task.cancel()
+                if not self._running:
+                    break
+                if need_reconnect:
+                    continue
 
     async def disconnect(self):
         self._running = False
