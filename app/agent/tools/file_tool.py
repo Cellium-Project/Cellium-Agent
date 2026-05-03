@@ -898,7 +898,6 @@ class FileTool(BaseTool):
         return abs_path
 
     def _detect_encoding(self, file_path: str) -> str:
-        """检测文件编码（BOM 检测）"""
         try:
             with open(file_path, "rb") as f:
                 raw = f.read(4)
@@ -910,6 +909,44 @@ class FileTool(BaseTool):
                 return "utf-8-sig"
         except Exception:
             pass
+
+        try:
+            with open(file_path, "rb") as f:
+                raw = f.read(65536)
+            if raw:
+                try:
+                    raw.decode("utf-8")
+                    return "utf-8"
+                except UnicodeDecodeError:
+                    pass
+                try:
+                    raw.decode("gbk")
+                    return "gbk"
+                except UnicodeDecodeError:
+                    pass
+                try:
+                    raw.decode("gb2312")
+                    return "gb2312"
+                except UnicodeDecodeError:
+                    pass
+                try:
+                    raw.decode("big5")
+                    return "big5"
+                except UnicodeDecodeError:
+                    pass
+                try:
+                    raw.decode("shift_jis")
+                    return "shift_jis"
+                except UnicodeDecodeError:
+                    pass
+                try:
+                    raw.decode("euc-kr")
+                    return "euc-kr"
+                except UnicodeDecodeError:
+                    pass
+        except Exception:
+            pass
+
         return "utf-8"
 
     def _get_file_state(self, path: str) -> Optional[FileState]:
@@ -933,16 +970,67 @@ class FileTool(BaseTool):
         return text
 
     def _find_actual_string(self, content: str, old_string: str) -> Optional[str]:
-        """查找实际匹配字符串（处理引号样式差异）"""
         if old_string in content:
             return old_string
         normalized_old = self._normalize_quotes(old_string)
         normalized_content = self._normalize_quotes(content)
         if normalized_old in normalized_content:
-            idx = content.find(old_string, 0)
-            if idx != -1:
-                return old_string
+            start = 0
+            while start <= len(normalized_content) - len(normalized_old):
+                idx = normalized_content.find(normalized_old, start)
+                if idx == -1:
+                    break
+                actual = content[idx:idx + len(normalized_old)]
+                if actual == old_string:
+                    return actual
+                start = idx + 1
+            return content[idx:idx + len(normalized_old)] if idx != -1 else None
+
+        content_lf = content.replace("\r\n", "\n").replace("\r", "\n")
+        old_string_lf = old_string.replace("\r\n", "\n").replace("\r", "\n")
+        if old_string_lf in content_lf:
+            lf_idx = content_lf.find(old_string_lf)
+            lf_end = lf_idx + len(old_string_lf)
+            orig_idx = self._lf_to_orig_offset(content, lf_idx)
+            orig_end = self._lf_to_orig_offset(content, lf_end)
+            return content[orig_idx:orig_end]
+
+        import unicodedata
+        nfkc_old = unicodedata.normalize("NFKC", old_string_lf)
+        nfkc_content = unicodedata.normalize("NFKC", content_lf)
+        if nfkc_old in nfkc_content:
+            nfkc_idx = nfkc_content.find(nfkc_old)
+            char_map = []
+            pos = 0
+            for ch in content_lf:
+                nfkc_ch = unicodedata.normalize("NFKC", ch)
+                char_map.append((pos, len(nfkc_ch)))
+                pos += 1
+            content_start = 0
+            content_end = len(content_lf)
+            nfkc_pos = 0
+            for i, (char_pos, nfkc_len) in enumerate(char_map):
+                if nfkc_pos == nfkc_idx:
+                    content_start = char_pos
+                nfkc_pos += nfkc_len
+                if nfkc_pos == nfkc_idx + len(nfkc_old):
+                    content_end = char_pos + 1
+                    break
+            orig_start = self._lf_to_orig_offset(content, content_start)
+            orig_end = self._lf_to_orig_offset(content, content_end)
+            return content[orig_start:orig_end]
+
         return None
+
+    def _lf_to_orig_offset(self, orig_content: str, lf_offset: int) -> int:
+        orig_pos = 0
+        lf_pos = 0
+        while lf_pos < lf_offset and orig_pos < len(orig_content):
+            if orig_content[orig_pos] == "\r" and orig_pos + 1 < len(orig_content) and orig_content[orig_pos + 1] == "\n":
+                orig_pos += 1
+            orig_pos += 1
+            lf_pos += 1
+        return orig_pos
 
     def _generate_diff(self, old_content: str, new_content: str, file_path: str, max_lines: int = 50) -> str:
         """生成 unified diff 格式"""
