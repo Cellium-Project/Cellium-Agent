@@ -596,6 +596,16 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                                 old_instance = cell
                                 old_cell_name = name
                                 break
+                        
+                        if old_cell_name:
+                            try:
+                                from app.core.util.component_tool_registry import get_component_tool_registry
+                                registry = get_component_tool_registry()
+                                registry.unregister(old_cell_name)
+                                logger.debug(f"[HotReload] 已注销旧工具注册表项: {old_cell_name}")
+                            except Exception as e:
+                                logger.debug(f"[HotReload] 注销旧工具注册表项失败 {old_cell_name}: {e}")
+                        
                         if old_instance and hasattr(old_instance, "on_unload"):
                             old_instance.on_unload()
 

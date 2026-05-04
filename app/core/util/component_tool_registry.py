@@ -534,7 +534,12 @@ class ComponentToolRegistry:
 
     def _on_tool_unregistered(self, name: str, adapter: CellToolAdapter):
         """工具卸载后回调（子类可覆盖）"""
-        ...
+        if hasattr(adapter, '_stop_heartbeat'):
+            try:
+                adapter._stop_heartbeat()
+                logger.debug(f"[ComponentToolRegistry] 已停止 {name} 的心跳线程")
+            except Exception as e:
+                logger.warning(f"[ComponentToolRegistry] 停止 {name} 心跳线程失败: {e}")
 
 
 # ================================================================

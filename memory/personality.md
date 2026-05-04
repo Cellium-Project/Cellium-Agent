@@ -75,35 +75,34 @@ class XxxTool(BaseCell):
 
 **创建后台组件**:
 ```
-1. component.template(style="background")  # 获取模板
+1. component.template(style="background")  # 获取完整模板
 2. file.write() 写入 components/xxx.py
-3. 实现监控逻辑（在 _background_loop 中）
+3. 修改类名、cell_name、实现监控逻辑
 ```
 
-**核心代码**:
+**核心方法**:
 ```python
 def _background_loop(self):
+    """后台循环 - 实现监控逻辑"""
     while self._running:
+        # 在这里实现监控逻辑
         if self._detect_change():
             for sid in self._target_sessions:
                 self._trigger_agent("事件消息", sid)
         time.sleep(60)
 
 def _trigger_agent(self, message: str, session_id: str):
-    """推送消息到 Agent（自动路由到对应通道）"""
+    """推送消息到 Agent"""
     import httpx
     from app.core.util.agent_config import get_config
     cfg = get_config()
     host, port = cfg.get("server.host", "127.0.0.1"), cfg.get("server.port", 18000)
     httpx.post(f"http://{host}:{port}/api/component/event", json={
-        "session_id": session_id,  # default/telegram:user123/qq:group:123
+        "session_id": session_id,
         "message": message,
         "source": self.cell_name,
         "event_type": "background_trigger"
     })
-
-def _cmd_add_session(self, session_id: str = None):
-    """添加目标 session（自动注入当前对话）"""
 ```
 
 **使用**:
@@ -113,7 +112,9 @@ xxx.start()        # 启动后台监控
 xxx.status()       # 查看状态
 ```
 
-组件触发事件后，Agent 会收到消息并回复到该对话。
+**铁律**: `_trigger_agent` 必须调用 `/api/component/event`，且必须包含 `"source": self.cell_name`
+
+组件触发事件后，Agent 会收到消息并回复到该对话（支持 QQ、Telegram 等外部平台，自动路由）。
 
 ---
 

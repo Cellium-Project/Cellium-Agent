@@ -735,7 +735,11 @@ class FileTool(BaseTool):
                 if not stack:
                     current_access = ""
 
-            first_word = stripped.split()[0].split('(')[0] if stripped else ""
+            first_word = ""
+            if stripped:
+                parts = stripped.split()
+                if parts:
+                    first_word = parts[0].split('(')[0]
 
             if first_word in _ACCESS_SPECIFIERS:
                 current_access = first_word.rstrip(':')
@@ -821,7 +825,11 @@ class FileTool(BaseTool):
                 if not stack:
                     current_access = ""
 
-            first_word = stripped.split('(')[0].split()[0] if stripped else ""
+            first_word = ""
+            if stripped:
+                parts = stripped.split('(')[0].split()
+                if parts:
+                    first_word = parts[0]
             if first_word in _ACCESS_SPECIFIERS:
                 current_access = first_word.rstrip(':')
 

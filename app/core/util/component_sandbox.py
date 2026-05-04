@@ -59,6 +59,8 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
 
     这个函数在子进程中运行，通过 Queue 与主进程通信
     """
+    import time  # 心跳管理需要
+    
     try:
         if project_root and project_root not in sys.path:
             sys.path.insert(0, project_root)
@@ -121,9 +123,27 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
 
         output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
 
+        # 心跳管理
+        HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
+        BACKGROUND_TIMEOUT = 300  # 后台组件超时（秒）
+        last_heartbeat = time.time()
+        
+        from queue import Empty as QueueEmpty
+        
         while True:
             try:
-                request = input_queue.get(timeout=SANDBOX_TIMEOUT)
+                has_background = False
+                if hasattr(component, '_running'):
+                    has_background = component._running
+                
+                if has_background:
+                    # 后台模式：使用更长的超时时间
+                    timeout = BACKGROUND_TIMEOUT
+                else:
+                    # 普通模式：使用默认超时
+                    timeout = SANDBOX_TIMEOUT
+                
+                request = input_queue.get(timeout=timeout)
                 if request is None:
                     break
 
@@ -148,9 +168,18 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                 elif action == "ping":
                     output_queue.put({"status": "pong"})
 
+                elif action == "heartbeat":
+                    last_heartbeat = time.time()
+                    has_bg = False
+                    if hasattr(component, '_running'):
+                        has_bg = component._running
+                    output_queue.put({"status": "ok", "has_background": has_bg})
+
                 else:
                     output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
 
+            except QueueEmpty:
+                continue
             except Exception as e:
                 error_str = str(e) or f"{type(e).__name__} (no error message)"
                 output_queue.put({
@@ -424,6 +453,26 @@ class ComponentSandbox(ICell):
         if not self._sandbox:
             return False
         return self._sandbox.is_busy()
+
+    def heartbeat(self) -> Dict[str, Any]:
+        """发送心跳，保持沙箱存活
+        
+        Returns:
+            {"status": "ok", "has_background": bool}
+        """
+        if not self._sandbox:
+            return {"status": "error", "error": "Sandbox not initialized"}
+        
+        if not self.is_alive():
+            return {"status": "error", "error": "Sandbox not alive"}
+        
+        try:
+            self._sandbox._input_queue.put({"action": "heartbeat"})
+            result = self._sandbox._output_queue.get(timeout=10)
+            return result
+        except Exception as e:
+            logger.warning("[ComponentSandbox] Heartbeat failed: %s", e)
+            return {"status": "error", "error": str(e)}
 
     @classmethod
     def get_sandbox(cls, name: str) -> 'ComponentSandbox':

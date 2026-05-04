@@ -27,6 +27,8 @@ import inspect
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Any, Dict, Optional, Set
 
 from app.agent.tools.base_tool import BaseTool
@@ -114,8 +116,13 @@ class CellToolAdapter(BaseTool):
                 self.description = f"组件 [{self.name}]"
 
         self._use_sandbox = self._determine_sandbox_mode(use_sandbox)
+        
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_stop_event = threading.Event()
+        self._heartbeat_interval = 30  # 心跳间隔（秒），与沙箱保持一致
 
         super().__init__()
+        
 
     def _determine_sandbox_mode(self, use_sandbox: Optional[bool]) -> bool:
         """决定是否使用沙箱模式"""
@@ -257,6 +264,9 @@ class CellToolAdapter(BaseTool):
                 result = {"result": result}
             result.setdefault("_source", f"component:{self.name}")
             result.setdefault("_sandboxed", True)
+
+            if self._use_sandbox and sandbox.is_alive() and (not self._heartbeat_thread or not self._heartbeat_thread.is_alive()):
+                self._start_heartbeat()
 
             return result
 
@@ -400,6 +410,7 @@ class CellToolAdapter(BaseTool):
                     "error": f"未知命令 '{cmd_name}'，可用: {list(available_cmds.keys())}",
                     "_source": f"component:{self.name}",
                 }
+            # 沙箱模式下，无法直接获取方法签名，保留所有参数让沙箱内部处理
             valid_params = set(all_args.keys())
         elif not hasattr(self._cell, target_method_name):
             available_cmds = list(self.get_commands().keys())
@@ -695,3 +706,81 @@ class CellToolAdapter(BaseTool):
         cmds = list(self.get_commands().keys())
         sandbox_flag = " [sandbox]" if self._use_sandbox else ""
         return f"<CellToolAdapter name={self.name} component={self.component_type} commands={cmds}{sandbox_flag}>"
+    
+    def _start_heartbeat(self):
+        """启动心跳线程，保持沙箱存活"""
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            return
+        
+        self._heartbeat_stop_event.clear()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+        logger.debug(f"[{self.name}] 心跳线程已启动")
+    
+    def _stop_heartbeat(self):
+        """停止心跳线程"""
+        if self._heartbeat_thread:
+            self._heartbeat_stop_event.set()
+            if self._heartbeat_thread is not threading.current_thread():
+                self._heartbeat_thread.join(timeout=2)
+            logger.debug(f"[{self.name}] 心跳线程已停止")
+    
+    def _heartbeat_loop(self):
+        """心跳循环 - 定期发送心跳保持沙箱存活"""
+        consecutive_failures = 0
+        max_failures = 5  # 最大失败次数
+        has_background = False
+        
+        while not self._heartbeat_stop_event.is_set():
+            try:
+                if self._use_sandbox:
+                    from app.core.util.component_sandbox import ComponentSandbox
+                    sandbox = ComponentSandbox.get_sandbox(self.name)
+                    
+                    if sandbox.is_alive():
+                        try:
+                            result = sandbox.heartbeat()
+                            consecutive_failures = 0  # 重置失败计数
+                            has_background = result.get("has_background", False)
+                            
+                            if has_background:
+                                logger.debug(f"[{self.name}] 心跳成功 | 后台任务运行中")
+                        except Exception as e:
+                            consecutive_failures += 1
+                            if has_background:
+                                logger.warning(f"[{self.name}] 后台组件心跳失败 ({consecutive_failures}/{max_failures * 2}): {e}")
+                                if consecutive_failures >= max_failures * 2:
+                                    logger.error(f"[{self.name}] 后台组件心跳连续失败{consecutive_failures}次，清理沙箱")
+                                    ComponentSandbox.remove_sandbox(self.name)
+                                    break
+                            elif consecutive_failures >= max_failures:
+                                logger.warning(f"[{self.name}] 心跳连续失败{max_failures}次，清理沙箱")
+                                ComponentSandbox.remove_sandbox(self.name)
+                                break
+                            if consecutive_failures == 1:
+                                logger.debug(f"[{self.name}] 心跳失败: {e}")
+                    else:
+                        consecutive_failures += 1
+                        if has_background:
+                            logger.debug(f"[{self.name}] 后台组件沙箱未响应 ({consecutive_failures}/{max_failures * 2})")
+                            if consecutive_failures >= max_failures * 2:
+                                logger.warning(f"[{self.name}] 后台组件沙箱长时间未响应，清理沙箱")
+                                ComponentSandbox.remove_sandbox(self.name)
+                                break
+                        elif consecutive_failures >= max_failures:
+                            logger.warning(f"[{self.name}] 沙箱未存活，清理沙箱")
+                            ComponentSandbox.remove_sandbox(self.name)
+                            break
+                
+                self._heartbeat_stop_event.wait(self._heartbeat_interval)
+                
+            except Exception as e:
+                logger.error(f"[{self.name}] 心跳循环出错: {e}")
+                time.sleep(5)
+    
+    def __del__(self):
+        """析构时停止心跳"""
+        try:
+            self._stop_heartbeat()
+        except Exception:
+            pass
