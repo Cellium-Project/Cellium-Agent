@@ -615,44 +615,48 @@ class CellToolAdapter(BaseTool):
 
         for cmd_name, cmd_desc in self.get_commands().items():
             method = getattr(self._cell, f"{self.COMMAND_PREFIX}{cmd_name}", None)
-            if method is None or not callable(method):
-                continue
-
+            
             params = {}
             required = []
 
-            # 提取方法参数签名
-            sig = inspect.signature(method)
-            for param_name, param in sig.parameters.items():
-                if param_name == "self":
-                    continue
+            if method is not None and callable(method):
+                sig = inspect.signature(method)
+                for param_name, param in sig.parameters.items():
+                    if param_name == "self":
+                        continue
 
-                param_info: Dict[str, Any] = {
-                    "type": "string",
-                    "description": param_name,
-                }
-
-                # 类型推断
-                annotation = param.annotation
-                if annotation != inspect.Parameter.empty:
-                    type_map = {
-                        int: "integer",
-                        float: "number",
-                        bool: "boolean",
-                        list: "array",
-                        dict: "object",
-                        str: "string",
+                    param_info: Dict[str, Any] = {
+                        "type": "string",
+                        "description": param_name,
                     }
-                    param_info["type"] = type_map.get(annotation, "string")
 
-                    # array 类型需要指定 items
-                    if annotation == list:
-                        param_info["items"] = {"type": "string"}
+                    annotation = param.annotation
+                    if annotation != inspect.Parameter.empty:
+                        type_map = {
+                            int: "integer",
+                            float: "number",
+                            bool: "boolean",
+                            list: "array",
+                            dict: "object",
+                            str: "string",
+                        }
+                        param_info["type"] = type_map.get(annotation, "string")
 
-                params[param_name] = param_info
+                        if annotation == list:
+                            param_info["items"] = {"type": "string"}
 
-                # 必填/选填
-                if param.default == inspect.Parameter.empty:
+                    params[param_name] = param_info
+
+                    if param.default == inspect.Parameter.empty:
+                        required.append(param_name)
+            else:
+                command_params = self._cell.get_command_params()
+                param_names = command_params.get(cmd_name, [])
+                for param_name in param_names:
+                    params[param_name] = {
+                        "type": "string",
+                        "description": param_name,
+                    }
                     required.append(param_name)
 
             commands_info.append({
