@@ -110,13 +110,12 @@ async def get_gene_stats():
     
     total_genes = len(items)
     total_usage = sum(item.get("metadata", {}).get("usage_count", 0) for item in items)
+    total_success = sum(item.get("metadata", {}).get("success_count", 0) for item in items)
     
-    success_rates = [
-        item.get("metadata", {}).get("success_rate", 0.0) 
-        for item in items 
-        if item.get("metadata", {}).get("usage_count", 0) > 0
-    ]
-    avg_success_rate = sum(success_rates) / len(success_rates) if success_rates else 0.0
+    if total_usage > 0:
+        weighted_success_rate = total_success / total_usage
+    else:
+        weighted_success_rate = 0.0
     
     evolved_genes = sum(
         1 for item in items 
@@ -126,7 +125,7 @@ async def get_gene_stats():
     return GeneStatsResponse(
         total_genes=total_genes,
         total_usage=total_usage,
-        avg_success_rate=avg_success_rate,
+        avg_success_rate=weighted_success_rate,
         evolved_genes=evolved_genes,
     )
 

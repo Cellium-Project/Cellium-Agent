@@ -205,9 +205,6 @@ class FeedbackEvaluator:
                         state.gene_failure_count = 0
                         state.gene_failure_history = []
                         logger.info("[GeneEvolution] Gene 触发完成，重置失败计数")
-            elif reward >= 0.5:
-                if task_type:
-                    GeneEvolution.record_success(task_type, reward, state.elapsed_ms)
         except Exception as e:
             logger.warning("[GeneEvolution] Gene evolution failed: %s", e)
 

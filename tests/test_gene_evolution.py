@@ -145,9 +145,9 @@ class TestGeneEvolution(unittest.TestCase):
 
         mock_repo.upsert_memory.assert_called_once()
         call_args = mock_repo.upsert_memory.call_args
-        self.assertEqual(call_args.kwargs["metadata"]["usage_count"], 5)
+        self.assertEqual(call_args.kwargs["metadata"]["usage_count"], 6)
         self.assertEqual(call_args.kwargs["metadata"]["success_count"], 4)
-        self.assertEqual(call_args.kwargs["metadata"]["success_rate"], 4/5)
+        self.assertEqual(call_args.kwargs["metadata"]["success_rate"], 4/6)
         self.assertIn("recent_results", call_args.kwargs["metadata"])
         self.assertEqual(call_args.kwargs["metadata"]["consecutive_success"], 1)
 
@@ -261,8 +261,9 @@ class TestFeedbackEvaluatorWithGeneEvolution(unittest.TestCase):
         reward = evaluator.evaluate_with_gene_evolution(state, "test_task")
 
         self.assertGreater(reward, 0.5)
-        mock_gene_evolution.record_success.assert_called_once()
-        # 新逻辑：成功时不重置失败计数器（保持累积）
+        # 新逻辑：record_success 移到 end_session 中调用，不再在每轮调用
+        mock_gene_evolution.record_success.assert_not_called()
+        # 失败计数器保持不变
         self.assertEqual(state.gene_failure_count, 1)
         self.assertEqual(len(state.gene_failure_history), 1)
 

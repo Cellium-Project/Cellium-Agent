@@ -120,13 +120,12 @@ class GeneEvolution:
 
             usage_count = metadata.get("usage_count", 0)
             success_count = metadata.get("success_count", 0)
+            failure_count = metadata.get("failure_count", 0)
 
             if is_failure:
-                failure_count = metadata.get("failure_count", 0) + 1
-            else:
-                failure_count = metadata.get("failure_count", 0)
+                failure_count += 1
+                usage_count += 1
 
-            usage_count = cls._ensure_valid_usage_count(usage_count, success_count)
             success_rate = cls._calculate_success_rate(success_count, usage_count)
 
             metadata_updates = {
@@ -886,10 +885,9 @@ MUST NOT: <应该避免的错误做法>
             gene = results[0]
             metadata = gene.get("metadata", {})
 
-            usage_count = metadata.get("usage_count", 0)
+            usage_count = metadata.get("usage_count", 0) + 1
             success_count = metadata.get("success_count", 0) + 1
 
-            usage_count = cls._ensure_valid_usage_count(usage_count, success_count)
             success_rate = cls._calculate_success_rate(success_count, usage_count)
 
             result_updates = cls._update_recent_results(metadata, True, reward, elapsed_ms)
@@ -906,6 +904,50 @@ MUST NOT: <应该避免的错误做法>
                     "success_count": success_count,
                     "success_rate": success_rate,
                     "last_success_at": datetime.now().isoformat(),
+                    **result_updates,
+                }
+            )
+        except Exception:
+            pass
+
+    @classmethod
+    def record_failure(cls, task_type: str, reward: float = 0.0, elapsed_ms: int = 0):
+        if not TaskSignalMatcher._repository or not task_type:
+            return
+
+        try:
+            results = TaskSignalMatcher._repository.search_memories(
+                query=f"gene:{task_type}",
+                schema_type="control_gene",
+                top_k=1
+            )
+
+            if not results:
+                return
+
+            gene = results[0]
+            metadata = gene.get("metadata", {})
+
+            usage_count = metadata.get("usage_count", 0) + 1
+            failure_count = metadata.get("failure_count", 0) + 1
+
+            success_count = metadata.get("success_count", 0)
+            success_rate = cls._calculate_success_rate(success_count, usage_count)
+
+            result_updates = cls._update_recent_results(metadata, False, reward, elapsed_ms)
+
+            TaskSignalMatcher._repository.upsert_memory(
+                title=gene.get("title", f"Gene: {task_type}"),
+                content=gene.get("content", ""),
+                schema_type="control_gene",
+                category="task_strategy",
+                memory_key=gene.get("memory_key", f"gene:{task_type}"),
+                metadata={
+                    **metadata,
+                    "usage_count": usage_count,
+                    "failure_count": failure_count,
+                    "success_rate": success_rate,
+                    "last_failure_at": datetime.now().isoformat(),
                     **result_updates,
                 }
             )

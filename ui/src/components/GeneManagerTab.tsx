@@ -367,7 +367,15 @@ export const GeneManagerTab: React.FC = () => {
               {selectedGene.evolution_history.length > 0 && (
                 <div className="detail-row">
                   <label>{t('gene.evolutionHistory')}</label>
-                  <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{
+                    marginTop: '8px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px',
+                    maxHeight: '200px',
+                    overflowY: 'auto',
+                    paddingRight: '4px'
+                  }}>
                     {selectedGene.evolution_history.map((entry, idx) => (
                       <div key={idx} style={{
                         display: 'flex',

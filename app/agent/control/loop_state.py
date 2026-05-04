@@ -128,7 +128,11 @@ class LoopState:
     gene_failure_history: List[Dict] = field(default_factory=list) 
 
     # ===== Gene 提示追踪 =====
-    gene_hint_shown: bool = False  # 是否已经显示过 Gene 提示（每会话只提示一次） 
+    gene_hint_shown: bool = False  # 是否已经显示过 Gene 提示（每会话只提示一次）
+    
+    # ===== Gene 会话统计 =====
+    matched_gene_type: str = ""  # 会话开始时匹配到的 Gene task_type
+    gene_session_recorded: bool = False  # 会话是否已记录 Gene 使用 
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（用于持久化）"""

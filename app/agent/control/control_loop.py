@@ -109,6 +109,8 @@ class ControlLoop:
             matched = TaskSignalMatcher.match(user_input)
             if matched:
                 task_type = matched.get("task_type", "")
+                if not state.matched_gene_type:
+                    state.matched_gene_type = task_type
         
         if not task_type and state.tool_traces:
             last_tool = state.tool_traces[-1].get('tool', '')
@@ -134,6 +136,20 @@ class ControlLoop:
 
     def end_session(self, state: LoopState):
         self.bandit.end_session()
+
+        if state.matched_gene_type and not state.gene_session_recorded:
+            from .constraint_gene import GeneEvolution
+            avg_reward = state.cumulative_reward / max(state.iteration, 1)
+            success = avg_reward >= 0.5
+            if success:
+                GeneEvolution.record_success(state.matched_gene_type, avg_reward, state.elapsed_ms)
+            else:
+                GeneEvolution.record_failure(state.matched_gene_type, avg_reward, state.elapsed_ms)
+            state.gene_session_recorded = True
+            logger.info(
+                "[ControlLoop] Gene 会话统计 | task_type=%s | success=%s | avg_reward=%.2f",
+                state.matched_gene_type, success, avg_reward
+            )
 
         summary = state.get_decision_summary()
         logger.info(
