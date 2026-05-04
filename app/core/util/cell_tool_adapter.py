@@ -120,6 +120,8 @@ class CellToolAdapter(BaseTool):
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop_event = threading.Event()
         self._heartbeat_interval = 30  # 心跳间隔（秒），与沙箱保持一致
+        
+        self._cached_params_map: Optional[Dict[str, list]] = None  # 缓存参数签名
 
         super().__init__()
         
@@ -410,8 +412,11 @@ class CellToolAdapter(BaseTool):
                     "error": f"未知命令 '{cmd_name}'，可用: {list(available_cmds.keys())}",
                     "_source": f"component:{self.name}",
                 }
-            # 沙箱模式下，无法直接获取方法签名，保留所有参数让沙箱内部处理
-            valid_params = set(all_args.keys())
+            # 沙箱模式：通过 get_command_params 获取参数签名（使用缓存）
+            if self._cached_params_map is None and hasattr(self._cell, 'get_command_params'):
+                self._cached_params_map = self._cell.get_command_params()
+            params_map = self._cached_params_map or {}
+            valid_params = set(params_map.get(cmd_name, []))
         elif not hasattr(self._cell, target_method_name):
             available_cmds = list(self.get_commands().keys())
             return {
@@ -426,9 +431,9 @@ class CellToolAdapter(BaseTool):
         
         cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
         
+        # 注入特殊参数（检查方法签名是否需要）
         if session_id and "session_id" in valid_params:
             cleaned_args["session_id"] = session_id
-        
         if platform_context and "platform_context" in valid_params:
             cleaned_args["platform_context"] = platform_context
         

@@ -165,6 +165,10 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                     commands = component.get_commands()
                     output_queue.put({"status": "ok", "commands": commands})
 
+                elif action == "get_command_params":
+                    params_map = component.get_command_params() if hasattr(component, 'get_command_params') else {}
+                    output_queue.put({"status": "ok", "params_map": params_map})
+
                 elif action == "ping":
                     output_queue.put({"status": "pong"})
 
@@ -336,6 +340,20 @@ class SandboxProcess:
             pass
         return {}
 
+    def get_command_params(self) -> Dict[str, list]:
+        """获取每个命令的参数列表（用于沙箱模式的参数注入判断）"""
+        if not self._initialized:
+            return {}
+
+        self._input_queue.put({"action": "get_command_params"})
+        try:
+            result = self._output_queue.get(timeout=5)
+            if result.get("status") == "ok":
+                return result.get("params_map", {})
+        except:
+            pass
+        return {}
+
     def ping(self) -> bool:
         """检查沙箱进程是否存活"""
         if not self._process or not self._process.is_alive():
@@ -438,6 +456,12 @@ class ComponentSandbox(ICell):
         if not self._sandbox:
             return {}
         return self._sandbox.get_commands()
+
+    def get_command_params(self) -> Dict[str, list]:
+        """获取每个命令的参数列表"""
+        if not self._sandbox:
+            return {}
+        return self._sandbox.get_command_params()
 
     def stop(self):
         """停止沙箱"""

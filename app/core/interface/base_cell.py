@@ -4,6 +4,7 @@ BaseCell - 基础组件类
 提供自动命令映射、依赖注入和事件支持
 """
 
+import inspect
 import logging
 
 from app.core.interface.icell import ICell
@@ -74,6 +75,19 @@ class BaseCell(ICell, metaclass=AutoInjectMeta):
                     doc = method.__doc__ or ""
                     commands[cmd_name] = doc.strip()
         return commands
+    
+    def get_command_params(self) -> Dict[str, list]:
+        """返回每个命令的参数名列表（用于沙箱模式的参数注入判断）"""
+        params_map = {}
+        for name in dir(self):
+            if name.startswith(self.COMMAND_PREFIX):
+                cmd_name = name[len(self.COMMAND_PREFIX):]
+                method = getattr(self, name)
+                if callable(method):
+                    sig = inspect.signature(method)
+                    params = [p for p in sig.parameters if p != "self"]
+                    params_map[cmd_name] = params
+        return params_map
     
     @property
     def event_bus(self):
