@@ -69,7 +69,6 @@ const ModelSettings: React.FC = () => {
 
   useEffect(() => {
     fetchJSON<Record<string, any>>(API.configSection('llm')).then(data => {
-      // 兼容旧配置，转换为 models 格式
       if (data && !data.models && data.openai) {
         data.models = [{
           name: data.openai.model || 'default',
@@ -81,7 +80,7 @@ const ModelSettings: React.FC = () => {
         }];
         data.current_model = data.openai.model || 'default';
       }
-      setConfig(data || {}); 
+      setConfig(data || {});
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -160,7 +159,6 @@ const ModelSettings: React.FC = () => {
   });
 
   const models = config.models || [];
-  // 直接使用 config.current_model，确保选择后能正确更新
   const currentModelName = config.current_model || '';
   const displayModelName = currentModelName || (models[0]?.name || '');
   const streaming = config.streaming || {};
@@ -168,113 +166,133 @@ const ModelSettings: React.FC = () => {
 
   return (
     <div className="settings-panel">
-      <h3 className="settings-section-title">
-        <span><Icons.Database size={18} /> {t('settings.model.title')}</span>
-      </h3>
-      <p className="settings-desc">{t('settings.model.description')}</p>
-
       {loading ? (
         <div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> {t('common.loading')}</div>
       ) : (
         <>
-          <div className="settings-grid">
-            <div className="form-group">
-              <FieldLabel label={t('settings.model.currentModel')} />
-              <CustomDropdown
-                value={displayModelName}
-                items={models.map((m: any) => ({ value: m.name, label: `${m.name} (${m.model || t('settings.model.notSet')})` }))}
-                onChange={val => updateField('current_model', val)}
-              />
+          <div className="settings-section">
+            <div className="settings-section-header">
+              <Icons.Database size={18} />
+              <h3>{t('settings.model.title')}</h3>
             </div>
+            <p className="settings-desc">{t('settings.model.description')}</p>
 
-            <div className="form-row">
-              <div className="form-group">
-                <FieldLabel label={t('settings.model.streaming')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!streaming.enabled} onChange={e => updateField('streaming.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                  <span className="toggle-label">{streaming.enabled ? t('settings.model.streamingEnabled') : t('settings.model.streamingDisabled')}</span>
-                </label>
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div className="settings-card-title">{t('settings.model.currentModel')}</div>
               </div>
-
-              <div className="form-group">
-                <FieldLabel label={t('settings.model.thinking')} />
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={!!thinking.enabled} onChange={e => updateField('thinking.enabled', e.target.checked)} />
-                  <span className="toggle-slider"></span>
-                  <span className="toggle-label">{thinking.enabled ? t('settings.model.thinkingEnabled') : t('settings.model.thinkingDisabled')}</span>
-                </label>
+              <div className="settings-card-grid" style={{ gridTemplateColumns: '1fr' }}>
+                <div className="form-group">
+                  <CustomDropdown
+                    value={displayModelName}
+                    items={models.map((m: any) => ({ value: m.name, label: `${m.name} (${m.model || t('settings.model.notSet')})` }))}
+                    onChange={val => updateField('current_model', val)}
+                  />
+                </div>
               </div>
             </div>
-
-            {thinking.enabled && (
-              <div className="form-group" style={{ marginTop: '8px' }}>
-                <FieldLabel label={t('settings.model.thinkingBudget')} />
-                <input
-                  type="number"
-                  value={thinking.budget_tokens || 10000}
-                  onChange={e => updateField('thinking.budget_tokens', parseInt(e.target.value) || 10000)}
-                  min={1000}
-                  max={200000}
-                  step={1000}
-                  style={{ width: '120px' }}
-                />
-              </div>
-            )}
           </div>
 
-          <div className="models-list">
-            <div className="models-list-header">
-              <h4>{t('settings.model.modelList')}</h4>
-              <button className="btn-small" onClick={addModel}>+ {t('settings.model.addModel')}</button>
-            </div>
-
-            {models.length === 0 && (
-              <p className="settings-desc">{t('settings.model.noModels')}</p>
-            )}
-
-            {models.map((model: any, index: number) => (
-              <div key={index} className="model-card">
-                <div className="model-card-header">
-                  <input
-                    type="text"
-                    value={model.name}
-                    onChange={e => updateModelField(index, 'name', e.target.value)}
-                    placeholder={t('settings.model.namePlaceholder')}
-                    className="model-name-input"
-                  />
-                  <button className="btn-icon" onClick={() => removeModel(index)} title={t('common.delete')}>
-                    <Icons.X size={16} />
-                  </button>
+          <div className="settings-section">
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div className="settings-card-title">{t('settings.model.inferenceSettings')}</div>
+              </div>
+              <div className="settings-card-grid">
+                <div className="form-group">
+                  <FieldLabel label={t('settings.model.streaming')} />
+                  <label className="toggle-switch">
+                    <input type="checkbox" checked={!!streaming.enabled} onChange={e => updateField('streaming.enabled', e.target.checked)} />
+                    <span className="toggle-slider"></span>
+                    <span className="toggle-label">{streaming.enabled ? t('settings.model.streamingEnabled') : t('settings.model.streamingDisabled')}</span>
+                  </label>
                 </div>
-                <div className="model-card-body">
-                  <div className="form-group">
-                    <FieldLabel label={t('settings.model.baseUrl')} />
-                    <input type="text" value={model.base_url || ''} onChange={e => updateModelField(index, 'base_url', e.target.value)} placeholder="https://api.openai.com/v1" />
-                  </div>
-                  <div className="form-group">
-                    <FieldLabel label={t('settings.model.apiKey')} />
-                    <input type="password" value={model.api_key || ''} onChange={e => updateModelField(index, 'api_key', e.target.value)} placeholder="sk-..." />
-                  </div>
-                  <div className="form-group">
-                    <FieldLabel label={t('settings.model.modelId')} />
-                    <input type="text" value={model.model || ''} onChange={e => updateModelField(index, 'model', e.target.value)} placeholder="gpt-4o" />
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <FieldLabel label={t('settings.model.temperature')} />
-                      <input type="number" value={Number(model.temperature) || 0.7} min={0} max={2} step={0.1}
-                        onChange={e => updateModelField(index, 'temperature', parseFloat(e.target.value))} />
-                    </div>
-                    <div className="form-group">
-                      <FieldLabel label={t('settings.model.timeout')} />
-                      <input type="number" value={Number(model.timeout) || 120} min={10} max={600}
-                        onChange={e => updateModelField(index, 'timeout', parseInt(e.target.value))} />
-                    </div>
-                  </div>
+                <div className="form-group">
+                  <FieldLabel label={t('settings.model.thinking')} />
+                  <label className="toggle-switch">
+                    <input type="checkbox" checked={!!thinking.enabled} onChange={e => updateField('thinking.enabled', e.target.checked)} />
+                    <span className="toggle-slider"></span>
+                    <span className="toggle-label">{thinking.enabled ? t('settings.model.thinkingEnabled') : t('settings.model.thinkingDisabled')}</span>
+                  </label>
+                </div>
+                <div className={`form-group thinking-budget ${thinking.enabled ? 'visible' : 'hidden'}`}>
+                  <FieldLabel label={t('settings.model.thinkingBudget')} />
+                  <input
+                    type="number"
+                    value={thinking.budget_tokens || 10000}
+                    onChange={e => updateField('thinking.budget_tokens', parseInt(e.target.value) || 10000)}
+                    min={1000}
+                    max={200000}
+                    step={1000}
+                  />
+                  <span className="input-hint">Token</span>
                 </div>
               </div>
-            ))}
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div className="settings-card-title">{t('settings.model.modelList')}</div>
+                <button className="btn-small" onClick={addModel}>+ {t('settings.model.addModel')}</button>
+              </div>
+
+              {models.length === 0 && (
+                <div className="empty-state">
+                  <Icons.Database size={32} />
+                  <p>{t('settings.model.noModels')}</p>
+                </div>
+              )}
+
+              <div className="models-grid">
+                {models.map((model: any, index: number) => (
+                  <div key={index} className={`model-card ${displayModelName === model.name ? 'active' : ''}`}>
+                    <div className="model-card-header">
+                      <div className="model-name-wrapper">
+                        {displayModelName === model.name && <span className="active-badge">Active</span>}
+                        <input
+                          type="text"
+                          value={model.name}
+                          onChange={e => updateModelField(index, 'name', e.target.value)}
+                          placeholder={t('settings.model.namePlaceholder')}
+                          className="model-name-input"
+                        />
+                      </div>
+                      <button className="btn-icon danger" onClick={() => removeModel(index)} title={t('common.delete')}>
+                        <Icons.X size={16} />
+                      </button>
+                    </div>
+                    <div className="model-card-body">
+                      <div className="form-group">
+                        <FieldLabel label={t('settings.model.baseUrl')} />
+                        <input type="text" value={model.base_url || ''} onChange={e => updateModelField(index, 'base_url', e.target.value)} placeholder="https://api.openai.com/v1" />
+                      </div>
+                      <div className="form-group">
+                        <FieldLabel label={t('settings.model.apiKey')} />
+                        <input type="password" value={model.api_key || ''} onChange={e => updateModelField(index, 'api_key', e.target.value)} placeholder="sk-..." />
+                      </div>
+                      <div className="form-group">
+                        <FieldLabel label={t('settings.model.modelId')} />
+                        <input type="text" value={model.model || ''} onChange={e => updateModelField(index, 'model', e.target.value)} placeholder="gpt-4o" />
+                      </div>
+                      <div className="form-row">
+                        <div className="form-group">
+                          <FieldLabel label={t('settings.model.temperature')} />
+                          <input type="number" value={Number(model.temperature) || 0.7} min={0} max={2} step={0.1}
+                            onChange={e => updateModelField(index, 'temperature', parseFloat(e.target.value))} />
+                        </div>
+                        <div className="form-group">
+                          <FieldLabel label={t('settings.model.timeout')} />
+                          <input type="number" value={Number(model.timeout) || 120} min={10} max={600}
+                            onChange={e => updateModelField(index, 'timeout', parseInt(e.target.value))} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="form-actions">
@@ -322,54 +340,96 @@ const AgentSettings: React.FC = () => {
     await putJSON(API.configUpdate('agent'), { value: config, persist: true });
   });
 
+  if (loading) {
+    return <div className="settings-panel"><div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> {t('common.loading')}</div></div>;
+  }
+
   return (
     <div className="settings-panel">
-      <div className="settings-card">
-        <div className="settings-card-header">
-          <div className="settings-card-title">
-            <Icons.Bot size={16} /> {t('settings.agent.title')}
-          </div>
+      <div className="settings-section">
+        <div className="settings-section-header">
+          <Icons.Bot size={18} />
+          <h3>{t('settings.agent.title')}</h3>
         </div>
-        <div className="settings-card-grid">
-          <div className="form-group">
-            <FieldLabel label={t('settings.agent.iterationLimit')} desc={t('settings.agent.iterationLimitDesc')} />
-            <label className="toggle-switch">
-              <input type="checkbox" checked={!!config.enforce_iteration_limit} onChange={e => updateField('enforce_iteration_limit', e.target.checked)} />
-              <span className="toggle-slider"></span>
-              <span className="toggle-label">{config.enforce_iteration_limit ? t('settings.agent.iterationLimitEnabled') : t('settings.agent.iterationLimitDisabled')}</span>
-            </label>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.agent.iterationControl')}</div>
           </div>
-          {config.enforce_iteration_limit && (
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.agent.iterationLimit')} desc={t('settings.agent.iterationLimitDesc')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!config.enforce_iteration_limit} onChange={e => updateField('enforce_iteration_limit', e.target.checked)} />
+                <span className="toggle-slider"></span>
+                <span className="toggle-label">{config.enforce_iteration_limit ? t('settings.agent.iterationLimitEnabled') : t('settings.agent.iterationLimitDisabled')}</span>
+              </label>
+            </div>
             <div className="form-group">
               <FieldLabel label={t('settings.agent.maxIterations')} desc={t('settings.agent.maxIterationsDesc')} />
-              <input type="number" value={Number(config.max_iterations) || 10} min={1} max={100}
-                onChange={e => updateField('max_iterations', parseInt(e.target.value))} />
+              <input 
+                type="number" 
+                value={Number(config.max_iterations) || 10} 
+                min={1} 
+                max={100}
+                disabled={!config.enforce_iteration_limit}
+                className={!config.enforce_iteration_limit ? 'input-disabled' : ''}
+                onChange={e => updateField('max_iterations', parseInt(e.target.value))} 
+              />
             </div>
-          )}
-          <div className="form-group">
-            <FieldLabel label={t('settings.agent.requestTimeout')} />
-            <input type="number" value={Number(config.request_timeout) || 300} min={30} max={3600}
-              onChange={e => updateField('request_timeout', parseInt(e.target.value))} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label={t('settings.agent.flashMode')} desc={t('settings.agent.flashModeDesc')} />
-            <label className="toggle-switch">
-              <input type="checkbox" checked={!!config.flash_mode} onChange={e => updateField('flash_mode', e.target.checked)} />
-              <span className="toggle-slider"></span>
-              <span className="toggle-label">{config.flash_mode ? t('settings.agent.flashModeEnabled') : t('settings.agent.flashModeDisabled')}</span>
-            </label>
-          </div>
-          <div className="form-group">
-            <FieldLabel label={t('settings.agent.shellWorkDir')} desc={t('settings.agent.shellWorkDirDesc')} />
-            <input type="text" value={config.shell_cwd || ''} placeholder="如: D:\\projects 或 /home/user/projects"
-              onChange={e => updateField('shell_cwd', e.target.value)} />
           </div>
         </div>
-        <div className="form-actions">
-          <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
-            {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.agent.save')}
-          </button>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.agent.timeoutSettings')}</div>
+          </div>
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.agent.requestTimeout')} />
+              <div className="input-with-unit">
+                <input type="number" value={Number(config.request_timeout) || 300} min={30} max={3600}
+                  onChange={e => updateField('request_timeout', parseInt(e.target.value))} />
+                <span className="input-unit">秒</span>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.agent.executionMode')}</div>
+          </div>
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.agent.flashMode')} desc={t('settings.agent.flashModeDesc')} />
+              <label className="toggle-switch">
+                <input type="checkbox" checked={!!config.flash_mode} onChange={e => updateField('flash_mode', e.target.checked)} />
+                <span className="toggle-slider"></span>
+                <span className="toggle-label">{config.flash_mode ? t('settings.agent.flashModeEnabled') : t('settings.agent.flashModeDisabled')}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-title">{t('settings.agent.shellSettings')}</div>
+          </div>
+          <div className="settings-card-grid">
+            <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+              <FieldLabel label={t('settings.agent.shellWorkDir')} desc={t('settings.agent.shellWorkDirDesc')} />
+              <input type="text" value={config.shell_cwd || ''} placeholder="如: D:\projects 或 /home/user/projects"
+                onChange={e => updateField('shell_cwd', e.target.value)} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="form-actions">
+        <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
+          {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.agent.save')}
+        </button>
       </div>
     </div>
   );

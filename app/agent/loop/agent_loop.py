@@ -1129,19 +1129,19 @@ class AgentLoop:
                             yield {"type": "thinking", "content": reasoning_text}
                         if after_json_text:
                             yield {"type": "content_chunk", "content": after_json_text}
-                        if not self.flash_mode:
-                            effective_memory.add_assistant_message(
-                                response.content or "",
-                                reasoning_content=response.reasoning_content
-                            )
+                        # 保存消息到 memory（Flash 模式也保存，但不注入上下文）
+                        effective_memory.add_assistant_message(
+                            response.content or "",
+                            reasoning_content=response.reasoning_content
+                        )
 
                         # 同步 Hybrid 状态并发送事件
                         hybrid_event = self._sync_hybrid_state()
                         if hybrid_event:
                             yield hybrid_event
 
-                        # 执行 ControlLoop 决策
-                        if self._loop_state:
+                        # 执行 ControlLoop 决策（flash_mode 下跳过）
+                        if self._loop_state and self.control_loop:
                             decision = self.control_loop.step(self._loop_state)
                             if decision.should_stop:
                                 logger.info("[AgentLoop] ControlLoop 决定终止循环")
@@ -1267,8 +1267,8 @@ class AgentLoop:
                             }
                             for info in tool_calls_info
                         ]
-                        # 非 flash 模式：将 interim_content 和 tool_calls 放在同一条消息中
-                        content_for_memory = (interim_content if interim_content else None) if not self.flash_mode else None
+                        # 保存 tool_calls 到 memory（Flash 模式也保存）
+                        content_for_memory = interim_content if interim_content else None
                         tool_call_ids = effective_memory.add_tool_calls_batch(
                             tool_calls_data,
                             content=content_for_memory,
@@ -1539,11 +1539,11 @@ class AgentLoop:
                         stuck_iterations=stuck_iters,
                     )
 
-                if not self.flash_mode:
-                    effective_memory.add_assistant_message(
-                        content,
-                        reasoning_content=response.reasoning_content
-                    )
+                # 保存消息到 memory（Flash 模式也保存，但不注入上下文）
+                effective_memory.add_assistant_message(
+                    content,
+                    reasoning_content=response.reasoning_content
+                )
                 is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
                 if is_json_thinking and reasoning_text:
                     yield {"type": "thinking", "content": reasoning_text}

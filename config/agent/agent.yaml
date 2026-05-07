@@ -5,5 +5,5 @@ agent:
   request_timeout: 300
   max_sessions: 100
   default_session_id: default
-  flash_mode: false
+  flash_mode: true
   shell_cwd: workspace
