@@ -164,6 +164,7 @@ const ModelSettings: React.FC = () => {
   const currentModelName = config.current_model || '';
   const displayModelName = currentModelName || (models[0]?.name || '');
   const streaming = config.streaming || {};
+  const thinking = config.thinking || {};
 
   return (
     <div className="settings-panel">
@@ -186,14 +187,40 @@ const ModelSettings: React.FC = () => {
               />
             </div>
 
-            <div className="form-group">
-              <FieldLabel label={t('settings.model.streaming')} />
-              <label className="toggle-switch">
-                <input type="checkbox" checked={!!streaming.enabled} onChange={e => updateField('streaming.enabled', e.target.checked)} />
-                <span className="toggle-slider"></span>
-                <span className="toggle-label">{streaming.enabled ? t('settings.model.streamingEnabled') : t('settings.model.streamingDisabled')}</span>
-              </label>
+            <div className="form-row">
+              <div className="form-group">
+                <FieldLabel label={t('settings.model.streaming')} />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!streaming.enabled} onChange={e => updateField('streaming.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                  <span className="toggle-label">{streaming.enabled ? t('settings.model.streamingEnabled') : t('settings.model.streamingDisabled')}</span>
+                </label>
+              </div>
+
+              <div className="form-group">
+                <FieldLabel label={t('settings.model.thinking')} />
+                <label className="toggle-switch">
+                  <input type="checkbox" checked={!!thinking.enabled} onChange={e => updateField('thinking.enabled', e.target.checked)} />
+                  <span className="toggle-slider"></span>
+                  <span className="toggle-label">{thinking.enabled ? t('settings.model.thinkingEnabled') : t('settings.model.thinkingDisabled')}</span>
+                </label>
+              </div>
             </div>
+
+            {thinking.enabled && (
+              <div className="form-group" style={{ marginTop: '8px' }}>
+                <FieldLabel label={t('settings.model.thinkingBudget')} />
+                <input
+                  type="number"
+                  value={thinking.budget_tokens || 10000}
+                  onChange={e => updateField('thinking.budget_tokens', parseInt(e.target.value) || 10000)}
+                  min={1000}
+                  max={200000}
+                  step={1000}
+                  style={{ width: '120px' }}
+                />
+              </div>
+            )}
           </div>
 
           <div className="models-list">

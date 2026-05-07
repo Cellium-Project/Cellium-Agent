@@ -216,6 +216,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         context_window: int = None,  
         verify_model: bool = True,
         omit_max_tokens: bool = True,
+        thinking: bool = False,
+        thinking_budget: int = None,
         **kwargs,
     ):
         self.api_key = api_key
@@ -228,6 +230,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._verify_deferred = False  
         self._verify_done = False
         self._omit_max_tokens = omit_max_tokens
+        self._thinking = thinking
+        self._thinking_budget = thinking_budget
 
         detected = _match_model(model)
 
@@ -360,6 +364,23 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if kwargs:
             params.update(kwargs)
 
+        if self._thinking:
+            model_lower = self.model.lower()
+            if any(m in model_lower for m in ["o1", "o3", "o4"]):
+                extra_body = {"thinking": {"type": "enabled"}}
+                if self._thinking_budget:
+                    extra_body["thinking"]["budget_tokens"] = self._thinking_budget
+                params["extra_body"] = extra_body
+                logger.info("[LLM] 思考模式 | model=%s | type=OpenAI-o系列 | budget=%s", self.model, self._thinking_budget or "默认")
+            elif "deepseek" in model_lower and "reasoner" in model_lower:
+                logger.info("[LLM] 思考模式 | model=%s | type=DeepSeek-Reasoner", self.model)
+            else:
+                logger.info("[LLM] 思考模式 | model=%s | type=第三方模型(传递thinking参数) | budget=%s", self.model, self._thinking_budget or "默认")
+                extra_body = {"thinking": {"type": "enabled"}}
+                if self._thinking_budget:
+                    extra_body["thinking"]["budget_tokens"] = self._thinking_budget
+                params["extra_body"] = extra_body
+
         req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
         max_tokens_display = "API自定" if self._omit_max_tokens else str(final_max_tokens)
@@ -396,6 +417,14 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             len(parsed.content or ""), usage_info,
             type(response).__name__,
         )
+
+        if parsed.reasoning_content:
+            logger.info(
+                "[LLM] <<< 思考内容 | model=%s | 长度=%d | 内容预览: %s",
+                self.model,
+                len(parsed.reasoning_content),
+                parsed.reasoning_content[:300],
+            )
 
         if not parsed.content and not parsed.tool_calls:
             global _EMPTY_RESPONSE_COUNT
@@ -997,6 +1026,10 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         logger.info("[LLMFactory] 使用模型配置 | name=%s | api_key=%s | base_url=%s",
                     current_model_name, api_key_preview, model_config.get("base_url", ""))
 
+        thinking_config = config_dict.get("thinking", {})
+        thinking_enabled = thinking_config.get("enabled", False)
+        thinking_budget = thinking_config.get("budget_tokens")
+
         engine = OpenAICompatibleEngine(
             api_key=api_key,
             base_url=model_config.get("base_url", "https://api.openai.com/v1"),
@@ -1007,6 +1040,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             context_window=int(model_config.get("context_window", 0)) or None,
             verify_model=True,
             omit_max_tokens=bool(model_config.get("omit_max_tokens", False)),
+            thinking=thinking_enabled,
+            thinking_budget=thinking_budget,
         )
 
         info = engine.model_info
@@ -1023,6 +1058,9 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
 
     elif provider == "ollama":
         oc = config_dict.get("ollama", {})
+        thinking_config = config_dict.get("thinking", {})
+        thinking_enabled = thinking_config.get("enabled", False)
+        thinking_budget = thinking_config.get("budget_tokens")
         engine = OpenAICompatibleEngine(
             api_key="ollama",
             base_url=oc.get("base_url", "http://localhost:11434/v1"),
@@ -1033,6 +1071,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             context_window=int(oc.get("context_window", 0)) or None,
             verify_model=True,
             omit_max_tokens=bool(oc.get("omit_max_tokens", False)),
+            thinking=thinking_enabled,
+            thinking_budget=thinking_budget,
         )
         info = engine.model_info
         logger.info(
