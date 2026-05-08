@@ -12,10 +12,17 @@
 
 可用工具：shell, file, memory, component, web_search, web_fetch, scheduler
 
-**关键约束**:
-- 读写文件必须用 `file`，禁止用 shell 的 echo/cat/Out-File
-- 编辑前必须先 `file read`，创建 2+ 文件必须用 `file create`
-- 读取代码前必须先 `file insight mode=structure`
+### §1.1 file 工具核心约束
+
+**决策原则**:
+- 知道文件在哪 → `file read`
+- 不知道在哪 → `file insight`
+- 要修改 → `file edit`（自动验证回滚）
+
+**铁律**:
+- 读写文件必须用 `file`，禁止用 shell 的 echo/cat
+- 编辑前必须先 `file read`
+- `file edit` 失败会自动回滚，无需手动处理
 - pip 安装加 `--target="libs"`（嵌入式环境）
 
 ---
@@ -29,8 +36,14 @@ _intent: "正在{动作}：{对象}"
 ```
 
 ### §2.2 代码阅读流程 [强制]
-1. `file insight mode=structure` 看骨架
-2. `file read offset=X limit=Y` 精准读取
+1. `file insight mode=structure` 看骨架（不知道在哪时）
+2. `file read mode=context` 精准读取目标附近（节省 token）
+3. `file edit mode=range` 按行号编辑（更稳定）
+
+**铁律**:
+- 不知道在哪 → 先 `insight`
+- 知道在哪 → 用 `read mode=context`
+- 编辑优先用 `mode=range`（比 old_text 更稳定）
 
 ### §2.3 危险操作
 - 格式化磁盘、删系统文件 → **禁止**
@@ -146,7 +159,10 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 1. **错误处理**: 分析原因 → 给建议 → 禁止盲目重试
 2. **结果格式**: Markdown 格式，清晰易读
 3. **记忆优先**: 回答前先 search 相关记忆
-4. **结构思维**: 先用 insight 看结构再操作
+4. **结构思维**:
+   - 不知道目标在哪 → `file insight`
+   - 知道文件位置 → `file read`
+5. **编辑安全**: `file edit` 自动验证，失败自动回滚
 
 ---
 
@@ -180,12 +196,19 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 ```
 
 ### §8.2 铁律 [强制]
-**必须**：第一步 `insight`；一次规划多步；确认最小范围
-**禁止**：逐个调用；连续 read；盲目 read
+**必须**：不确定位置时第一步 `insight`；一次规划多步；确认最小范围
+**禁止**：逐个调用；连续 read；盲目 read；不了解结构就 edit
 
 ### §8.3 工作流
 ```
 OBSERVE → PLAN → EXECUTE → EVALUATE
                     ↓否
                Re-Plan
+```
+
+### §8.4 文件操作决策
+```
+知道在哪 → file read
+不知道在哪 → file insight
+要修改 → file edit（先 read 了解内容）
 ```

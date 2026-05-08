@@ -25,15 +25,14 @@ class ToolDescriptionGenerator:
     # 模板定义：{变量} 从 arguments 中动态提取
     DESC_TEMPLATES = {
         "file": {
-            "read":     "正在读取文件：{basename}",
-            "write":    "正在写入文件：{basename}",
-            "edit":     "正在编辑文件：{basename}",
-            "create":   "正在创建项目：{base_dir}（{file_count} 个文件）",
-            "delete":   "正在删除：{target}",
-            "list":     "正在查看目录：{dir_path}",
-            "exists":   "正在检查是否存在：{basename}",
-            "mkdir":    "正在创建目录：{target}",
+            # read 命令（根据 mode 细分）
+            "read":     "{read_desc}",
+            # insight 命令（根据 mode 细分）
             "insight":  "{insight_desc}",
+            # edit 命令（根据 mode 细分）
+            "edit":     "{edit_desc}",
+            # fs 命令（根据 action 细分）
+            "fs":       "{fs_desc}",
             "_default": "正在操作文件：{basename}",
         },
         "memory": {
@@ -98,35 +97,83 @@ class ToolDescriptionGenerator:
         ctx["target"] = ctx["basename"] or path
 
         ctx["command"] = (arguments.get("command") or "").strip()
+
+        # file 工具的细分描述
         if tool_name == "file":
-            files_arg = arguments.get("files")
-            if isinstance(files_arg, dict):
-                ctx["file_count"] = len(files_arg)
-            elif isinstance(files_arg, str):
-                try:
-                    parsed = json.loads(files_arg)
-                    ctx["file_count"] = len(parsed) if isinstance(parsed, dict) else "?"
-                except Exception:
-                    ctx["file_count"] = "?"
-            else:
-                ctx["file_count"] = "?"
-            ctx["base_dir"] = arguments.get("base_dir") or ""
-            ctx["mode"] = arguments.get("mode") or "auto"
-            ctx["query"] = (arguments.get("query") or "")[:30]
-            if tool_name == "file" and ctx["command"] == "insight":
-                mode = ctx["mode"]
-                query = ctx["query"]
-                basename = ctx["basename"]
-                if query:
-                    ctx["insight_desc"] = f"正在搜索 {basename} 中的：{query}"
-                elif mode == "structure":
-                    ctx["insight_desc"] = f"正在分析 {basename} 的代码结构"
+            cmd = ctx["command"]
+            mode = arguments.get("mode", "full") or "full"
+
+            # read 命令的细分
+            if cmd == "read":
+                if mode == "context":
+                    target = (arguments.get("target") or "")[:30]
+                    ctx["read_desc"] = f"正在读取 {ctx['basename']} 中的：{target}"
                 elif mode == "summary":
-                    ctx["insight_desc"] = f"正在获取 {basename} 的摘要"
+                    ctx["read_desc"] = f"正在提取 {ctx['basename']} 的符号签名"
+                elif mode == "compact":
+                    ctx["read_desc"] = f"正在压缩读取 {ctx['basename']}"
                 else:
-                    ctx["insight_desc"] = f"正在分析 {basename}（{mode}模式）"
+                    ctx["read_desc"] = f"正在读取文件：{ctx['basename']}"
+
+            # insight 命令的细分
+            elif cmd == "insight":
+                insight_mode = arguments.get("mode", "grep")
+                query = (arguments.get("query") or "")[:30]
+                if insight_mode == "grep":
+                    ctx["insight_desc"] = f"正在搜索：{query}"
+                elif insight_mode == "structure":
+                    ctx["insight_desc"] = f"正在分析 {ctx['basename']} 的结构"
+                elif insight_mode == "symbol":
+                    ctx["insight_desc"] = f"正在搜索符号：{query}"
+                elif insight_mode == "files":
+                    pattern = (arguments.get("pattern") or arguments.get("query") or "*")[:30]
+                    ctx["insight_desc"] = f"正在查找文件：{pattern}"
+                else:
+                    ctx["insight_desc"] = f"正在探索工程"
+
+            # edit 命令的细分
+            elif cmd == "edit":
+                edit_mode = arguments.get("mode", "replace")
+                if edit_mode == "range":
+                    start = arguments.get("start_line", "?")
+                    end = arguments.get("end_line", "?")
+                    ctx["edit_desc"] = f"正在编辑 {ctx['basename']} 第{start}-{end}行"
+                elif edit_mode == "delete":
+                    start = arguments.get("start_line", "?")
+                    end = arguments.get("end_line", "?")
+                    ctx["edit_desc"] = f"正在删除 {ctx['basename']} 第{start}-{end}行"
+                elif edit_mode == "append":
+                    ctx["edit_desc"] = f"正在追加内容到 {ctx['basename']}"
+                else:
+                    ctx["edit_desc"] = f"正在编辑文件：{ctx['basename']}"
+
+            # fs 命令的细分
+            elif cmd == "fs":
+                action = arguments.get("action", "list")
+                if action == "list":
+                    ctx["fs_desc"] = f"正在查看目录：{ctx['dir_path'] or ctx['basename']}"
+                elif action == "mkdir":
+                    ctx["fs_desc"] = f"正在创建目录：{ctx['target']}"
+                elif action == "delete":
+                    ctx["fs_desc"] = f"正在删除：{ctx['target']}"
+                elif action == "exists":
+                    ctx["fs_desc"] = f"正在检查：{ctx['target']}"
+                elif action == "create":
+                    files_arg = arguments.get("files")
+                    if isinstance(files_arg, dict):
+                        count = len(files_arg)
+                    else:
+                        count = "?"
+                    base = arguments.get("path") or ""
+                    ctx["fs_desc"] = f"正在创建项目：{os.path.basename(base)}（{count} 个文件）"
+                else:
+                    ctx["fs_desc"] = f"正在操作文件系统"
+
             else:
+                ctx["read_desc"] = f"正在操作文件：{ctx['basename']}"
                 ctx["insight_desc"] = ""
+                ctx["edit_desc"] = f"正在操作文件：{ctx['basename']}"
+                ctx["fs_desc"] = f"正在操作文件系统"
 
         # Memory / Web Search 特有
         ctx["query"] = (arguments.get("query") or arguments.get("q") or arguments.get("keywords") or "")[:30]

@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-文件操作工具 — 读写删查
+文件操作工具
 
 设计原则：
-  - 所有文件操作走 Python 原生 IO，避免 PowerShell 转义/编码问题
-  - 自动处理 UTF-8 编码
-  - 路径安全检查（防路径穿越）
-  - 支持大文件自动截断
-  - 原子写入（temp + rename）
-  - 文件读取缓存 + 外部修改检测
+  - 4 个核心命令：read, insight, edit, fs
+  - 决策复杂度最小化
+  - edit 内部自动事务+验证+回滚
 """
 
 import os
@@ -21,845 +18,331 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Optional, List
 
 from .base_tool import BaseTool
+from ..runtime.context import ReadTracker, ContextCompact, SymbolSummary
+from ..runtime.transaction import EditTransaction
 
 logger = logging.getLogger(__name__)
 
 # 安全限制
 _MAX_FILE_SIZE = 2 * 1024 * 1024   # 单次读取最大 2MB
 _MAX_LIST_ENTRIES = 200            # 列目录最多返回 200 条
-_ALLOWED_ROOTS = None              # 允许的根目录列表（None=不限制）
-
-_STRUCTURE_PATTERNS = {
-    '.py': re.compile(r'^\s*(class|def|async\s+def)\s+(?P<name>[\w\.]+)'),
-    '.cpp': re.compile(r'^\s*(?:[\w\d<>*&:]+\s+)?(?P<name>[\w\d_:]+(?:<[\w\d\s,:]+>)?(?:::[\w\d_:]+)*)\s*(?:\{|:)'),
-    '.h': re.compile(r'^\s*(class|struct|namespace|enum|typedef|using)\s+(?P<name>[\w\d_:]+(?:<.*>)?)'),
-    '.c': re.compile(r'^\s*(struct|class|enum|namespace|typedef|union)\s+(?P<name>[\w\d_]+)'),
-    '.cs': re.compile(r'^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:internal\s+)?(?:static\s+)?(?:abstract\s+)?(?:sealed\s+)?(?:partial\s+)?(?:override\s+)?(?:virtual\s+)?(?:async\s+)?(?:[\w\d<>\[\]]+\s+)?(?:class\s+|struct\s+|interface\s+|namespace\s+|enum\s+|record\s+|delegate\s+|void\s+|[\w\d<>\[\]]+\s+)(?P<name>[\w\d_]+)'),
-    '.java': re.compile(r'^\s*(?:public\s+)?(class|interface|enum|record)\s+(?P<name>[\w\d_]+)|^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:static\s+)?(?:abstract\s+)?(?:final\s+)?(?:synchronized\s+)?(?:[\w\d<>\[\]]+\s+)?(?P<name2>[\w\d_]+)\s*\('),
-    '.js': re.compile(r'^\s*(export\s+(default\s+)?)?(class|function|const|async)\s+(?P<name>\w+)'),
-    '.ts': re.compile(r'^\s*(export\s+)?(interface|type|class|function)\s+(?P<name>\w+)'),
-    '.go': re.compile(r'^\s*(func(?:\s+\([^)]+\))?|type|const|var|interface)\s+(?P<name>[\w\d_]+)'),
-    '.rs': re.compile(r'^\s*(pub\s+)?(struct|enum|(?:async\s+)?fn|impl|trait|const|static(?:\s+mut)?)\s+(?P<name>[\w\d_]+)'),
-    '.php': re.compile(r'^\s*(?:public\s+)?(?:private\s+)?(?:protected\s+)?(?:static\s+)?(?:abstract\s+)?(?:final\s+)?(?:const\s+|class\s+|interface\s+|trait\s+|enum\s+|function\s+)(?P<name>[\w\d_]+)'),
-    '.rb': re.compile(r'^\s*(class|module|def|attr_accessor|attr_reader|attr_writer|include|extend|prepend)\s+(?P<name>[\w\d_:]+)'),
-    '.kt': re.compile(r'^\s*(class|interface|sealed\s+class|enum\s+class|object|fun|data\s+class)\s+(?P<name>[\w\d_]+)'),
-    '.css': re.compile(r'^\s*(?P<name>(?:@media|@keyframes|@font-face|@supports)[\s\S]*?|[@:.]?[\w.-]+)\s*(?:\{|$)'),
-    '.html': re.compile(r'^\s*<(?P<name>[a-z]+)(?:\s|>)'),
-    '.md': re.compile(r'^(#{1,6})\s+(?P<name>.+)'),
-}
-_DEFAULT_PATTERN = re.compile(r'^\s*(class|def|struct|function|namespace)\s+(?P<name>[\w\d_:]+)')
 
 
 @dataclass
 class FileState:
-    """文件读取状态（用于检测外部修改）"""
+    """文件读取状态"""
     path: str
     content: str
     timestamp: float
-    offset: Optional[int] = None
-    limit: Optional[int] = None
 
 
 class FileTool(BaseTool):
+    """
+    文件操作工具 — 4 命令架构
+
+    | 命令 | 语义 | modes |
+    |------|------|-------|
+    | read | 读取具体目标 | full, context, summary, compact |
+    | insight | 探索工程 | grep, structure, symbol, files |
+    | edit | 修改文件 | replace, range, delete, append |
+    | fs | 文件系统 | list, mkdir, delete, exists, create |
+
+    **edit 内部自动：快照 → 编辑 → 验证 → 失败回滚**
+    """
 
     name = "file"
     description = (
-        "文件读写删查。原子写入防损坏，自动 UTF-8。\n\n"
-        "| 命令 | 说明 | 注意 |\n"
-        "|------|------|------|\n"
-        "| read | 读文件，支持 offset/limit 分页 | 大文件先用 insight |\n"
-        "| write | 写文件 | mode: overwrite/append/create |\n"
-        "| edit | 编辑文件 | **必须先 read**，occurrence 指定第几处匹配 |\n"
-        "| truncate | 原子删除指定行范围 | start/end 为行号，end=None 删到末尾 |\n"
-        "| create | 批量创建多文件 | files 为 {路径:内容} 字典 |\n"
-        "| delete | 删除文件或目录 | recursive=True 删除非空目录 |\n"
-        "| list | 列目录 | pattern 支持 glob 如 *.py |\n"
-        "| exists | 检查路径存在 | - |\n"
-        "| mkdir | 创建目录 | parents=True 自动建父目录 |\n"
-        "| insight | 搜索/结构/摘要 | 先用 insight 看骨架再精准 read |\n"
-        "\n\n"
-        "**insight**: structure 返回骨架（breadcrumb/visual_tree），search 返回命中（breadcrumb/match_pos）\n"
-        "**read**: 默认 offset=0, limit=500，建议先用 insight 看结构再精准读取\n"
-        "**truncate**: 原子操作，先写临时文件再 rename，失败不损坏原文件"
+        "文件操作。4 个核心命令：read（读取）、insight（探索）、edit（修改）、fs（文件系统）\n\n"
+        "**read**: 读取具体目标\n"
+        "  - mode=full: 完整读取\n"
+        "  - mode=context: 只读目标附近（target + 前后 N 行）\n"
+        "  - mode=summary: 只返回类/函数签名\n"
+        "  - mode=compact: 压缩读取（折叠 imports/docstrings）\n\n"
+        "**insight**: 探索工程（不知道目标在哪时使用）\n"
+        "  - mode=grep: 搜索内容\n"
+        "  - mode=structure: 文件结构大纲\n"
+        "  - mode=symbol: 搜索符号\n"
+        "  - mode=files: 搜索文件\n\n"
+        "**edit**: 修改文件（自动验证，失败回滚）\n"
+        "  - mode=replace: 替换文本（old_text → new_text）\n"
+        "  - mode=range: 按行号编辑（start_line, end_line, new_text）\n"
+        "  - mode=delete: 删除行范围（start_line, end_line）\n"
+        "  - mode=append: 追加内容\n\n"
+        "**fs**: 文件系统操作\n"
+        "  - action=list: 列目录\n"
+        "  - action=mkdir: 创建目录\n"
+        "  - action=delete: 删除文件/目录\n"
+        "  - action=exists: 检查存在\n"
+        "  - action=create: 批量创建文件\n\n"
+        "**推荐流程**: insight → read(mode=context) → edit"
     )
 
     def __init__(self, allowed_roots=None):
-        """
-        Args:
-            allowed_roots: 允许访问的根目录列表，如 ["F:\\", "D:\\project"]
-                          None 或不传参时默认为项目下的 workspace 目录（跨平台）
-        """
         super().__init__()
-        global _ALLOWED_ROOTS
-        if allowed_roots is None:
-            workspace_path = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
-            _ALLOWED_ROOTS = [str(workspace_path)]
-        else:
-            _ALLOWED_ROOTS = allowed_roots
+        self._allowed_roots = allowed_roots or []
         self._read_cache: Dict[str, FileState] = {}
-        self._edit_history: list = []
+        self._read_tracker = ReadTracker()
+        self._transaction: Optional[EditTransaction] = None
 
     @property
     def tool_name(self) -> str:
         return "file"
 
     # ================================================================
-    #  子命令实现（_cmd_ 前缀自动注册）
+    #  READ - 读取具体目标
     # ================================================================
 
-    def _cmd_read(self, path: str, offset: int = 0, limit: int = 500) -> Dict[str, Any]:
-        """读取文件内容（UTF-8）
+    def _cmd_read(
+        self,
+        path: str,
+        mode: str = "full",
+        target: str = None,
+        before: int = 3,
+        after: int = 3,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        """读取文件内容
 
         Args:
-            path: 文件路径（绝对或相对）
-            offset: 从第几行开始读（默认0从头开始）
-            limit: 最多读取行数（默认500，防止token爆炸）
+            path: 文件路径
+            mode: 读取模式
+                - full: 完整读取（默认）
+                - context: 只读目标附近（需提供 target）
+                - summary: 只返回类/函数签名
+                - compact: 压缩读取（折叠 imports/docstrings）
+            target: 目标文本（mode=context 时使用）
+            before: 目标前几行（mode=context，默认 3）
+            after: 目标后几行（mode=context，默认 3）
+            offset: 从第几行开始（mode=full，默认 0）
+            limit: 读取行数限制（mode=full，默认 500）
         """
         if not path:
-            return {
-                "error": "未提供 path 参数",
-                "hint": (
-                    '调用 file 工具读取文件时使用 command="read"\n'
-                    '  - path (必填): 文件路径，如 "D:\\project\\main.py"\n'
-                    '\n'
-                    '示例: {"command":"read","path":"D:\\\\test.py"}'
-                ),
-            }
+            return {"success": False, "error": "需要 path 参数"}
 
         abs_path = self._resolve_path(path)
         if not os.path.isfile(abs_path):
             return {"success": False, "error": f"文件不存在: {abs_path}"}
 
-        try:
-            file_size = os.path.getsize(abs_path)
-            if file_size > _MAX_FILE_SIZE:
-                ext = os.path.splitext(abs_path)[1].lower()
-                is_code = ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.rs', '.rb', '.php']
-                hint_msg = (
-                    f"文件过大 ({_to_mb(file_size):.1f}MB > {_to_mb(_MAX_FILE_SIZE):.1f}MB)。"
-                    f"建议先用 `file insight` 获取结构大纲，再用 `read(offset=X, limit=Y)` 精准读取。"
-                    if is_code else
-                    f"文件过大 ({_to_mb(file_size):.1f}MB > {_to_mb(_MAX_FILE_SIZE):.1f}MB)。"
-                    f"建议先用 `file insight` 搜索关键词定位，再用 `read(offset=X, limit=Y)` 分段读取。"
-                )
-                return {
-                    "success": False,
-                    "error": hint_msg,
-                    "size": file_size,
-                    "hint_command": f'file insight(path="{path}", mode="structure")' if is_code else f'file insight(path="{path}", mode="search", query="关键字")',
-                }
-
-            encoding = self._detect_encoding(abs_path)
-            with open(abs_path, "r", encoding=encoding, errors="replace") as f:
-                all_lines = f.readlines()
-
-            total_lines = len(all_lines)
-            if offset < 0:
-                offset = 0
-            if offset >= total_lines:
-                return {"success": False, "error": f"Offset {offset} 超出文件总行数 {total_lines}"}
-
-            end = offset + limit if limit else total_lines
-            selected = all_lines[offset:end]
-            content = "".join(selected).rstrip("\n")
-
-            # 缓存完整文件状态（供 Edit 使用）
-            full_content = "".join(all_lines)
-            self._set_file_state(abs_path, FileState(
-                path=abs_path,
-                content=full_content,
-                timestamp=os.path.getmtime(abs_path),
-                offset=offset,
-                limit=limit,
-            ))
-
-            return {
-                "success": True,
-                "data": content,
-                "path": abs_path,
-                "lines": len(selected),
-                "total_lines": total_lines,
-                "truncated": total_lines > len(selected),
-                "encoding": encoding,
-            }
-        except UnicodeDecodeError as e:
-            return {"success": False, "error": f"文件编码不是 UTF-8: {e}", "hint": "可尝试 shell: Get-Content -Encoding Default"}
-        except Exception as e:
-            return {"success": False, "error": f"读取失败 ({type(e).__name__}): {e}"}
-
-    def _cmd_write(self, path: str, content: str, mode: str = "overwrite") -> Dict[str, Any]:
-        """写入文件（原子写入）
-
-        Args:
-            path: 文件路径
-            content: 要写入的文本内容
-            mode: 写入模式
-                  overwrite — 覆盖（默认）
-                  append     — 追加
-                  create     — 仅创建新文件（已存在则返回错误）
-        """
-        if not path:
-            return {
-                "error": "未提供 path 参数",
-                "hint": '示例: {"command":"write","path":"D:\\\\test.py","content":"hello"}',
-            }
-        if content is None:
-            return {
-                "error": "未提供 content 参数",
-                "hint": '示例: {"command":"write","path":"D:\\\\test.py","content":"文件内容"}',
-            }
-
-        abs_path = self._resolve_path(path)
-
-        try:
-            parent_dir = os.path.dirname(abs_path)
-            if parent_dir and not os.path.exists(parent_dir):
-                os.makedirs(parent_dir, exist_ok=True)
-
-            if mode == "create" and os.path.exists(abs_path):
-                return {"success": False, "error": f"文件已存在（mode=create 不允许覆盖）: {abs_path}"}
-
-            if mode == "append":
-                if os.path.exists(abs_path):
-                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                        existing = f.read()
-                    content = existing + content
-
-            self._atomic_write(abs_path, content)
-
-            return {
-                "success": True,
-                "message": f"{'追加到' if mode=='append' else '写入'}文件成功",
-                "path": abs_path,
-                "bytes_written": len(content.encode("utf-8")),
-                "mode": mode,
-            }
-        except Exception as e:
-            return {"success": False, "error": f"写入失败 ({type(e).__name__}): {e}"}
-
-    def _cmd_edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False, occurrence: int = 0) -> Dict[str, Any]:
-        """编辑文件
-
-        Args:
-            path: 文件路径
-            old_string: 要替换的字符串
-            new_string: 替换后的字符串
-            replace_all: 是否替换所有匹配（默认 False）
-            occurrence: 替换第几处匹配（从0开始，默认0替换第一处），
-                       仅在 replace_all=False 且有多处匹配时生效
-        """
-        if not path:
-            return {"success": False, "error": "未提供 path 参数", "hint": '示例: {"command":"edit","path":"D:\\\\test.py","old_string":"hello","new_string":"hello world"}'}
-        if not old_string:
-            return {"success": False, "error": "未提供 old_string 参数"}
-        if new_string is None:
-            return {"success": False, "error": "未提供 new_string 参数"}
-        if old_string == new_string:
-            return {"success": False, "error": "old_string 和 new_string 相同，无需替换"}
-
-        abs_path = self._resolve_path(path)
-
-        if not os.path.exists(abs_path):
-            if old_string == "":
-                try:
-                    os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
-                    self._atomic_write(abs_path, new_string)
-                    return {"success": True, "message": f"创建新文件: {abs_path}", "path": abs_path}
-                except Exception as e:
-                    return {"success": False, "error": f"创建文件失败: {e}"}
-            return {"success": False, "error": f"文件不存在: {abs_path}"}
-
-        file_state = self._get_file_state(abs_path)
-        if not file_state:
-            return {"success": False, "error": "文件尚未读取，请先使用 read 命令读取文件后再进行编辑"}
-
-        current_mtime = os.path.getmtime(abs_path)
-        if current_mtime > file_state.timestamp:
-            encoding = self._detect_encoding(abs_path)
-            try:
-                with open(abs_path, "r", encoding=encoding, errors="replace") as f:
-                    current_content = f.read()
-                if current_content != file_state.content:
-                    return {"success": False, "error": "文件已被外部修改，请重新读取后再编辑"}
-            except Exception:
-                return {"success": False, "error": "文件已被外部修改，请重新读取后再编辑"}
-
-        actual_old_string = self._find_actual_string(file_state.content, old_string)
-        if not actual_old_string:
-            return {"success": False, "error": f"在文件中未找到要替换的字符串: {repr(old_string[:50])}"}
-
-        matches = file_state.content.count(actual_old_string)
-        if matches > 1 and not replace_all:
-            if occurrence < 0 or occurrence >= matches:
-                return {
-                    "success": False,
-                    "error": f"找到 {matches} 处匹配，occurrence={occurrence} 超出范围 [0, {matches-1}]",
-                    "hint": f"使用 occurrence 参数指定替换第几处（0-{matches-1}），或设置 replace_all: true 替换所有",
-                }
-            old_content = file_state.content
-            idx = -1
-            for i in range(occurrence + 1):
-                idx = old_content.find(actual_old_string, idx + 1)
-                if idx == -1:
-                    break
-            if idx == -1:
-                return {"success": False, "error": f"定位第 {occurrence} 处匹配失败"}
-            new_content = old_content[:idx] + new_string + old_content[idx + len(actual_old_string):]
-            action = f"替换了第 {occurrence} 处匹配（共 {matches} 处）"
-        elif replace_all:
-            old_content = file_state.content
-            new_content = old_content.replace(actual_old_string, new_string)
-            action = f"替换了 {matches} 处"
-        else:
-            old_content = file_state.content
-            new_content = old_content.replace(actual_old_string, new_string, 1)
-            action = "替换了 1 处"
-
-        diff = self._generate_diff(old_content, new_content, abs_path)
-
-        try:
-            self._atomic_write(abs_path, new_content)
-        except Exception as e:
-            return {"success": False, "error": f"写入文件失败: {e}"}
-
-        self._set_file_state(abs_path, FileState(
-            path=abs_path,
-            content=new_content,
-            timestamp=os.path.getmtime(abs_path),
-        ))
-
-        self._edit_history.append({
-            "path": abs_path,
-            "old_content": old_content,
-            "new_content": new_content,
-            "timestamp": os.path.getmtime(abs_path),
-        })
-
-        return {
-            "success": True,
-            "message": f"{action} in {abs_path}",
-            "path": abs_path,
-            "diff": diff,
-            "replacements": matches if replace_all else 1,
-        }
-
-    def _cmd_delete(self, path: str, recursive: bool = False) -> Dict[str, Any]:
-        """删除文件或目录
-
-        Args:
-            path: 要删除的文件或目录路径
-            recursive: 是否递归删除目录（默认False只删空目录）
-        """
-        if not path:
-            return {
-                "error": "未提供 path 参数",
-                "hint": '示例: {"command":"delete","path":"D:\\\\test.py"}',
-            }
-
-        abs_path = self._resolve_path(path)
-
-        if not os.path.exists(abs_path):
-            return {"success": False, "error": f"不存在: {abs_path}"}
-
-        try:
-            if os.path.isfile(abs_path):
-                os.remove(abs_path)
-                op = "文件"
-            elif os.path.isdir(abs_path):
-                if recursive:
-                    shutil.rmtree(abs_path)
-                else:
-                    os.rmdir(abs_path)
-                op = "目录"
-            else:
-                return {"success": False, "error": f"无法识别的类型（非文件非目录）: {abs_path}"}
-
-            return {
-                "success": True,
-                "message": f"{op}删除成功",
-                "path": abs_path,
-            }
-        except OSError as e:
-            if "Directory not empty" in str(e) or "目录非空" in str(e):
-                return {
-                    "error": f"目录非空（需要 recursive=True 才能删除非空目录）",
-                    "path": abs_path,
-                }
-            return {"success": False, "error": f"删除失败 ({type(e).__name__}): {e}"}
-        except Exception as e:
-            return {"success": False, "error": f"删除失败 ({type(e).__name__}): {e}"}
-
-    def _cmd_list(self, dir_path: str = ".", show_hidden: bool = False,
-                  pattern: str = None, detail: bool = False) -> Dict[str, Any]:
-        """列出目录内容
-
-        Args:
-            dir_path: 目录路径（默认当前工作目录）
-            show_hidden: 是否显示隐藏文件/目录（默认不显示）
-            pattern: 文件名过滤（glob 模式，如 "*.py"、"*.md"）
-            detail: 是否显示详细信息（大小、修改时间）
-        """
-        abs_path = self._resolve_path(dir_path)
-
-        if not os.path.isdir(abs_path):
-            return {"success": False, "error": f"目录不存在: {abs_path}"}
-
-        try:
-            entries = []
-            count = 0
-            _skip_pattern = pattern in ("*", "*.*", "**", "*.*", "", None)
-            _import_fnmatch = False
-
-            for name in sorted(os.listdir(abs_path)):
-                if not show_hidden and name.startswith("."):
-                    continue
-                if not _skip_pattern and pattern:
-                    if not _import_fnmatch:
-                        import fnmatch
-                        _import_fnmatch = True
-                    if not fnmatch.fnmatch(name, pattern):
-                        continue
-
-                full_path = os.path.join(abs_path, name)
-                stat_info = os.stat(full_path)
-                is_dir = os.path.isdir(full_path)
-
-                entry = {"name": name, "type": "dir" if is_dir else "file"}
-
-                if detail:
-                    import datetime
-                    mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime)
-                    if is_dir:
-                        try:
-                            item_count = len(os.listdir(full_path))
-                            size_display = f"{item_count} items"
-                        except PermissionError:
-                            size_display = "?"
-                    else:
-                        size_display = stat_info.st_size
-                    entry.update({
-                        "size": size_display,
-                        "modified": mtime.isoformat(timespec="seconds"),
-                    })
-
-                entries.append(entry)
-                count += 1
-                if count >= _MAX_LIST_ENTRIES:
-                    entries.append({"name": f"...(共{count+1}条，已截断)", "type": "info"})
-                    break
-
-            return {
-                "success": True,
-                "data": entries,
-                "path": abs_path,
-                "count": min(count, _MAX_LIST_ENTRIES),
-            }
-        except PermissionError:
-            return {"success": False, "error": f"无权限访问: {abs_path}"}
-        except Exception as e:
-            return {"success": False, "error": f"列出失败 ({type(e).__name__}): {e}"}
-
-    def _cmd_exists(self, path: str) -> Dict[str, Any]:
-        """检查路径是否存在及类型
-
-        Args:
-            path: 文件或目录路径
-        """
-        if not path:
-            return {
-                "error": "未提供 path 参数",
-                "hint": '示例: {"command":"exists","path":"D:\\\\test.py"}',
-            }
-
-        abs_path = self._resolve_path(path)
-
-        exists = os.path.exists(abs_path)
-        info = {}
-        if exists:
-            info["type"] = "directory" if os.path.isdir(abs_path) else "file"
-            info["size"] = os.path.getsize(abs_path) if not info["type"] == "directory" else None
-
-        return {
-            "success": True,
-            "exists": exists,
-            "path": abs_path,
-            **info,
-        }
-
-    def _cmd_mkdir(self, path: str, parents: bool = True) -> Dict[str, Any]:
-        """创建目录
-
-        Args:
-            path: 目录路径
-            parents: 是否自动创建父目录（默认True）
-        """
-        if not path:
-            return {
-                "error": "未提供 path 参数",
-                "hint": '示例: {"command":"mkdir","path":"D:\\\\new_dir"}',
-            }
-
-        abs_path = self._resolve_path(path)
-
-        try:
-            os.makedirs(abs_path, exist_ok=parents)
-            return {
-                "success": True,
-                "message": "目录创建成功" if not os.path.exists(abs_path) else "目录已存在",
-                "path": abs_path,
-            }
-        except Exception as e:
-            return {"success": False, "error": f"创建失败 ({type(e).__name__}): {e}"}
-
-    def _cmd_create(self, base_dir: str, files: Dict[str, str], auto_mkdir: bool = True) -> Dict[str, Any]:
-        """批量创建文件
-
-        Args:
-            base_dir: 基础目录（如 F:\\计算器），所有文件相对于此目录
-            files: 文件字典 {相对路径: 内容}，如 {"index.html":"...", "style.css":"..."}
-            auto_mkdir: 是否自动创建不存在的父目录（默认True）
-
-        """
-        if not base_dir:
-            return {
-                "error": "未提供 base_dir 参数",
-                "hint": (
-                    '调用 file create 批量创建文件:\n'
-                    '  - base_dir (必填): 基础目录\n'
-                    '  - files (必填): 文件字典 JSON，如 {"index.html":"<html>..."}\n'
-                    '\n'
-                    '示例: {"command":"create","base_dir":"D:\\\\project","files":{"main.py":"print(1)","README.md":"# test"}}'
-                ),
-            }
-
-        import json as _json
-        if isinstance(files, str):
-            try:
-                files = _json.loads(files)
-            except (_json.JSONDecodeError, TypeError) as _e:
-                return {"success": False, "error": f"files 参数格式错误（期望字典或JSON字符串）: {_e}"}
-
-        if not files or not isinstance(files, dict):
-            return {
-                "error": "未提供 files 参数或格式错误，需要字典: {'path': 'content', ...}",
-                "hint": (
-                    'files 必须是字典或 JSON 字符串:\n'
-                    '{"index.html":"<html>...</html>","style.css":"body{margin:0}","app.js":"console.log(1)"}\n'
-                    '\n'
-                    '完整调用示例: {"command":"create","base_dir":"D:\\\\project","files":{"main.py":"print(1)"}}'
-                ),
-            }
-
-        abs_base = self._resolve_path(base_dir)
-
-        try:
-            os.makedirs(abs_base, exist_ok=True)
-        except Exception as e:
-            return {"success": False, "error": f"无法创建目录 {abs_base}: {e}"}
-
-        results = []
-        success_count = 0
-        total_bytes = 0
-
-        for rel_path, content in files.items():
-            if not rel_path:
-                continue
-
-            full_path = os.path.join(abs_base, rel_path.replace('/', os.sep).replace('\\', os.sep))
-
-            try:
-                parent = os.path.dirname(full_path)
-                if parent and auto_mkdir and not os.path.exists(parent):
-                    os.makedirs(parent, exist_ok=True)
-
-                self._atomic_write(full_path, content or "")
-
-                file_size = len((content or "").encode("utf-8"))
-                total_bytes += file_size
-                success_count += 1
-                results.append({"path": full_path, "status": "ok", "size": file_size})
-            except Exception as e:
-                results.append({"path": full_path, "status": "error", "error": str(e)})
-
-        failed = [r for r in results if r["status"] != "ok"]
-        return {
-            "success": len(failed) == 0,
-            "message": f"已创建 {success_count}/{len(files)} 个文件，共 {total_bytes} 字节",
-            "base_dir": abs_base,
-            "files_created": success_count,
-            "total_files": len(files),
-            "total_bytes": total_bytes,
-            "details": results,
-            **({"errors": failed} if failed else {}),
-        }
-
-    def _cmd_truncate(self, path: str, start: int = 0, end: Optional[int] = None) -> Dict[str, Any]:
-        """原子截断/删除文件内容（先写临时文件再替换）
-
-        Args:
-            path: 文件路径
-            start: 开始删除的行号（从0开始，包含）
-            end: 结束删除的行号（不包含）；None 表示删除到文件末尾
-        """
-        if not path:
-            return {
-                "error": "未提供 path 参数",
-                "hint": '示例: {"command":"truncate","path":"D:\\test.py","start":10,"end":20}',
-            }
-
-        abs_path = self._resolve_path(path)
-
-        if not os.path.isfile(abs_path):
-            return {"success": False, "error": f"文件不存在: {abs_path}"}
-
-        try:
-            encoding = self._detect_encoding(abs_path)
-            with open(abs_path, "r", encoding=encoding, errors="replace") as f:
-                all_lines = f.readlines()
-
-            total_lines = len(all_lines)
-
-            if start < 0:
-                start = 0
-            if start >= total_lines:
-                return {"success": False, "error": f"start={start} 超出文件总行数 {total_lines}"}
-
-            if end is None:
-                end = total_lines
-            if end > total_lines:
-                end = total_lines
-            if end <= start:
-                return {"success": False, "error": f"end={end} 必须大于 start={start}"}
-
-            # 保留的内容：start 之前 + end 之后
-            new_lines = all_lines[:start] + all_lines[end:]
-            new_content = "".join(new_lines)
-
-            # 原子写入
-            self._atomic_write(abs_path, new_content)
-
-            # 更新缓存
-            self._set_file_state(abs_path, FileState(
-                path=abs_path,
-                content=new_content,
-                timestamp=os.path.getmtime(abs_path),
-            ))
-
-            return {
-                "success": True,
-                "message": f"已删除第 {start}-{end-1} 行（共 {end-start} 行）",
-                "path": abs_path,
-                "deleted_lines": end - start,
-                "remaining_lines": len(new_lines),
-                "total_lines_before": total_lines,
-            }
-        except Exception as e:
-            return {"success": False, "error": f"截断失败 ({type(e).__name__}): {e}"}
-
-    def _cmd_insight(self, path: str, mode: str = "auto", query: str = None, offset: int = 0) -> Dict[str, Any]:
-        """
-        理解层工具：返回文件大纲或搜索索引。
-        原则：绝不返回超过 2KB 的数据，强制 Agent 进行分层阅读。
-        """
-        abs_path = self._resolve_path(path)
-        if not os.path.isfile(abs_path):
-            return {"success": False, "error": f"文件不存在: {abs_path}"}
-
-        file_size = os.path.getsize(abs_path)
-        ext = os.path.splitext(abs_path)[1].lower()
         encoding = self._detect_encoding(abs_path)
+        file_size = os.path.getsize(abs_path)
 
-        if mode == "auto":
-            if ext in ['.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.h', '.cs', '.rs', '.php', '.rb', '.kt', '.css', '.html', '.md']:
-                mode = "structure"
-            elif query or ext in ['.log', '.txt']:
-                mode = "search"
-            else:
-                mode = "summary"
+        # 检查文件大小
+        if file_size > _MAX_FILE_SIZE and mode == "full":
+            return {
+                "success": False,
+                "error": f"文件过大 ({file_size/1024/1024:.1f}MB)，建议使用 mode=summary 或 mode=context",
+                "size": file_size,
+            }
 
         try:
             with open(abs_path, "r", encoding=encoding, errors="replace") as f:
-                if mode == "structure":
-                    return self._extract_structure(f, ext)
-                elif mode == "search":
-                    return self._stream_search(f, query, ext=ext, offset=offset)
-                else:
-                    return self._file_summary(f, abs_path, file_size)
+                content = f.read()
+            lines = content.split('\n')
+            total_lines = len(lines)
+
+            # 缓存文件状态
+            self._cache_file(abs_path, content)
+
+            # 记录读取（用于检测重复）
+            read_info = self._read_tracker.record(abs_path, offset, limit)
+
+            if mode == "full":
+                # 完整读取（带分页）
+                if offset < 0:
+                    offset = 0
+                if offset >= total_lines:
+                    return {"success": False, "error": f"offset {offset} 超出文件总行数 {total_lines}"}
+
+                end = min(offset + limit, total_lines)
+                selected_lines = lines[offset:end]
+                result_content = '\n'.join(selected_lines)
+
+                return {
+                    "success": True,
+                    "data": result_content,
+                    "path": abs_path,
+                    "lines": len(selected_lines),
+                    "total_lines": total_lines,
+                    "offset": offset,
+                    "truncated": end < total_lines,
+                    "encoding": encoding,
+                    "read_count": read_info.get("read_count", 1),
+                }
+
+            elif mode == "context":
+                # 只读目标附近
+                if not target:
+                    return {"success": False, "error": "mode=context 需要提供 target 参数"}
+
+                target_lower = target.lower()
+                target_line = None
+                for i, line in enumerate(lines):
+                    if target_lower in line.lower():
+                        target_line = i
+                        break
+
+                if target_line is None:
+                    return {"success": False, "error": f"未找到目标: {target[:50]}"}
+
+                start = max(0, target_line - before)
+                end = min(total_lines, target_line + after + 1)
+                context_content = '\n'.join(lines[start:end])
+
+                return {
+                    "success": True,
+                    "data": context_content,
+                    "path": abs_path,
+                    "target_line": target_line + 1,
+                    "start_line": start + 1,
+                    "end_line": end,
+                    "context_lines": end - start,
+                    "total_lines": total_lines,
+                    "encoding": encoding,
+                }
+
+            elif mode == "summary":
+                # 只返回符号摘要
+                ext = os.path.splitext(abs_path)[1].lower()
+                result = SymbolSummary.extract(content, ext)
+
+                return {
+                    "success": True,
+                    "data": result["summary"],
+                    "path": abs_path,
+                    "symbols": result["symbols"],
+                    "total_symbols": result["total_symbols"],
+                    "total_lines": total_lines,
+                }
+
+            elif mode == "compact":
+                # 压缩读取
+                result = ContextCompact.compact(content)
+
+                return {
+                    "success": True,
+                    "data": result["content"],
+                    "path": abs_path,
+                    "original_lines": result["original_lines"],
+                    "new_lines": result["new_lines"],
+                    "imports_collapsed": result["imports_collapsed"],
+                    "docstrings_collapsed": result["docstrings_collapsed"],
+                    "blank_lines_removed": result["blank_lines_removed"],
+                    "compression_ratio": result["compression_ratio"],
+                }
+
+            else:
+                return {"success": False, "error": f"未知 mode: {mode}"}
+
         except Exception as e:
-            return {"success": False, "error": f"Insight failed: {str(e)}"}
+            return {"success": False, "error": f"读取失败: {e}"}
 
     # ================================================================
-    #  理解层私有实现
+    #  INSIGHT - 探索工程（不知道目标在哪）
     # ================================================================
 
-    def _extract_structure(self, f, ext: str) -> Dict[str, Any]:
-        regex = _STRUCTURE_PATTERNS.get(ext, _DEFAULT_PATTERN)
-        is_markdown = (ext == '.md')
+    def _cmd_insight(
+        self,
+        query: str = None,
+        mode: str = "grep",
+        path: str = ".",
+        pattern: str = None,
+        ext: str = None,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """探索工程
 
-        _CONTROL_FLOW = {"if", "for", "while", "switch", "elif", "else", "try", "except", "finally"}
-        _ACCESS_SPECIFIERS = {"public:", "private:", "protected:"}
-        _CLASS_KEYWORDS = {"class", "struct", "interface"}
+        Args:
+            query: 搜索内容（mode=grep/symbol 时使用）
+            mode: 探索模式
+                - grep: 搜索文件内容
+                - structure: 文件结构大纲
+                - symbol: 搜索符号（类/函数名）
+                - files: 搜索文件名
+            path: 搜索路径（默认当前目录）
+            pattern: 文件模式过滤（如 *.py）
+            ext: 扩展名过滤
+            offset: 分页偏移
+        """
+        abs_path = self._resolve_path(path)
 
-        symbols = []
-        stack = []
-        current_access = ""
+        if mode == "grep":
+            # 搜索文件内容
+            if not query:
+                return {"success": False, "error": "mode=grep 需要提供 query 参数"}
+            return self._grep_search(abs_path, query, pattern, ext, offset)
 
-        f.seek(0)
-        for i, line in enumerate(f):
-            stripped = line.strip()
-            if not stripped or stripped.startswith(('/', '*')):
-                continue
+        elif mode == "structure":
+            # 文件结构大纲
+            if os.path.isfile(abs_path):
+                return self._extract_structure(abs_path)
+            else:
+                return {"success": False, "error": "structure 模式需要指定文件路径"}
 
-            if is_markdown:
-                match = _STRUCTURE_PATTERNS['.md'].match(stripped)
-                if not match:
+        elif mode == "symbol":
+            # 搜索符号
+            if not query:
+                return {"success": False, "error": "mode=symbol 需要提供 query 参数"}
+            return self._symbol_search(abs_path, query, pattern, ext, offset)
+
+        elif mode == "files":
+            # 搜索文件名
+            return self._file_search(abs_path, query or pattern or "*", offset)
+
+        else:
+            return {"success": False, "error": f"未知 mode: {mode}"}
+
+    def _grep_search(self, root: str, query: str, pattern: str, ext_filter: str, offset: int) -> Dict[str, Any]:
+        """搜索文件内容"""
+        hits = []
+        use_regex = any(c in query for c in '*+?^$[]|(){}')
+
+        for dirpath, dirnames, filenames in os.walk(root):
+            # 跳过隐藏目录
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+
+            for filename in filenames:
+                # 过滤扩展名
+                if ext_filter and not filename.endswith(ext_filter):
                     continue
-                level = len(match.group(1))
-                name = match.group("name").strip()
-                breadcrumb = " > ".join([s["name"] for s in stack])
-                symbols.append({
-                    "line": i + 1,
-                    "level": level,
-                    "breadcrumb": breadcrumb,
-                    "name": name,
-                    "indent": (level - 1) * 4,
-                })
-                stack = stack[:level - 1]
-                stack.append({"name": name})
-                continue
-
-            indent = self._normalize_indent(line)
-
-            while stack and indent <= stack[-1]['indent']:
-                stack.pop()
-                if not stack:
-                    current_access = ""
-
-            first_word = ""
-            if stripped:
-                parts = stripped.split()
-                if parts:
-                    first_word = parts[0].split('(')[0]
-
-            if first_word in _ACCESS_SPECIFIERS:
-                current_access = first_word.rstrip(':')
-                continue
-
-            match = regex.search(line)
-            if match:
-                name = match.group("name") or match.group("name2") or match.group("name3") or ""
-                if not name:
+                if pattern and not self._match_pattern(filename, pattern):
                     continue
-                should_push = (first_word not in _CONTROL_FLOW) and (first_word not in _ACCESS_SPECIFIERS)
 
-                breadcrumb = " > ".join([node['name'] for node in stack])
-                display_name = f"[{current_access}] {name}" if current_access else name
+                filepath = os.path.join(dirpath, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        for i, line in enumerate(f):
+                            if use_regex:
+                                match = re.search(query, line, re.IGNORECASE)
+                                if match:
+                                    hits.append({
+                                        "file": filepath,
+                                        "line": i + 1,
+                                        "content": line.strip()[:100],
+                                        "match": match.group(),
+                                    })
+                            else:
+                                if query.lower() in line.lower():
+                                    hits.append({
+                                        "file": filepath,
+                                        "line": i + 1,
+                                        "content": line.strip()[:100],
+                                    })
+                except Exception:
+                    continue
 
-                symbols.append({
-                    "line": i + 1,
-                    "breadcrumb": breadcrumb,
-                    "name": display_name,
-                    "indent": indent,
-                    "raw": stripped[:60],
-                })
-
-                if should_push and stripped.endswith((':', '{', '[')):
-                    if any(kw in stripped for kw in _CLASS_KEYWORDS):
-                        current_access = ""
-                    stack.append({"indent": indent, "name": name})
-
-            if len(symbols) >= 150:
+                if len(hits) >= 100:
+                    break
+            if len(hits) >= 100:
                 break
 
-        return {
-            "success": True,
-            "type": "structure",
-            "language": ext,
-            "visual_tree": self._render_visual_tree(symbols),
-            "symbols": symbols,
-            "total_symbols": len(symbols),
-        }
-
-    def _normalize_indent(self, line: str, tab_size: int = 4) -> int:
-        leading = line[:len(line) - len(line.lstrip())]
-        return len(leading.replace('\t', ' ' * tab_size))
-
-    def _render_visual_tree(self, symbols: List[Dict], max_length: int = 2000) -> str:
-        parts = []
-        for sym in symbols[:60]:
-            ctx = f"{sym['breadcrumb']} > " if sym['breadcrumb'] else ""
-            part = f"{ctx}{sym['name']}:{sym['line']}"
-            parts.append(part)
-        
-        result = " | ".join(parts)
-        if len(result) > max_length:
-            result = result[:max_length] + "..."
-        return result
-
-    def _stream_search(self, f, query: str, ext: str = None, offset: int = 0) -> Dict[str, Any]:
-        if not query:
-            return {"success": False, "error": "Search 模式必须提供 query 参数"}
-
-        _CONTROL_FLOW = {"if", "for", "while", "switch", "elif", "else", "try", "except", "finally"}
-        _ACCESS_SPECIFIERS = {"public:", "private:", "protected:"}
-        _CLASS_KEYWORDS = {"class", "struct", "namespace", "interface", "def", "void", "int", "auto"}
-
-        hits = []
-        stack = []
-        current_access = ""
-
-        def _is_regex(q: str) -> bool:
-            return bool(set(q) & set('*+?^$[\\]|().{}'))
-
-        use_regex = _is_regex(query)
-        f.seek(0)
-
-        for i, line in enumerate(f):
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            indent = self._normalize_indent(line)
-            while stack and indent <= stack[-1]['indent']:
-                stack.pop()
-                if not stack:
-                    current_access = ""
-
-            first_word = ""
-            if stripped:
-                parts = stripped.split('(')[0].split()
-                if parts:
-                    first_word = parts[0]
-            if first_word in _ACCESS_SPECIFIERS:
-                current_access = first_word.rstrip(':')
-
-            if any(k in stripped for k in _CLASS_KEYWORDS) and stripped.endswith((':', '{')):
-                if first_word not in _CONTROL_FLOW:
-                    name_hint = stripped.split('(')[0].split('{')[0].split()[-1]
-                    stack.append({"indent": indent, "name": name_hint})
-
-            if use_regex:
-                matched = re.search(query, line, re.IGNORECASE)
-            else:
-                matched = query.lower() in line.lower()
-
-            if matched:
-                breadcrumb = " > ".join([node['name'] for node in stack])
-                match_start = line.lower().find(query.lower()) if not use_regex else (matched.start() if matched else 0)
-                hits.append({
-                    "line": i + 1,
-                    "breadcrumb": breadcrumb,
-                    "access": current_access,
-                    "content": stripped,
-                    "match_pos": match_start,
-                })
-
+        # 分页
         total = len(hits)
         page = hits[offset:offset + 20]
 
         return {
             "success": True,
-            "type": "search_with_context",
+            "mode": "grep",
             "query": query,
             "hits": page,
             "total": total,
@@ -867,236 +350,497 @@ class FileTool(BaseTool):
             "has_more": offset + 20 < total,
         }
 
-    def _file_summary(self, f, path: str, size: int) -> Dict[str, Any]:
-        """模式3：快速摘要（适用于配置和文档）"""
-        f.seek(0)
-        lines = f.readlines()
-        head = [line.strip() for line in lines[:5] if line.strip()]
-        total_lines = len(lines)
-        hint = f"文件共 {total_lines} 行，建议使用 search 模式定位关键内容"
-        if total_lines <= 5:
-            hint = "文件较短，可直接 read"
+    def _symbol_search(self, root: str, query: str, pattern: str, ext_filter: str, offset: int) -> Dict[str, Any]:
+        """搜索符号"""
+        hits = []
+        ext = ext_filter or ".py"
+
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+
+            for filename in filenames:
+                if not filename.endswith(ext):
+                    continue
+
+                filepath = os.path.join(dirpath, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+
+                    result = SymbolSummary.extract(content, ext)
+                    for sym in result["symbols"]:
+                        if query.lower() in sym["name"].lower():
+                            hits.append({
+                                "file": filepath,
+                                "line": sym["line"],
+                                "name": sym["name"],
+                                "type": sym["type"],
+                            })
+                except Exception:
+                    continue
+
+        total = len(hits)
+        page = hits[offset:offset + 20]
+
         return {
             "success": True,
-            "type": "summary",
-            "path": path,
-            "size_kb": round(size / 1024, 2),
-            "head": head,
-            "total_lines": total_lines,
-            "hint": hint,
+            "mode": "symbol",
+            "query": query,
+            "hits": page,
+            "total": total,
+            "offset": offset,
+        }
+
+    def _file_search(self, root: str, pattern: str, offset: int) -> Dict[str, Any]:
+        """搜索文件名"""
+        hits = []
+        pattern_lower = pattern.lower().replace('*', '')
+
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+
+            for filename in filenames:
+                if pattern_lower in filename.lower():
+                    filepath = os.path.join(dirpath, filename)
+                    hits.append({
+                        "file": filepath,
+                        "name": filename,
+                    })
+
+                if len(hits) >= 100:
+                    break
+            if len(hits) >= 100:
+                break
+
+        total = len(hits)
+        page = hits[offset:offset + 20]
+
+        return {
+            "success": True,
+            "mode": "files",
+            "pattern": pattern,
+            "hits": page,
+            "total": total,
+        }
+
+    def _extract_structure(self, filepath: str) -> Dict[str, Any]:
+        """提取文件结构"""
+        ext = os.path.splitext(filepath)[1].lower()
+        encoding = self._detect_encoding(filepath)
+
+        try:
+            with open(filepath, 'r', encoding=encoding, errors='replace') as f:
+                content = f.read()
+
+            result = SymbolSummary.extract(content, ext)
+
+            return {
+                "success": True,
+                "mode": "structure",
+                "path": filepath,
+                "data": result["summary"],
+                "symbols": result["symbols"],
+                "total_symbols": result["total_symbols"],
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _match_pattern(self, filename: str, pattern: str) -> bool:
+        """简单的模式匹配"""
+        import fnmatch
+        return fnmatch.fnmatch(filename, pattern)
+
+    # ================================================================
+    #  EDIT - 修改文件（隐式事务，自动验证回滚）
+    # ================================================================
+
+    def _cmd_edit(
+        self,
+        path: str,
+        mode: str = "replace",
+        old_text: str = None,
+        new_text: str = None,
+        start_line: int = None,
+        end_line: int = None,
+        content: str = None,
+        validate: bool = True,
+    ) -> Dict[str, Any]:
+        """编辑文件（自动验证，失败回滚）
+
+        Args:
+            path: 文件路径
+            mode: 编辑模式
+                - replace: 替换文本（old_text → new_text）
+                - range: 按行号编辑（start_line, end_line, new_text）
+                - delete: 删除行范围（start_line, end_line）
+                - append: 追加内容（content）
+            old_text: 要替换的文本（mode=replace）
+            new_text: 新文本（mode=replace/range）
+            start_line: 起始行号（mode=range/delete，从 0 开始）
+            end_line: 结束行号（mode=range/delete，不包含）
+            content: 要追加的内容（mode=append）
+            validate: 是否验证（默认 True）
+        """
+        if not path:
+            return {"success": False, "error": "需要 path 参数"}
+
+        abs_path = self._resolve_path(path)
+
+        if not os.path.exists(abs_path):
+            # 文件不存在，检查是否是创建新文件
+            if mode == "append" and content:
+                return self._write_new_file(abs_path, content)
+            return {"success": False, "error": f"文件不存在: {abs_path}"}
+
+        # 检查是否已读取
+        file_state = self._read_cache.get(abs_path)
+        if not file_state:
+            return {"success": False, "error": "请先使用 read 命令读取文件"}
+
+        # 检查文件是否被外部修改
+        current_mtime = os.path.getmtime(abs_path)
+        if current_mtime > file_state.timestamp:
+            return {"success": False, "error": "文件已被外部修改，请重新读取"}
+
+        # 创建快照
+        tx = EditTransaction(workspace=os.path.dirname(abs_path) or os.getcwd())
+        tx.begin()
+
+        try:
+            if mode == "replace":
+                # 替换文本
+                if not old_text:
+                    return {"success": False, "error": "mode=replace 需要 old_text 参数"}
+                if new_text is None:
+                    return {"success": False, "error": "mode=replace 需要 new_text 参数"}
+                if old_text == new_text:
+                    return {"success": False, "error": "old_text 和 new_text 相同"}
+
+                step = tx.create_step(abs_path, old_text, new_text)
+
+            elif mode == "range":
+                # 按行号编辑
+                if start_line is None or end_line is None:
+                    return {"success": False, "error": "mode=range 需要 start_line 和 end_line"}
+                if new_text is None:
+                    return {"success": False, "error": "mode=range 需要 new_text"}
+
+                step = tx.create_step_by_range(abs_path, start_line, end_line, new_text)
+
+            elif mode == "delete":
+                # 删除行范围
+                if start_line is None or end_line is None:
+                    return {"success": False, "error": "mode=delete 需要 start_line 和 end_line"}
+
+                step = tx.create_step_by_range(abs_path, start_line, end_line, "")
+
+            elif mode == "append":
+                # 追加内容
+                if content is None:
+                    return {"success": False, "error": "mode=append 需要 content 参数"}
+
+                # 读取当前内容并追加
+                current_content = file_state.content
+                new_content = current_content.rstrip('\n') + '\n' + content
+
+                step = tx.create_step(abs_path, current_content, new_content)
+
+            else:
+                return {"success": False, "error": f"未知 mode: {mode}"}
+
+            # 提交步骤（自动验证）
+            result = tx.commit_step(step, validate=validate)
+
+            if result["success"]:
+                # 更新缓存
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    new_file_content = f.read()
+                self._cache_file(abs_path, new_file_content)
+
+                return {
+                    "success": True,
+                    "path": abs_path,
+                    "mode": mode,
+                    "step_id": step.step_id,
+                    "diagnostics": result.get("diagnostics", []),
+                    "validated": validate,
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error"),
+                    "rolled_back": result.get("rolled_back", False),
+                    "diagnostics": result.get("diagnostics", []),
+                }
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _write_new_file(self, path: str, content: str) -> Dict[str, Any]:
+        """写入新文件"""
+        try:
+            parent = os.path.dirname(path)
+            if parent and not os.path.exists(parent):
+                os.makedirs(parent, exist_ok=True)
+
+            self._atomic_write(path, content)
+            self._cache_file(path, content)
+
+            return {
+                "success": True,
+                "path": path,
+                "bytes_written": len(content.encode('utf-8')),
+                "message": "新文件已创建",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ================================================================
+    #  FS - 文件系统操作
+    # ================================================================
+
+    def _cmd_fs(
+        self,
+        action: str,
+        path: str = None,
+        dir_path: str = None,
+        pattern: str = None,
+        recursive: bool = False,
+        parents: bool = True,
+        files: Dict[str, str] = None,
+        detail: bool = False,
+    ) -> Dict[str, Any]:
+        """文件系统操作
+
+        Args:
+            action: 操作类型
+                - list: 列目录
+                - mkdir: 创建目录
+                - delete: 删除文件/目录
+                - exists: 检查存在
+                - create: 批量创建文件
+            path: 文件/目录路径
+            dir_path: 目录路径（action=list 时使用）
+            pattern: 文件模式（action=list）
+            recursive: 递归删除目录（action=delete）
+            parents: 创建父目录（action=mkdir）
+            files: 批量创建的文件（action=create）
+            detail: 显示详细信息（action=list）
+        """
+        if action == "list":
+            target = dir_path or path or "."
+            return self._fs_list(target, pattern, detail)
+
+        elif action == "mkdir":
+            if not path:
+                return {"success": False, "error": "需要 path 参数"}
+            return self._fs_mkdir(path, parents)
+
+        elif action == "delete":
+            if not path:
+                return {"success": False, "error": "需要 path 参数"}
+            return self._fs_delete(path, recursive)
+
+        elif action == "exists":
+            if not path:
+                return {"success": False, "error": "需要 path 参数"}
+            return self._fs_exists(path)
+
+        elif action == "create":
+            if not path or not files:
+                return {"success": False, "error": "需要 path 和 files 参数"}
+            return self._fs_create(path, files)
+
+        else:
+            return {"success": False, "error": f"未知 action: {action}"}
+
+    def _fs_list(self, path: str, pattern: str, detail: bool) -> Dict[str, Any]:
+        """列目录"""
+        abs_path = self._resolve_path(path)
+        if not os.path.isdir(abs_path):
+            return {"success": False, "error": f"目录不存在: {abs_path}"}
+
+        entries = []
+        try:
+            for name in sorted(os.listdir(abs_path)):
+                if name.startswith('.'):
+                    continue
+
+                if pattern and not self._match_pattern(name, pattern):
+                    continue
+
+                full_path = os.path.join(abs_path, name)
+                is_dir = os.path.isdir(full_path)
+
+                entry = {"name": name, "type": "dir" if is_dir else "file"}
+
+                if detail:
+                    stat_info = os.stat(full_path)
+                    import datetime
+                    entry["size"] = stat_info.st_size if not is_dir else None
+                    entry["modified"] = datetime.datetime.fromtimestamp(stat_info.st_mtime).isoformat(timespec="seconds")
+
+                entries.append(entry)
+
+                if len(entries) >= _MAX_LIST_ENTRIES:
+                    break
+
+            return {
+                "success": True,
+                "data": entries,
+                "path": abs_path,
+                "count": len(entries),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _fs_mkdir(self, path: str, parents: bool) -> Dict[str, Any]:
+        """创建目录"""
+        abs_path = self._resolve_path(path)
+        try:
+            os.makedirs(abs_path, exist_ok=parents)
+            return {
+                "success": True,
+                "path": abs_path,
+                "message": "目录创建成功" if not os.path.exists(abs_path) else "目录已存在",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _fs_delete(self, path: str, recursive: bool) -> Dict[str, Any]:
+        """删除文件/目录"""
+        abs_path = self._resolve_path(path)
+        if not os.path.exists(abs_path):
+            return {"success": False, "error": f"不存在: {abs_path}"}
+
+        try:
+            if os.path.isfile(abs_path):
+                os.remove(abs_path)
+            elif os.path.isdir(abs_path):
+                if recursive:
+                    shutil.rmtree(abs_path)
+                else:
+                    os.rmdir(abs_path)
+
+            return {"success": True, "path": abs_path, "message": "删除成功"}
+        except OSError as e:
+            if "Directory not empty" in str(e):
+                return {"success": False, "error": "目录非空，需要 recursive=True"}
+            return {"success": False, "error": str(e)}
+
+    def _fs_exists(self, path: str) -> Dict[str, Any]:
+        """检查存在"""
+        abs_path = self._resolve_path(path)
+        exists = os.path.exists(abs_path)
+
+        result = {"success": True, "exists": exists, "path": abs_path}
+        if exists:
+            result["type"] = "directory" if os.path.isdir(abs_path) else "file"
+            result["size"] = os.path.getsize(abs_path) if result["type"] == "file" else None
+
+        return result
+
+    def _fs_create(self, base_dir: str, files: Dict[str, str]) -> Dict[str, Any]:
+        """批量创建文件"""
+        abs_base = self._resolve_path(base_dir)
+
+        try:
+            os.makedirs(abs_base, exist_ok=True)
+        except Exception as e:
+            return {"success": False, "error": f"无法创建目录: {e}"}
+
+        results = []
+        success_count = 0
+
+        for rel_path, content in files.items():
+            full_path = os.path.join(abs_base, rel_path.replace('/', os.sep).replace('\\', os.sep))
+
+            try:
+                parent = os.path.dirname(full_path)
+                if parent and not os.path.exists(parent):
+                    os.makedirs(parent, exist_ok=True)
+
+                self._atomic_write(full_path, content or "")
+                success_count += 1
+                results.append({"path": full_path, "status": "ok"})
+            except Exception as e:
+                results.append({"path": full_path, "status": "error", "error": str(e)})
+
+        return {
+            "success": success_count == len(files),
+            "base_dir": abs_base,
+            "files_created": success_count,
+            "total_files": len(files),
+            "details": results,
         }
 
     # ================================================================
-    #  内部工具方法
+    #  内部工具
     # ================================================================
 
     def _resolve_path(self, path: str) -> str:
-        """解析为绝对路径，空路径或无效路径时使用默认 workspace"""
-        if not path or not isinstance(path, str):
+        """解析路径"""
+        if not path:
+            return os.getcwd()
+        if os.path.isabs(path):
+            return path
+        return os.path.abspath(path)
 
-            return str(Path(__file__).resolve().parent.parent.parent.parent / "workspace")
-
-        if not os.path.isabs(path):
-            workspace_path = Path(__file__).resolve().parent.parent.parent.parent / "workspace"
-            relative_path = workspace_path / path
-            if relative_path.exists():
-                return str(relative_path)
-
-        abs_path = os.path.abspath(path)
-        return abs_path
-
-    def _detect_encoding(self, file_path: str) -> str:
+    def _detect_encoding(self, path: str) -> str:
+        """检测文件编码"""
         try:
-            with open(file_path, "rb") as f:
+            with open(path, 'rb') as f:
                 raw = f.read(4)
-            if raw[:2] == b"\xff\xfe":
-                return "utf-16-le"
-            if raw[:2] == b"\xfe\xff":
-                return "utf-16"
-            if raw[:3] == b"\xef\xbb\xbf":
-                return "utf-8-sig"
+
+            if raw[:3] == b'\xef\xbb\xbf':
+                return 'utf-8-sig'
+            if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+                return 'utf-16'
+
+            with open(path, 'rb') as f:
+                content = f.read(65536)
+            try:
+                content.decode('utf-8')
+                return 'utf-8'
+            except UnicodeDecodeError:
+                pass
+            for enc in ('gbk', 'gb2312', 'big5'):
+                try:
+                    content.decode(enc)
+                    return enc
+                except UnicodeDecodeError:
+                    continue
         except Exception:
             pass
+        return 'utf-8'
+
+    def _cache_file(self, path: str, content: str):
+        """缓存文件状态"""
+        self._read_cache[path] = FileState(
+            path=path,
+            content=content,
+            timestamp=os.path.getmtime(path),
+        )
+
+    def _atomic_write(self, path: str, content: str):
+        """原子写入"""
+        dir_path = os.path.dirname(path) or '.'
+        temp_fd, temp_path = tempfile.mkstemp(dir=dir_path, suffix='.tmp')
 
         try:
-            with open(file_path, "rb") as f:
-                raw = f.read(65536)
-            if raw:
-                try:
-                    raw.decode("utf-8")
-                    return "utf-8"
-                except UnicodeDecodeError:
-                    pass
-                try:
-                    raw.decode("gbk")
-                    return "gbk"
-                except UnicodeDecodeError:
-                    pass
-                try:
-                    raw.decode("gb2312")
-                    return "gb2312"
-                except UnicodeDecodeError:
-                    pass
-                try:
-                    raw.decode("big5")
-                    return "big5"
-                except UnicodeDecodeError:
-                    pass
-                try:
-                    raw.decode("shift_jis")
-                    return "shift_jis"
-                except UnicodeDecodeError:
-                    pass
-                try:
-                    raw.decode("euc-kr")
-                    return "euc-kr"
-                except UnicodeDecodeError:
-                    pass
-        except Exception:
-            pass
-
-        return "utf-8"
-
-    def _get_file_state(self, path: str) -> Optional[FileState]:
-        """获取文件读取状态"""
-        return self._read_cache.get(os.path.abspath(path))
-
-    def _set_file_state(self, path: str, state: FileState):
-        """设置文件读取状态"""
-        self._read_cache[os.path.abspath(path)] = state
-
-    def _normalize_quotes(self, text: str) -> str:
-        """标准化引号样式（处理中文弯引号）"""
-        replacements = {
-            '"': '"',
-            '"': '"',
-            ''': "'",
-            ''': "'",
-        }
-        for old, new in replacements.items():
-            text = text.replace(old, new)
-        return text
-
-    def _find_actual_string(self, content: str, old_string: str) -> Optional[str]:
-        if old_string in content:
-            return old_string
-        normalized_old = self._normalize_quotes(old_string)
-        normalized_content = self._normalize_quotes(content)
-        if normalized_old in normalized_content:
-            start = 0
-            while start <= len(normalized_content) - len(normalized_old):
-                idx = normalized_content.find(normalized_old, start)
-                if idx == -1:
-                    break
-                actual = content[idx:idx + len(normalized_old)]
-                if actual == old_string:
-                    return actual
-                start = idx + 1
-            return content[idx:idx + len(normalized_old)] if idx != -1 else None
-
-        content_lf = content.replace("\r\n", "\n").replace("\r", "\n")
-        old_string_lf = old_string.replace("\r\n", "\n").replace("\r", "\n")
-        if old_string_lf in content_lf:
-            lf_idx = content_lf.find(old_string_lf)
-            lf_end = lf_idx + len(old_string_lf)
-            orig_idx = self._lf_to_orig_offset(content, lf_idx)
-            orig_end = self._lf_to_orig_offset(content, lf_end)
-            return content[orig_idx:orig_end]
-
-        import unicodedata
-        nfkc_old = unicodedata.normalize("NFKC", old_string_lf)
-        nfkc_content = unicodedata.normalize("NFKC", content_lf)
-        if nfkc_old in nfkc_content:
-            nfkc_idx = nfkc_content.find(nfkc_old)
-            char_map = []
-            pos = 0
-            for ch in content_lf:
-                nfkc_ch = unicodedata.normalize("NFKC", ch)
-                char_map.append((pos, len(nfkc_ch)))
-                pos += 1
-            content_start = 0
-            content_end = len(content_lf)
-            nfkc_pos = 0
-            for i, (char_pos, nfkc_len) in enumerate(char_map):
-                if nfkc_pos == nfkc_idx:
-                    content_start = char_pos
-                nfkc_pos += nfkc_len
-                if nfkc_pos == nfkc_idx + len(nfkc_old):
-                    content_end = char_pos + 1
-                    break
-            orig_start = self._lf_to_orig_offset(content, content_start)
-            orig_end = self._lf_to_orig_offset(content, content_end)
-            return content[orig_start:orig_end]
-
-        return None
-
-    def _lf_to_orig_offset(self, orig_content: str, lf_offset: int) -> int:
-        orig_pos = 0
-        lf_pos = 0
-        while lf_pos < lf_offset and orig_pos < len(orig_content):
-            if orig_content[orig_pos] == "\r" and orig_pos + 1 < len(orig_content) and orig_content[orig_pos + 1] == "\n":
-                orig_pos += 1
-            orig_pos += 1
-            lf_pos += 1
-        return orig_pos
-
-    def _generate_diff(self, old_content: str, new_content: str, file_path: str, max_lines: int = 50) -> str:
-        """生成 unified diff 格式"""
-        old_lines = old_content.split("\n")
-        new_lines = new_content.split("\n")
-        diff_lines = [f"--- {file_path}", f"+++ {file_path}"]
-        i = j = 0
-        changes = []
-        while i < len(old_lines) or j < len(new_lines):
-            old_line = old_lines[i] if i < len(old_lines) else None
-            new_line = new_lines[j] if j < len(new_lines) else None
-            if old_line == new_line:
-                i += 1
-                j += 1
-            elif old_line is None:
-                changes.append(f"+ {new_line}")
-                j += 1
-            elif new_line is None:
-                changes.append(f"- {old_line}")
-                i += 1
-            else:
-                changes.append(f"- {old_line}")
-                changes.append(f"+ {new_line}")
-                i += 1
-                j += 1
-            if len(changes) >= max_lines:
-                changes.append("... (truncated)")
-                break
-        if changes:
-            diff_lines.extend(changes)
-            return "\n".join(diff_lines)
-        return ""
-
-    def _atomic_write(self, file_path: str, content: str):
-        """原子写入（先写临时文件，再 rename）"""
-        dir_path = os.path.dirname(file_path) or "."
-        temp_fd, temp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
-        try:
-            encoding = self._detect_encoding(file_path) if os.path.exists(file_path) else "utf-8"
-            with os.fdopen(temp_fd, "w", encoding=encoding) as f:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
                 f.write(content)
                 f.flush()
-                if hasattr(os, "fsync"):
+                if hasattr(os, 'fsync'):
                     os.fsync(f.fileno())
-            temp_fd = None
-            if os.path.exists(file_path):
-                stat_info = os.stat(file_path)
-                os.replace(temp_path, file_path)
-                os.chmod(file_path, stat_info.st_mode)
+
+            if os.path.exists(path):
+                stat_info = os.stat(path)
+                os.replace(temp_path, path)
+                os.chmod(path, stat_info.st_mode)
             else:
-                os.replace(temp_path, file_path)
+                os.replace(temp_path, path)
         except Exception:
-            if temp_fd is not None:
-                os.close(temp_fd)
-            if temp_path and os.path.exists(temp_path):
+            if os.path.exists(temp_path):
                 os.unlink(temp_path)
             raise
-
-
-def _to_mb(n: int) -> float:
-    return n / (1024 * 1024)
