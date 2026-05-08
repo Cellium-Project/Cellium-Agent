@@ -4526,6 +4526,76 @@ input:focus, select:focus, textarea:focus {
         font-size: 10px;
     }
 
+    /* Model Manager Mobile Styles */
+    .model-manager {
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .saved-models {
+        max-width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border-primary);
+        padding-right: 0;
+        padding-bottom: 20px;
+    }
+
+    .model-form {
+        flex: 1;
+        width: 100%;
+    }
+
+    .model-item {
+        padding: 12px;
+    }
+
+    .model-item-actions {
+        opacity: 1;
+    }
+
+    /* Models Grid Mobile Styles */
+    .models-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .model-card {
+        margin-bottom: 12px;
+    }
+
+    .model-card-header {
+        padding: 10px 12px;
+    }
+
+    .model-card-body {
+        padding: 12px;
+    }
+
+    .model-card-body .form-row {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .model-name-input {
+        font-size: 13px;
+        min-width: 0;
+    }
+
+    /* Settings Card Grid Mobile Styles */
+    .settings-card-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .settings-card {
+        overflow-x: hidden;
+    }
+
+    .preset-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+    }
+
     .scheduler-main {
         flex: 1;
         min-height: 0;
@@ -4680,6 +4750,23 @@ input:focus, select:focus, textarea:focus {
     .btn-save {
         padding: 10px 16px;
         font-size: 13px;
+    }
+
+    /* Model Manager Extra Small Screen Styles */
+    .model-item {
+        padding: 10px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .model-item-name {
+        font-size: 13px;
+        width: 100%;
+    }
+
+    .model-item-actions {
+        width: 100%;
+        justify-content: flex-end;
     }
 }
 

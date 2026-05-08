@@ -22,7 +22,8 @@ import logging
 import multiprocessing
 import os
 import sys
-import tempfile
+import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -58,10 +59,33 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
     沙箱工作进程 - 在独立进程中执行组件代码
 
     这个函数在子进程中运行，通过 Queue 与主进程通信
+    优化：减少内存占用，只导入必要的模块
     """
     import time  # 心跳管理需要
     
     try:
+        # 清理不必要的模块以减少内存占用（fork后继承的模块）
+        # 注意：保留 multiprocessing 相关模块，因为 Queue 通信需要
+        modules_to_remove = [
+            'numpy', 'pandas', 'matplotlib', 'sklearn', 'torch', 'tensorflow',
+            'cv2', 'PIL.Image', 'PIL.PngImagePlugin', 'PIL.JpegImagePlugin',
+            'requests', 'urllib3', 'http.client', 'http.cookiejar',
+            'email', 'xml.etree', 'xml.dom', 'html.parser',
+            'csv', 'pickle', 'sqlite3', 'hashlib', 'hmac',
+            'ssl', 'socketserver', 'asyncio', 'concurrent.futures',
+            'subprocess', 'threading', 'queue',
+        ]
+        for mod_name in list(sys.modules.keys()):
+            if any(mod_name.startswith(rm) for rm in modules_to_remove):
+                try:
+                    del sys.modules[mod_name]
+                except:
+                    pass
+        
+        # 强制垃圾回收
+        import gc
+        gc.collect()
+        
         if project_root and project_root not in sys.path:
             sys.path.insert(0, project_root)
 
@@ -411,6 +435,57 @@ class SandboxProcess:
 # 全局沙箱实例缓存
 _sandbox_instances: Dict[str, 'ComponentSandbox'] = {}
 
+MAX_SANDBOX_COUNT = 15  # 最大沙箱数量
+IDLE_TIMEOUT_SECONDS = 300  # 空闲超时（5分钟）
+
+_sandbox_last_used: Dict[str, float] = {}
+_sandbox_lock = threading.RLock()
+_sandbox_cleanup_thread: Optional[threading.Thread] = None
+_sandbox_cleanup_stop_event = threading.Event()
+
+
+def _cleanup_idle_sandboxes():
+    """后台线程：定期清理空闲沙箱"""
+    while not _sandbox_cleanup_stop_event.is_set():
+        try:
+            time.sleep(60)  
+            
+            with _sandbox_lock:
+                current_time = time.time()
+                to_remove = []
+                
+                for name, last_used in list(_sandbox_last_used.items()):
+                    if current_time - last_used > IDLE_TIMEOUT_SECONDS:
+                        sandbox = _sandbox_instances.get(name)
+                        if sandbox and not sandbox.is_busy():
+                            to_remove.append(name)
+                
+                for name in to_remove:
+                    logger.info("[SandboxCleanup] 清理空闲沙箱: %s", name)
+                    ComponentSandbox.remove_sandbox(name)
+                    
+        except Exception as e:
+            logger.error("[SandboxCleanup] 清理线程错误: %s", e)
+
+
+def _start_cleanup_thread():
+    """启动清理线程"""
+    global _sandbox_cleanup_thread
+    if _sandbox_cleanup_thread is None or not _sandbox_cleanup_thread.is_alive():
+        _sandbox_cleanup_stop_event.clear()
+        _sandbox_cleanup_thread = threading.Thread(target=_cleanup_idle_sandboxes, daemon=True)
+        _sandbox_cleanup_thread.start()
+        logger.info("[SandboxCleanup] 清理线程已启动")
+
+
+def _stop_cleanup_thread():
+    """停止清理线程"""
+    global _sandbox_cleanup_thread
+    if _sandbox_cleanup_thread and _sandbox_cleanup_thread.is_alive():
+        _sandbox_cleanup_stop_event.set()
+        _sandbox_cleanup_thread.join(timeout=5)
+        logger.info("[SandboxCleanup] 清理线程已停止")
+
 
 class ComponentSandbox(ICell):
     """
@@ -427,6 +502,7 @@ class ComponentSandbox(ICell):
         """
         self._name = name
         self._sandbox: Optional[SandboxProcess] = None
+        _start_cleanup_thread()  # 确保清理线程在运行
 
     @property
     def cell_name(self) -> str:
@@ -501,7 +577,7 @@ class ComponentSandbox(ICell):
     @classmethod
     def get_sandbox(cls, name: str) -> 'ComponentSandbox':
         """
-        获取或创建沙箱实例（单例模式）
+        获取或创建沙箱实例
         
         Args:
             name: 组件名称
@@ -509,9 +585,28 @@ class ComponentSandbox(ICell):
         Returns:
             ComponentSandbox 实例
         """
-        if name not in _sandbox_instances:
+        with _sandbox_lock:
+            _sandbox_last_used[name] = time.time()
+            
+            if name in _sandbox_instances:
+                return _sandbox_instances[name]
+            
+            if len(_sandbox_instances) >= MAX_SANDBOX_COUNT:
+                sorted_names = sorted(
+                    _sandbox_last_used.keys(),
+                    key=lambda n: _sandbox_last_used.get(n, 0)
+                )
+                
+                for old_name in sorted_names:
+                    if old_name != name and old_name in _sandbox_instances:
+                        old_sandbox = _sandbox_instances[old_name]
+                        if not old_sandbox.is_busy():
+                            logger.info("[SandboxLRU] 淘汰旧沙箱: %s", old_name)
+                            cls.remove_sandbox(old_name)
+                            break
+            
             _sandbox_instances[name] = cls(name)
-        return _sandbox_instances[name]
+            return _sandbox_instances[name]
 
     @classmethod
     def _get_existing_sandbox(cls, name: str) -> Optional['ComponentSandbox']:
@@ -556,13 +651,16 @@ class ComponentSandbox(ICell):
         Returns:
             是否成功删除
         """
-        if name in _sandbox_instances:
-            sandbox = _sandbox_instances[name]
-            sandbox.stop()
-            del _sandbox_instances[name]
-            logger.info("[ComponentSandbox] 已删除沙箱实例: %s", name)
-            return True
-        return False
+        with _sandbox_lock:
+            if name in _sandbox_instances:
+                sandbox = _sandbox_instances[name]
+                sandbox.stop()
+                del _sandbox_instances[name]
+                # 同时清理使用时间记录
+                _sandbox_last_used.pop(name, None)
+                logger.info("[ComponentSandbox] 已删除沙箱实例: %s", name)
+                return True
+            return False
 
     @classmethod
     def get_all_sandbox_names(cls) -> list:
@@ -577,9 +675,49 @@ class ComponentSandbox(ICell):
     @classmethod
     def clear_all_sandboxes(cls):
         """清理所有沙箱实例"""
-        for name in list(_sandbox_instances.keys()):
-            cls.remove_sandbox(name)
-        logger.info("[ComponentSandbox] 已清理所有沙箱实例")
+        with _sandbox_lock:
+            for name in list(_sandbox_instances.keys()):
+                sandbox = _sandbox_instances[name]
+                sandbox.stop()
+            _sandbox_instances.clear()
+            _sandbox_last_used.clear()
+            logger.info("[ComponentSandbox] 已清理所有沙箱实例")
+            _stop_cleanup_thread()
+
+    @classmethod
+    def get_sandbox_stats(cls) -> Dict[str, Any]:
+        """
+        获取沙箱统计信息
+        
+        Returns:
+            {
+                "total": 沙箱总数,
+                "max": 最大允许数量,
+                "idle_timeout": 空闲超时秒数,
+                "sandboxes": [
+                    {"name": 名称, "alive": 是否存活, "last_used": 最后使用时间}
+                ]
+            }
+        """
+        with _sandbox_lock:
+            sandboxes = []
+            current_time = time.time()
+            for name, sandbox in _sandbox_instances.items():
+                last_used = _sandbox_last_used.get(name, 0)
+                sandboxes.append({
+                    "name": name,
+                    "alive": sandbox.is_alive(),
+                    "busy": sandbox.is_busy(),
+                    "last_used": last_used,
+                    "idle_seconds": int(current_time - last_used)
+                })
+            
+            return {
+                "total": len(_sandbox_instances),
+                "max": MAX_SANDBOX_COUNT,
+                "idle_timeout": IDLE_TIMEOUT_SECONDS,
+                "sandboxes": sandboxes
+            }
 
     def __del__(self):
         """析构时自动停止沙箱"""
