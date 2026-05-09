@@ -356,6 +356,275 @@ class ComponentBuilder(BaseCell):
                 "hint": "\u8bf7\u624b\u52a8\u8c03\u7528 component.reload()",
             }
 
+    def _cmd_generate_package(
+        self,
+        name: str,
+        description: str = "",
+        commands: str = "",
+        modules: str = "",
+    ) -> Dict[str, Any]:
+        """
+        \u751f\u6210\u4e00\u4e2a\u5305\u7ec4\u4ef6\uff08\u6587\u4ef6\u5939\u5f62\u5f0f\uff09\uff0c\u9002\u5408\u590d\u6742\u529f\u80fd
+
+        \u5305\u7ec4\u4ef6\u7ed3\u6784:
+          components/{name}/
+          \u251c\u2014 __init__.py
+          \u2514\u2014 core.py  (\u4e3b\u7ec4\u4ef6\u7c7b)
+
+        \u989d\u5916\u6a21\u5757\u4f1a\u521b\u5efa\u4e3a\u72ec\u7acb .py \u6587\u4ef6
+
+        Args:
+            name: \u7ec4\u4ef6\u540d\u79f0\uff08\u5c0f\u5199\u82f1\u6587\uff0c\u5982 eth_quant\u3001data_pipeline\uff09
+            description: \u7ec4\u4ef6\u529f\u80fd\u63cf\u8ff0
+            commands: \u547d\u4ee4\u5217\u8868 JSON \u6570\u7ec4\uff0c\u5982 '[{"name":"run","desc":"\u6267\u884c"}]'
+            modules: \u989d\u5916\u6a21\u5757\u5217\u8868 JSON \u6570\u7ec4\uff0c\u5982 '["utils","monitor","api"]'
+
+        Returns:
+            {"success": True, "package_dir": "...", "files": [...], "cell_name": "..."}
+
+        \u4f7f\u7528\u793a\u4f8b:
+          component.generate_package("eth_quant", "\u4ee5\u592a\u574a\u91cf\u5316\u4ea4\u6613")
+          component.generate_package("data_pipeline", "\u6570\u636e\u5904\u7406\u7ba1\u9053",
+            commands='[{"name":"run","desc":"\u8fd0\u884c\u7ba1\u9053"},{"name":"status","desc":"\u67e5\u770b\u72b6\u6001"}]',
+            modules='["utils","monitor","api"]')
+        """
+        if not name or not name.isidentifier():
+            return {
+                "error": f"\u65e0\u6548\u7684\u7ec4\u4ef6\u540d\u79f0 '{name}'\uff1a\u5fc5\u987b\u662f\u5408\u6cd5 Python \u6807\u8bc6\u7b26",
+                "hint": "\u4f7f\u7528\u5c0f\u5199\u82f1\u6587\u548c\u4e0b\u5212\u7ebf\uff0c\u5982 eth_quant\u3001data_pipeline",
+            }
+
+        cell_name = name.lower()
+        class_name = "".join(word.capitalize() for word in name.split("_"))
+
+        cmd_list = []
+        if commands and commands.strip():
+            try:
+                parsed = json.loads(commands)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, str):
+                            cmd_list.append({"name": item, "desc": f"\u6267\u884c {item} \u64cd\u4f5c"})
+                        elif isinstance(item, dict):
+                            cmd_list.append(item)
+            except json.JSONDecodeError:
+                return {
+                    "error": "commands \u53c2\u6570\u683c\u5f0f\u9519\u8bef\uff1a\u5fc5\u987b\u662f JSON \u6570\u7ec4\u683c\u5f0f",
+                    "hint": '\u6b63\u786e\u683c\u5f0f: commands=\'[{"name":"run","desc":"\u6267\u884c"}]\'',
+                    "received": commands[:200],
+                }
+
+        if not cmd_list:
+            cmd_list = [{"name": "execute", "desc": f"\u6267\u884c{description or cell_name}\u7684\u4e3b\u8981\u529f\u80fd"}]
+
+        module_list = []
+        if modules and modules.strip():
+            try:
+                parsed = json.loads(modules)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, str):
+                            module_list.append(item)
+            except json.JSONDecodeError:
+                return {
+                    "error": "modules \u53c2\u6570\u683c\u5f0f\u9519\u8bef\uff1a\u5fc5\u987b\u662f JSON \u6570\u7ec4\u683c\u5f0f",
+                    "hint": '\u6b63\u786e\u683c\u5f0f: modules=\'["utils","monitor"]\'',
+                }
+
+        components_dir = get_components_dir()
+        pkg_dir = components_dir / name
+
+        if pkg_dir.exists():
+            return {
+                "error": f"\u7ec4\u4ef6\u5305\u5df2\u5b58\u5728: {pkg_dir}",
+                "hint": "\u8bf7\u6362\u4e00\u4e2a\u540d\u5b57\uff0c\u6216\u5148\u5220\u9664\u5df2\u6709\u76ee\u5f55",
+                "existing_dir": str(pkg_dir),
+            }
+
+        py_file = components_dir / f"{name}.py"
+        if py_file.exists():
+            return {
+                "error": f"\u5b58\u5728\u540c\u540d\u5355\u6587\u4ef6\u7ec4\u4ef6: {py_file}",
+                "hint": "\u5305\u7ec4\u4ef6\u4e0d\u80fd\u4e0e\u5355\u6587\u4ef6\u7ec4\u4ef6\u540c\u540d",
+            }
+
+        try:
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return {"success": False, "error": f"\u521b\u5efa\u76ee\u5f55\u5931\u8d25: {e}"}
+
+        created_files = []
+
+        init_content = f'''# -*- coding: utf-8 -*-
+"""
+{description or cell_name} — Cellium \u5305\u7ec4\u4ef6
+
+\u81ea\u52a8\u751f\u6210 by ComponentBuilder
+"""
+
+from .core import {class_name}
+
+__all__ = ["{class_name}"]
+'''
+        init_path = pkg_dir / "__init__.py"
+        try:
+            with open(init_path, "w", encoding="utf-8") as f:
+                f.write(init_content)
+            created_files.append(str(init_path))
+        except Exception as e:
+            return {"success": False, "error": f"\u5199\u5165 __init__.py \u5931\u8d25: {e}"}
+
+        methods_parts = []
+        for cmd in cmd_list:
+            cn = cmd.get("name", "execute")
+            cd = cmd.get("desc", f"\u6267\u884c {cn} \u64cd\u4f5c")
+            cd_escaped = cd.replace('"', '\\"').replace("'''", "\\'''")
+            method = f'''    def _cmd_{cn}(self, input_data: str = "") -> Dict[str, Any]:
+        """
+        {cd_escaped}
+
+        Args:
+            input_data: \u8f93\u5165\u6570\u636e
+
+        Returns:
+            {{"success": True, "result": ...}}
+        """
+        # TODO: \u5b9e\u73b0 {cn} \u7684\u5177\u4f53\u903b\u8f91
+        return {{"success": True, "result": "{cn} \u529f\u80fd\u5f85\u5b9e\u73b0"}}
+'''
+            methods_parts.append(method)
+
+        methods_code = "\n".join(methods_parts)
+
+        now = datetime.now().strftime("%Y-%m-%d")
+        desc_escaped = (description or cell_name).replace('"', '\\"')
+
+        core_lines = []
+        core_lines.append('# -*- coding: utf-8 -*-')
+        core_lines.append('"""')
+        core_lines.append(desc_escaped + ' — \u6838\u5fc3\u6a21\u5757')
+        core_lines.append('')
+        core_lines.append('\u521b\u5efa\u65f6\u95f4: ' + now)
+        core_lines.append('"""')
+        core_lines.append('')
+        core_lines.append('from typing import Any, Dict')
+        core_lines.append('from app.core.interface.base_cell import BaseCell')
+        for mod in module_list:
+            core_lines.append(f'from .{mod} import *')
+        core_lines.append('')
+        core_lines.append('')
+        core_lines.append(f'class {class_name}(BaseCell):')
+        core_lines.append('    """')
+        core_lines.append(f'    {desc_escaped}')
+        core_lines.append('    ')
+        core_lines.append(f'    \u529f\u80fd\u8bf4\u660e: {desc_escaped}')
+        core_lines.append('    """')
+        core_lines.append('')
+        core_lines.append('    @property')
+        core_lines.append('    def cell_name(self) -> str:')
+        core_lines.append('        return "' + cell_name + '"')
+        core_lines.append('')
+
+        for line in methods_code.split('\n'):
+            core_lines.append(line)
+
+        core_lines.append('')
+        core_lines.append('    def _cmd_help(self, topic: str = "") -> Dict[str, Any]:')
+        core_lines.append('        """\u67e5\u8be2\u7ec4\u4ef6\u4f7f\u7528\u5e2e\u52a9"""')
+        core_lines.append('        return {')
+        core_lines.append('            "name": self.cell_name,')
+        core_lines.append('            "commands": self.get_commands(),')
+        core_lines.append('            "description": """' + desc_escaped + '"""')
+        core_lines.append('        }')
+        core_lines.append('')
+        core_lines.append('    def on_load(self):')
+        core_lines.append('        """\u7ec4\u4ef6\u88ab\u52a0\u8f7d\u540e\u8c03\u7528"""')
+        core_lines.append('        super().on_load()')
+
+        core_content = "\n".join(core_lines)
+
+        try:
+            compile(core_content, "core.py", 'exec')
+        except SyntaxError as e:
+            import shutil
+            shutil.rmtree(pkg_dir)
+            return {
+                "success": False,
+                "error": f"\u751f\u6210\u7684\u7ec4\u4ef6\u4ee3\u7801\u6709\u8bed\u6cd5\u9519\u8bef: {e}",
+            }
+
+        core_path = pkg_dir / "core.py"
+        try:
+            with open(core_path, "w", encoding="utf-8") as f:
+                f.write(core_content)
+            created_files.append(str(core_path))
+        except Exception as e:
+            import shutil
+            shutil.rmtree(pkg_dir)
+            return {"success": False, "error": f"\u5199\u5165 core.py \u5931\u8d25: {e}"}
+
+        for mod_name in module_list:
+            if not mod_name.isidentifier():
+                continue
+            mod_content = f'''# -*- coding: utf-8 -*-
+"""
+{mod_name} \u6a21\u5757
+
+\u81ea\u52a8\u751f\u6210 by ComponentBuilder
+"""
+
+# TODO: \u5b9e\u73b0\u6a21\u5757\u529f\u80fd
+
+def example_function():
+    """\u793a\u4f8b\u51fd\u6570"""
+    return "Hello from {mod_name}"
+'''
+            mod_path = pkg_dir / f"{mod_name}.py"
+            try:
+                with open(mod_path, "w", encoding="utf-8") as f:
+                    f.write(mod_content)
+                created_files.append(str(mod_path))
+            except Exception as e:
+                pass
+
+        try:
+            from app.core.util.components_loader import hot_reload
+            from app.core.di.container import get_container as get_di_container
+            try:
+                container = get_di_container()
+            except Exception:
+                container = None
+            reload_result = hot_reload(container=container)
+
+            try:
+                from app.core.util.component_tool_registry import get_component_tool_registry
+                tool_registry = get_component_tool_registry()
+                tool_registry.sync_from_components_loader()
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "message": f"\u5305\u7ec4\u4ef6 '{cell_name}' \u5df2\u521b\u5efa\u5e76\u52a0\u8f7d\uff01",
+                "package_dir": str(pkg_dir),
+                "cell_name": cell_name,
+                "class_name": class_name,
+                "module_path": f"components.{name}.{class_name}",
+                "files": created_files,
+                "commands": [{c["name"]: c["desc"]} for c in cmd_list],
+                "modules": module_list,
+                "reload_result": reload_result,
+                "note": "\u5305\u7ec4\u4ef6\u9002\u5408\u590d\u6742\u529f\u80fd\uff0c\u53ef\u4ee5\u5728\u5404\u6a21\u5757\u4e2d\u5206\u79bb\u5b9e\u73b0\u903b\u8f91",
+            }
+        except Exception as e:
+            return {
+                "success": True,
+                "message": f"\u5305\u7ec4\u4ef6 '{cell_name}' \u5df2\u521b\u5efa\uff0c\u4f46\u91cd\u8f7d\u5931\u8d25: {e}",
+                "package_dir": str(pkg_dir),
+                "files": created_files,
+                "hint": "\u8bf7\u624b\u52a8\u8c03\u7528 component.reload()",
+            }
+
     def _cmd_list(
         self,
         show_commands: bool = False,
@@ -857,17 +1126,17 @@ class BackgroundMonitor(BaseCell):
             "available_commands": commands,
             "command_count": len(commands),
             "usage_examples": [
-                {"command": "generate", "args": {"name": "<组件名>", "description": "<一句话描述>", "commands": "[{name,desc}...]"}, "description": "创建新组件文件"},
+                {"command": "generate", "args": {"name": "<组件名>", "description": "<一句话描述>"}, "description": "创建单文件组件（简单功能）"},
+                {"command": "generate_package", "args": {"name": "<组件名>", "description": "<描述>", "modules": "[\"utils\",\"monitor\"]"}, "description": "创建包组件（复杂功能）"},
                 {"command": "list", "args": {"show_commands": True}, "description": "列出所有已加载组件"},
                 {"command": "info", "args": {"name": "<组件名>"}, "description": "查看指定组件详情"},
                 {"command": "reload", "args": {}, "description": "手动触发热重载扫描"},
                 {"command": "cleanup", "args": {"dry_run": True}, "description": "预览/清理组件缓存"},
-                {"command": "template", "args": {"style": "minimal|full|example"}, "description": "获取标准模板代码"},
             ],
             "_notes": [
                 "这是系统内置组件（白名单豁免），负责创建和管理其他 Cellium 组件",
-                "generate 创建的组件会自动包含 _cmd_help 方法供 LLM 自学习用法",
-                "generate 创建的组件会自动包含 _run_agent(prompt) 方法，可启动 Agent 循环",
+                "generate 创建单文件组件，适合简单功能",
+                "generate_package 创建包组件（文件夹形式），适合复杂功能，便于模块解耦",
                 "每次调用必须带 command 字段指定子命令名",
                 "调用格式: {\"command\": \"generate\", \"name\": \"my_tool\", ...}",
                 "如果不确定如何调用，可先调 help 查看用法或调 list 查看可用命令",
@@ -893,6 +1162,28 @@ class BackgroundMonitor(BaseCell):
                         '  - commands (选补): JSON数组 [{name,desc}] 定义命令列表\n'
                         '\n'
                         '示例: {"command":"generate","name":"calc","description":"计算器"}'
+                    ),
+                },
+                "generate_package": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "required_params": ["name"],
+                    "optional_params": ["description", "commands", "modules"],
+                    "hint": (
+                        '调用示例: 调用 component 工具时使用 command="generate_package"\n'
+                        '  - name (必填): 组件名，如 eth_quant、data_pipeline\n'
+                        '  - description (选填): 功能描述\n'
+                        '  - commands (选填): JSON数组定义命令\n'
+                        '  - modules (选填): JSON数组定义额外模块，如 ["utils","monitor"]\n'
+                        '\n'
+                        '示例: {"command":"generate_package","name":"eth_quant","description":"交易组件","modules":"[\\"monitor\\",\\"api\\"]"}\n'
+                        '\n'
+                        '包组件结构:\n'
+                        '  components/{name}/\n'
+                        '  ├── __init__.py\n'
+                        '  ├── core.py (主组件类)\n'
+                        '  ├── utils.py (额外模块)\n'
+                        '  └── monitor.py (额外模块)'
                     ),
                 },
                 "list": {

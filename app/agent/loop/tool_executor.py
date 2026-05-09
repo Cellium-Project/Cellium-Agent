@@ -160,8 +160,14 @@ class ToolDescriptionGenerator:
                     ctx["fs_desc"] = f"正在检查：{ctx['target']}"
                 elif action == "create":
                     files_arg = arguments.get("files")
-                    if isinstance(files_arg, dict):
+                    if isinstance(files_arg, (dict, list)):
                         count = len(files_arg)
+                    elif isinstance(files_arg, str):
+                        try:
+                            parsed = json.loads(files_arg)
+                            count = len(parsed) if isinstance(parsed, (dict, list)) else "?"
+                        except Exception:
+                            count = "?"
                     else:
                         count = "?"
                     base = arguments.get("path") or ""
@@ -345,6 +351,85 @@ class ToolDescriptionGenerator:
             return "正在执行 Node.js 包管理命令"
         if re.search(r'^(?:curl |wget |Invoke-WebRequest)', cmd_lower):
             return "正在请求网络资源"
+
+        # ── 文本处理命令 ──
+        text_cmds = {
+            'wc': '统计文件信息',
+            'grep': '搜索文本内容',
+            'egrep': '搜索文本内容',
+            'fgrep': '搜索固定字符串',
+            'sed': '处理文本',
+            'awk': '处理文本数据',
+            'head': '查看文件开头',
+            'tail': '查看文件末尾',
+            'sort': '排序文本',
+            'uniq': '去除重复行',
+            'cut': '提取文本列',
+            'tr': '转换字符',
+            'diff': '比较文件差异',
+            'find': '查找文件',
+            'xargs': '批量执行命令',
+            'echo': '输出文本',
+            'printf': '格式化输出',
+        }
+        first_cmd = cmd.split()[0] if cmd.split() else ""
+        first_cmd_lower = first_cmd.lower()
+        if first_cmd_lower in text_cmds:
+            file_match = re.search(r'\s+(\S+)\s*$', cmd)
+            if file_match:
+                target = os.path.basename(file_match.group(1))
+                return f"正在{text_cmds[first_cmd_lower]}：{target}"
+            return f"正在{text_cmds[first_cmd_lower]}"
+
+        # ── 系统信息命令 ──
+        sys_cmds = {
+            'df': '查看磁盘空间',
+            'du': '查看目录大小',
+            'free': '查看内存使用',
+            'top': '查看进程状态',
+            'htop': '查看进程状态',
+            'ps': '查看进程',
+            'kill': '终止进程',
+            'killall': '终止进程',
+            'chmod': '修改文件权限',
+            'chown': '修改文件所有者',
+            'ln': '创建链接',
+            'tar': '压缩/解压文件',
+            'zip': '压缩文件',
+            'unzip': '解压文件',
+            'gzip': '压缩文件',
+            'gunzip': '解压文件',
+            'date': '查看日期时间',
+            'cal': '查看日历',
+            'uptime': '查看系统运行时间',
+            'ipconfig': '查看网络配置',
+            'ifconfig': '查看网络配置',
+            'netstat': '查看网络连接',
+            'ping': '测试网络连通',
+            'nslookup': '查询 DNS',
+            'dig': '查询 DNS',
+            'traceroute': '追踪网络路由',
+            'export': '设置环境变量',
+            'source': '加载配置文件',
+            'alias': '设置命令别名',
+            'history': '查看命令历史',
+            'which': '查找命令路径',
+            'whereis': '查找程序路径',
+            'man': '查看帮助文档',
+            'help': '查看帮助',
+        }
+        if first_cmd_lower in sys_cmds:
+            return f"正在{sys_cmds[first_cmd_lower]}"
+
+        # ── 带管道的命令 ──
+        if '|' in cmd:
+            parts = cmd.split('|')
+            first_part = parts[0].strip().split()[0] if parts[0].strip() else ""
+            if first_part.lower() in text_cmds:
+                return f"正在{text_cmds[first_part.lower()]}"
+            if first_part.lower() in sys_cmds:
+                return f"正在{sys_cmds[first_part.lower()]}"
+            return "正在执行管道命令"
 
         # 默认：提取命令关键词
         first_word = cmd.split()[0] if cmd.split() else "执行命令"

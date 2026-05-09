@@ -17,6 +17,7 @@ ComponentSandbox — 组件子进程沙箱
 IPC 协议：multiprocessing.Queue
 """
 
+import inspect
 import json
 import logging
 import multiprocessing
@@ -56,36 +57,12 @@ SANDBOX_TIMEOUT = 120
 def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiprocessing.Queue,
                     module_path: str, class_name: str, init_args: Dict, project_root: str):
     """
-    沙箱工作进程 - 在独立进程中执行组件代码
-
-    这个函数在子进程中运行，通过 Queue 与主进程通信
-    优化：减少内存占用，只导入必要的模块
+    沙箱工作进程
     """
-    import time  # 心跳管理需要
-    
+    import time
+    import importlib
+
     try:
-        # 清理不必要的模块以减少内存占用（fork后继承的模块）
-        # 注意：保留 multiprocessing 相关模块，因为 Queue 通信需要
-        modules_to_remove = [
-            'numpy', 'pandas', 'matplotlib', 'sklearn', 'torch', 'tensorflow',
-            'cv2', 'PIL.Image', 'PIL.PngImagePlugin', 'PIL.JpegImagePlugin',
-            'requests', 'urllib3', 'http.client', 'http.cookiejar',
-            'email', 'xml.etree', 'xml.dom', 'html.parser',
-            'csv', 'pickle', 'sqlite3', 'hashlib', 'hmac',
-            'ssl', 'socketserver', 'asyncio', 'concurrent.futures',
-            'subprocess', 'threading', 'queue',
-        ]
-        for mod_name in list(sys.modules.keys()):
-            if any(mod_name.startswith(rm) for rm in modules_to_remove):
-                try:
-                    del sys.modules[mod_name]
-                except:
-                    pass
-        
-        # 强制垃圾回收
-        import gc
-        gc.collect()
-        
         if project_root and project_root not in sys.path:
             sys.path.insert(0, project_root)
 
@@ -108,35 +85,89 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                     importlib.machinery.PathFinder.invalidate_caches()
                     return builtins.__import__(name, globals, locals, fromlist, level)
 
-            try:
-                cached = importlib.util.cache_from_source(module_path)
-                if cached and os.path.exists(cached):
-                    os.remove(cached)
-                    logger.debug("[Sandbox] 已删除缓存: %s", cached)
-            except Exception as e:
-                logger.debug("[Sandbox] 删除缓存失败: %s", e)
+            if os.path.isdir(module_path) and os.path.exists(os.path.join(module_path, "__init__.py")):
+                pkg_name = os.path.basename(module_path)
+                components_dir = os.path.dirname(module_path)
+                if components_dir not in sys.path:
+                    sys.path.insert(0, components_dir)
 
-            try:
-                pycache_dir = Path(module_path).parent / "__pycache__"
-                if pycache_dir.exists():
-                    stem = Path(module_path).stem
-                    for cached_file in pycache_dir.glob(f"{stem}*.pyc"):
+                for key in list(sys.modules.keys()):
+                    if key == pkg_name or key.startswith(f"{pkg_name}."):
                         try:
-                            cached_file.unlink()
-                            logger.debug("[Sandbox] 已删除缓存(glob): %s", cached_file)
+                            del sys.modules[key]
                         except Exception:
                             pass
-            except Exception as e:
-                logger.debug("[Sandbox] glob清理缓存失败: %s", e)
 
-            spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
-            module = importlib.util.module_from_spec(spec)
+                pycache_dir = os.path.join(module_path, "__pycache__")
+                if os.path.exists(pycache_dir):
+                    for cached_file in Path(pycache_dir).glob("*.pyc"):
+                        try:
+                            cached_file.unlink()
+                        except Exception:
+                            pass
 
-            module.__dict__['__builtins__'] = builtins.__dict__
-            module.__dict__['__import__'] = sandbox_import
+                for sub_dir in Path(module_path).iterdir():
+                    if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
+                        for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
+                            try:
+                                cached_file.unlink()
+                            except Exception:
+                                pass
 
-            spec.loader.exec_module(module)
-            component_class = getattr(module, class_name)
+                component_class = None
+                for py_file in Path(module_path).rglob("*.py"):
+                    if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                        continue
+
+                    rel_path = py_file.relative_to(module_path)
+                    module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
+                    if module_parts[-1] == "__init__":
+                        module_parts = module_parts[:-1]
+                    sub_module_name = f"{pkg_name}.{'.'.join(module_parts)}" if module_parts else pkg_name
+
+                    try:
+                        sub_module = importlib.import_module(sub_module_name)
+                        if hasattr(sub_module, class_name):
+                            obj = getattr(sub_module, class_name)
+                            if inspect.isclass(obj):
+                                component_class = obj
+                                break
+                    except Exception:
+                        continue
+
+                if component_class is None:
+                    raise AttributeError(f"类不存在: {class_name} 在包 {pkg_name}")
+            else:
+                try:
+                    cached = importlib.util.cache_from_source(module_path)
+                    if cached and os.path.exists(cached):
+                        os.remove(cached)
+                        logger.debug("[Sandbox] 已删除缓存: %s", cached)
+                except Exception as e:
+                    logger.debug("[Sandbox] 删除缓存失败: %s", e)
+
+                try:
+                    pycache_dir = Path(module_path).parent / "__pycache__"
+                    if pycache_dir.exists():
+                        stem = Path(module_path).stem
+                        for cached_file in pycache_dir.glob(f"{stem}*.pyc"):
+                            try:
+                                cached_file.unlink()
+                                logger.debug("[Sandbox] 已删除缓存(glob): %s", cached_file)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.debug("[Sandbox] glob清理缓存失败: %s", e)
+
+                spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
+                module = importlib.util.module_from_spec(spec)
+
+                module.__dict__['__builtins__'] = builtins.__dict__
+                module.__dict__['__import__'] = sandbox_import
+
+                spec.loader.exec_module(module)
+                component_class = getattr(module, class_name)
+
             component = component_class(**init_args)
 
             if hasattr(component, "on_load"):

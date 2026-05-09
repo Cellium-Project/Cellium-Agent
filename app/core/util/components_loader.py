@@ -244,65 +244,90 @@ def get_components_dir() -> pathlib.Path:
 
 
 def discover_components() -> List[Dict[str, Any]]:
-    """
-    扫描 components/ 目录，发现所有符合条件的组件类
-    
-    识别规则：
-      1. .py 文件（非 __init__.py，非 _ 开头文件）
-      2. 文件中包含继承 BaseCell 或 ICell 的类
-      3. 类不是抽象的（可以实例化）
-    
-    扫描范围：
-      - components/*.py → 系统组件
-    
-    Returns:
-        发现结果列表 [{file, class_name, module_path, is_new}]
-    """
     components_dir = get_components_dir()
-    
     results = []
-    
-    scan_dirs = [components_dir]
-    
-    for scan_dir in scan_dirs:
-        if not scan_dir.exists():
-            continue
-        
-        for py_file in sorted(scan_dir.glob("*.py")):
-            if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                continue
-            if py_file.name == "__init__":
-                continue
 
+    if not components_dir.exists():
+        return results
+
+    conflicts = []
+    for item in sorted(components_dir.iterdir()):
+        if item.name.startswith("_"):
+            continue
+
+        py_file = components_dir / f"{item.stem}.py" if item.is_dir() else None
+        if py_file and py_file.exists():
+            conflicts.append(item.stem)
+
+        if item.is_file() and item.suffix == ".py":
             try:
-                result = _extract_cell_classes(py_file)
+                result = _extract_cell_classes(item)
                 if isinstance(result, tuple):
                     classes, error_info = result
                     if error_info:
-                        logger.warning(f"[Component] 文件有错误 {py_file.name}: {error_info['error_type']} - {error_info['error']}")
-                        _load_errors[str(py_file)] = {
-                            "file": py_file.name,
+                        logger.warning(f"[Component] 文件有错误 {item.name}: {error_info['error_type']} - {error_info['error']}")
+                        _load_errors[str(item)] = {
+                            "file": item.name,
                             "error": error_info['error'],
                             "error_type": error_info['error_type'],
                             "timestamp": time.time(),
                         }
+                    else:
+                        if str(item) in _load_errors:
+                            del _load_errors[str(item)]
                 else:
                     classes = result
-                    if str(py_file) in _load_errors:
-                        del _load_errors[str(py_file)]
+                    if str(item) in _load_errors:
+                        del _load_errors[str(item)]
 
                 for cls_info in classes:
-                    is_new = str(py_file) not in _loaded_files
+                    is_new = str(item) not in _loaded_files
                     results.append({
-                        "file": str(py_file),
+                        "file": str(item),
                         "class_name": cls_info["class_name"],
                         "module_path": cls_info["module_path"],
                         "cls": cls_info["cls"],
                         "is_new": is_new,
                     })
-                    
             except Exception as e:
-                logger.error(f"[Component] 解析文件失败 {py_file.name}: {e}")
+                logger.error(f"[Component] 解析文件失败 {item.name}: {e}")
+
+        elif item.is_dir() and (item / "__init__.py").exists():
+            try:
+                result = _extract_cell_classes_from_package(item)
+                if isinstance(result, tuple):
+                    classes, error_info = result
+                    if error_info:
+                        logger.warning(f"[Component] 包有错误 {item.name}: {error_info['error_type']} - {error_info['error']}")
+                        _load_errors[str(item)] = {
+                            "file": item.name,
+                            "error": error_info['error'],
+                            "error_type": error_info['error_type'],
+                            "timestamp": time.time(),
+                        }
+                    else:
+                        if str(item) in _load_errors:
+                            del _load_errors[str(item)]
+                else:
+                    classes = result
+                    if str(item) in _load_errors:
+                        del _load_errors[str(item)]
+
+                for cls_info in classes:
+                    is_new = str(item) not in _loaded_files
+                    results.append({
+                        "file": str(item),
+                        "class_name": cls_info["class_name"],
+                        "module_path": cls_info["module_path"],
+                        "cls": cls_info["cls"],
+                        "is_new": is_new,
+                        "is_package": True,
+                    })
+            except Exception as e:
+                logger.error(f"[Component] 解析包失败 {item.name}: {e}")
+
+    if conflicts:
+        logger.warning(f"[Component] 包名冲突: {', '.join(conflicts)} 同时存在 .py 文件和目录，已优先使用包")
 
     return results
 
@@ -362,6 +387,66 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
                     "module_path": correct_module_path,
                     "cls": obj,
                 })
+
+    return found, None
+
+
+def _extract_cell_classes_from_package(pkg_dir: pathlib.Path) -> tuple:
+    pkg_name = pkg_dir.name
+    components_dir = pkg_dir.parent
+
+    if str(components_dir) not in sys.path:
+        sys.path.insert(0, str(components_dir))
+
+    for key in list(sys.modules.keys()):
+        if key == pkg_name or key.startswith(f"{pkg_name}."):
+            try:
+                del sys.modules[key]
+            except Exception:
+                pass
+
+    found = []
+    scanned_modules = set()
+
+    for py_file in pkg_dir.rglob("*.py"):
+        if py_file.name.startswith("_") and py_file.name != "__init__.py":
+            continue
+
+        rel_path = py_file.relative_to(pkg_dir)
+        module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
+        if module_parts[-1] == "__init__":
+            module_parts = module_parts[:-1]
+        sub_module_name = f"{pkg_name}.{'.'.join(module_parts)}" if module_parts else pkg_name
+
+        if sub_module_name in scanned_modules:
+            continue
+        scanned_modules.add(sub_module_name)
+
+        for key in list(sys.modules.keys()):
+            if key == sub_module_name or key.startswith(f"{sub_module_name}."):
+                try:
+                    del sys.modules[key]
+                except Exception:
+                    pass
+
+        try:
+            module = importlib.import_module(sub_module_name)
+        except Exception as e:
+            continue
+
+        for name, obj in inspect.getmembers(module, inspect.isclass):
+            if not obj.__module__.startswith(pkg_name):
+                continue
+
+            if issubclass(obj, BaseCell) or (
+                issubclass(obj, ICell) and obj is not ICell and obj is not BaseCell
+            ):
+                if not inspect.isabstract(obj):
+                    found.append({
+                        "class_name": name,
+                        "module_path": f"components.{pkg_name}.{name}",
+                        "cls": obj,
+                    })
 
     return found, None
 
@@ -444,26 +529,93 @@ def load_components(
 
 
 def _instantiate_component(module_path: str) -> tuple:
-    """
-    实例化单个组件（支持外部热加载，不依赖 components package）
-
-    热重载策略：
-      - 先清除 sys.modules 中的旧模块（含 discover 阶段的临时模块）
-      - 再用 spec_from_file_location 从文件重新加载
-      - 这比 importlib.reload 更可靠，后者对 spec_from_file_location
-        加载的模块经常失败（缺少 __spec__.loader）
-
-    Returns:
-        (instance, info_dict) 或 (None, error_info)
-    """
     parts = module_path.rsplit(".", 1)
     if len(parts) != 2:
         raise ValueError(f"无效的模块路径: {module_path}")
 
     module_name, class_name = parts
-
-    # ── 定位组件源文件 ──
     components_dir = get_components_dir()
+
+    if str(components_dir) not in sys.path:
+        sys.path.insert(0, str(components_dir))
+
+    pkg_name = module_name.split(".")[-1] if "." in module_name else module_name
+    pkg_dir = components_dir / pkg_name
+
+    if pkg_dir.is_dir() and (pkg_dir / "__init__.py").exists():
+        for key in list(sys.modules.keys()):
+            if key == pkg_name or key.startswith(f"{pkg_name}."):
+                try:
+                    del sys.modules[key]
+                except Exception:
+                    pass
+
+        for key in list(sys.modules.keys()):
+            if not key.startswith("_component_"):
+                continue
+            mod = sys.modules.get(key)
+            if mod is None:
+                continue
+            mod_file = getattr(mod, '__file__', None)
+            if mod_file and str(pkg_dir) in mod_file:
+                try:
+                    del sys.modules[key]
+                except Exception:
+                    pass
+
+        pycache_dir = pkg_dir / "__pycache__"
+        if pycache_dir.exists():
+            for cached_file in pycache_dir.glob("*.pyc"):
+                try:
+                    cached_file.unlink()
+                except Exception:
+                    pass
+
+        for sub_dir in pkg_dir.iterdir():
+            if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
+                for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
+                    try:
+                        cached_file.unlink()
+                    except Exception:
+                        pass
+
+        cls = None
+        for py_file in pkg_dir.rglob("*.py"):
+            if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                continue
+
+            rel_path = py_file.relative_to(pkg_dir)
+            module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
+            if module_parts[-1] == "__init__":
+                module_parts = module_parts[:-1]
+            sub_module_name = f"{pkg_name}.{'.'.join(module_parts)}" if module_parts else pkg_name
+
+            try:
+                sub_module = importlib.import_module(sub_module_name)
+                if hasattr(sub_module, class_name):
+                    obj = getattr(sub_module, class_name)
+                    if inspect.isclass(obj) and issubclass(obj, BaseCell):
+                        cls = obj
+                        break
+            except Exception:
+                continue
+
+        if cls is None:
+            raise AttributeError(f"类不存在: {class_name} 在包 {pkg_name}")
+
+        instance = cls()
+        source_file = str(pkg_dir)
+
+        info = {
+            "class_name": class_name,
+            "module_path": module_path,
+            "source_file": source_file,
+            "is_new": source_file not in _loaded_files,
+            "is_package": True,
+        }
+
+        return instance, info
+
     import re
     s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
     snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
@@ -472,15 +624,12 @@ def _instantiate_component(module_path: str) -> tuple:
     if not file_path.exists():
         raise ImportError(f"组件文件不存在: {file_path}")
 
-    # ── 清除旧模块引用（确保重新加载而非复用缓存） ──
     old_file = None
     if module_name in sys.modules:
         old_mod = sys.modules[module_name]
         old_file = getattr(old_mod, '__file__', None)
         del sys.modules[module_name]
-        logger.debug(f"[Component] 清除旧模块: {module_name}")
 
-    # 也清除 discover 阶段创建的临时模块（_component_xxx 前缀）
     for key in list(sys.modules.keys()):
         if not key.startswith("_component_"):
             continue
@@ -490,19 +639,16 @@ def _instantiate_component(module_path: str) -> tuple:
         mod_file = getattr(mod, '__file__', None)
         if mod_file and (mod_file == str(file_path) or mod_file == old_file):
             del sys.modules[key]
-            logger.debug(f"[Component] 清除临时模块: {key}")
 
     cache_removed = False
-    
     try:
         cached = importlib.util.cache_from_source(str(file_path))
         if cached and os.path.exists(cached):
             os.remove(cached)
-            logger.debug(f"[Component] 删除缓存文件: {cached}")
             cache_removed = True
-    except Exception as e:
-        logger.debug(f"[Component] cache_from_source 失败: {e}")
-    
+    except Exception:
+        pass
+
     if not cache_removed:
         pycache_dir = file_path.parent / "__pycache__"
         if pycache_dir.exists():
@@ -511,10 +657,9 @@ def _instantiate_component(module_path: str) -> tuple:
                 for cached_file in pycache_dir.glob(pattern):
                     try:
                         cached_file.unlink()
-                        logger.debug(f"[Component] 删除缓存文件(glob): {cached_file}")
                         cache_removed = True
-                    except Exception as e:
-                        logger.debug(f"[Component] 删除缓存文件失败 {cached_file}: {e}")
+                    except Exception:
+                        pass
 
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if not spec or not spec.loader:
@@ -541,6 +686,7 @@ def _instantiate_component(module_path: str) -> tuple:
         "module_path": module_path,
         "source_file": source_file,
         "is_new": source_file not in _loaded_files if source_file else True,
+        "is_package": False,
     }
 
     return instance, info
@@ -549,35 +695,49 @@ def _instantiate_component(module_path: str) -> tuple:
 def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
     """
     热重载：重新扫描目录，增量加载/卸载组件
-    
+
     Returns:
         变更报告 {"added": [...], "removed": [...], "updated": [...]}
     """
     report = {"added": [], "removed": [], "updated": []}
-    
+
     current_files = set()
     discovered = discover_components()
-    
+
     for item in discovered:
         file_path = item["file"]
         current_files.add(file_path)
-        
+
         cell_name_lower = item["cls"]().__class__.__name__.lower()
-        
+        is_package = item.get("is_package", False)
+
         if file_path not in _loaded_files:
             try:
                 instance, info = _instantiate_component(item["module_path"])
                 register_cell(instance)
                 _loaded_files.add(file_path)
-                _file_mtimes[file_path] = os.path.getmtime(file_path)  # 记录 mtime
+                if is_package:
+                    pkg_path = pathlib.Path(file_path)
+                    max_mtime = 0
+                    init_file = pkg_path / "__init__.py"
+                    if init_file.exists():
+                        max_mtime = os.path.getmtime(init_file)
+                    for py_file in pkg_path.glob("*.py"):
+                        try:
+                            max_mtime = max(max_mtime, os.path.getmtime(py_file))
+                        except Exception:
+                            pass
+                    _file_mtimes[file_path] = max_mtime
+                else:
+                    _file_mtimes[file_path] = os.path.getmtime(file_path)
                 instance._source_file = file_path
-                
+
                 if hasattr(instance, "on_load"):
                     instance.on_load()
-                
+
                 if container:
                     container.register(type(instance), instance)
-                
+
                 register_to_config(item["module_path"])
                 report["added"].append({"name": instance.cell_name, "class": item["class_name"]})
                 logger.info(f"[HotReload] 新组件: {instance.cell_name} ({item['class_name']})")
@@ -585,7 +745,20 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 logger.error(f"[HotReload] 加载新组件失败 {item['class_name']}: {e}")
         else:
             try:
-                current_mtime = os.path.getmtime(file_path)
+                if is_package:
+                    pkg_path = pathlib.Path(file_path)
+                    current_mtime = 0
+                    init_file = pkg_path / "__init__.py"
+                    if init_file.exists():
+                        current_mtime = os.path.getmtime(init_file)
+                    for py_file in pkg_path.glob("*.py"):
+                        try:
+                            current_mtime = max(current_mtime, os.path.getmtime(py_file))
+                        except Exception:
+                            pass
+                else:
+                    current_mtime = os.path.getmtime(file_path)
+
                 if file_path in _file_mtimes and _file_mtimes[file_path] != current_mtime:
                     logger.info(f"[HotReload] 检测到组件更新: {item['class_name']} (mtime changed)")
                     try:

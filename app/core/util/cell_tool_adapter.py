@@ -154,9 +154,20 @@ class CellToolAdapter(BaseTool):
         return type(self._cell).__name__
 
     def _get_component_source(self) -> Optional[str]:
-        """获取组件源文件路径"""
         try:
-            return inspect.getsourcefile(type(self._cell))
+            source_file = inspect.getsourcefile(type(self._cell))
+            if not source_file:
+                return None
+
+            parent_dir = os.path.dirname(source_file)
+            init_path = os.path.join(parent_dir, "__init__.py")
+            if os.path.exists(init_path):
+                root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                components_dir = os.path.join(root_dir, "components")
+                if os.path.abspath(parent_dir).startswith(os.path.abspath(components_dir)):
+                    return parent_dir
+
+            return source_file
         except (TypeError, OSError):
             return None
 
