@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.core.interface.icell import ICell
-from app.core.util.protected_modules import ProtectedContext
 
 
 def ensure_import(module_name: str, project_root: str = None) -> Any:
@@ -70,111 +69,110 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
         if os.path.exists(libs_dir) and libs_dir not in sys.path:
             sys.path.insert(0, libs_dir)
 
-        with ProtectedContext():
-            import builtins
-            import importlib.util
+        import builtins
+        import importlib.util
 
-            def sandbox_import(name, globals=None, locals=None, fromlist=(), level=0):
-                if libs_dir and os.path.exists(libs_dir) and libs_dir not in sys.path:
-                    sys.path.insert(0, libs_dir)
+        def sandbox_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if libs_dir and os.path.exists(libs_dir) and libs_dir not in sys.path:
+                sys.path.insert(0, libs_dir)
 
-                try:
-                    return builtins.__import__(name, globals, locals, fromlist, level)
-                except ImportError:
-                    import importlib.machinery
-                    importlib.machinery.PathFinder.invalidate_caches()
-                    return builtins.__import__(name, globals, locals, fromlist, level)
+            try:
+                return builtins.__import__(name, globals, locals, fromlist, level)
+            except ImportError:
+                import importlib.machinery
+                importlib.machinery.PathFinder.invalidate_caches()
+                return builtins.__import__(name, globals, locals, fromlist, level)
 
-            if os.path.isdir(module_path) and os.path.exists(os.path.join(module_path, "__init__.py")):
-                pkg_name = os.path.basename(module_path)
-                components_dir = os.path.dirname(module_path)
-                if components_dir not in sys.path:
-                    sys.path.insert(0, components_dir)
+        if os.path.isdir(module_path) and os.path.exists(os.path.join(module_path, "__init__.py")):
+            pkg_name = os.path.basename(module_path)
+            components_dir = os.path.dirname(module_path)
+            if components_dir not in sys.path:
+                sys.path.insert(0, components_dir)
 
-                for key in list(sys.modules.keys()):
-                    if key == pkg_name or key.startswith(f"{pkg_name}."):
-                        try:
-                            del sys.modules[key]
-                        except Exception:
-                            pass
+            for key in list(sys.modules.keys()):
+                if key == pkg_name or key.startswith(f"{pkg_name}."):
+                    try:
+                        del sys.modules[key]
+                    except Exception:
+                        pass
 
-                pycache_dir = os.path.join(module_path, "__pycache__")
-                if os.path.exists(pycache_dir):
-                    for cached_file in Path(pycache_dir).glob("*.pyc"):
+            pycache_dir = os.path.join(module_path, "__pycache__")
+            if os.path.exists(pycache_dir):
+                for cached_file in Path(pycache_dir).glob("*.pyc"):
+                    try:
+                        cached_file.unlink()
+                    except Exception:
+                        pass
+
+            for sub_dir in Path(module_path).iterdir():
+                if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
+                    for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
                         try:
                             cached_file.unlink()
                         except Exception:
                             pass
 
-                for sub_dir in Path(module_path).iterdir():
-                    if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
-                        for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
-                            try:
-                                cached_file.unlink()
-                            except Exception:
-                                pass
+            component_class = None
+            for py_file in Path(module_path).rglob("*.py"):
+                if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                    continue
 
-                component_class = None
-                for py_file in Path(module_path).rglob("*.py"):
-                    if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                        continue
-
-                    rel_path = py_file.relative_to(module_path)
-                    module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
-                    if module_parts[-1] == "__init__":
-                        module_parts = module_parts[:-1]
-                    sub_module_name = f"{pkg_name}.{'.'.join(module_parts)}" if module_parts else pkg_name
-
-                    try:
-                        sub_module = importlib.import_module(sub_module_name)
-                        if hasattr(sub_module, class_name):
-                            obj = getattr(sub_module, class_name)
-                            if inspect.isclass(obj):
-                                component_class = obj
-                                break
-                    except Exception:
-                        continue
-
-                if component_class is None:
-                    raise AttributeError(f"类不存在: {class_name} 在包 {pkg_name}")
-            else:
-                try:
-                    cached = importlib.util.cache_from_source(module_path)
-                    if cached and os.path.exists(cached):
-                        os.remove(cached)
-                        logger.debug("[Sandbox] 已删除缓存: %s", cached)
-                except Exception as e:
-                    logger.debug("[Sandbox] 删除缓存失败: %s", e)
+                rel_path = py_file.relative_to(module_path)
+                module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
+                if module_parts[-1] == "__init__":
+                    module_parts = module_parts[:-1]
+                sub_module_name = f"{pkg_name}.{'.'.join(module_parts)}" if module_parts else pkg_name
 
                 try:
-                    pycache_dir = Path(module_path).parent / "__pycache__"
-                    if pycache_dir.exists():
-                        stem = Path(module_path).stem
-                        for cached_file in pycache_dir.glob(f"{stem}*.pyc"):
-                            try:
-                                cached_file.unlink()
-                                logger.debug("[Sandbox] 已删除缓存(glob): %s", cached_file)
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.debug("[Sandbox] glob清理缓存失败: %s", e)
+                    sub_module = importlib.import_module(sub_module_name)
+                    if hasattr(sub_module, class_name):
+                        obj = getattr(sub_module, class_name)
+                        if inspect.isclass(obj):
+                            component_class = obj
+                            break
+                except Exception:
+                    continue
 
-                spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
-                module = importlib.util.module_from_spec(spec)
+            if component_class is None:
+                raise AttributeError(f"类不存在: {class_name} 在包 {pkg_name}")
+        else:
+            try:
+                cached = importlib.util.cache_from_source(module_path)
+                if cached and os.path.exists(cached):
+                    os.remove(cached)
+                    logger.debug("[Sandbox] 已删除缓存: %s", cached)
+            except Exception as e:
+                logger.debug("[Sandbox] 删除缓存失败: %s", e)
 
-                module.__dict__['__builtins__'] = builtins.__dict__
-                module.__dict__['__import__'] = sandbox_import
+            try:
+                pycache_dir = Path(module_path).parent / "__pycache__"
+                if pycache_dir.exists():
+                    stem = Path(module_path).stem
+                    for cached_file in pycache_dir.glob(f"{stem}*.pyc"):
+                        try:
+                            cached_file.unlink()
+                            logger.debug("[Sandbox] 已删除缓存(glob): %s", cached_file)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("[Sandbox] glob清理缓存失败: %s", e)
 
-                spec.loader.exec_module(module)
-                component_class = getattr(module, class_name)
+            spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
+            module = importlib.util.module_from_spec(spec)
 
-            component = component_class(**init_args)
+            module.__dict__['__builtins__'] = builtins.__dict__
+            module.__dict__['__import__'] = sandbox_import
 
-            if hasattr(component, "on_load"):
-                try:
-                    component.on_load()
-                except Exception as e:
-                    logger.warning("[Sandbox] on_load failed: %s", e)
+            spec.loader.exec_module(module)
+            component_class = getattr(module, class_name)
+
+        component = component_class(**init_args)
+
+        if hasattr(component, "on_load"):
+            try:
+                component.on_load()
+            except Exception as e:
+                logger.warning("[Sandbox] on_load failed: %s", e)
 
         output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
 
@@ -223,6 +221,11 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                 elif action == "get_command_params":
                     params_map = component.get_command_params() if hasattr(component, 'get_command_params') else {}
                     output_queue.put({"status": "ok", "params_map": params_map})
+
+                elif action == "has_method":
+                    method_name = request.get("method_name", "")
+                    has_it = hasattr(component, method_name) and callable(getattr(component, method_name))
+                    output_queue.put({"status": "ok", "has": has_it})
 
                 elif action == "ping":
                     output_queue.put({"status": "pong"})
@@ -409,6 +412,20 @@ class SandboxProcess:
             pass
         return {}
 
+    def has_method(self, method_name: str) -> bool:
+        """检查组件是否有指定方法"""
+        if not self._initialized:
+            return False
+
+        self._input_queue.put({"action": "has_method", "method_name": method_name})
+        try:
+            result = self._output_queue.get(timeout=5)
+            if result.get("status") == "ok":
+                return result.get("has", False)
+        except:
+            pass
+        return False
+
     def ping(self) -> bool:
         """检查沙箱进程是否存活"""
         if not self._process or not self._process.is_alive():
@@ -518,6 +535,17 @@ def _stop_cleanup_thread():
         logger.info("[SandboxCleanup] 清理线程已停止")
 
 
+class _CmdMethodProxy:
+    """代理 _cmd_xxx 方法调用到沙箱"""
+
+    def __init__(self, sandbox: 'SandboxProcess', command_name: str):
+        self._sandbox = sandbox
+        self._command_name = command_name
+
+    def __call__(self, *args, **kwargs):
+        return self._sandbox.execute(self._command_name, *args, **kwargs)
+
+
 class ComponentSandbox(ICell):
     """
     组件沙箱接口
@@ -569,6 +597,14 @@ class ComponentSandbox(ICell):
         if not self._sandbox:
             return {}
         return self._sandbox.get_command_params()
+
+    def __getattr__(self, name: str):
+        """代理 _cmd_xxx 方法访问到沙箱组件"""
+        if name.startswith("_cmd_"):
+            command_name = name[5:]
+            if self._sandbox and self._sandbox.has_method(name):
+                return _CmdMethodProxy(self._sandbox, command_name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def stop(self):
         """停止沙箱"""

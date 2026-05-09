@@ -132,7 +132,11 @@ class LoopState:
     
     # ===== Gene 会话统计 =====
     matched_gene_type: str = ""  # 会话开始时匹配到的 Gene task_type
-    gene_session_recorded: bool = False  # 会话是否已记录 Gene 使用 
+    gene_session_recorded: bool = False  # 会话是否已记录 Gene 使用
+    gene_tool_success_count: int = 0  # Gene 匹配后工具调用成功次数
+    gene_tool_failure_count: int = 0  # Gene 匹配后工具调用失败次数
+    gene_last_traces_count: int = 0  # 上轮结束时 tool_traces 数量（用于追踪本轮新增）
+    matched_gene_content: str = ""  # 匹配到的 Gene 内容（整轮对话持续注入） 
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（用于持久化）"""

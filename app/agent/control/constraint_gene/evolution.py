@@ -251,12 +251,16 @@ class GeneEvolution:
                 consecutive_failure += 1
                 consecutive_success = 0
 
+        sliding_success_count = sum(1 for r in recent_results if r["success"])
+        sliding_success_rate = sliding_success_count / len(recent_results) if recent_results else 0.0
+
         return {
             "recent_results": recent_results,
             "avg_reward": avg_reward,
             "avg_duration_ms": avg_duration,
             "consecutive_success": consecutive_success,
             "consecutive_failure": consecutive_failure,
+            "sliding_success_rate": sliding_success_rate,
         }
 
     @classmethod
@@ -869,28 +873,26 @@ MUST NOT: <应该避免的错误做法>
 
     @classmethod
     def record_success(cls, task_type: str, reward: float = 1.0, elapsed_ms: int = 0):
+        """记录 Gene 使用成功（会话结束时调用）
+
+        注意：usage_count 在 match() 时已增加，这里只记录成功次数
+        """
         if not TaskSignalMatcher._repository or not task_type:
             return
 
         try:
-            results = TaskSignalMatcher._repository.search_memories(
-                query=f"gene:{task_type}",
-                schema_type="control_gene",
-                top_k=1
-            )
-
-            if not results:
+            memory_key = f"gene:{task_type}"
+            gene = TaskSignalMatcher._repository.get_by_memory_key(memory_key, schema_type="control_gene")
+            if not gene:
+                logger.debug("[GeneEvolution] record_success: 未找到 Gene | task_type=%s", task_type)
                 return
 
-            gene = results[0]
             metadata = gene.get("metadata", {})
 
-            usage_count = metadata.get("usage_count", 0) + 1
             success_count = metadata.get("success_count", 0) + 1
 
-            success_rate = cls._calculate_success_rate(success_count, usage_count)
-
             result_updates = cls._update_recent_results(metadata, True, reward, elapsed_ms)
+            sliding_success_rate = result_updates.get("sliding_success_rate", 1.0)
 
             TaskSignalMatcher._repository.upsert_memory(
                 title=gene.get("title", f"Gene: {task_type}"),
@@ -900,41 +902,38 @@ MUST NOT: <应该避免的错误做法>
                 memory_key=gene.get("memory_key", f"gene:{task_type}"),
                 metadata={
                     **metadata,
-                    "usage_count": usage_count,
                     "success_count": success_count,
-                    "success_rate": success_rate,
+                    "success_rate": sliding_success_rate,
                     "last_success_at": datetime.now().isoformat(),
                     **result_updates,
                 }
             )
+            logger.debug("[GeneEvolution] record_success | task_type=%s | sliding_rate=%.2f", task_type, sliding_success_rate)
         except Exception:
             pass
 
     @classmethod
     def record_failure(cls, task_type: str, reward: float = 0.0, elapsed_ms: int = 0):
+        """记录 Gene 使用失败（会话结束时调用）
+
+        注意：usage_count 在 match() 时已增加，这里只记录失败次数
+        """
         if not TaskSignalMatcher._repository or not task_type:
             return
 
         try:
-            results = TaskSignalMatcher._repository.search_memories(
-                query=f"gene:{task_type}",
-                schema_type="control_gene",
-                top_k=1
-            )
-
-            if not results:
+            memory_key = f"gene:{task_type}"
+            gene = TaskSignalMatcher._repository.get_by_memory_key(memory_key, schema_type="control_gene")
+            if not gene:
+                logger.debug("[GeneEvolution] record_failure: 未找到 Gene | task_type=%s", task_type)
                 return
 
-            gene = results[0]
             metadata = gene.get("metadata", {})
 
-            usage_count = metadata.get("usage_count", 0) + 1
             failure_count = metadata.get("failure_count", 0) + 1
 
-            success_count = metadata.get("success_count", 0)
-            success_rate = cls._calculate_success_rate(success_count, usage_count)
-
             result_updates = cls._update_recent_results(metadata, False, reward, elapsed_ms)
+            sliding_success_rate = result_updates.get("sliding_success_rate", 0.0)
 
             TaskSignalMatcher._repository.upsert_memory(
                 title=gene.get("title", f"Gene: {task_type}"),
@@ -944,12 +943,12 @@ MUST NOT: <应该避免的错误做法>
                 memory_key=gene.get("memory_key", f"gene:{task_type}"),
                 metadata={
                     **metadata,
-                    "usage_count": usage_count,
                     "failure_count": failure_count,
-                    "success_rate": success_rate,
+                    "success_rate": sliding_success_rate,
                     "last_failure_at": datetime.now().isoformat(),
                     **result_updates,
                 }
             )
+            logger.debug("[GeneEvolution] record_failure | task_type=%s | sliding_rate=%.2f", task_type, sliding_success_rate)
         except Exception:
             pass

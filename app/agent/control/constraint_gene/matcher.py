@@ -138,6 +138,13 @@ MUST NOT: Rely on single source, copy without understanding
         for task_type, config in cls._cache.items():
             signals = config.get("signals", [])
             if any(signal in user_lower for signal in signals):
+                # 记录使用次数
+                if cls._repository:
+                    try:
+                        cls._repository.increment_usage(f"gene:{task_type}")
+                        logger.debug(f"[TaskSignalMatcher] Gene 关键词匹配使用次数增加 | task_type={task_type}")
+                    except Exception:
+                        pass
                 return {
                     "task_type": task_type,
                     "gene_template": config["gene_template"],
@@ -149,6 +156,12 @@ MUST NOT: Rely on single source, copy without understanding
             if any(signal in user_lower for signal in config["signals"]):
                 if cls._repository:
                     cls._save_to_repository(task_type, config)
+                    # 记录使用次数
+                    try:
+                        cls._repository.increment_usage(f"gene:{task_type}")
+                        logger.debug(f"[TaskSignalMatcher] Gene 内置模板匹配使用次数增加 | task_type={task_type}")
+                    except Exception:
+                        pass
                 return {
                     "task_type": task_type,
                     "gene_template": config["gene_template"],

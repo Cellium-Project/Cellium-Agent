@@ -111,12 +111,30 @@ class ControlLoop:
                 task_type = matched.get("task_type", "")
                 if not state.matched_gene_type:
                     state.matched_gene_type = task_type
-        
+
+                    gene_template = matched.get("gene_template", "")
+                    if gene_template:
+                        state.matched_gene_content = gene_template
+                        logger.info("[ControlLoop] Gene 已匹配并缓存 | task_type=%s | 将在每轮迭代注入", task_type)
+
         if not task_type and state.tool_traces:
             last_tool = state.tool_traces[-1].get('tool', '')
             if last_tool:
                 task_type = last_tool
                 logger.debug("[ControlLoop] 从工具调用推断 task_type: %s", task_type)
+
+        if state.matched_gene_type and state.tool_traces:
+            current_count = len(state.tool_traces)
+            start_index = state.gene_last_traces_count
+
+            if current_count > start_index:
+                for trace in state.tool_traces[start_index:]:
+                    if trace.get("success"):
+                        state.gene_tool_success_count += 1
+                    else:
+                        state.gene_tool_failure_count += 1
+
+                state.gene_last_traces_count = current_count
 
         reward = self.evaluator.evaluate_with_gene_evolution(state, task_type, user_input)
 
@@ -128,8 +146,10 @@ class ControlLoop:
             self.bandit.update(last_decision.action_type, reward)
 
         logger.debug(
-            "[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f",
-            reward, state.cumulative_reward
+            "[ControlLoop] 本轮结束 | reward=%.2f | cumulative=%.2f | gene_tools=%d/%d | gene_injected=%s",
+            reward, state.cumulative_reward,
+            state.gene_tool_success_count, state.gene_tool_success_count + state.gene_tool_failure_count,
+            bool(state.matched_gene_content)
         )
 
         return reward
@@ -139,16 +159,27 @@ class ControlLoop:
 
         if state.matched_gene_type and not state.gene_session_recorded:
             from .constraint_gene import GeneEvolution
-            avg_reward = state.cumulative_reward / max(state.iteration, 1)
-            success = avg_reward >= 0.5
-            if success:
-                GeneEvolution.record_success(state.matched_gene_type, avg_reward, state.elapsed_ms)
+
+            # 基于工具调用成功率判断 Gene 是否成功
+            total_tool_calls = state.gene_tool_success_count + state.gene_tool_failure_count
+            if total_tool_calls > 0:
+                tool_success_rate = state.gene_tool_success_count / total_tool_calls
             else:
-                GeneEvolution.record_failure(state.matched_gene_type, avg_reward, state.elapsed_ms)
+                # 如果没有工具调用，使用 avg_reward 兜底
+                tool_success_rate = state.cumulative_reward / max(state.iteration, 1)
+
+            # 成功率 >= 50% 视为成功
+            success = tool_success_rate >= 0.5
+
+            if success:
+                GeneEvolution.record_success(state.matched_gene_type, tool_success_rate, state.elapsed_ms)
+            else:
+                GeneEvolution.record_failure(state.matched_gene_type, tool_success_rate, state.elapsed_ms)
             state.gene_session_recorded = True
             logger.info(
-                "[ControlLoop] Gene 会话统计 | task_type=%s | success=%s | avg_reward=%.2f",
-                state.matched_gene_type, success, avg_reward
+                "[ControlLoop] Gene 会话统计 | task_type=%s | success=%s | tool_success_rate=%.2f | tools=%d/%d",
+                state.matched_gene_type, success, tool_success_rate,
+                state.gene_tool_success_count, total_tool_calls
             )
 
         summary = state.get_decision_summary()

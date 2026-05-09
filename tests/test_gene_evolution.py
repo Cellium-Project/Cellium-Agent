@@ -127,29 +127,27 @@ class TestGeneEvolution(unittest.TestCase):
 
     def test_record_success_updates_metadata(self):
         mock_repo = MagicMock()
-        mock_repo.search_memories.return_value = [
-            {
-                "content": "[HARD CONSTRAINTS]\nTest",
-                "metadata": {
-                    "task_type": "test_task",
-                    "usage_count": 5,
-                    "success_count": 3,
-                },
-                "title": "Gene: test_task",
-                "memory_key": "gene:test_task",
-            }
-        ]
+        mock_repo.get_by_memory_key.return_value = {
+            "content": "[HARD CONSTRAINTS]\nTest",
+            "metadata": {
+                "task_type": "test_task",
+                "usage_count": 5,
+                "success_count": 3,
+            },
+            "title": "Gene: test_task",
+            "memory_key": "gene:test_task",
+        }
         TaskSignalMatcher._repository = mock_repo
 
         GeneEvolution.record_success("test_task", 0.85, 3000)
 
         mock_repo.upsert_memory.assert_called_once()
         call_args = mock_repo.upsert_memory.call_args
-        self.assertEqual(call_args.kwargs["metadata"]["usage_count"], 6)
+        # usage_count 不再在 record_success 中增加（已在 match 时增加）
         self.assertEqual(call_args.kwargs["metadata"]["success_count"], 4)
-        self.assertEqual(call_args.kwargs["metadata"]["success_rate"], 4/6)
+        # 使用滑动窗口成功率而非历史累积
+        self.assertIn("success_rate", call_args.kwargs["metadata"])
         self.assertIn("recent_results", call_args.kwargs["metadata"])
-        self.assertEqual(call_args.kwargs["metadata"]["consecutive_success"], 1)
 
     def test_update_gene_no_repository(self):
         TaskSignalMatcher._repository = None

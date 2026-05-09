@@ -936,6 +936,15 @@ class AgentLoop:
                 _active_constraint = None
                 _pending_system_injection = system_injection
 
+                # 注入匹配到的 Gene 内容（每轮迭代都注入）
+                if self._loop_state and self._loop_state.matched_gene_content:
+                    gene_injection = f"[任务约束 - {self._loop_state.matched_gene_type}]\n{self._loop_state.matched_gene_content}"
+                    if _pending_system_injection:
+                        _pending_system_injection = f"{_pending_system_injection}\n\n{gene_injection}"
+                    else:
+                        _pending_system_injection = gene_injection
+                    logger.debug("[AgentLoop] 本轮注入 Gene | task_type=%s | iter=%d", self._loop_state.matched_gene_type, iteration)
+
                 if self.control_loop and self._loop_state:
                     # 更新状态
                     self._loop_state.iteration = iteration

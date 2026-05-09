@@ -707,6 +707,21 @@ class MemoryRepository:
     def get_record(self, identifier: str) -> Optional[Dict[str, Any]]:
         return self._public_record(str(identifier))
 
+    def get_by_memory_key(self, memory_key: str, schema_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """通过 memory_key 精确查找记录（公共方法）
+
+        Args:
+            memory_key: 记忆键名
+            schema_type: 可选的 schema_type 过滤
+
+        Returns:
+            找到的记录字典，如果不存在返回 None
+        """
+        found = self._find_by_memory_key(memory_key, schema_type=schema_type)
+        if found:
+            return self._public_record(found[0])
+        return None
+
     def summarize(self) -> Dict[str, Any]:
         self._backfill_from_index()
         records = list(self._catalog.get("records", {}).values())
