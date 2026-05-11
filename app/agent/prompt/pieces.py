@@ -78,6 +78,19 @@ DEFAULT_IDENTITY = """# Cellium Agent
 
 DYNAMIC_PIECES: List[PromptPiece] = [
     PromptPiece(
+        name="coherence_reminder",
+        template="""##  §重要 连贯性保持 [强制]
+
+**保持对话连贯性**：
+- 如果用户提到"它"、"那个"、"之前"等指代词，但上下文不清晰 → 使用 memory:search 检索相关记忆
+- 如果用户的问题涉及之前讨论的内容但你没有相关信息 → 主动查询长期记忆
+- 如果当前上下文无法确定用户意图 → 先查询记忆再决策
+
+**禁止**：在上下文不足时凭空猜测或假设用户意图""",
+        priority=95,
+        enabled=True,
+    ),
+    PromptPiece(
         name="session_context",
         template="""## 当前对话上下文
 

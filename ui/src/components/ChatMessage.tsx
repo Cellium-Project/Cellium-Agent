@@ -14,10 +14,9 @@ function safeRenderMarkdown(content: string): string {
   return DOMPurify.sanitize(rawHtml);
 }
 
-/** Check if a parsed JSON object looks like a "thought" block (reasoning/plan/action) */
+/** Check if a parsed JSON object is a thought JSON (has reasoning field) */
 function isThoughtJson(obj: any): boolean {
-  return typeof obj === 'object' && obj !== null &&
-    ('reasoning' in obj || 'plan' in obj || 'action' in obj);
+  return typeof obj === 'object' && obj !== null && typeof obj.reasoning === 'string';
 }
 
 /**
@@ -184,30 +183,27 @@ function renderContentWithCollapsibleJson(content: string): React.ReactNode {
 const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
   const { t } = useTranslation();
 
-  const { reasoning, isThought } = useMemo(() => {
+  const { label, content } = useMemo(() => {
     let parsed: any = null;
     try {
       parsed = JSON.parse(jsonStr);
     } catch {
-      // Not valid JSON — just show as-is
       return {
-        reasoning: jsonStr,
-        isThought: false,
+        label: 'Thinking',
+        content: jsonStr,
       };
     }
 
-    // 如果是 thought JSON（包含 reasoning/action/plan 等字段），只显示 reasoning
     if (isThoughtJson(parsed)) {
       return {
-        reasoning: parsed.reasoning || JSON.stringify(parsed, null, 2),
-        isThought: true,
+        label: 'Thinking',
+        content: parsed.reasoning || jsonStr,
       };
     }
 
-    // 其他 JSON，显示格式化后的内容
     return {
-      reasoning: JSON.stringify(parsed, null, 2),
-      isThought: false,
+      label: 'JSON',
+      content: JSON.stringify(parsed, null, 2),
     };
   }, [jsonStr]);
 
@@ -216,13 +212,13 @@ const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
       <Collapsible
         summary={
           <span className="json-block-summary">
-            <span className="json-block-label">Thinking</span>
-            <span className="json-block-preview">{String(reasoning).slice(0, 80)}</span>
+            <span className="json-block-label">{label}</span>
+            <span className="json-block-preview">{String(content).slice(0, 80)}</span>
           </span>
         }
         defaultOpen={false}
       >
-        <pre className="json-block-content">{reasoning}</pre>
+        <pre className="json-block-content">{content}</pre>
       </Collapsible>
     </div>
   );
@@ -289,7 +285,6 @@ function renderTimeline(message: Message): React.ReactNode {
           groups.push({ kind: 'merged-text', contents: [segment.content] });
         }
       } else if (segment.kind === 'thinking') {
-        // thinking segments are kept separate and rendered with ThinkingCard
         groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'tool') {
         groups.push(segment as ToolSegment);
@@ -304,7 +299,7 @@ function renderTimeline(message: Message): React.ReactNode {
             return <React.Fragment key={idx}>{renderContentWithCollapsibleJson(merged)}</React.Fragment>;
           }
           if (group.kind === 'thinking') {
-            return <ThinkingCard key={idx} content={group.content} />;
+            return <JsonBlockCard key={idx} jsonStr={group.content} />;
           }
           // tool segment
           const seg = group as ToolSegment;
@@ -340,32 +335,13 @@ function renderTimeline(message: Message): React.ReactNode {
   );
 }
 
-/** Thinking card with simple styling */
-const ThinkingCard: React.FC<{ content: string }> = ({ content }) => {
-  return (
-    <div className="thinking-card">
-      <Collapsible
-        summary={
-          <span className="collapsible-summary">
-            Thinking
-          </span>
-        }
-        defaultOpen={false}
-      >
-        <pre className="thinking-content">{content}</pre>
-      </Collapsible>
-    </div>
-  );
-};
-
 function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNode {
   if (segment.kind === 'text') {
     return renderContentWithCollapsibleJson(segment.content);
   }
 
   if (segment.kind === 'thinking') {
-    // Use dedicated thinking card with proper styling
-    return <ThinkingCard content={segment.content} />;
+    return <JsonBlockCard jsonStr={segment.content} />;
   }
 
   return (

@@ -9,15 +9,15 @@ import type { HybridPhase } from '../stores/appStore';
  */
 function extractJsonThinking(content: string): { reasoning?: string; plan?: unknown[]; action?: string; confidence?: number; estimated_steps?: number } | null {
   if (!content) return null;
-  
+
   // 匹配 ```json ... ``` 代码块
   const jsonBlockMatch = content.match(/```json\s*([\s\S]*?)\s*```/i);
   const jsonStr = jsonBlockMatch ? jsonBlockMatch[1].trim() : content.trim();
-  
+
   if (jsonStr.startsWith('{') && jsonStr.endsWith('}')) {
     try {
       const data = JSON.parse(jsonStr);
-      if (data && typeof data === 'object' && 'reasoning' in data && 'action' in data) {
+      if (typeof data === 'object' && data !== null && typeof data.reasoning === 'string') {
         return data;
       }
     } catch {
