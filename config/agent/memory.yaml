@@ -9,7 +9,7 @@ memory:
   session_compact:
     enabled: true
     token_threshold: 80000
-    tool_call_threshold: 20
+    tool_call_threshold: 35
     keep_recent_messages: 20
     max_notes_length: 2000
     notes_dir: memory/notes

@@ -41,7 +41,9 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
     else:
         content = DEFAULT_IDENTITY
 
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    current_date = f"{now.year}年{now.month}月{now.day}号 {weekdays[now.weekday()]}"
     content = content.replace("{{current_date}}", current_date)
 
     return PromptPiece(
