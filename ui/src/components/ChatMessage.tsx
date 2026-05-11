@@ -184,40 +184,30 @@ function renderContentWithCollapsibleJson(content: string): React.ReactNode {
 const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
   const { t } = useTranslation();
 
-  const { label, summaryText, prettyJson } = useMemo(() => {
+  const { reasoning, isThought } = useMemo(() => {
     let parsed: any = null;
     try {
       parsed = JSON.parse(jsonStr);
     } catch {
       // Not valid JSON — just show as-is
       return {
-        label: 'JSON',
-        summaryText: jsonStr.slice(0, 60) + (jsonStr.length > 60 ? '...' : ''),
-        prettyJson: jsonStr,
+        reasoning: jsonStr,
+        isThought: false,
       };
     }
 
-    const label = parsed.action
-      ? String(parsed.action)
-      : parsed.reasoning
-        ? '💭 reasoning'
-        : 'JSON';
-
-    const summaryParts: string[] = [];
-    if (parsed.reasoning) {
-      summaryParts.push(String(parsed.reasoning).slice(0, 80));
-    }
-    if (parsed.confidence !== undefined) {
-      summaryParts.push(`confidence: ${parsed.confidence}`);
-    }
-    if (parsed.estimated_steps !== undefined) {
-      summaryParts.push(`steps: ${parsed.estimated_steps}`);
+    // 如果是 thought JSON（包含 reasoning/action/plan 等字段），只显示 reasoning
+    if (isThoughtJson(parsed)) {
+      return {
+        reasoning: parsed.reasoning || JSON.stringify(parsed, null, 2),
+        isThought: true,
+      };
     }
 
+    // 其他 JSON，显示格式化后的内容
     return {
-      label,
-      summaryText: summaryParts.join(' · ') || jsonStr.slice(0, 60),
-      prettyJson: JSON.stringify(parsed, null, 2),
+      reasoning: JSON.stringify(parsed, null, 2),
+      isThought: false,
     };
   }, [jsonStr]);
 
@@ -226,13 +216,13 @@ const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
       <Collapsible
         summary={
           <span className="json-block-summary">
-            <span className="json-block-label">{label}</span>
-            <span className="json-block-preview">{summaryText}</span>
+            <span className="json-block-label">Thinking</span>
+            <span className="json-block-preview">{String(reasoning).slice(0, 80)}</span>
           </span>
         }
         defaultOpen={false}
       >
-        <pre className="json-block-content">{prettyJson}</pre>
+        <pre className="json-block-content">{reasoning}</pre>
       </Collapsible>
     </div>
   );
@@ -352,20 +342,6 @@ function renderTimeline(message: Message): React.ReactNode {
 
 /** Thinking card with simple styling */
 const ThinkingCard: React.FC<{ content: string }> = ({ content }) => {
-  const prettyContent = useMemo(() => {
-    let parsed: any = null;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      // Not valid JSON
-    }
-    
-    if (parsed && typeof parsed === 'object') {
-      return JSON.stringify(parsed, null, 2);
-    }
-    return content;
-  }, [content]);
-
   return (
     <div className="thinking-card">
       <Collapsible
@@ -376,7 +352,7 @@ const ThinkingCard: React.FC<{ content: string }> = ({ content }) => {
         }
         defaultOpen={false}
       >
-        <pre className="thinking-content">{prettyContent}</pre>
+        <pre className="thinking-content">{content}</pre>
       </Collapsible>
     </div>
   );

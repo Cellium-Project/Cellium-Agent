@@ -50,15 +50,15 @@ function extractFinalText(content: string): string {
  */
 function processTimeline(timeline: TimelineSegment[]): TimelineSegment[] {
   const result: TimelineSegment[] = [];
-  
+
   for (const segment of timeline) {
     if (segment.kind === 'text' && segment.content) {
       const thinkingData = extractJsonThinking(segment.content);
       if (thinkingData) {
-        // 添加 thinking 卡片
+        // 添加 thinking 卡片 - 只存储 reasoning 字段
         result.push({
           kind: 'thinking',
-          content: JSON.stringify(thinkingData, null, 2),
+          content: thinkingData.reasoning || '',
         });
         // 添加实际文本内容
         const finalText = extractFinalText(segment.content);
@@ -75,7 +75,7 @@ function processTimeline(timeline: TimelineSegment[]): TimelineSegment[] {
       result.push(segment);
     }
   }
-  
+
   return result;
 }
 
