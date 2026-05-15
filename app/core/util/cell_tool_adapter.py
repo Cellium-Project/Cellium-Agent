@@ -412,10 +412,10 @@ class CellToolAdapter(BaseTool):
         
         target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}"
         
-        from app.core.util.component_sandbox import ComponentSandbox
-        is_sandbox = isinstance(self._cell, ComponentSandbox)
-        
-        if is_sandbox:
+        if self._use_sandbox:
+            from app.core.util.component_sandbox import ComponentSandbox
+            sandbox = ComponentSandbox.get_sandbox(self.name)
+            
             available_cmds = self.get_commands()
             if cmd_name not in available_cmds:
                 return {
@@ -423,9 +423,9 @@ class CellToolAdapter(BaseTool):
                     "error": f"未知命令 '{cmd_name}'，可用: {list(available_cmds.keys())}",
                     "_source": f"component:{self.name}",
                 }
-            # 沙箱模式：通过 get_command_params 获取参数签名（使用缓存）
-            if self._cached_params_map is None and hasattr(self._cell, 'get_command_params'):
-                self._cached_params_map = self._cell.get_command_params()
+            # 沙箱模式：通过 get_command_params 获取参数签名
+            if self._cached_params_map is None:
+                self._cached_params_map = sandbox.get_command_params()
             params_map = self._cached_params_map or {}
             valid_params = set(params_map.get(cmd_name, []))
         elif not hasattr(self._cell, target_method_name):
@@ -441,8 +441,7 @@ class CellToolAdapter(BaseTool):
             valid_params = {p for p in sig.parameters if p != "self"}
         
         cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
-        
-        # 注入特殊参数（检查方法签名是否需要）
+
         if session_id and "session_id" in valid_params:
             cleaned_args["session_id"] = session_id
         if platform_context and "platform_context" in valid_params:
@@ -611,6 +610,26 @@ class CellToolAdapter(BaseTool):
 
     def get_commands(self) -> Dict[str, str]:
         """获取组件的所有可用命令"""
+        if self._use_sandbox:
+            try:
+                from app.core.util.component_sandbox import ComponentSandbox
+                sandbox = ComponentSandbox.get_sandbox(self.name)
+                
+                if sandbox.is_alive():
+                    return sandbox.get_commands()
+                
+                source_file = self._get_component_source()
+                class_name = type(self._cell).__name__
+                if source_file:
+                    sandbox.initialize(source_file, class_name)
+                    if sandbox.is_alive():
+                        return sandbox.get_commands()
+            except Exception as e:
+                logger.warning(
+                    "[CellToolAdapter] %s 从沙箱获取命令失败，回退到直接获取: %s",
+                    self.name, e,
+                )
+        
         return self._cell.get_commands()
 
     @property

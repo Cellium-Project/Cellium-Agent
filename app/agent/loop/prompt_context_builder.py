@@ -9,7 +9,8 @@
 """
 
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import os
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     from app.agent.prompt import PromptBuilder
@@ -30,6 +31,7 @@ class PromptContextBuilder:
         prompt_builder: "PromptBuilder",
         three_layer_memory: Optional["ThreeLayerMemory"] = None,
         flash_mode: bool = False,
+        memory_dir: str = "memory",
     ):
         """
         初始化构建器
@@ -37,11 +39,86 @@ class PromptContextBuilder:
         Args:
             prompt_builder: Prompt 构建器实例
             three_layer_memory: 三层记忆系统（可选）
-            flash_mode: 是否启用闪电模式（跳过记忆注入）
+            flash_mode: 是否启用flash模式（跳过记忆注入）
+            memory_dir: 记忆目录路径
         """
         self._prompt_builder = prompt_builder
         self._three_layer_memory = three_layer_memory
         self._flash_mode = flash_mode
+        self._memory_dir = memory_dir
+        self._cached_fixed_personality: Optional[str] = None
+
+    def _get_fixed_personality(self) -> str:
+        """
+        获取固定的 personality 内容
+        
+        Returns:
+            personality.md 内容，其中 {{current_date}} 保持原样或替换为占位符
+        """
+        if self._cached_fixed_personality is not None:
+            return self._cached_fixed_personality
+        
+        personality_path = os.path.join(self._memory_dir, "personality.md")
+        if os.path.exists(personality_path):
+            try:
+                with open(personality_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except Exception:
+                content = self._get_default_identity()
+        else:
+            content = self._get_default_identity()
+        
+        self._cached_fixed_personality = content
+        return content
+
+    def _get_default_identity(self) -> str:
+        """获取默认身份定义"""
+        return """# Cellium Agent
+
+- **当前日期**: {{current_date}}
+
+你是一个专业的桌面助手，擅长：
+- 执行系统命令和脚本
+- 读写文件和管理项目
+- 回答技术问题
+- 协助开发和调试
+
+请用中文回复，保持专业、友好、简洁。
+"""
+
+    def _get_current_date(self) -> str:
+        """获取当前日期字符串"""
+        from datetime import datetime
+        now = datetime.now()
+        weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        return f"{now.year}年{now.month}月{now.day}号 {weekdays[now.weekday()]}"
+
+    def _build_system_messages(self, runtime_status: Optional[str] = None) -> Tuple[Dict, Dict]:
+        """
+        构建 system 消息
+        
+        Returns:
+            (固定 system 消息, 动态 system 消息)
+        """
+        # 1. 固定内容
+        fixed_content = self._get_fixed_personality()
+        fixed_message = {"role": "system", "content": fixed_content}
+        
+        # 2. 动态内容
+        dynamic_parts = []
+        
+        # 日期信息
+        current_date = self._get_current_date()
+        dynamic_parts.append(f"**当前日期**: {current_date}")
+        
+        # 运行时状态
+        if runtime_status:
+            dynamic_parts.append(f"\n[运行时状态]\n{runtime_status}")
+        
+        dynamic_content = "\n".join(dynamic_parts)
+        dynamic_message = {"role": "system", "content": dynamic_content}
+        
+        return fixed_message, dynamic_message
 
     def _inject_runtime_status(self, runtime_status: Optional[Any]) -> None:
         """注入运行时状态到 PromptBuilder（供 Agent 自我感知）"""
@@ -79,11 +156,8 @@ class PromptContextBuilder:
         """
         messages = []
 
-        # 1. 系统提示词（包含身份、工具指南等）
-        # 清除残留的动态控制注入，避免跨轮次/跨会话泄漏
         self._prompt_builder.clear_dynamic()
 
-        # 如果有 system_injection，先注入到 PromptBuilder
         if system_injection:
             self._prompt_builder.inject(
                 system_injection,
@@ -91,8 +165,11 @@ class PromptContextBuilder:
                 priority=50,
             )
 
+        fixed_sys_msg, dynamic_sys_msg = self._build_system_messages(runtime_status)
+        messages.append(fixed_sys_msg)  
+        messages.append(dynamic_sys_msg)  
+        
         system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
-        messages.append({"role": "system", "content": system_prompt})
 
         # 2. 注入长期记忆
         if not self._flash_mode and self._three_layer_memory:
@@ -107,7 +184,7 @@ class PromptContextBuilder:
                     "content": "好的，我已参考长期记忆中的相关信息。",
                 })
 
-        # 3. 运行时状态通过 PromptBuilder 注入（统一管理）
+        # 3. 运行时状态通过 PromptBuilder 注入
         self._inject_runtime_status(runtime_status)
 
         # 4. 会话历史
@@ -117,7 +194,7 @@ class PromptContextBuilder:
         if self._flash_mode and not session_messages:
             messages.append({"role": "user", "content": user_input})
 
-        # 5. 引导消息（如果有）
+        # 5. 引导消息
         if guidance_message:
             messages.append({
                 "role": "user",
@@ -174,7 +251,6 @@ class PromptContextBuilder:
         messages = []
 
         # 1. 系统提示词
-        # 清除上一轮的动态注入，避免累积
         self._prompt_builder.clear_dynamic()
 
         # 如果有 system_injection，注入到 PromptBuilder
@@ -185,27 +261,14 @@ class PromptContextBuilder:
                 priority=50,
             )
 
-        # 每 5 轮注入一次完整的 personality.md，其他轮次注入极简提醒
-        # iteration 从 2 开始（第一轮用 build_first_round）
-        # 所以第 2, 7, 12... 轮注入完整提示词
-        # 计算：第2轮(2-2)%5=0, 第7轮(7-2)%5=0, 第12轮(12-2)%5=0
-        should_inject_full = (iteration - 2) % 5 == 0
+        fixed_sys_msg, dynamic_sys_msg = self._build_system_messages(runtime_status)
+        messages.append(fixed_sys_msg)
+        messages.append(dynamic_sys_msg)
 
-        if should_inject_full:
-            system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
-        else:
-            # 极简提醒 + 动态注入
-            system_prompt = self._BRIEF_SYSTEM_REMINDER
-            if runtime_status:
-                system_prompt += f"\n\n[运行时状态]\n{runtime_status}"
+        # 2. 运行时状态
+        self._inject_runtime_status(runtime_status)
 
-        messages.append({"role": "system", "content": system_prompt})
-
-        # 2. 运行时状态（只在注入完整 personality.md 时通过 PromptBuilder 注入）
-        if should_inject_full:
-            self._inject_runtime_status(runtime_status)
-
-        # 3. 会话历史（后续轮次不需要重复注入长期记忆）
+        # 3. 会话历史
         messages.extend(session_messages)
 
         # 4. 自动提示
