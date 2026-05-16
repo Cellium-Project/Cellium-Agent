@@ -1,13 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-文件操作工具
-
-设计原则：
-  - 4 个核心命令：read, insight, edit, fs
-  - 决策复杂度最小化
-  - edit 内部自动事务+验证+回滚
-"""
-
 import os
 import re
 import shutil
@@ -20,35 +11,22 @@ from typing import Dict, Any, Optional, List
 from .base_tool import BaseTool
 from ..runtime.context import ReadTracker, ContextCompact, SymbolSummary
 from ..runtime.transaction import EditTransaction
+from ..runtime.patch_applier import PatchApplier
 
 logger = logging.getLogger(__name__)
 
-# 安全限制
-_MAX_FILE_SIZE = 2 * 1024 * 1024   # 单次读取最大 2MB
-_MAX_LIST_ENTRIES = 200            # 列目录最多返回 200 条
+_MAX_FILE_SIZE = 2 * 1024 * 1024
+_MAX_LIST_ENTRIES = 200
 
 
 @dataclass
 class FileState:
-    """文件读取状态"""
     path: str
     content: str
     timestamp: float
 
 
 class FileTool(BaseTool):
-    """
-    文件操作工具 — 4 命令架构
-
-    | 命令 | 语义 | modes |
-    |------|------|-------|
-    | read | 读取具体目标 | full, context, summary, compact |
-    | insight | 探索工程 | grep, structure, symbol, files |
-    | edit | 修改文件 | replace, range, delete, append |
-    | fs | 文件系统 | list, mkdir, delete, exists, create |
-
-    **edit 内部自动：快照 → 编辑 → 验证 → 失败回滚**
-    """
 
     name = "file"
     description = (
@@ -65,9 +43,12 @@ class FileTool(BaseTool):
         "  - mode=files: 搜索文件\n\n"
         "**edit**: 修改文件（自动验证，失败回滚）\n"
         "  - mode=replace: 替换文本（old_text → new_text）\n"
+        "  - mode=replace_all: 替换所有匹配\n"
+        "  - mode=insert: 在指定行号前插入（line, content）\n"
+        "  - mode=append: 追加内容\n"
+        "  - mode=regex: 正则替换（pattern, replacement）\n"
         "  - mode=range: 按行号编辑（start_line, end_line, new_text）\n"
-        "  - mode=delete: 删除行范围（start_line, end_line）\n"
-        "  - mode=append: 追加内容\n\n"
+        "  - mode=delete: 删除行范围（start_line, end_line）\n\n"
         "**fs**: 文件系统操作\n"
         "  - action=list: 列目录\n"
         "  - action=mkdir: 创建目录\n"
@@ -88,10 +69,6 @@ class FileTool(BaseTool):
     def tool_name(self) -> str:
         return "file"
 
-    # ================================================================
-    #  READ - 读取具体目标
-    # ================================================================
-
     def _cmd_read(
         self,
         path: str,
@@ -102,21 +79,6 @@ class FileTool(BaseTool):
         offset: int = 0,
         limit: int = 500,
     ) -> Dict[str, Any]:
-        """读取文件内容
-
-        Args:
-            path: 文件路径
-            mode: 读取模式
-                - full: 完整读取（默认）
-                - context: 只读目标附近（需提供 target）
-                - summary: 只返回类/函数签名
-                - compact: 压缩读取（折叠 imports/docstrings）
-            target: 目标文本（mode=context 时使用）
-            before: 目标前几行（mode=context，默认 3）
-            after: 目标后几行（mode=context，默认 3）
-            offset: 从第几行开始（mode=full，默认 0）
-            limit: 读取行数限制（mode=full，默认 500）
-        """
         if not path:
             return {"success": False, "error": "需要 path 参数"}
 
@@ -127,7 +89,6 @@ class FileTool(BaseTool):
         encoding = self._detect_encoding(abs_path)
         file_size = os.path.getsize(abs_path)
 
-        # 检查文件大小
         if file_size > _MAX_FILE_SIZE and mode == "full":
             return {
                 "success": False,
@@ -141,14 +102,11 @@ class FileTool(BaseTool):
             lines = content.split('\n')
             total_lines = len(lines)
 
-            # 缓存文件状态
             self._cache_file(abs_path, content)
 
-            # 记录读取（用于检测重复）
             read_info = self._read_tracker.record(abs_path, offset, limit)
 
             if mode == "full":
-                # 完整读取（带分页）
                 if offset < 0:
                     offset = 0
                 if offset >= total_lines:
@@ -171,7 +129,6 @@ class FileTool(BaseTool):
                 }
 
             elif mode == "context":
-                # 只读目标附近
                 if not target:
                     return {"success": False, "error": "mode=context 需要提供 target 参数"}
 
@@ -202,7 +159,6 @@ class FileTool(BaseTool):
                 }
 
             elif mode == "summary":
-                # 只返回符号摘要
                 ext = os.path.splitext(abs_path)[1].lower()
                 result = SymbolSummary.extract(content, ext)
 
@@ -216,7 +172,6 @@ class FileTool(BaseTool):
                 }
 
             elif mode == "compact":
-                # 压缩读取
                 result = ContextCompact.compact(content)
 
                 return {
@@ -237,10 +192,6 @@ class FileTool(BaseTool):
         except Exception as e:
             return {"success": False, "error": f"读取失败: {e}"}
 
-    # ================================================================
-    #  INSIGHT - 探索工程（不知道目标在哪）
-    # ================================================================
-
     def _cmd_insight(
         self,
         query: str = None,
@@ -250,59 +201,38 @@ class FileTool(BaseTool):
         ext: str = None,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        """探索工程
-
-        Args:
-            query: 搜索内容（mode=grep/symbol 时使用）
-            mode: 探索模式
-                - grep: 搜索文件内容
-                - structure: 文件结构大纲
-                - symbol: 搜索符号（类/函数名）
-                - files: 搜索文件名
-            path: 搜索路径（默认当前目录）
-            pattern: 文件模式过滤（如 *.py）
-            ext: 扩展名过滤
-            offset: 分页偏移
-        """
         abs_path = self._resolve_path(path)
 
         if mode == "grep":
-            # 搜索文件内容
             if not query:
                 return {"success": False, "error": "mode=grep 需要提供 query 参数"}
             return self._grep_search(abs_path, query, pattern, ext, offset)
 
         elif mode == "structure":
-            # 文件结构大纲
             if os.path.isfile(abs_path):
                 return self._extract_structure(abs_path)
             else:
                 return {"success": False, "error": "structure 模式需要指定文件路径"}
 
         elif mode == "symbol":
-            # 搜索符号
             if not query:
                 return {"success": False, "error": "mode=symbol 需要提供 query 参数"}
             return self._symbol_search(abs_path, query, pattern, ext, offset)
 
         elif mode == "files":
-            # 搜索文件名
             return self._file_search(abs_path, query or pattern or "*", offset)
 
         else:
             return {"success": False, "error": f"未知 mode: {mode}"}
 
     def _grep_search(self, root: str, query: str, pattern: str, ext_filter: str, offset: int) -> Dict[str, Any]:
-        """搜索文件内容"""
         hits = []
         use_regex = any(c in query for c in '*+?^$[]|(){}')
 
         for dirpath, dirnames, filenames in os.walk(root):
-            # 跳过隐藏目录
             dirnames[:] = [d for d in dirnames if not d.startswith('.')]
 
             for filename in filenames:
-                # 过滤扩展名
                 if ext_filter and not filename.endswith(ext_filter):
                     continue
                 if pattern and not self._match_pattern(filename, pattern):
@@ -336,7 +266,6 @@ class FileTool(BaseTool):
             if len(hits) >= 100:
                 break
 
-        # 分页
         total = len(hits)
         page = hits[offset:offset + 20]
 
@@ -351,7 +280,6 @@ class FileTool(BaseTool):
         }
 
     def _symbol_search(self, root: str, query: str, pattern: str, ext_filter: str, offset: int) -> Dict[str, Any]:
-        """搜索符号"""
         hits = []
         ext = ext_filter or ".py"
 
@@ -392,7 +320,6 @@ class FileTool(BaseTool):
         }
 
     def _file_search(self, root: str, pattern: str, offset: int) -> Dict[str, Any]:
-        """搜索文件名"""
         hits = []
         pattern_lower = pattern.lower().replace('*', '')
 
@@ -424,7 +351,6 @@ class FileTool(BaseTool):
         }
 
     def _extract_structure(self, filepath: str) -> Dict[str, Any]:
-        """提取文件结构"""
         ext = os.path.splitext(filepath)[1].lower()
         encoding = self._detect_encoding(filepath)
 
@@ -446,13 +372,8 @@ class FileTool(BaseTool):
             return {"success": False, "error": str(e)}
 
     def _match_pattern(self, filename: str, pattern: str) -> bool:
-        """简单的模式匹配"""
         import fnmatch
         return fnmatch.fnmatch(filename, pattern)
-
-    # ================================================================
-    #  EDIT - 修改文件（隐式事务，自动验证回滚）
-    # ================================================================
 
     def _cmd_edit(
         self,
@@ -460,99 +381,94 @@ class FileTool(BaseTool):
         mode: str = "replace",
         old_text: str = None,
         new_text: str = None,
+        line: int = None,
         start_line: int = None,
         end_line: int = None,
         content: str = None,
+        pattern: str = None,
+        replacement: str = None,
         validate: bool = True,
+        preview: bool = False,
     ) -> Dict[str, Any]:
-        """编辑文件（自动验证，失败回滚）
-
-        Args:
-            path: 文件路径
-            mode: 编辑模式
-                - replace: 替换文本（old_text → new_text）
-                - range: 按行号编辑（start_line, end_line, new_text）
-                - delete: 删除行范围（start_line, end_line）
-                - append: 追加内容（content）
-            old_text: 要替换的文本（mode=replace）
-            new_text: 新文本（mode=replace/range）
-            start_line: 起始行号（mode=range/delete，从 0 开始）
-            end_line: 结束行号（mode=range/delete，不包含）
-            content: 要追加的内容（mode=append）
-            validate: 是否验证（默认 True）
-        """
         if not path:
             return {"success": False, "error": "需要 path 参数"}
 
         abs_path = self._resolve_path(path)
 
         if not os.path.exists(abs_path):
-            # 文件不存在，检查是否是创建新文件
             if mode == "append" and content:
                 return self._write_new_file(abs_path, content)
             return {"success": False, "error": f"文件不存在: {abs_path}"}
 
-        # 检查是否已读取
         file_state = self._read_cache.get(abs_path)
         if not file_state:
             return {"success": False, "error": "请先使用 read 命令读取文件"}
 
-        # 检查文件是否被外部修改
         current_mtime = os.path.getmtime(abs_path)
         if current_mtime > file_state.timestamp:
             return {"success": False, "error": "文件已被外部修改，请重新读取"}
 
-        # 创建快照
+        if preview:
+            return self._preview_edit(abs_path, mode, old_text, new_text, line,
+                                      start_line, end_line, content, pattern, replacement)
+
         tx = EditTransaction(workspace=os.path.dirname(abs_path) or os.getcwd())
         tx.begin()
 
         try:
             if mode == "replace":
-                # 替换文本
                 if not old_text:
                     return {"success": False, "error": "mode=replace 需要 old_text 参数"}
                 if new_text is None:
                     return {"success": False, "error": "mode=replace 需要 new_text 参数"}
                 if old_text == new_text:
                     return {"success": False, "error": "old_text 和 new_text 相同"}
+                step = tx.create_step(abs_path, old_text, new_text, replace_all=False)
 
-                step = tx.create_step(abs_path, old_text, new_text)
+            elif mode == "replace_all":
+                if not old_text:
+                    return {"success": False, "error": "mode=replace_all 需要 old_text 参数"}
+                if new_text is None:
+                    return {"success": False, "error": "mode=replace_all 需要 new_text 参数"}
+                step = tx.create_step(abs_path, old_text, new_text, replace_all=True)
+
+            elif mode == "insert":
+                if line is None:
+                    return {"success": False, "error": "mode=insert 需要 line 参数"}
+                if content is None:
+                    return {"success": False, "error": "mode=insert 需要 content 参数"}
+                step = tx.create_step_for_insert(abs_path, line, content)
+
+            elif mode == "append":
+                if content is None:
+                    return {"success": False, "error": "mode=append 需要 content 参数"}
+                step = tx.create_step_for_append(abs_path, content)
+
+            elif mode == "regex":
+                if not pattern:
+                    return {"success": False, "error": "mode=regex 需要 pattern 参数"}
+                if replacement is None:
+                    return {"success": False, "error": "mode=regex 需要 replacement 参数"}
+                step = tx.create_step_for_regex(abs_path, pattern, replacement)
 
             elif mode == "range":
-                # 按行号编辑
                 if start_line is None or end_line is None:
                     return {"success": False, "error": "mode=range 需要 start_line 和 end_line"}
                 if new_text is None:
                     return {"success": False, "error": "mode=range 需要 new_text"}
-
                 step = tx.create_step_by_range(abs_path, start_line, end_line, new_text)
 
             elif mode == "delete":
-                # 删除行范围
                 if start_line is None or end_line is None:
                     return {"success": False, "error": "mode=delete 需要 start_line 和 end_line"}
-
                 step = tx.create_step_by_range(abs_path, start_line, end_line, "")
-
-            elif mode == "append":
-                # 追加内容
-                if content is None:
-                    return {"success": False, "error": "mode=append 需要 content 参数"}
-
-                # 读取当前内容并追加
-                current_content = file_state.content
-                new_content = current_content.rstrip('\n') + '\n' + content
-
-                step = tx.create_step(abs_path, current_content, new_content)
 
             else:
                 return {"success": False, "error": f"未知 mode: {mode}"}
 
-            # 提交步骤（自动验证）
             result = tx.commit_step(step, validate=validate)
 
             if result["success"]:
-                # 更新缓存
                 with open(abs_path, 'r', encoding='utf-8') as f:
                     new_file_content = f.read()
                 self._cache_file(abs_path, new_file_content)
@@ -562,6 +478,8 @@ class FileTool(BaseTool):
                     "path": abs_path,
                     "mode": mode,
                     "step_id": step.step_id,
+                    "count": result.get("count", 0),
+                    "diff": result.get("diff", ""),
                     "diagnostics": result.get("diagnostics", []),
                     "validated": validate,
                 }
@@ -576,8 +494,58 @@ class FileTool(BaseTool):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _preview_edit(
+        self,
+        abs_path: str,
+        mode: str,
+        old_text: str = None,
+        new_text: str = None,
+        line: int = None,
+        start_line: int = None,
+        end_line: int = None,
+        content: str = None,
+        pattern: str = None,
+        replacement: str = None,
+    ) -> Dict[str, Any]:
+        if not os.path.exists(abs_path):
+            return {"success": False, "error": f"文件不存在: {abs_path}"}
+
+        try:
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        if mode == "replace":
+            patch = {"mode": "replace", "old_text": old_text, "new_text": new_text, "replace_all": False}
+        elif mode == "replace_all":
+            patch = {"mode": "replace", "old_text": old_text, "new_text": new_text, "replace_all": True}
+        elif mode == "insert":
+            patch = {"mode": "insert", "line": line, "content": content}
+        elif mode == "append":
+            patch = {"mode": "append", "content": content}
+        elif mode == "regex":
+            patch = {"mode": "regex", "pattern": pattern, "replacement": replacement}
+        elif mode == "range":
+            patch = {"mode": "range", "start_line": start_line, "end_line": end_line, "new_text": new_text}
+        elif mode == "delete":
+            patch = {"mode": "delete", "start_line": start_line, "end_line": end_line}
+        else:
+            return {"success": False, "error": f"未知 mode: {mode}"}
+
+        preview_info = PatchApplier.preview(file_content, patch)
+
+        return {
+            "success": True,
+            "preview": True,
+            "path": abs_path,
+            "diff": preview_info["diff"],
+            "count": preview_info["count"],
+            "matches": preview_info.get("matches", []),
+            "error": preview_info.get("error"),
+        }
+
     def _write_new_file(self, path: str, content: str) -> Dict[str, Any]:
-        """写入新文件"""
         try:
             parent = os.path.dirname(path)
             if parent and not os.path.exists(parent):
@@ -595,10 +563,6 @@ class FileTool(BaseTool):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ================================================================
-    #  FS - 文件系统操作
-    # ================================================================
-
     def _cmd_fs(
         self,
         action: str,
@@ -610,23 +574,6 @@ class FileTool(BaseTool):
         files: Dict[str, str] = None,
         detail: bool = False,
     ) -> Dict[str, Any]:
-        """文件系统操作
-
-        Args:
-            action: 操作类型
-                - list: 列目录
-                - mkdir: 创建目录
-                - delete: 删除文件/目录
-                - exists: 检查存在
-                - create: 批量创建文件
-            path: 文件/目录路径
-            dir_path: 目录路径（action=list 时使用）
-            pattern: 文件模式（action=list）
-            recursive: 递归删除目录（action=delete）
-            parents: 创建父目录（action=mkdir）
-            files: 批量创建的文件（action=create）
-            detail: 显示详细信息（action=list）
-        """
         if action == "list":
             target = dir_path or path or "."
             return self._fs_list(target, pattern, detail)
@@ -655,7 +602,6 @@ class FileTool(BaseTool):
             return {"success": False, "error": f"未知 action: {action}"}
 
     def _fs_list(self, path: str, pattern: str, detail: bool) -> Dict[str, Any]:
-        """列目录"""
         abs_path = self._resolve_path(path)
         if not os.path.isdir(abs_path):
             return {"success": False, "error": f"目录不存在: {abs_path}"}
@@ -695,7 +641,6 @@ class FileTool(BaseTool):
             return {"success": False, "error": str(e)}
 
     def _fs_mkdir(self, path: str, parents: bool) -> Dict[str, Any]:
-        """创建目录"""
         abs_path = self._resolve_path(path)
         try:
             os.makedirs(abs_path, exist_ok=parents)
@@ -708,7 +653,6 @@ class FileTool(BaseTool):
             return {"success": False, "error": str(e)}
 
     def _fs_delete(self, path: str, recursive: bool) -> Dict[str, Any]:
-        """删除文件/目录"""
         abs_path = self._resolve_path(path)
         if not os.path.exists(abs_path):
             return {"success": False, "error": f"不存在: {abs_path}"}
@@ -729,7 +673,6 @@ class FileTool(BaseTool):
             return {"success": False, "error": str(e)}
 
     def _fs_exists(self, path: str) -> Dict[str, Any]:
-        """检查存在"""
         abs_path = self._resolve_path(path)
         exists = os.path.exists(abs_path)
 
@@ -741,7 +684,6 @@ class FileTool(BaseTool):
         return result
 
     def _fs_create(self, base_dir: str, files: Dict[str, str]) -> Dict[str, Any]:
-        """批量创建文件"""
         abs_base = self._resolve_path(base_dir)
 
         try:
@@ -774,12 +716,7 @@ class FileTool(BaseTool):
             "details": results,
         }
 
-    # ================================================================
-    #  内部工具
-    # ================================================================
-
     def _resolve_path(self, path: str) -> str:
-        """解析路径"""
         if not path:
             return os.getcwd()
         if os.path.isabs(path):
@@ -787,7 +724,6 @@ class FileTool(BaseTool):
         return os.path.abspath(path)
 
     def _detect_encoding(self, path: str) -> str:
-        """检测文件编码"""
         try:
             with open(path, 'rb') as f:
                 raw = f.read(4)
@@ -815,7 +751,6 @@ class FileTool(BaseTool):
         return 'utf-8'
 
     def _cache_file(self, path: str, content: str):
-        """缓存文件状态"""
         self._read_cache[path] = FileState(
             path=path,
             content=content,
@@ -823,7 +758,6 @@ class FileTool(BaseTool):
         )
 
     def _atomic_write(self, path: str, content: str):
-        """原子写入"""
         dir_path = os.path.dirname(path) or '.'
         temp_fd, temp_path = tempfile.mkstemp(dir=dir_path, suffix='.tmp')
 

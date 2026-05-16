@@ -23,7 +23,7 @@ class SessionInfo:
         session_id: str,
         max_history: int = 200,
         max_tool_results: int = 10,
-        max_tool_result_length: int = 500,
+        max_tool_result_length: int = 2000,
         auto_compact_threshold: int = 10000,
         flash_mode: bool = False,
     ):

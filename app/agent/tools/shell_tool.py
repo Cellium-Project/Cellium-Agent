@@ -103,33 +103,32 @@ class ShellTool(BaseTool):
 
     @property
     def description(self) -> str:
-        """动态生成 description（包含环境信息）"""
         env_info = _detect_embedded_python()
 
         base_desc = (
             "执行系统命令。\n\n"
-            "**重要**: Windows 环境使用 PowerShell，Linux/Mac 使用 bash。\n"
-            "- Windows: 用 PowerShell 语法（如 `Get-ChildItem`、`pwd`、`$env:PATH`）\n"
-            "- Linux/Mac: 用 bash 语法（如 `ls -la`、`pwd`、`echo $PATH`）\n\n"
-            "| 子命令 | 用途 | 必填参数 |\n"
-            "|--------|------|----------|\n"
-            "| `run` | 执行命令 | `cmd` |\n"
+            "**优先使用 argv 参数**：\n"
+            "- 执行 Python/脚本命令时，用 `argv=[\"python\", \"-c\", \"code\"]` 而非 `cmd`\n"
+            "- argv 直接传给进程，无 shell 解析，避免引号/换行问题\n"
+            "- 示例: `{\"command\": \"run\", \"argv\": [\"python\", \"-c\", \"print(1+1)\"]}`\n\n"
+            "**使用 cmd 的情况**：\n"
+            "- 需要 pipe (`|`)、`&&`、`||`、重定向 (`>`)、wildcard (`*`)\n"
+            "- Windows: PowerShell 语法 | Linux/Mac: bash 语法\n\n"
+            "| 子命令 | 用途 | 参数 |\n"
+            "|--------|------|------|\n"
+            "| `run` | 执行命令 | `argv`(优先) 或 `cmd` |\n"
             "| `list` | 列出后台任务 | - |\n"
             "| `output` | 获取任务输出 | `task_id` |\n"
             "| `kill` | 终止后台任务 | `task_id` |\n\n"
-            "**铁律**: 长运行服务（server/dev 等）必须 `background=true`，否则会阻塞超时\n"
-            "**注意**: Windows 上可用 `dir`、`type`、`cd` 等 cmd 命令，会自动回退到 cmd.exe"
+            "**铁律**: 长运行服务必须 `background=true`"
         )
 
-        # 打包环境：注入 Python 路径信息
         if env_info["is_embedded"] == "true":
             env_note = (
                 f"\n\n**【打包环境 Python 信息】**\n"
                 f"- 嵌入式 Python: `{env_info['python_path']}`\n"
                 f"- 依赖目录: `{env_info['libs_path']}`\n"
-                f"- **安装依赖必须用**: `{env_info['pip_cmd']}`\n"
-                f"- 示例: `{env_info['python_path']} -m pip install qrcode --target=\"{env_info['libs_path']}\"`\n"
-                f"**切勿**使用系统 pip，否则依赖无法被本程序加载！"
+                f"- **安装依赖**: `{env_info['pip_cmd']}`\n"
             )
             return base_desc + env_note
 
@@ -146,7 +145,6 @@ class ShellTool(BaseTool):
 
     @property
     def definition(self) -> Dict:
-        """生成 LLM function calling 定义"""
         return {
             "type": "function",
             "function": {
@@ -162,7 +160,12 @@ class ShellTool(BaseTool):
                         },
                         "cmd": {
                             "type": "string",
-                            "description": "[run] 要执行的命令",
+                            "description": "[run] shell 命令字符串（经 shell 解析）",
+                        },
+                        "argv": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "[run] 命令参数列表（直接执行，不经 shell。优先使用）",
                         },
                         "background": {
                             "type": "boolean",
@@ -183,21 +186,41 @@ class ShellTool(BaseTool):
     # ================================================================
 
     def _cmd_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        执行命令
-
-        参数：
-          - cmd: 要执行的命令（必填）
-          - background: 是否后台运行（默认 false）
-        """
+        argv = args.get("argv")
         cmd = args.get("cmd", "")
         background = args.get("background", False)
 
-        if not cmd or not cmd.strip():
-            return {"success": False, "error": "缺少 cmd 参数"}
-
         if not self.shell:
             return {"success": False, "error": "Shell 未初始化"}
+
+        if argv and isinstance(argv, list):
+            cmd_str = " ".join(argv)
+            if not self._check_permission(cmd_str):
+                return {"success": False, "error": f"Permission denied: {cmd_str[:100]}"}
+
+            try:
+                logger.info("[ShellTool] run(argv) | argv=%s | background=%s", argv[:5], background)
+                result = self.shell.execute({
+                    "argv": argv,
+                    "run_in_background": background,
+                })
+
+                if background and result.get("status") == "background_started":
+                    return {
+                        "success": True,
+                        "task_id": result.get("task_id"),
+                        "output_file": result.get("output_file"),
+                        "message": f"后台任务已启动，ID: {result.get('task_id')}",
+                    }
+
+                return result
+
+            except Exception as e:
+                logger.error("[ShellTool] run(argv) 失败 | error=%s", str(e))
+                return {"success": False, "error": f"执行失败: {str(e)}"}
+
+        if not cmd or not cmd.strip():
+            return {"success": False, "error": "缺少 cmd 或 argv 参数"}
 
         if not self._check_permission(cmd):
             return {"success": False, "error": f"Permission denied: {cmd[:100]}"}
@@ -209,7 +232,6 @@ class ShellTool(BaseTool):
                 "run_in_background": background,
             })
 
-            # 后台任务返回 task_id
             if background and result.get("status") == "background_started":
                 return {
                     "success": True,
@@ -218,7 +240,6 @@ class ShellTool(BaseTool):
                     "message": f"后台任务已启动，ID: {result.get('task_id')}",
                 }
 
-            # 前台任务直接返回结果
             return result
 
         except Exception as e:

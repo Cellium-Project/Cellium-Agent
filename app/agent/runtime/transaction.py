@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Edit Transaction Runtime — 小步提交机制
-"""
-
 import os
 import json
 import uuid
@@ -15,57 +11,48 @@ from pathlib import Path
 from .diagnostics import DiagnosticLoop, DiagnosticEngine, Diagnostic
 from .patch import Patch, PatchEngine
 from .core import CodeRuntime
+from .patch_applier import PatchApplier
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class EditStep:
-    """单步编辑记录
-
-    记录一次编辑操作的完整信息，用于：
-      - 回滚单步
-      - 重试失败步骤
-      - 回放编辑历史
-      - 崩溃恢复
-    """
-    step_id: str                          # 步骤唯一 ID
-    file: str                             # 目标文件
-    patch: Dict[str, Any]                 # Patch 信息（old_start, old_end, old_text, new_text）
-    snapshot_id: str                      # 快照 ID（用于回滚）
-    status: str = "pending"               # pending / applied / committed / failed / rolled_back
-    diagnostics: List[Dict[str, Any]] = field(default_factory=list) 
-    error: Optional[str] = None           # 错误信息
+    step_id: str
+    file: str
+    patch: Dict[str, Any]
+    snapshot_id: str
+    status: str = "pending"
+    diagnostics: List[Dict[str, Any]] = field(default_factory=list)
+    error: Optional[str] = None
+    diff: str = ""
     timestamp: float = field(default_factory=time.time)
-    retry_count: int = 0                  # 重试次数
-    metadata: Dict[str, Any] = field(default_factory=dict)  # 额外元数据
+    retry_count: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """序列化为字典"""
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EditStep":
-        """从字典反序列化"""
         return cls(**data)
 
 
 @dataclass
 class TransactionState:
-    """事务状态"""
     transaction_id: str
-    status: str = "active"  # active / committed / rolled_back / failed
+    status: str = "active"
     created_at: float = field(default_factory=time.time)
     steps: List[EditStep] = field(default_factory=list)
     committed_steps: List[str] = field(default_factory=list)
     failed_steps: List[str] = field(default_factory=list)
-    rollback_history: List[str] = field(default_factory=list)  # 已回滚的步骤 ID
+    rollback_history: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)  
 
 
 class EditTransaction:
 
-    JOURNAL_DIR = ".edit_journal"  # 日志目录
+    JOURNAL_DIR = ".edit_journal"
 
     def __init__(self, workspace: str = None, auto_validate: bool = True):
         self.workspace = workspace or os.getcwd()
@@ -73,21 +60,9 @@ class EditTransaction:
         self.state: Optional[TransactionState] = None
         self._runtime = CodeRuntime()
         self._diagnostic_loop = DiagnosticLoop()
-        self._file_cache: Dict[str, str] = {}  # 文件内容缓存
-
-    # ================================================================
-    #  事务生命周期
-    # ================================================================
+        self._file_cache: Dict[str, str] = {}
 
     def begin(self, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
-        """开始新事务
-
-        Args:
-            metadata: 事务元数据（如 task_id, description 等）
-
-        Returns:
-            {"success": True, "transaction_id": "..."}
-        """
         if self.state and self.state.status == "active":
             return {
                 "success": False,
@@ -114,13 +89,6 @@ class EditTransaction:
         }
 
     def commit(self) -> Dict[str, Any]:
-        """提交事务（标记为已完成）
-
-        注意：这不会回滚任何内容，只是标记事务完成
-
-        Returns:
-            {"success": True, "steps_committed": N, "steps_failed": M}
-        """
         if not self.state:
             return {"success": False, "error": "没有活跃事务"}
 
@@ -143,40 +111,25 @@ class EditTransaction:
             "steps_rolled_back": len(self.state.rollback_history),
         }
 
-    # ================================================================
-    #  步骤管理
-    # ================================================================
-
     def create_step(
         self,
         file: str,
         old_text: str,
         new_text: str,
+        replace_all: bool = False,
         metadata: Dict[str, Any] = None
     ) -> EditStep:
-        """创建编辑步骤（不立即执行）
-
-        Args:
-            file: 目标文件路径
-            old_text: 要替换的文本
-            new_text: 新文本
-            metadata: 步骤元数据
-
-        Returns:
-            EditStep 实例
-        """
         if not self.state or self.state.status != "active":
             raise RuntimeError("没有活跃事务，请先调用 begin()")
 
         abs_path = self._resolve_path(file)
-
         snapshot_id = self._runtime.snapshot(abs_path)
 
         patch = {
+            "mode": "replace",
             "old_text": old_text,
             "new_text": new_text,
-            "old_start": None,  
-            "old_end": None,
+            "replace_all": replace_all,
         }
 
         step = EditStep(
@@ -186,9 +139,92 @@ class EditTransaction:
             snapshot_id=snapshot_id,
             metadata=metadata or {},
         )
-
         self.state.steps.append(step)
+        return step
 
+    def create_step_for_insert(
+        self,
+        file: str,
+        line: int,
+        content: str,
+        metadata: Dict[str, Any] = None
+    ) -> EditStep:
+        if not self.state or self.state.status != "active":
+            raise RuntimeError("没有活跃事务，请先调用 begin()")
+
+        abs_path = self._resolve_path(file)
+        snapshot_id = self._runtime.snapshot(abs_path)
+
+        patch = {
+            "mode": "insert",
+            "line": line,
+            "content": content,
+        }
+
+        step = EditStep(
+            step_id=self._generate_step_id(),
+            file=abs_path,
+            patch=patch,
+            snapshot_id=snapshot_id,
+            metadata=metadata or {},
+        )
+        self.state.steps.append(step)
+        return step
+
+    def create_step_for_append(
+        self,
+        file: str,
+        content: str,
+        metadata: Dict[str, Any] = None
+    ) -> EditStep:
+        if not self.state or self.state.status != "active":
+            raise RuntimeError("没有活跃事务，请先调用 begin()")
+
+        abs_path = self._resolve_path(file)
+        snapshot_id = self._runtime.snapshot(abs_path)
+
+        patch = {
+            "mode": "append",
+            "content": content,
+        }
+
+        step = EditStep(
+            step_id=self._generate_step_id(),
+            file=abs_path,
+            patch=patch,
+            snapshot_id=snapshot_id,
+            metadata=metadata or {},
+        )
+        self.state.steps.append(step)
+        return step
+
+    def create_step_for_regex(
+        self,
+        file: str,
+        pattern: str,
+        replacement: str,
+        metadata: Dict[str, Any] = None
+    ) -> EditStep:
+        if not self.state or self.state.status != "active":
+            raise RuntimeError("没有活跃事务，请先调用 begin()")
+
+        abs_path = self._resolve_path(file)
+        snapshot_id = self._runtime.snapshot(abs_path)
+
+        patch = {
+            "mode": "regex",
+            "pattern": pattern,
+            "replacement": replacement,
+        }
+
+        step = EditStep(
+            step_id=self._generate_step_id(),
+            file=abs_path,
+            patch=patch,
+            snapshot_id=snapshot_id,
+            metadata=metadata or {},
+        )
+        self.state.steps.append(step)
         return step
 
     def create_step_by_range(
@@ -199,37 +235,17 @@ class EditTransaction:
         new_text: str,
         metadata: Dict[str, Any] = None
     ) -> EditStep:
-        """按行号范围创建编辑步骤
-
-        Args:
-            file: 目标文件路径
-            start_line: 起始行号（从 0 开始）
-            end_line: 结束行号（不包含）
-            new_text: 新文本
-            metadata: 步骤元数据
-        """
         if not self.state or self.state.status != "active":
             raise RuntimeError("没有活跃事务，请先调用 begin()")
 
         abs_path = self._resolve_path(file)
-
-        content = self._read_file(abs_path)
-        lines = content.split('\n')
-
-        if start_line < 0 or start_line >= len(lines):
-            raise ValueError(f"start_line {start_line} 无效")
-        if end_line <= start_line or end_line > len(lines):
-            raise ValueError(f"end_line {end_line} 无效")
-
-        old_text = '\n'.join(lines[start_line:end_line])
-
         snapshot_id = self._runtime.snapshot(abs_path)
 
         patch = {
-            "old_text": old_text,
-            "new_text": new_text,
+            "mode": "range",
             "start_line": start_line,
             "end_line": end_line,
+            "new_text": new_text,
         }
 
         step = EditStep(
@@ -239,20 +255,10 @@ class EditTransaction:
             snapshot_id=snapshot_id,
             metadata=metadata or {},
         )
-
         self.state.steps.append(step)
-
         return step
 
     def commit_step(self, step: EditStep, validate: bool = True) -> Dict[str, Any]:
-        """提交单步编辑
-        Args:
-            step: 编辑步骤
-            validate: 是否验证（默认 True）
-
-        Returns:
-            {"success": True/False, "diagnostics": [...], "rolled_back": bool}
-        """
         if not self.state or self.state.status != "active":
             return {"success": False, "error": "没有活跃事务"}
 
@@ -264,30 +270,32 @@ class EditTransaction:
         try:
             content = self._read_file(abs_path)
 
-            if "old_text" in step.patch and step.patch["old_text"]:
-                old_text = step.patch["old_text"]
-                if old_text not in content:
-                    step.status = "failed"
-                    step.error = "未找到要替换的文本"
-                    self.state.failed_steps.append(step.step_id)
-                    return {
-                        "success": False,
-                        "error": step.error,
-                        "step_id": step.step_id,
-                    }
+            new_content, apply_info = PatchApplier.apply(content, step.patch)
 
-                new_content = content.replace(old_text, step.patch["new_text"], 1)
-            else:
-                lines = content.split('\n')
-                start = step.patch.get("start_line", 0)
-                end = step.patch.get("end_line", len(lines))
-                new_text = step.patch.get("new_text", "")
+            if apply_info.get("error"):
+                step.status = "failed"
+                step.error = apply_info["error"]
+                self.state.failed_steps.append(step.step_id)
+                return {
+                    "success": False,
+                    "error": step.error,
+                    "step_id": step.step_id,
+                }
 
-                new_lines = lines[:start] + [new_text] + lines[end:]
-                new_content = '\n'.join(new_lines)
+            if new_content == content:
+                step.status = "failed"
+                step.error = "内容无变化"
+                self.state.failed_steps.append(step.step_id)
+                return {
+                    "success": False,
+                    "error": step.error,
+                    "step_id": step.step_id,
+                }
 
             self._write_file(abs_path, new_content)
             step.status = "applied"
+
+            diff = PatchApplier._generate_diff(content, new_content)
 
             if validate and self.auto_validate:
                 diagnostics = self._diagnostic_loop.engine.check(abs_path, new_content)
@@ -303,6 +311,7 @@ class EditTransaction:
                         "error": "诊断失败，已自动回滚",
                         "rolled_back": True,
                         "diagnostics": step.diagnostics,
+                        "diff": diff,
                         "step_id": step.step_id,
                     }
 
@@ -316,8 +325,9 @@ class EditTransaction:
                 "success": True,
                 "step_id": step.step_id,
                 "file": abs_path,
+                "count": apply_info.get("count", 0),
+                "diff": diff,
                 "diagnostics": step.diagnostics,
-                "rolled_back": False,
             }
 
         except Exception as e:
@@ -334,14 +344,6 @@ class EditTransaction:
             }
 
     def rollback_step(self, step: EditStep) -> Dict[str, Any]:
-        """回滚单步编辑
-
-        Args:
-            step: 要回滚的步骤
-
-        Returns:
-            {"success": True/False}
-        """
         if step.status not in ("applied", "committed", "failed"):
             return {"success": False, "error": f"步骤状态 {step.status} 不可回滚"}
 
@@ -365,15 +367,6 @@ class EditTransaction:
             return {"success": False, "error": "回滚失败（快照不存在）"}
 
     def rollback_to_step(self, step_id: str, include_target: bool = False) -> Dict[str, Any]:
-        """回滚到指定步骤（回滚该步骤之后的所有操作）
-
-        Args:
-            step_id: 目标步骤 ID
-            include_target: 是否也回滚目标步骤（默认 False，只回滚后续步骤）
-
-        Returns:
-            {"success": True, "rolled_back": [step_ids]}
-        """
         if not self.state:
             return {"success": False, "error": "没有活跃事务"}
 
@@ -407,11 +400,6 @@ class EditTransaction:
         }
 
     def rollback_all(self) -> Dict[str, Any]:
-        """回滚所有已提交步骤
-
-        Returns:
-            {"success": True, "rolled_back": [step_ids]}
-        """
         if not self.state:
             return {"success": False, "error": "没有活跃事务"}
 
@@ -435,14 +423,6 @@ class EditTransaction:
         }
 
     def retry_failed(self, max_retries: int = 3) -> Dict[str, Any]:
-        """重试所有失败步骤
-
-        Args:
-            max_retries: 最大重试次数
-
-        Returns:
-            {"success": True, "retried": [step_ids], "succeeded": [step_ids]}
-        """
         if not self.state:
             return {"success": False, "error": "没有活跃事务"}
 
@@ -474,12 +454,7 @@ class EditTransaction:
             "max_retries": max_retries,
         }
 
-    # ================================================================
-    #  查询接口
-    # ================================================================
-
     def get_step(self, step_id: str) -> Optional[EditStep]:
-        """获取指定步骤"""
         if not self.state:
             return None
         for step in self.state.steps:
@@ -488,23 +463,19 @@ class EditTransaction:
         return None
 
     def get_all_steps(self) -> List[EditStep]:
-        """获取所有步骤"""
         return self.state.steps if self.state else []
 
     def get_committed_steps(self) -> List[EditStep]:
-        """获取已提交步骤"""
         if not self.state:
             return []
         return [s for s in self.state.steps if s.status == "committed"]
 
     def get_failed_steps(self) -> List[EditStep]:
-        """获取失败步骤"""
         if not self.state:
             return []
         return [s for s in self.state.steps if s.status == "failed"]
 
     def get_summary(self) -> Dict[str, Any]:
-        """获取事务摘要"""
         if not self.state:
             return {"error": "没有活跃事务"}
 
@@ -518,12 +489,7 @@ class EditTransaction:
             "files_modified": list(set(s.file for s in self.state.steps if s.status == "committed")),
         }
 
-    # ================================================================
-    #  持久化
-    # ================================================================
-
     def _persist_state(self):
-        """持久化事务状态"""
         if not self.state:
             return
 
@@ -540,7 +506,6 @@ class EditTransaction:
             "metadata": self.state.metadata,
         }
 
-        # 原子写入
         import tempfile
         temp_file = journal_file + ".tmp"
         with open(temp_file, 'w', encoding='utf-8') as f:
@@ -549,20 +514,11 @@ class EditTransaction:
         os.replace(temp_file, journal_file)
 
     def recover(self, transaction_id: str = None) -> Dict[str, Any]:
-        """从崩溃中恢复事务
-
-        Args:
-            transaction_id: 要恢复的事务 ID（默认恢复最近的）
-
-        Returns:
-            {"success": True, "transaction": ...}
-        """
         journal_dir = self._get_journal_dir()
 
         if not os.path.exists(journal_dir):
             return {"success": False, "error": "没有找到日志目录"}
 
-        # 查找事务日志
         if transaction_id:
             journal_file = os.path.join(journal_dir, f"{transaction_id}.json")
             if not os.path.exists(journal_file):
@@ -604,36 +560,26 @@ class EditTransaction:
         except Exception as e:
             return {"success": False, "error": f"恢复失败: {e}"}
 
-    # ================================================================
-    #  内部工具
-    # ================================================================
-
     def _generate_id(self) -> str:
-        """生成事务 ID"""
         return f"tx_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
 
     def _generate_step_id(self) -> str:
-        """生成步骤 ID"""
         return f"step_{uuid.uuid4().hex[:8]}"
 
     def _get_journal_dir(self) -> str:
-        """获取日志目录"""
         return os.path.join(self.workspace, self.JOURNAL_DIR)
 
     def _get_journal_file(self) -> str:
-        """获取当前事务日志文件"""
         if not self.state:
             return None
         return os.path.join(self._get_journal_dir(), f"{self.state.transaction_id}.json")
 
     def _resolve_path(self, path: str) -> str:
-        """解析路径"""
         if os.path.isabs(path):
             return path
         return os.path.join(self.workspace, path)
 
     def _read_file(self, path: str) -> str:
-        """读取文件"""
         if path in self._file_cache:
             mtime = os.path.getmtime(path)
             cached = self._file_cache.get(f"{path}:mtime")
@@ -649,7 +595,6 @@ class EditTransaction:
         return content
 
     def _write_file(self, path: str, content: str):
-        """写入文件"""
         import tempfile
         dir_path = os.path.dirname(path) or '.'
         temp_fd, temp_path = tempfile.mkstemp(dir=dir_path, suffix='.tmp')
@@ -671,7 +616,6 @@ class EditTransaction:
         self._file_cache[f"{path}:mtime"] = os.path.getmtime(path)
 
     def _cleanup_current_journal(self):
-        """清理当前事务的日志文件（提交成功后调用）"""
         if not self.state:
             return
         journal_file = self._get_journal_file()
@@ -683,7 +627,6 @@ class EditTransaction:
                 logger.warning(f"清理事务日志失败: {e}")
 
     def _cleanup_journal(self, keep_days: int = 7):
-        """清理旧日志"""
         journal_dir = self._get_journal_dir()
         if not os.path.exists(journal_dir):
             return

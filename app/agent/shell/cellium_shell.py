@@ -154,12 +154,29 @@ def format_duration(seconds: float) -> str:
 
 
 def format_size(size_bytes: int) -> str:
-    """格式化文件大小"""
     for unit in ["B", "KB", "MB", "GB"]:
         if size_bytes < 1024:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f} TB"
+
+
+def _patch_python_c_for_stdin(argv: List[str]) -> Tuple[List[str], Optional[bytes]]:
+    if len(argv) < 3:
+        return argv, None
+
+    exe = os.path.basename(argv[0]).lower()
+    if exe not in ("python", "python.exe", "python3", "python3.exe"):
+        return argv, None
+
+    for i, arg in enumerate(argv):
+        if arg == "-c" and i + 1 < len(argv):
+            script = argv[i + 1]
+            patched = argv[:i] + ["-"] + argv[i + 2:]
+            stdin_data = script.encode('utf-8')
+            return patched, stdin_data
+
+    return argv, None
 
 
 # =============================================================================
@@ -354,14 +371,16 @@ class CelliumShell:
         self,
         command: Union[str, Dict[str, Any]] = "",
     ) -> Dict[str, Any]:
-        """
-        同步执行命令
-
-        支持两种调用方式：
-        1. dict 模式: {"command": "ls -la", "timeout": 30}
-        2. str 模式: "ls -la"
-        """
         if isinstance(command, dict):
+            argv = command.get("argv")
+            if argv and isinstance(argv, list):
+                logger.info("[Shell] execute(argv) | argv=%s", argv[:5])
+                return self._run_argv(
+                    argv,
+                    timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
+                    run_in_background=command.get("run_in_background", False),
+                    cwd=command.get("cwd", self._cwd),
+                )
             cmd_str = command.get("command", "")
             logger.info("[Shell] execute(dict) | command=%s", cmd_str[:200] if cmd_str else "(空)")
             return self._run_command(
@@ -381,17 +400,16 @@ class CelliumShell:
         self,
         command: Union[str, Dict[str, Any]] = "",
     ) -> Dict[str, Any]:
-        """
-        异步执行命令
-
-        支持两种调用方式：
-        1. dict 模式: {"command": "ls -la", "timeout": 30}
-        2. str 模式: "ls -la"
-
-        额外参数:
-            - on_progress: 流式输出回调 fn(stdout: str, stderr: str)
-        """
         if isinstance(command, dict):
+            argv = command.get("argv")
+            if argv and isinstance(argv, list):
+                logger.info("[Shell] execute_async(argv) | argv=%s", argv[:5])
+                return self._run_argv(
+                    argv,
+                    timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
+                    run_in_background=command.get("run_in_background", False),
+                    cwd=command.get("cwd", self._cwd),
+                )
             cmd_str = command.get("command", "")
             logger.info("[Shell] execute_async(dict) | command=%s", cmd_str[:200] if cmd_str else "(空)")
             return await self._run_command_async(
@@ -491,6 +509,158 @@ class CelliumShell:
 
         return self._execute_sync(cmd, effective_timeout, cwd, cmd_type)
 
+    def _run_argv(
+        self,
+        argv: List[str],
+        timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        run_in_background: bool = False,
+        cwd: str = None,
+    ) -> Dict[str, Any]:
+        if not argv:
+            return {"success": False, "error": "argv 为空"}
+
+        cmd_str = " ".join(argv)
+        sec = self._check_security(cmd_str)
+        if not sec["allowed"]:
+            return {"success": False, "error": f"安全拦截: {sec['reason']}"}
+
+        effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
+
+        if run_in_background:
+            return self._run_background_argv(argv, effective_timeout, cwd)
+
+        return self._execute_argv_sync(argv, effective_timeout, cwd)
+
+    def _execute_argv_sync(
+        self,
+        argv: List[str],
+        timeout: int,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
+        env = os.environ.copy()
+        start_time = time.time()
+
+        try:
+            process = subprocess.Popen(
+                argv,
+                stdin=None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=work_dir,
+                env=env,
+                shell=False,
+            )
+
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+                elapsed = time.time() - start_time
+
+                stdout_str = decode_output(stdout).strip()
+                stderr_str = decode_output(stderr).strip()
+                output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
+
+                result = {
+                    "output": output,
+                    "exit_code": process.returncode,
+                    "elapsed_ms": int(elapsed * 1000),
+                }
+
+                if stderr_str:
+                    result["stderr"] = stderr_str
+                if truncated:
+                    result["truncated"] = True
+                if process.returncode != 0:
+                    result["error"] = stderr_str or f"Exit code: {process.returncode}"
+
+                return result
+
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                return {
+                    "error": f"命令超时（{timeout}秒）",
+                    "timed_out": True,
+                    "timeout_seconds": timeout,
+                }
+
+        except FileNotFoundError:
+            return {"success": False, "error": f"命令未找到: {argv[0]}"}
+        except PermissionError as e:
+            return {"success": False, "error": f"权限拒绝: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"执行失败 ({type(e).__name__}): {e}"}
+
+    def _run_background_argv(
+        self,
+        argv: List[str],
+        timeout: int,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        import uuid
+        task_id = f"bg_{uuid.uuid4().hex[:8]}"
+        output_file = os.path.join(tempfile.gettempdir(), f"{task_id}.output")
+
+        def run_in_thread():
+            work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
+            env = os.environ.copy()
+
+            try:
+                process = subprocess.Popen(
+                    argv,
+                    stdin=None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=work_dir,
+                    env=env,
+                    shell=False,
+                )
+
+                try:
+                    stdout, stderr = process.communicate(timeout=timeout)
+                    stdout_str = decode_output(stdout)
+                    stderr_str = decode_output(stderr)
+
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(stdout_str)
+                        if stderr_str:
+                            f.write("\n--- STDERR ---\n")
+                            f.write(stderr_str)
+
+                    return {
+                        "task_id": task_id,
+                        "output_file": output_file,
+                        "exit_code": process.returncode,
+                    }
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(f"Command timed out after {timeout} seconds")
+                    return {
+                        "task_id": task_id,
+                        "output_file": output_file,
+                        "error": "timeout",
+                    }
+            except Exception as e:
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(f"Error: {str(e)}")
+                return {
+                    "task_id": task_id,
+                    "output_file": output_file,
+                    "error": str(e),
+                }
+
+        future = self._get_executor().submit(run_in_thread)
+        self._background_tasks[task_id] = future
+
+        return {
+            "status": "background_started",
+            "task_id": task_id,
+            "output_file": output_file,
+            "message": "命令已在后台执行",
+        }
+
     async def _run_command_async(
         self,
         cmd: str,
@@ -522,13 +692,18 @@ class CelliumShell:
         cwd: str,
         cmd_type: CommandType,
     ) -> Dict[str, Any]:
-        """同步执行命令"""
         shell_cmd, shell_args = self._resolve_shell(cmd)
 
         if self._platform == "win32" and "powershell" not in shell_cmd.lower():
             full_cmd = [shell_cmd] + shell_args + [cmd]
         else:
             full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+
+        stdin_data = None
+        if self._platform == "win32" and self._shell_name == "powershell":
+            patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+            if stdin_data:
+                full_cmd = patched
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
         env = os.environ.copy()
@@ -538,7 +713,7 @@ class CelliumShell:
         try:
             process = subprocess.Popen(
                 full_cmd,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin_data else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=work_dir,
@@ -547,7 +722,10 @@ class CelliumShell:
             )
 
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
+                if stdin_data:
+                    stdout, stderr = process.communicate(input=stdin_data, timeout=timeout)
+                else:
+                    stdout, stderr = process.communicate(timeout=timeout)
                 elapsed = time.time() - start_time
 
                 stdout_str = decode_output(stdout).strip()
@@ -596,13 +774,18 @@ class CelliumShell:
         cmd_type: CommandType,
         on_progress: Optional[Callable] = None,
     ) -> Dict[str, Any]:
-        """异步执行命令（使用 asyncio subprocess）"""
         shell_cmd, shell_args = self._resolve_shell(cmd)
 
         if self._platform == "win32" and "powershell" not in shell_cmd.lower():
             full_cmd = [shell_cmd] + shell_args + [cmd]
         else:
             full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+
+        stdin_data = None
+        if self._platform == "win32" and self._shell_name == "powershell":
+            patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+            if stdin_data:
+                full_cmd = patched
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
         env = os.environ.copy()
@@ -614,15 +797,52 @@ class CelliumShell:
         try:
             process = await asyncio.create_subprocess_exec(
                 *full_cmd,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE if stdin_data else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=work_dir,
                 env=env,
             )
 
+            if stdin_data:
+                try:
+                    if timeout > 0:
+                        stdout, stderr = await asyncio.wait_for(
+                            process.communicate(input=stdin_data),
+                            timeout=timeout,
+                        )
+                    else:
+                        stdout, stderr = await process.communicate(input=stdin_data)
+
+                    elapsed = time.time() - start_time
+                    stdout_str = decode_output(stdout).strip()
+                    stderr_str = decode_output(stderr).strip()
+                    output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
+
+                    result = {
+                        "output": output,
+                        "exit_code": process.returncode,
+                        "elapsed_ms": int(elapsed * 1000),
+                        "command_type": cmd_type.value,
+                    }
+                    if stderr_str:
+                        result["stderr"] = stderr_str
+                    if truncated:
+                        result["truncated"] = True
+                    if process.returncode != 0:
+                        result["error"] = stderr_str or f"Exit code: {process.returncode}"
+                    return result
+
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                    return {
+                        "error": f"命令超时（{timeout}秒）",
+                        "timed_out": True,
+                        "timeout_seconds": timeout,
+                    }
+
             async def read_stream(stream: asyncio.StreamReader, is_stdout: bool):
-                """流式读取输出"""
                 try:
                     while True:
                         line = await stream.readline()
@@ -715,7 +935,6 @@ class CelliumShell:
         timeout: int,
         cwd: str,
     ) -> Dict[str, Any]:
-        """后台执行命令"""
         import uuid
         task_id = f"bg_{uuid.uuid4().hex[:8]}"
         output_file = os.path.join(tempfile.gettempdir(), f"{task_id}.output")
@@ -728,13 +947,19 @@ class CelliumShell:
             else:
                 full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
 
+            stdin_data = None
+            if self._platform == "win32" and self._shell_name == "powershell":
+                patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+                if stdin_data:
+                    full_cmd = patched
+
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
             env = os.environ.copy()
 
             try:
                 process = subprocess.Popen(
                     full_cmd,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE if stdin_data else None,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=work_dir,
@@ -743,7 +968,10 @@ class CelliumShell:
                 )
 
                 try:
-                    stdout, stderr = process.communicate(timeout=timeout)
+                    if stdin_data:
+                        stdout, stderr = process.communicate(input=stdin_data, timeout=timeout)
+                    else:
+                        stdout, stderr = process.communicate(timeout=timeout)
                     stdout_str = decode_output(stdout)
                     stderr_str = decode_output(stderr)
 

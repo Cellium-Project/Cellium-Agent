@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 @dataclass
@@ -175,72 +175,205 @@ class SymbolSummary:
             return SymbolSummary._extract_javascript(content)
         elif ext in ('.go',):
             return SymbolSummary._extract_go(content)
+        elif ext in ('.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.java', '.rs', '.cs', '.swift', '.kt'):
+            return SymbolSummary._extract_c_style(content)
         return {"symbols": [], "raw": content[:500]}
 
     @staticmethod
     def _extract_python(content: str) -> Dict[str, Any]:
-        symbols = []
         lines = content.split('\n')
-        current_class = None
-        class_indent = 0
+        n = len(lines)
 
-        class_pattern = re.compile(r'^class\s+(\w+)')
-        func_pattern = re.compile(r'^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)')
-        arg_pattern = re.compile(r'(\w+)')
+        class_pattern = re.compile(r'^class\s+(\w+)(?:\([^)]*\))?:')
+        func_start_pattern = re.compile(r'^(?:async\s+)?def\s+(\w+)\s*\(')
 
-        for i, line in enumerate(lines):
+        def get_indent(line: str) -> int:
+            return len(line) - len(line.lstrip())
+
+        def collect_params(start_i: int) -> Tuple[str, int]:
+            line = lines[start_i]
             stripped = line.strip()
+            m = func_start_pattern.match(stripped)
+            if not m:
+                return '', start_i + 1
 
-            if stripped.startswith('#'):
-                continue
+            func_name = m.group(1)
+            paren_pos = stripped.find('(')
+            if paren_pos == -1:
+                return func_name, start_i + 1
 
-            class_match = class_pattern.match(stripped)
-            if class_match:
-                current_class = class_match.group(1)
-                class_indent = len(line) - len(line.lstrip())
-                symbols.append({
-                    "type": "class",
-                    "name": current_class,
-                    "line": i + 1,
-                    "methods": [],
-                })
-                continue
+            depth = 0
+            close_pos = None
+            for pos, ch in enumerate(stripped[paren_pos:], start=paren_pos):
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        close_pos = pos + 1
+                        break
 
-            func_match = func_pattern.match(stripped)
-            if func_match:
-                func_name = func_match.group(1)
-                args_str = func_match.group(2)
-                args = arg_pattern.findall(args_str)
-                args = [a for a in args if a not in ('self', 'cls')]
+            if close_pos:
+                params_str = stripped[paren_pos:close_pos]
+                return func_name, params_str
 
-                line_indent = len(line) - len(line.lstrip())
+            params_lines = [stripped[paren_pos:]]
+            i = start_i + 1
+            while i < n and depth > 0:
+                next_stripped = lines[i].strip()
+                for pos, ch in enumerate(next_stripped):
+                    if ch == '(':
+                        depth += 1
+                    elif ch == ')':
+                        depth -= 1
+                        if depth == 0:
+                            params_lines.append(next_stripped[:pos + 1])
+                            break
+                if depth > 0:
+                    params_lines.append(next_stripped)
+                i += 1
 
-                if current_class and line_indent > class_indent:
-                    if symbols:
-                        symbols[-1]["methods"].append({
-                            "name": func_name,
-                            "args": args,
-                            "line": i + 1,
-                        })
+            params_str = ' '.join(params_lines)
+            return func_name, params_str
+
+        def parse_params(params_str: str) -> List[str]:
+            if not params_str or params_str.strip() in ('()', ''):
+                return []
+            content = params_str.strip()
+            if content.startswith('('):
+                content = content[1:]
+            if content.endswith(')'):
+                content = content[:-1]
+            if content.endswith(':'):
+                content = content[:-1]
+
+            args = []
+            depth = 0
+            current = ''
+            for ch in content:
+                if ch in '([{<':
+                    depth += 1
+                    current += ch
+                elif ch in ')]}>':
+                    depth -= 1
+                    current += ch
+                elif ch == ',' and depth == 0:
+                    param = current.strip()
+                    if param:
+                        name = param.split(':')[0].split('=')[0].strip()
+                        if name and name not in ('self', 'cls'):
+                            if name.startswith('**'):
+                                name = name[2:]
+                            elif name.startswith('*'):
+                                name = name[1:]
+                            args.append(name)
+                    current = ''
                 else:
-                    current_class = None
-                    symbols.append({
-                        "type": "function",
+                    current += ch
+            if current.strip():
+                param = current.strip()
+                name = param.split(':')[0].split('=')[0].strip()
+                if name and name not in ('self', 'cls'):
+                    if name.startswith('**'):
+                        name = name[2:]
+                    elif name.startswith('*'):
+                        name = name[1:]
+                    args.append(name)
+            return args
+
+        def find_end(start_i: int, start_indent: int) -> int:
+            j = start_i + 1
+            while j < n:
+                next_line = lines[j]
+                next_stripped = next_line.strip()
+                if next_stripped == '' or next_stripped.startswith('#'):
+                    j += 1
+                    continue
+                if get_indent(next_line) <= start_indent:
+                    break
+                j += 1
+            return j
+
+        def extract_methods(start_i: int, end_i: int, class_indent: int) -> List[Dict]:
+            methods = []
+            method_indent = class_indent + 4
+            i = start_i + 1
+            while i < end_i:
+                stripped = lines[i].strip()
+                if stripped.startswith('#') or stripped == '':
+                    i += 1
+                    continue
+                line_indent = get_indent(lines[i])
+                if line_indent < method_indent:
+                    i += 1
+                    continue
+                func_match = func_start_pattern.match(stripped)
+                if func_match:
+                    func_name, params_str = collect_params(i)
+                    args = parse_params(params_str)
+                    method_end = find_end(i, line_indent)
+                    methods.append({
                         "name": func_name,
                         "args": args,
                         "line": i + 1,
+                        "end_line": method_end,
                     })
+                    i = method_end
+                else:
+                    i += 1
+            return methods
+
+        symbols = []
+        i = 0
+        while i < n:
+            stripped = lines[i].strip()
+            if stripped.startswith('#') or stripped == '':
+                i += 1
+                continue
+
+            class_match = class_pattern.match(stripped)
+            func_match = func_start_pattern.match(stripped)
+
+            if class_match:
+                start_indent = get_indent(lines[i])
+                end_line = find_end(i, start_indent)
+                methods = extract_methods(i, end_line, start_indent)
+                symbols.append({
+                    "type": "class",
+                    "name": class_match.group(1),
+                    "line": i + 1,
+                    "end_line": end_line,
+                    "methods": methods,
+                })
+                i = end_line
+
+            elif func_match:
+                start_indent = get_indent(lines[i])
+                end_line = find_end(i, start_indent)
+                func_name, params_str = collect_params(i)
+                args = parse_params(params_str)
+                symbols.append({
+                    "type": "function",
+                    "name": func_name,
+                    "args": args,
+                    "line": i + 1,
+                    "end_line": end_line,
+                })
+                i = end_line
+
+            else:
+                i += 1
 
         summary_lines = []
         for sym in symbols:
             if sym["type"] == "class":
-                summary_lines.append(f"class {sym['name']}")
+                summary_lines.append(f"class {sym['name']} (lines {sym['line']}-{sym['end_line']})")
                 for m in sym.get("methods", []):
                     args_str = ", ".join(m["args"]) if m["args"] else ""
-                    summary_lines.append(f"  - {m['name']}({args_str})")
+                    summary_lines.append(f"  - {m['name']}({args_str}) (lines {m['line']}-{m['end_line']})")
             else:
                 args_str = ", ".join(sym.get("args", []))
-                summary_lines.append(f"function {sym['name']}({args_str})")
+                summary_lines.append(f"function {sym['name']}({args_str}) (lines {sym['line']}-{sym['end_line']})")
 
         return {
             "symbols": symbols,
@@ -252,40 +385,71 @@ class SymbolSummary:
     def _extract_javascript(content: str) -> Dict[str, Any]:
         symbols = []
         lines = content.split('\n')
+        n = len(lines)
 
         class_pattern = re.compile(r'(?:export\s+)?class\s+(\w+)')
         func_pattern = re.compile(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)')
-        method_pattern = re.compile(r'(\w+)\s*\(([^)]*)\)\s*\{')
-        arrow_pattern = re.compile(r'(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*=>')
 
-        current_class = None
+        def get_indent(line: str) -> int:
+            return len(line) - len(line.lstrip())
 
-        for i, line in enumerate(lines):
-            class_match = class_pattern.search(line)
-            if class_match:
-                current_class = class_match.group(1)
-                symbols.append({
-                    "type": "class",
-                    "name": current_class,
-                    "line": i + 1,
-                    "methods": [],
-                })
+        i = 0
+        while i < n:
+            line = lines[i]
+            stripped = line.strip()
+
+            if stripped.startswith('//') or stripped == '':
+                i += 1
                 continue
 
-            func_match = func_pattern.search(line)
-            if func_match:
+            class_match = class_pattern.search(stripped)
+            func_match = func_pattern.search(stripped)
+
+            if class_match or func_match:
+                start_line = i + 1
+                start_indent = get_indent(line)
+
+                sym_type = "class" if class_match else "function"
+                sym_name = class_match.group(1) if class_match else func_match.group(1)
+
+                j = i + 1
+                brace_count = line.count('{') - line.count('}')
+                started = brace_count > 0
+                while j < n:
+                    next_line = lines[j]
+                    next_stripped = next_line.strip()
+                    if next_stripped.startswith('//'):
+                        j += 1
+                        continue
+                    brace_count += next_line.count('{')
+                    brace_count -= next_line.count('}')
+                    if started and brace_count <= 0:
+                        j += 1
+                        break
+                    if brace_count > 0:
+                        started = True
+                        next_indent = get_indent(next_line)
+                        if next_indent <= start_indent and next_stripped != '':
+                            break
+                    j += 1
+                end_line = j
+
                 symbols.append({
-                    "type": "function",
-                    "name": func_match.group(1),
-                    "line": i + 1,
+                    "type": sym_type,
+                    "name": sym_name,
+                    "line": start_line,
+                    "end_line": end_line,
                 })
+                i = j
+            else:
+                i += 1
 
         summary_lines = []
         for sym in symbols:
             if sym["type"] == "class":
-                summary_lines.append(f"class {sym['name']}")
+                summary_lines.append(f"class {sym['name']} (lines {sym['line']}-{sym['end_line']})")
             else:
-                summary_lines.append(f"function {sym['name']}")
+                summary_lines.append(f"function {sym['name']} (lines {sym['line']}-{sym['end_line']})")
 
         return {
             "symbols": symbols,
@@ -297,31 +461,206 @@ class SymbolSummary:
     def _extract_go(content: str) -> Dict[str, Any]:
         symbols = []
         lines = content.split('\n')
+        n = len(lines)
 
         type_pattern = re.compile(r'type\s+(\w+)\s+struct')
         func_pattern = re.compile(r'func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(')
 
-        for i, line in enumerate(lines):
-            type_match = type_pattern.search(line)
-            if type_match:
-                symbols.append({
-                    "type": "struct",
-                    "name": type_match.group(1),
-                    "line": i + 1,
-                })
+        i = 0
+        while i < n:
+            line = lines[i]
+            stripped = line.strip()
+
+            if stripped.startswith('//') or stripped == '':
+                i += 1
                 continue
 
-            func_match = func_pattern.search(line)
-            if func_match:
+            type_match = type_pattern.search(stripped)
+            func_match = func_pattern.search(stripped)
+
+            if type_match or func_match:
+                start_line = i + 1
+
+                sym_type = "struct" if type_match else "function"
+                sym_name = type_match.group(1) if type_match else func_match.group(1)
+
+                j = i + 1
+                brace_count = stripped.count('{') - stripped.count('}')
+                while j < n and brace_count > 0:
+                    brace_count += lines[j].count('{') - lines[j].count('}')
+                    j += 1
+                end_line = j
+
                 symbols.append({
-                    "type": "function",
-                    "name": func_match.group(1),
-                    "line": i + 1,
+                    "type": sym_type,
+                    "name": sym_name,
+                    "line": start_line,
+                    "end_line": end_line,
                 })
+                i = j
+            else:
+                i += 1
 
         summary_lines = []
         for sym in symbols:
-            summary_lines.append(f"{sym['type']} {sym['name']}")
+            summary_lines.append(f"{sym['type']} {sym['name']} (lines {sym['line']}-{sym['end_line']})")
+
+        return {
+            "symbols": symbols,
+            "summary": "\n".join(summary_lines),
+            "total_symbols": len(symbols),
+        }
+
+    @staticmethod
+    def _extract_c_style(content: str) -> Dict[str, Any]:
+        lines = content.split('\n')
+        n = len(lines)
+
+        type_pattern = re.compile(r'\b(class|struct|interface|protocol|enum|impl|object)\s+(?:class\s+)?(\w+)')
+
+        skip_keywords = {'if', 'else', 'while', 'for', 'switch', 'catch', 'try',
+                         'return', 'sizeof', 'typeof', 'delete', 'throw'}
+
+        def find_brace_end(start_i: int) -> int:
+            j = start_i
+            count = 0
+            while j < n:
+                for ch in lines[j]:
+                    if ch == '{':
+                        count += 1
+                    elif ch == '}':
+                        count -= 1
+                        if count == 0:
+                            return j + 1
+                j += 1
+            return n
+
+        def is_func_start(stripped: str, i: int) -> str:
+            if not stripped or stripped.startswith('//') or stripped.startswith('#'):
+                return ''
+            if stripped.startswith('public:') or stripped.startswith('private:') or stripped.startswith('protected:'):
+                return ''
+
+            brace_pos = stripped.find('{')
+            if brace_pos >= 0:
+                before = stripped[:brace_pos].strip()
+            elif i + 1 < n:
+                next_s = lines[i + 1].strip()
+                if next_s == '{' or next_s.startswith('{'):
+                    before = stripped
+                else:
+                    return ''
+            else:
+                return ''
+
+            paren_open = before.find('(')
+            paren_close = before.find(')')
+            if paren_open < 0 or paren_close < 0 or paren_close <= paren_open:
+                return ''
+
+            before_paren = before[:paren_open].strip()
+            if not before_paren:
+                return ''
+
+            parts = before_paren.split()
+            name = parts[-1] if parts else ''
+
+            if name.startswith('~'):
+                name = name[1:]
+            if name in skip_keywords:
+                return ''
+
+            return name
+
+        def extract_members(start: int, end: int) -> List[Dict]:
+            members = []
+            i = start + 1
+            while i < end:
+                stripped = lines[i].strip()
+                name = is_func_start(stripped, i)
+                if name:
+                    if '{' in stripped:
+                        member_end = find_brace_end(i)
+                    elif i + 1 < end and ('{' in lines[i + 1] or lines[i + 1].strip() == '{'):
+                        member_end = find_brace_end(i + 1)
+                    else:
+                        member_end = min(i + 2, end)
+                    members.append({"name": name, "line": i + 1, "end_line": member_end})
+                    i = member_end
+                else:
+                    i += 1
+            return members
+
+        symbols = []
+        class_ranges = []
+        i = 0
+        while i < n:
+            stripped = lines[i].strip()
+
+            if stripped.startswith('//') or stripped.startswith('#') or stripped == '' or stripped.startswith('using') or stripped.startswith('import') or stripped.startswith('package') or stripped.startswith('include'):
+                i += 1
+                continue
+
+            m = type_pattern.search(stripped)
+            if m:
+                sym_type = m.group(1)
+                name = m.group(2)
+                if '{' in stripped:
+                    end_line = find_brace_end(i)
+                elif i + 1 < n and '{' in lines[i + 1]:
+                    end_line = find_brace_end(i + 1)
+                else:
+                    end_line = min(i + 5, n)
+                class_ranges.append((i, end_line))
+                members = extract_members(i, end_line)
+                symbols.append({
+                    "type": sym_type,
+                    "name": name,
+                    "line": i + 1,
+                    "end_line": end_line,
+                    "methods": members,
+                })
+                i = end_line
+                continue
+
+            i += 1
+
+        i = 0
+        while i < n:
+            in_class = any(s <= i < e for s, e in class_ranges)
+            if in_class:
+                i += 1
+                continue
+
+            stripped = lines[i].strip()
+            name = is_func_start(stripped, i)
+            if name:
+                if '{' in stripped:
+                    end_line = find_brace_end(i)
+                elif i + 1 < n and ('{' in lines[i + 1] or lines[i + 1].strip() == '{'):
+                    end_line = find_brace_end(i + 1)
+                else:
+                    end_line = min(i + 2, n)
+                symbols.append({
+                    "type": "function",
+                    "name": name,
+                    "line": i + 1,
+                    "end_line": end_line,
+                })
+                i = end_line
+            else:
+                i += 1
+
+        symbols.sort(key=lambda x: x["line"])
+
+        summary_lines = []
+        for sym in symbols:
+            if sym["type"] in ("class", "struct", "interface", "enum"):
+                summary_lines.append(f"{sym['type']} {sym['name']} (lines {sym['line']}-{sym['end_line']})")
+                for m in sym.get("methods", []):
+                    summary_lines.append(f"  - {m['name']}() (lines {m['line']}-{m['end_line']})")
+            else:
+                summary_lines.append(f"function {sym['name']}() (lines {sym['line']}-{sym['end_line']})")
 
         return {
             "symbols": symbols,

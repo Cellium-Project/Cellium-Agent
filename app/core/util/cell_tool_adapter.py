@@ -271,7 +271,7 @@ class CellToolAdapter(BaseTool):
 
                 result = sandbox.execute(cmd_name, *[], **all_args)
             else:
-                result = sandbox.execute(command, args=list(args), kwargs=kwargs)
+                result = sandbox.execute(command, *args, **kwargs)
 
             if not isinstance(result, dict):
                 result = {"result": result}

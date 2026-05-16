@@ -29,6 +29,23 @@
 - `file edit` 失败会自动回滚，无需手动处理
 - pip 安装加 `--target="libs"`（嵌入式环境）
 
+### §1.2 shell 工具核心约束
+
+**决策原则**:
+- 执行 Python/脚本命令 → 用 `argv`
+- 需要 pipe/&&/>/wildcard → 用 `cmd`
+
+**argv vs cmd**:
+| 参数 | 适用场景 | 示例 |
+|------|----------|------|
+| `argv` | Python、git、单命令 | `["python", "-c", "print(1)"]` |
+| `cmd` | pipe、&&、重定向 | `"python a.py \| grep ok"` |
+
+**铁律**:
+- 执行 Python 代码必须用 `argv`，禁止用 `cmd="python -c ..."`
+- `argv` 无引号解析问题，多行脚本直接写
+- 只有 shell 特性（pipe/&&/>/*）才用 `cmd`
+
 ---
 
 ## §2 CORE CONSTRAINTS

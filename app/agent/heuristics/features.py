@@ -51,7 +51,18 @@ def get_call_signature(call: Dict) -> str:
             path = args.get("path", args.get("file", ""))
 
             if command == "read":
-                return f"{tool_name}:read:{path}"
+                mode = args.get("mode", "full")
+                if mode == "context":
+                    target = args.get("target", "")[:30]
+                    return f"{tool_name}:read:{path}:context:{target}"
+                elif mode == "summary":
+                    return f"{tool_name}:read:{path}:summary"
+                elif mode == "compact":
+                    return f"{tool_name}:read:{path}:compact"
+                else:
+                    offset = args.get("offset", 0)
+                    limit = args.get("limit", 500)
+                    return f"{tool_name}:read:{path}:full:{offset}-{offset+limit}"
             elif command == "write":
                 content = args.get("content", "")
                 h = _content_hash(content)

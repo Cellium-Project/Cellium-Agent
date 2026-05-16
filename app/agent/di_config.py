@@ -328,7 +328,7 @@ def setup_agent_di(
     _mem_mgr = MemoryManager(
         max_history=short_term.get("max_history", 50),
         max_tool_results=short_term.get("max_tool_results", 10),
-        max_tool_result_length=short_term.get("max_tool_result_length", 500),
+        max_tool_result_length=short_term.get("max_tool_result_length", 2000),
         auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
     )
     if not hasattr(MemoryManager, '_di_registered'):

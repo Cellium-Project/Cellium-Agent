@@ -13,7 +13,7 @@ class MemoryManager:
         self,
         max_history: int = 50,
         max_tool_results: int = 10,
-        max_tool_result_length: int = 500,
+        max_tool_result_length: int = 2000,
         auto_compact_threshold: int = 10000,
     ):
         self.messages: List[Dict] = []
