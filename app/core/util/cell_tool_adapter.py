@@ -165,7 +165,9 @@ class CellToolAdapter(BaseTool):
                 root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 components_dir = os.path.join(root_dir, "components")
                 if os.path.abspath(parent_dir).startswith(os.path.abspath(components_dir)):
-                    return parent_dir
+                    if source_file.endswith("__init__.py"):
+                        return parent_dir
+                    return source_file
 
             return source_file
         except (TypeError, OSError):
