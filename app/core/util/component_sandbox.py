@@ -222,6 +222,26 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                     params_map = component.get_command_params() if hasattr(component, 'get_command_params') else {}
                     output_queue.put({"status": "ok", "params_map": params_map})
 
+                elif action == "get_commands_meta":
+                    commands_meta = {}
+                    commands = component.get_commands()
+                    for cmd_name in commands.keys():
+                        method_name = f"_cmd_{cmd_name}"
+                        method = getattr(component, method_name, None)
+                        if method:
+                            meta = {
+                                "doc": method.__doc__ or "",
+                                "name": cmd_name,
+                            }
+                            try:
+                                sig = inspect.signature(method)
+                                params = [p for p in sig.parameters.keys() if p != "self"]
+                                meta["params"] = params
+                            except Exception:
+                                meta["params"] = []
+                            commands_meta[cmd_name] = meta
+                    output_queue.put({"status": "ok", "commands_meta": commands_meta})
+
                 elif action == "has_method":
                     method_name = request.get("method_name", "")
                     has_it = hasattr(component, method_name) and callable(getattr(component, method_name))
@@ -412,6 +432,20 @@ class SandboxProcess:
             pass
         return {}
 
+    def get_commands_meta(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有命令的元信息（docstring、参数签名等）"""
+        if not self._initialized:
+            return {}
+
+        self._input_queue.put({"action": "get_commands_meta"})
+        try:
+            result = self._output_queue.get(timeout=5)
+            if result.get("status") == "ok":
+                return result.get("commands_meta", {})
+        except:
+            pass
+        return {}
+
     def has_method(self, method_name: str) -> bool:
         """检查组件是否有指定方法"""
         if not self._initialized:
@@ -538,12 +572,17 @@ def _stop_cleanup_thread():
 class _CmdMethodProxy:
     """代理 _cmd_xxx 方法调用到沙箱"""
 
-    def __init__(self, sandbox: 'SandboxProcess', command_name: str):
+    def __init__(self, sandbox: 'ComponentSandbox', command_name: str):
         self._sandbox = sandbox
         self._command_name = command_name
+        meta = sandbox.get_command_meta(command_name)
+        self.__doc__ = meta.get("doc", "")
+        self.__name__ = f"_cmd_{command_name}"
 
     def __call__(self, *args, **kwargs):
-        return self._sandbox.execute(self._command_name, *args, **kwargs)
+        if not self._sandbox._sandbox:
+            raise RuntimeError("Sandbox not initialized")
+        return self._sandbox._sandbox.execute(self._command_name, *args, **kwargs)
 
 
 class ComponentSandbox(ICell):
@@ -561,6 +600,7 @@ class ComponentSandbox(ICell):
         """
         self._name = name
         self._sandbox: Optional[SandboxProcess] = None
+        self._commands_meta: Dict[str, Dict[str, Any]] = {}  # 缓存命令元信息
         _start_cleanup_thread()  # 确保清理线程在运行
 
     @property
@@ -571,7 +611,7 @@ class ComponentSandbox(ICell):
     def initialize(self, module_path: str, class_name: str, init_args: Dict = None):
         """
         初始化沙箱
-        
+
         Args:
             module_path: 组件文件路径
             class_name: 组件类名
@@ -579,6 +619,16 @@ class ComponentSandbox(ICell):
         """
         self._sandbox = SandboxProcess()
         self._sandbox.start(module_path, class_name, init_args)
+        self._commands_meta = self._sandbox.get_commands_meta()
+        logger.debug("[ComponentSandbox] 缓存命令元信息: %s", list(self._commands_meta.keys()))
+
+    def get_command_meta(self, command_name: str) -> Dict[str, Any]:
+        """获取单个命令的元信息"""
+        return self._commands_meta.get(command_name, {})
+
+    def get_commands_meta(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有命令的元信息"""
+        return self._commands_meta
 
     def execute(self, command: str, *args, **kwargs) -> Any:
         """执行命令"""
@@ -603,7 +653,7 @@ class ComponentSandbox(ICell):
         if name.startswith("_cmd_"):
             command_name = name[5:]
             if self._sandbox and self._sandbox.has_method(name):
-                return _CmdMethodProxy(self._sandbox, command_name)
+                return _CmdMethodProxy(self, command_name)  # 传递 self（ComponentSandbox）
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def stop(self):
