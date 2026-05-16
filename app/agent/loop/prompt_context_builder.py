@@ -83,7 +83,6 @@ class PromptContextBuilder:
 - 回答技术问题
 - 协助开发和调试
 
-请用中文回复，保持专业、友好、简洁。
 """
 
     def _get_current_date(self) -> str:
@@ -158,18 +157,15 @@ class PromptContextBuilder:
 
         self._prompt_builder.clear_dynamic()
 
-        if system_injection:
-            self._prompt_builder.inject(
-                system_injection,
-                name="_control_constraint",
-                priority=50,
-            )
-
         fixed_sys_msg, dynamic_sys_msg = self._build_system_messages(runtime_status)
         messages.append(fixed_sys_msg)  
         messages.append(dynamic_sys_msg)  
-        
-        system_prompt = self._prompt_builder.build(context={"runtime_status": runtime_status})
+
+        if system_injection:
+            messages.append({
+                "role": "system",
+                "content": system_injection,
+            })
 
         # 2. 注入长期记忆
         if not self._flash_mode and self._three_layer_memory:
@@ -253,17 +249,15 @@ class PromptContextBuilder:
         # 1. 系统提示词
         self._prompt_builder.clear_dynamic()
 
-        # 如果有 system_injection，注入到 PromptBuilder
-        if system_injection:
-            self._prompt_builder.inject(
-                system_injection,
-                name="_control_constraint",
-                priority=50,
-            )
-
         fixed_sys_msg, dynamic_sys_msg = self._build_system_messages(runtime_status)
         messages.append(fixed_sys_msg)
         messages.append(dynamic_sys_msg)
+
+        if system_injection:
+            messages.append({
+                "role": "system",
+                "content": system_injection,
+            })
 
         # 2. 运行时状态
         self._inject_runtime_status(runtime_status)
