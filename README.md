@@ -4,6 +4,12 @@
 
 <img src="logo.png" width="200" style="background:#1e90ff;padding:20px;border-radius:10px;">
 
+<div align="center">
+  <a href="https://www.producthunt.com/products/cellium-agent?utm_source=badge-follow&utm_medium=badge" target="_blank">
+    <img src="https://api.producthunt.com/widgets/embed-image/v1/follow.svg?product_id=cellium-agent&theme=light" alt="Cellium-Agent - Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" />
+  </a>
+</div>
+
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-green)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-orange)](LICENSE)
