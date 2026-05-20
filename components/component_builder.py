@@ -126,12 +126,13 @@ class ComponentBuilder(BaseCell):
             cn = cmd.get("name", "execute")
             cd = cmd.get("desc", f"执行 {cn} 操作")
             cd_escaped = cd.replace('"', '\\"').replace("'''", "\\'''")
-            method = f'''    def _cmd_{cn}(self, input_data: str) -> Dict[str, Any]:
+            method = f'''    def _cmd_{cn}(self, input_data: str = "", **kwargs) -> Dict[str, Any]:
         """
         {cd_escaped}
 
         Args:
             input_data: 输入数据
+            **kwargs: 额外参数
 
         Returns:
             {{"result": 处理结果}}
@@ -479,7 +480,7 @@ __all__ = ["{class_name}"]
             cn = cmd.get("name", "execute")
             cd = cmd.get("desc", f"\u6267\u884c {cn} \u64cd\u4f5c")
             cd_escaped = cd.replace('"', '\\"').replace("'''", "\\'''")
-            method = f'''    def _cmd_{cn}(self, input_data: str = "") -> Dict[str, Any]:
+            method = f'''    def _cmd_{cn}(self, input_data: str = "", **kwargs) -> Dict[str, Any]:
         """
         {cd_escaped}
 

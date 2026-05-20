@@ -37,18 +37,20 @@ class ExampleComponent(BaseCell):
     # 命令方法（_cmd_ 前缀 + docstring 必须有）
     # ================================================================
 
-    def _cmd_calc(self, expression: str) -> Dict[str, Any]:
+    def _cmd_calc(self, input_data: str = "", **kwargs) -> Dict[str, Any]:
         """
         安全计算数学表达式
         
         Args:
-            expression: 数学表达式，如 "1+2*3"
+            input_data: 数学表达式，如 "1+2*3"
+            **kwargs: 额外参数
             
         Returns:
             {"result": 数值结果, "expression": 原始表达式}
         
         使用: execute("calc", "2+3*4")
         """
+        expression = input_data
         # 安全限制：只允许数字和基本运算符
         allowed = set("0123456789+-*/().% ")
         if not all(c in allowed for c in expression):
@@ -64,16 +66,18 @@ class ExampleComponent(BaseCell):
         except Exception as e:
             return {"error": str(e), "expression": expression}
 
-    def _cmd_echo(self, message: str, repeat: int = 1) -> Dict[str, Any]:
+    def _cmd_echo(self, input_data: str = "", **kwargs) -> Dict[str, Any]:
         """
         回显消息（可重复多次）
         
         Args:
-            message: 要回显的文本
-            repeat: 重复次数（默认1次）
+            input_data: 要回显的文本
+            **kwargs: 额外参数，支持 repeat 指定重复次数
         
         使用: execute("echo", "Hello") 或 execute("echo", "Hi", repeat=3)
         """
+        message = input_data
+        repeat = kwargs.get("repeat", 1)
         result = (message + "\n") * repeat
         return {"output": result.strip(), "repeat": repeat}
 
