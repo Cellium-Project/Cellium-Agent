@@ -174,6 +174,10 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 
 **Skill** 是通过 SKILL.md 描述的插件化能力。
 
+**使用判断**：
+- 无相关 Skill → 直接处理
+- 有匹配任务的 Skill → 先 `skill_manager.get_info(name="xxx")` 查看，再读取 SKILL.md 执行
+
 使用流程：
 1. `skill_manager.list()` - 发现 Skill
 2. `file.read(path=".../SKILL.md")` - 读取指南并执行

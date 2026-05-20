@@ -155,15 +155,11 @@ class AutoHintManager:
             if not available_skills:
                 return ""
 
-            # 构建提示文本
-            skill_list = ", ".join(available_skills[:10])  # 最多显示10个
+            skill_list = ", ".join(available_skills[:10])
             if len(available_skills) > 10:
                 skill_list += f" 等共 {len(available_skills)} 个"
 
-            return (
-                f"**可用 Skill**: {skill_list}\n"
-                f"处理任务前，先调用 `skill_manager.list()` 或 `skill_manager.get_info(name=\"xxx\")` 查看匹配的 Skill。"
-            )
+            return f"**可用 Skill**: {skill_list}"
         except Exception as e:
             logger.debug("[AutoHint] Skill 提示获取失败: %s", e)
             return ""
