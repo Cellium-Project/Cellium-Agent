@@ -792,6 +792,7 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                                 sandbox_name = old_cell_name or class_name_lower
                                 sandbox = ComponentSandbox.reload_sandbox(sandbox_name)
                                 sandbox.initialize(str(file_path), item["class_name"])
+                                sandbox._source_file = file_path
                                 logger.info(f"[HotReload] 已重启并初始化沙箱: {sandbox_name}")
                                 instance = sandbox
                                 info = {

@@ -601,6 +601,7 @@ class ComponentSandbox(ICell):
         self._name = name
         self._sandbox: Optional[SandboxProcess] = None
         self._commands_meta: Dict[str, Dict[str, Any]] = {}  # 缓存命令元信息
+        self._source_file: Optional[str] = None  # 组件源文件路径
         _start_cleanup_thread()  # 确保清理线程在运行
 
     @property
@@ -620,6 +621,7 @@ class ComponentSandbox(ICell):
         self._sandbox = SandboxProcess()
         self._sandbox.start(module_path, class_name, init_args)
         self._commands_meta = self._sandbox.get_commands_meta()
+        self._source_file = module_path
         logger.debug("[ComponentSandbox] 缓存命令元信息: %s", list(self._commands_meta.keys()))
 
     def get_command_meta(self, command_name: str) -> Dict[str, Any]:
