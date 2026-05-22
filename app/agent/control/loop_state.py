@@ -44,6 +44,11 @@ class ControlDecision:
     # 参数化决策
     params: Dict[str, Any] = field(default_factory=dict)
 
+    predicted_outcome: str = ""
+    verification_criteria: str = ""
+    prediction_verified: Optional[bool] = None
+    verification_evidence: str = ""
+
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典"""
         return {
@@ -55,6 +60,8 @@ class ControlDecision:
             "force_memory_compact": self.force_memory_compact,
             "context_trim_level": self.context_trim_level,
             "params": self.params,
+            "predicted_outcome": self.predicted_outcome,
+            "prediction_verified": self.prediction_verified,
         }
 
 

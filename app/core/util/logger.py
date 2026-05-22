@@ -75,6 +75,8 @@ class RuntimeStatus:
         self.stop_reason: Optional[str] = None
         self.stuck_iterations: int = 0
         self.recent_llm_outputs_count: int = 0
+        self.prediction_verified: Optional[bool] = None
+        self.prediction_outcome: str = ""
 
     @property
     def token_pct(self) -> float:
@@ -112,6 +114,9 @@ class RuntimeStatus:
             lines.append(f"[警告] 卡住{self.stuck_iterations}轮")
         if self.decision_action and self.decision_action != "continue":
             lines.append(f"[决策] {self.decision_action} | {self.decision_guidance or ''}")
+        if self.prediction_verified is not None:
+            status = "✓" if self.prediction_verified else "✗"
+            lines.append(f"[预测验证] {status} {self.prediction_outcome}")
         if self.should_stop:
             lines.append(f"[停止] {self.stop_reason or '强制终止'}")
         return "\n".join(lines)
@@ -190,6 +195,13 @@ def set_runtime_status(state) -> None:
     features = state.features
     if features:
         rs.stuck_iterations = getattr(features, "stuck_iterations", 0)
+
+    # 决策可观测性：获取上一轮预测验证结果
+    if len(state.decision_trace) >= 2:
+        last_decision = state.decision_trace[-2]
+        if last_decision.predicted_outcome:
+            rs.prediction_verified = last_decision.prediction_verified
+            rs.prediction_outcome = last_decision.predicted_outcome[:50]
 
 
 def get_runtime_status() -> Optional[RuntimeStatus]:

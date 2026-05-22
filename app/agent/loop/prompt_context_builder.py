@@ -92,6 +92,22 @@ class PromptContextBuilder:
         weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         return f"{now.year}年{now.month}月{now.day}号 {weekdays[now.weekday()]}"
 
+    def _get_system_info(self) -> str:
+        """获取系统环境信息"""
+        import platform
+
+        system = platform.system()
+        machine = platform.machine()
+
+        if system == "Windows":
+            shell = "PowerShell"
+        elif system == "Darwin":
+            shell = "zsh/bash"
+        else:
+            shell = "bash"
+
+        return f"{system} {machine} | {shell}"
+
     def _build_system_messages(self, runtime_status: Optional[str] = None) -> Tuple[Dict, Dict]:
         """
         构建 system 消息
@@ -105,10 +121,14 @@ class PromptContextBuilder:
         
         # 2. 动态内容
         dynamic_parts = []
-        
+
         # 日期信息
         current_date = self._get_current_date()
         dynamic_parts.append(f"**当前日期**: {current_date}")
+
+        # 系统环境信息
+        system_info = self._get_system_info()
+        dynamic_parts.append(f"**系统环境**: {system_info}")
         
         # 运行时状态
         if runtime_status:

@@ -136,7 +136,17 @@ class ControlLoop:
 
                 state.gene_last_traces_count = current_count
 
+        verified_decision = self._verify_last_prediction(state)
+
         reward = self.evaluator.evaluate_with_gene_evolution(state, task_type, user_input)
+
+        if verified_decision and verified_decision.prediction_verified is not None:
+            prediction_bonus = 0.1 if verified_decision.prediction_verified else -0.1
+            reward += prediction_bonus
+            logger.debug(
+                "[ControlLoop] 预测奖励 | verified=%s | bonus=%+.2f",
+                verified_decision.prediction_verified, prediction_bonus
+            )
 
         state.round_reward = reward
         state.cumulative_reward += reward
@@ -399,7 +409,34 @@ class ControlLoop:
             elif token_ratio > 0.6:
                 decision.context_trim_level = "normal"
 
+        self._attach_prediction(decision, state)
+
         return decision
+
+    def _attach_prediction(self, decision: ControlDecision, state: LoopState):
+        """为决策附加预测和验证标准"""
+        action = decision.action_type
+
+        if action == "continue":
+            decision.predicted_outcome = "继续执行，预期有工具调用或任务进展"
+            decision.verification_criteria = "tool_traces新增或progress_score>0"
+
+        elif action == "redirect":
+            guidance = decision.guidance_message[:30] if decision.guidance_message else "调整方向"
+            decision.predicted_outcome = f"重定向: {guidance}...，预期突破当前困境"
+            decision.verification_criteria = "后续工具调用成功且progress_score提升"
+
+        elif action == "retry":
+            decision.predicted_outcome = "重试当前策略，预期工具调用成功"
+            decision.verification_criteria = "last_tool_result.success=True"
+
+        elif action == "compress":
+            decision.predicted_outcome = "压缩上下文，预期token使用效率提升"
+            decision.verification_criteria = "tokens_used增速放缓"
+
+        elif action == "terminate":
+            decision.predicted_outcome = f"终止任务: {decision.stop_reason or '完成或无法继续'}"
+            decision.verification_criteria = "should_stop=True"
 
     def _build_redirect_message(
         self,
@@ -500,6 +537,50 @@ class ControlLoop:
             return unused[:3]
 
         return state.available_tools[:3]
+
+    def _verify_last_prediction(self, state: LoopState) -> Optional[ControlDecision]:
+        """验证上一轮决策的预测是否成真，返回被验证的决策"""
+        if len(state.decision_trace) < 2:
+            return None
+
+        last_decision = state.decision_trace[-2]
+        if not last_decision.predicted_outcome:
+            return None
+
+        criteria = last_decision.verification_criteria
+        verified = False
+        evidence = ""
+
+        if "tool_traces" in criteria or "progress" in criteria.lower():
+            tool_count = len(state.tool_traces)
+            progress = getattr(state.features, 'progress_score', 0) if state.features else 0
+            verified = tool_count > 0 and progress > 0
+            evidence = f"tools={tool_count}, progress={progress:.2f}"
+
+        elif "tool_result" in criteria or "success" in criteria.lower():
+            if state.last_tool_result:
+                verified = state.last_tool_result.get("success", False)
+                evidence = f"success={verified}"
+            else:
+                evidence = "无工具结果"
+
+        elif "token" in criteria.lower():
+            verified = True
+            evidence = f"tokens={state.tokens_used}"
+
+        elif "should_stop" in criteria or "终止" in criteria:
+            verified = last_decision.should_stop
+            evidence = f"should_stop={verified}"
+
+        last_decision.prediction_verified = verified
+        last_decision.verification_evidence = evidence
+
+        logger.info(
+            "[ControlLoop] 预测验证 | action=%s | verified=%s | evidence=%s",
+            last_decision.action_type, verified, evidence
+        )
+
+        return last_decision
 
 
 # ============================================================

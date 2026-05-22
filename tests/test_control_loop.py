@@ -310,6 +310,245 @@ class TestControlLoopIntegration(unittest.TestCase):
         self.assertEqual(actual_order, filtered_expected)
 
 
+class TestDecisionObservability(unittest.TestCase):
+    """决策可观测性测试 - 预测和验证"""
+
+    def setUp(self):
+        self.heuristics = Mock()
+        self.heuristics.config = Mock()
+        self.heuristics.config.get_threshold = Mock(return_value=3)
+        self.heuristics.feature_extractor = Mock()
+        self.heuristics.evaluate_fused = Mock()
+        self.heuristics.reset = Mock()
+
+        self.bandit = Mock()
+        self.bandit.select_action = Mock(return_value="continue")
+        self.bandit.update = Mock()
+        self.bandit.end_session = Mock()
+
+        self.evaluator = Mock()
+        self.evaluator.evaluate_with_gene_evolution = Mock(return_value=0.5)
+
+        self.loop = ControlLoop(self.heuristics, self.bandit, self.evaluator)
+        self.state = LoopState(session_id="test_observability")
+
+    def _create_features(self, **kwargs):
+        defaults = {
+            'stuck_iterations': 0,
+            'progress_trend': 0.5,
+            'progress_trend_raw': 0.5,
+            'progress_score': 0.6,
+            'is_output_loop': False,
+            'exact_repetition_count': 0,
+            'is_making_progress': True,
+            'repetition_score': 0.0,
+            'pattern_detected': None,
+            'context_saturation': 0.0,
+        }
+        defaults.update(kwargs)
+        features = Mock()
+        for k, v in defaults.items():
+            setattr(features, k, v)
+        return features
+
+    def test_decision_has_prediction(self):
+        """决策应包含预测和验证标准"""
+        self.loop.start_session(self.state)
+        self.state.hybrid_phase = "execute"
+
+        features = self._create_features()
+        self.heuristics.feature_extractor.extract = Mock(return_value=features)
+        self.heuristics.evaluate_fused = Mock(return_value=Mock(
+            action=Mock(value="continue"),
+            contributing_rules=[],
+            reasons=[],
+            metadata={}
+        ))
+
+        decision = self.loop.step(self.state)
+
+        self.assertTrue(len(decision.predicted_outcome) > 0, "决策应有预测结果")
+        self.assertTrue(len(decision.verification_criteria) > 0, "决策应有验证标准")
+        self.assertIsNone(decision.prediction_verified, "新决策验证状态应为None")
+
+    def test_continue_action_prediction(self):
+        """continue 动作的预测内容"""
+        self.loop.start_session(self.state)
+        self.state.hybrid_phase = "execute"
+
+        features = self._create_features()
+        self.heuristics.feature_extractor.extract = Mock(return_value=features)
+        self.heuristics.evaluate_fused = Mock(return_value=Mock(
+            action=Mock(value="continue"),
+            contributing_rules=[],
+            reasons=[],
+            metadata={}
+        ))
+
+        decision = self.loop.step(self.state)
+
+        self.assertEqual(decision.action_type, "continue")
+        self.assertIn("继续执行", decision.predicted_outcome)
+        self.assertIn("tool_traces", decision.verification_criteria)
+
+    def test_terminate_action_prediction(self):
+        """terminate 动作的预测内容"""
+        self.loop.start_session(self.state)
+        self.state.hybrid_phase = "execute"
+        self.state.iteration = 10
+
+        features = self._create_features()
+        self.heuristics.feature_extractor.extract = Mock(return_value=features)
+
+        def side_effect(point, context, feats):
+            from app.agent.heuristics.types import DecisionAction
+            return Mock(
+                action=DecisionAction.STOP,
+                contributing_rules=["term-001"],
+                reasons=["达到最大迭代次数"],
+                metadata={}
+            )
+
+        self.heuristics.evaluate_fused = Mock(side_effect=side_effect)
+
+        decision = self.loop.step(self.state)
+
+        self.assertEqual(decision.action_type, "terminate")
+        self.assertTrue(decision.should_stop)
+        self.assertIn("终止", decision.predicted_outcome)
+
+    def test_prediction_verification_continue_success(self):
+        """验证 continue 决策的预测 - 成功情况"""
+        self.loop.start_session(self.state)
+
+        # 第一轮决策
+        decision1 = ControlDecision(action_type="continue")
+        decision1.predicted_outcome = "继续执行"
+        decision1.verification_criteria = "tool_traces新增或progress_score>0"
+        self.state.decision_trace.append(decision1)
+
+        # 第二轮决策（触发验证上一轮）
+        decision2 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision2)
+
+        # 模拟执行后有工具调用和进展
+        self.state.tool_traces.append({"tool": "test", "success": True})
+        self.state.features = self._create_features(progress_score=0.7)
+
+        # 验证上一轮（decision_trace[-2] = decision1）
+        self.loop._verify_last_prediction(self.state)
+
+        self.assertTrue(decision1.prediction_verified, "预测应被验证为正确")
+        self.assertIn("progress=0.70", decision1.verification_evidence)
+
+    def test_prediction_verification_tool_success(self):
+        """验证 retry 决策的预测 - 基于工具结果"""
+        self.loop.start_session(self.state)
+
+        # 第一轮决策
+        decision1 = ControlDecision(action_type="retry")
+        decision1.predicted_outcome = "重试"
+        decision1.verification_criteria = "last_tool_result.success=True"
+        self.state.decision_trace.append(decision1)
+
+        # 第二轮决策（触发验证上一轮）
+        decision2 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision2)
+
+        # 模拟工具成功
+        self.state.last_tool_result = {"success": True, "output": "ok"}
+
+        # 验证上一轮
+        self.loop._verify_last_prediction(self.state)
+
+        self.assertTrue(decision1.prediction_verified, "预测应被验证为正确")
+        self.assertIn("success=True", decision1.verification_evidence)
+
+    def test_prediction_verification_no_prediction(self):
+        """无预测时不应验证"""
+        self.loop.start_session(self.state)
+
+        # 第一轮决策无预测
+        decision1 = ControlDecision(action_type="continue")
+        # predicted_outcome 默认为空
+        self.state.decision_trace.append(decision1)
+
+        # 第二轮决策（触发验证上一轮）
+        decision2 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision2)
+
+        # 验证
+        self.loop._verify_last_prediction(self.state)
+
+        self.assertIsNone(decision1.prediction_verified, "无预测时验证状态应保持None")
+
+    def test_prediction_bonus_applied(self):
+        """预测验证结果应影响奖励"""
+        self.loop.start_session(self.state)
+
+        # 设置基础奖励
+        self.evaluator.evaluate_with_gene_evolution = Mock(return_value=0.5)
+
+        # 第一轮决策
+        decision0 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision0)
+
+        # 第二轮决策 - 预测正确（将被验证）
+        decision1 = ControlDecision(action_type="continue")
+        decision1.predicted_outcome = "继续执行"
+        decision1.verification_criteria = "tool_traces"
+        decision1.prediction_verified = True
+        decision1.params["bandit_tiebreak"] = True
+        self.state.decision_trace.append(decision1)
+
+        # 第三轮决策（触发验证 decision1）
+        decision2 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision2)
+
+        # 模拟有工具调用
+        self.state.tool_traces.append({"tool": "test", "success": True})
+        self.state.features = self._create_features(progress_score=0.7)
+
+        # 执行 end_round
+        reward = self.loop.end_round(self.state)
+
+        # 基础奖励 0.5 + 预测正确奖励 0.1 = 0.6
+        self.assertAlmostEqual(reward, 0.6, places=2, msg="预测正确应获得 +0.1 奖励")
+        self.assertAlmostEqual(self.state.round_reward, 0.6, places=2)
+
+    def test_prediction_penalty_applied(self):
+        """预测失败应受到惩罚"""
+        self.loop.start_session(self.state)
+
+        # 设置基础奖励
+        self.evaluator.evaluate_with_gene_evolution = Mock(return_value=0.5)
+
+        # 第一轮决策
+        decision0 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision0)
+
+        # 第二轮决策 - 预测错误（将被验证）
+        decision1 = ControlDecision(action_type="continue")
+        decision1.predicted_outcome = "继续执行"
+        decision1.verification_criteria = "tool_traces"
+        decision1.prediction_verified = False
+        decision1.params["bandit_tiebreak"] = True
+        self.state.decision_trace.append(decision1)
+
+        # 第三轮决策（触发验证 decision1）
+        decision2 = ControlDecision(action_type="continue")
+        self.state.decision_trace.append(decision2)
+
+        # 模拟无进展
+        self.state.features = self._create_features(progress_score=0.0)
+
+        # 执行 end_round
+        reward = self.loop.end_round(self.state)
+
+        # 基础奖励 0.5 + 预测错误惩罚 -0.1 = 0.4
+        self.assertAlmostEqual(reward, 0.4, places=2, msg="预测错误应受到 -0.1 惩罚")
+
+
 class TestCreateControlLoop(unittest.TestCase):
     def test_create_control_loop_imports(self):
         from app.agent.control.control_loop import create_control_loop

@@ -239,7 +239,18 @@ class FeatureExtractor:
                 consecutive_same = 1
             last_signature = signature
 
-        return min(max_consecutive / len(recent), 1.0)
+        base_score = min(max_consecutive / len(recent), 1.0)
+
+        high_freq_tools = {"file", "memory"}
+        recent_tools = set()
+        for call in recent:
+            tool_name = call.get("tool_name", call.get("tool", ""))
+            recent_tools.add(tool_name)
+
+        if recent_tools.issubset(high_freq_tools) and len(recent_tools) <= 2:
+            return base_score * 0.6
+
+        return base_score
 
     def _detect_pattern(self, calls: List[Dict]) -> Tuple[str, int]:
         """
