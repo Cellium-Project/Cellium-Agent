@@ -17,17 +17,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_THINKING_CONFIRM_MESSAGES = [
-    {
-        "role": "user",
-        "content": "请确认你理解了 §8 THINKING PROTOCOL 中定义的思考输出格式。",
-    },
-    {
-        "role": "assistant",
-        "content": '{"reasoning": "分析当前情况（50-150字）", "plan": [{"tool": "工具名", "purpose": "目的"}], "action": "tool_call"}\n禁止不输出思考直接调用工具。',
-    },
-]
-
 
 class PromptContextBuilder:
     """
@@ -106,7 +95,12 @@ class PromptContextBuilder:
             固定 system 消息
         """
         fixed_content = self._get_fixed_personality()
-        return {"role": "system", "content": fixed_content}
+
+        from app.agent.control.thought_parser import THOUGHT_SCHEMA
+        
+        content = f"{fixed_content}\n\n{THOUGHT_SCHEMA}"
+        
+        return {"role": "system", "content": content}
     
     def _build_context_message(self, runtime_status: Optional[str] = None) -> str:
         """
@@ -152,7 +146,6 @@ class PromptContextBuilder:
         messages = []
 
         messages.append(self._build_system_message())
-        messages.extend(_THINKING_CONFIRM_MESSAGES)
 
         prefix_parts = []
 
@@ -231,8 +224,6 @@ class PromptContextBuilder:
         messages = []
 
         messages.append(self._build_system_message())
-
-        messages.extend(_THINKING_CONFIRM_MESSAGES)
 
         prefix_parts = []
 

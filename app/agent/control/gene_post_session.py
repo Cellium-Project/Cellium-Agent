@@ -4,17 +4,6 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-GENE_CREATION_CONFIRM_MESSAGES = [
-    {
-        "role": "user",
-        "content": "请确认你理解了 Gene 创建评估任务的要求：仅处理 Gene 的创建/进化/查询，不执行其他操作。",
-    },
-    {
-        "role": "assistant",
-        "content": "明白。我将专注于 Gene 的评估：查询现有 Gene，判断是否需要创建新 Gene 或进化现有 Gene，严格按照格式输出，不处理其他任务。",
-    },
-]
-
 
 class GenePostSessionAnalyzer:
 

@@ -77,6 +77,7 @@ class RuntimeStatus:
         self.recent_llm_outputs_count: int = 0
         self.prediction_verified: Optional[bool] = None
         self.prediction_outcome: str = ""
+        self.hybrid_phase: Optional[str] = None
 
     @property
     def token_pct(self) -> float:
@@ -119,6 +120,8 @@ class RuntimeStatus:
             lines.append(f"[预测验证] {status} {self.prediction_outcome}")
         if self.should_stop:
             lines.append(f"[停止] {self.stop_reason or '强制终止'}")
+        if self.hybrid_phase:
+            lines.append(f"[PEOP阶段] {self.hybrid_phase}")
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -202,6 +205,9 @@ def set_runtime_status(state) -> None:
         if last_decision.predicted_outcome:
             rs.prediction_verified = last_decision.prediction_verified
             rs.prediction_outcome = last_decision.predicted_outcome[:50]
+
+    # PEOP 阶段信息
+    rs.hybrid_phase = getattr(state, 'hybrid_phase', None)
 
 
 def get_runtime_status() -> Optional[RuntimeStatus]:

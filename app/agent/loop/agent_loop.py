@@ -1565,9 +1565,6 @@ class AgentLoop:
                     gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
                     if gene_prompt and not getattr(self._loop_state, 'gene_processing_done', False):
                         logger.info("[AgentLoop] Mechanism B: 触发 Gene 评估轮次")
-                        from app.agent.control.gene_post_session import GENE_CREATION_CONFIRM_MESSAGES
-                        for msg in GENE_CREATION_CONFIRM_MESSAGES:
-                            effective_memory.add_ephemeral_message(msg["role"], msg["content"])
                         effective_memory.add_ephemeral_message("user", gene_prompt)
                         effective_memory.add_assistant_message(
                             content,
