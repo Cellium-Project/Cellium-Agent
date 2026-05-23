@@ -306,9 +306,12 @@ class EditTransaction:
 
                 if self._diagnostic_loop.engine.has_errors(diagnostics):
                     self.rollback_step(step)
+                    error_details = "; ".join(
+                        f"行{d.line}: {d.message}" for d in diagnostics if d.severity == "error"
+                    )
                     return {
                         "success": False,
-                        "error": "诊断失败，已自动回滚",
+                        "error": f"诊断失败，已自动回滚: {error_details}",
                         "rolled_back": True,
                         "diagnostics": step.diagnostics,
                         "diff": diff,

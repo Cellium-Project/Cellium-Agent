@@ -17,6 +17,7 @@ class MemoryManager:
         auto_compact_threshold: int = 10000,
     ):
         self.messages: List[Dict] = []
+        self._ephemeral_messages: List[Dict] = []
         self.max_history = max_history
         self.max_tool_results = max_tool_results
         self.max_tool_result_length = max_tool_result_length
@@ -165,7 +166,21 @@ class MemoryManager:
     def get_messages(self) -> List[Dict]:
         messages = self._smart_truncate(self.messages, self.max_history)
         messages = self._truncate_long_tool_contents(messages)
-        return self._fix_message_sequence(messages)
+        messages = self._fix_message_sequence(messages)
+        if self._ephemeral_messages:
+            messages = messages + self._ephemeral_messages
+        return messages
+
+    def add_ephemeral_message(self, role: str, content: str):
+        """添加临时消息（不存储到记忆，仅用于当前 LLM 调用）"""
+        self._ephemeral_messages.append({
+            "role": role,
+            "content": content,
+        })
+
+    def clear_ephemeral_messages(self):
+        """清理临时消息"""
+        self._ephemeral_messages = []
 
     def remove_system_messages_by_content(self, content_substring: str) -> int:
         """移除包含指定内容的系统消息
@@ -190,29 +205,21 @@ class MemoryManager:
         return removed_count
 
     def remove_gene_system_messages(self) -> int:
-        """移除 Gene 创建评估的系统提示消息
-
-        只清理特定前缀的系统注入消息，不影响：
-        - Agent 正常的 Gene 查询结果（tool 消息）
-        - 用户消息
-        - 其他系统消息
-
-        Returns:
-            移除的消息数量
-        """
+        """移除 Gene 创建评估的提示消息"""
         gene_prompt_prefixes = [
             "[系统提示 - Gene 创建评估]",
+            "[HARD CONSTRAINTS]",
+            "[任务约束",
         ]
 
         original_count = len(self.messages)
         new_messages = []
 
         for msg in self.messages:
-            if msg.get("role") != "system":
+            content = msg.get("content", "")
+            if not content:
                 new_messages.append(msg)
                 continue
-
-            content = msg.get("content", "")
 
             is_gene_prompt = False
             for prefix in gene_prompt_prefixes:

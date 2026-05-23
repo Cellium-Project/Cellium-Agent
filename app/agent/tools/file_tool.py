@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import os
 import re
 import shutil
@@ -19,6 +20,13 @@ _MAX_FILE_SIZE = 2 * 1024 * 1024
 _MAX_LIST_ENTRIES = 200
 
 
+def _unescape_string(value: str) -> str:
+    """处理双重转义的字符串（如 \\n -> 换行符）"""
+    if not isinstance(value, str):
+        return value
+    return value.encode('utf-8').decode('unicode_escape')
+
+
 @dataclass
 class FileState:
     path: str
@@ -37,7 +45,7 @@ class FileTool(BaseTool):
         "  - mode=summary: 只返回类/函数签名\n"
         "  - mode=compact: 压缩读取（折叠 imports/docstrings）\n\n"
         "**insight**: 探索工程（不知道目标在哪时使用）\n"
-        "  - mode=grep: 搜索内容\n"
+        "  - mode=grep: 搜索内容（query=搜索词, pattern=文件过滤如*.py）\n"
         "  - mode=structure: 文件结构大纲\n"
         "  - mode=symbol: 搜索符号\n"
         "  - mode=files: 搜索文件\n\n"
@@ -390,6 +398,15 @@ class FileTool(BaseTool):
         validate: bool = True,
         preview: bool = False,
     ) -> Dict[str, Any]:
+        old_text = _unescape_string(old_text)
+        new_text = _unescape_string(new_text)
+        content = _unescape_string(content)
+        pattern = _unescape_string(pattern)
+        replacement = _unescape_string(replacement)
+
+        if mode == "replace" and not old_text and start_line is not None and end_line is not None:
+            mode = "range"
+
         if not path:
             return {"success": False, "error": "需要 path 参数"}
 
@@ -685,6 +702,15 @@ class FileTool(BaseTool):
 
     def _fs_create(self, base_dir: str, files: Dict[str, str]) -> Dict[str, Any]:
         abs_base = self._resolve_path(base_dir)
+
+        if isinstance(files, str):
+            try:
+                files = json.loads(files)
+            except json.JSONDecodeError as e:
+                return {"success": False, "error": f"files 参数 JSON 解析失败: {e}"}
+
+        if not isinstance(files, dict):
+            return {"success": False, "error": f"files 参数必须是字典或 JSON 字符串，当前类型: {type(files).__name__}"}
 
         try:
             os.makedirs(abs_base, exist_ok=True)

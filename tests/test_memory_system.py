@@ -380,16 +380,11 @@ class TestPromptContextBuilder(unittest.TestCase):
     """测试统一检索入口是否经过 ThreeLayerMemory"""
 
     def test_build_first_round_uses_three_layer_memory_api(self):
-        prompt_builder = Mock()
-        prompt_builder.build.return_value = "system prompt"
-        prompt_builder.clear_dynamic = Mock()
-        prompt_builder.inject = Mock()
-
         three_layer_memory = Mock()
         three_layer_memory.retrieve_context.return_value = [{"title": "记忆", "content": "历史内容"}]
         three_layer_memory.format_retrieved_context.return_value = "1. 记忆\n   历史内容"
 
-        builder = PromptContextBuilder(prompt_builder=prompt_builder, three_layer_memory=three_layer_memory)
+        builder = PromptContextBuilder(three_layer_memory=three_layer_memory)
         messages = builder.build_first_round("请回忆之前的命令", session_messages=[{"role": "user", "content": "请回忆之前的命令"}])
 
         three_layer_memory.retrieve_context.assert_called_once_with("请回忆之前的命令", top_k=3, exclude_schema_types=["control_gene"])

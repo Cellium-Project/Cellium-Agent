@@ -24,13 +24,6 @@ if TYPE_CHECKING:
 # ============================================================
 
 def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
-    """
-    获取身份定义拼图块
-
-    从 memory/personality.md 加载，不存在则使用默认
-    """
-    from datetime import datetime
-
     personality_path = os.path.join(memory_dir, "personality.md")
     if os.path.exists(personality_path):
         try:
@@ -40,11 +33,6 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
             content = DEFAULT_IDENTITY
     else:
         content = DEFAULT_IDENTITY
-
-    now = datetime.now()
-    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-    current_date = f"{now.year}年{now.month}月{now.day}号 {weekdays[now.weekday()]}"
-    content = content.replace("{{current_date}}", current_date)
 
     return PromptPiece(
         name="identity",
@@ -56,15 +44,11 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
 
 DEFAULT_IDENTITY = """# Cellium Agent
 
-- **当前日期**: {{current_date}}
-
 你是一个专业的桌面助手，擅长：
 - 执行系统命令和脚本
 - 读写文件和管理项目
 - 回答技术问题
 - 协助开发和调试
-
-请用中文回复，保持专业、友好、简洁。
 
 ## 工具调用规范
 - 每次工具调用必须包含 `_intent` 字段

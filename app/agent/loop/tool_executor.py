@@ -246,10 +246,30 @@ class ToolDescriptionGenerator:
         if intent and isinstance(intent, str) and len(intent.strip()) > 0:
             return intent.strip()
 
-        # Shell 走独立解析器（正则匹配，无法用简单模板覆盖）
+        # Shell 走独立解析器
         if tool_name == "shell":
-            cmd = (arguments.get("command") or "").strip()
-            return cls.describe_shell_command(cmd)
+            # 取实际的命令内容（cmd 或 argv），而不是子命令名（run/list/output/kill）
+            cmd = (arguments.get("cmd") or "").strip()
+            argv = arguments.get("argv")
+            if argv and isinstance(argv, list) and len(argv) > 0:
+                cmd = " ".join(argv)
+            sub_cmd = (arguments.get("command") or "").strip()
+            # 只有 run 子命令才需要解析实际命令
+            if sub_cmd == "run" and cmd:
+                return cls.describe_shell_command(cmd)
+            elif sub_cmd == "run":
+                return "正在执行命令"
+            elif sub_cmd == "list":
+                return "正在查看后台任务列表"
+            elif sub_cmd == "output":
+                task_id = arguments.get("task_id", "")
+                return f"正在获取任务输出：{task_id}"
+            elif sub_cmd == "kill":
+                task_id = arguments.get("task_id", "")
+                return f"正在终止任务：{task_id}"
+            elif cmd:
+                return cls.describe_shell_command(cmd)
+            return "正在执行 shell 命令"
 
         context = cls.extract_context(tool_name, arguments)
         sub_cmd = context.get("command", "").lower()

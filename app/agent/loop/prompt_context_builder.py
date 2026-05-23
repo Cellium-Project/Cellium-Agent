@@ -10,13 +10,23 @@
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.agent.prompt import PromptBuilder
     from app.agent.memory.three_layer import ThreeLayerMemory
 
 logger = logging.getLogger(__name__)
+
+_THINKING_CONFIRM_MESSAGES = [
+    {
+        "role": "user",
+        "content": "请确认你理解了 §8 THINKING PROTOCOL 中定义的思考输出格式。",
+    },
+    {
+        "role": "assistant",
+        "content": '{"reasoning": "分析当前情况（50-150字）", "plan": [{"tool": "工具名", "purpose": "目的"}], "action": "tool_call"}\n禁止不输出思考直接调用工具。',
+    },
+]
 
 
 class PromptContextBuilder:
@@ -28,33 +38,16 @@ class PromptContextBuilder:
 
     def __init__(
         self,
-        prompt_builder: "PromptBuilder",
         three_layer_memory: Optional["ThreeLayerMemory"] = None,
         flash_mode: bool = False,
         memory_dir: str = "memory",
     ):
-        """
-        初始化构建器
-
-        Args:
-            prompt_builder: Prompt 构建器实例
-            three_layer_memory: 三层记忆系统（可选）
-            flash_mode: 是否启用flash模式（跳过记忆注入）
-            memory_dir: 记忆目录路径
-        """
-        self._prompt_builder = prompt_builder
         self._three_layer_memory = three_layer_memory
         self._flash_mode = flash_mode
         self._memory_dir = memory_dir
         self._cached_fixed_personality: Optional[str] = None
 
     def _get_fixed_personality(self) -> str:
-        """
-        获取固定的 personality 内容
-        
-        Returns:
-            personality.md 内容，其中 {{current_date}} 保持原样或替换为占位符
-        """
         if self._cached_fixed_personality is not None:
             return self._cached_fixed_personality
         
@@ -72,10 +65,7 @@ class PromptContextBuilder:
         return content
 
     def _get_default_identity(self) -> str:
-        """获取默认身份定义"""
         return """# Cellium Agent
-
-- **当前日期**: {{current_date}}
 
 你是一个专业的桌面助手，擅长：
 - 执行系统命令和脚本
@@ -108,49 +98,35 @@ class PromptContextBuilder:
 
         return f"{system} {machine} | {shell}"
 
-    def _build_system_messages(self, runtime_status: Optional[str] = None) -> Tuple[Dict, Dict]:
+    def _build_system_message(self) -> Dict:
         """
         构建 system 消息
         
         Returns:
-            (固定 system 消息, 动态 system 消息)
+            固定 system 消息
         """
-        # 1. 固定内容
         fixed_content = self._get_fixed_personality()
-        fixed_message = {"role": "system", "content": fixed_content}
+        return {"role": "system", "content": fixed_content}
+    
+    def _build_context_message(self, runtime_status: Optional[str] = None) -> str:
+        """
+        构建动态上下文信息
         
-        # 2. 动态内容
-        dynamic_parts = []
-
-        # 日期信息
+        Returns:
+            动态上下文字符串
+        """
+        context_parts = []
+        
         current_date = self._get_current_date()
-        dynamic_parts.append(f"**当前日期**: {current_date}")
-
-        # 系统环境信息
+        context_parts.append(f"**当前日期**: {current_date}")
+        
         system_info = self._get_system_info()
-        dynamic_parts.append(f"**系统环境**: {system_info}")
+        context_parts.append(f"**系统环境**: {system_info}")
         
-        # 运行时状态
         if runtime_status:
-            dynamic_parts.append(f"\n[运行时状态]\n{runtime_status}")
+            context_parts.append(f"\n[运行时状态]\n{runtime_status}")
         
-        dynamic_content = "\n".join(dynamic_parts)
-        dynamic_message = {"role": "system", "content": dynamic_content}
-        
-        return fixed_message, dynamic_message
-
-    def _inject_runtime_status(self, runtime_status: Optional[Any]) -> None:
-        """注入运行时状态到 PromptBuilder（供 Agent 自我感知）"""
-        if not self._flash_mode and runtime_status:
-            self._prompt_builder.enable("self_awareness", True)
-            self._prompt_builder.inject(
-                runtime_status,
-                name="_runtime_status",
-                priority=100,
-                is_base=False,
-            )
-        else:
-            self._prompt_builder.enable("self_awareness", False)
+        return "\n".join(context_parts)
 
     def build_first_round(
         self,
@@ -175,50 +151,38 @@ class PromptContextBuilder:
         """
         messages = []
 
-        self._prompt_builder.clear_dynamic()
+        messages.append(self._build_system_message())
+        messages.extend(_THINKING_CONFIRM_MESSAGES)
 
-        fixed_sys_msg, dynamic_sys_msg = self._build_system_messages(runtime_status)
-        messages.append(fixed_sys_msg)  
-        messages.append(dynamic_sys_msg)  
+        prefix_parts = []
 
         if system_injection:
-            messages.append({
-                "role": "system",
-                "content": system_injection,
-            })
+            prefix_parts.append(f"[系统指令]\n{system_injection}")
 
-        # 2. 注入长期记忆
+        context_content = self._build_context_message(runtime_status)
+        if context_content:
+            prefix_parts.append(f"[上下文信息]\n{context_content}")
+
         if not self._flash_mode and self._three_layer_memory:
             long_term_context = self._retrieve_long_term_memory(user_input)
             if long_term_context:
-                messages.append({
-                    "role": "user",
-                    "content": f"[长期记忆检索结果]\n{long_term_context}\n\n请参考以上信息回答用户问题。",
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": "好的，我已参考长期记忆中的相关信息。",
-                })
+                prefix_parts.append(f"[长期记忆检索结果]\n{long_term_context}")
 
-        # 3. 运行时状态通过 PromptBuilder 注入
-        self._inject_runtime_status(runtime_status)
+        if prefix_parts:
+            messages.append({
+                "role": "user",
+                "content": "\n\n".join(prefix_parts),
+            })
 
-        # 4. 会话历史
         messages.extend(session_messages)
 
-        # 4.5 Flash模式：直接注入用户输入（session_messages 为空时）
         if self._flash_mode and not session_messages:
             messages.append({"role": "user", "content": user_input})
 
-        # 5. 引导消息
         if guidance_message:
             messages.append({
                 "role": "user",
                 "content": f"[系统引导]\n{guidance_message}",
-            })
-            messages.append({
-                "role": "assistant",
-                "content": "好的，我会按照引导执行。",
             })
 
         logger.debug(
@@ -259,53 +223,39 @@ class PromptContextBuilder:
             guidance_message: 引导消息
             system_injection: 系统提示词注入（来自控制环）
             runtime_status: 运行时状态摘要（来自 LoopState）
-            iteration: 当前迭代轮次（用于控制 personality.md 注入频率）
+            iteration: 当前迭代轮次
 
         Returns:
             LLM 消息列表
         """
         messages = []
 
-        # 1. 系统提示词
-        self._prompt_builder.clear_dynamic()
+        messages.append(self._build_system_message())
 
-        fixed_sys_msg, dynamic_sys_msg = self._build_system_messages(runtime_status)
-        messages.append(fixed_sys_msg)
-        messages.append(dynamic_sys_msg)
+        messages.extend(_THINKING_CONFIRM_MESSAGES)
+
+        prefix_parts = []
 
         if system_injection:
-            messages.append({
-                "role": "system",
-                "content": system_injection,
-            })
+            prefix_parts.append(f"[系统指令]\n{system_injection}")
 
-        # 2. 运行时状态
-        self._inject_runtime_status(runtime_status)
+        context_content = self._build_context_message(runtime_status)
+        if context_content:
+            prefix_parts.append(f"[上下文信息]\n{context_content}")
 
-        # 3. 会话历史
-        messages.extend(session_messages)
-
-        # 4. 自动提示
         if auto_hints:
+            prefix_parts.append(f"[工具使用提示]\n{auto_hints}")
+
+        if guidance_message:
+            prefix_parts.append(f"[系统引导]\n{guidance_message}")
+
+        if prefix_parts:
             messages.append({
                 "role": "user",
-                "content": f"[工具使用提示]\n{auto_hints}",
-            })
-            messages.append({
-                "role": "assistant",
-                "content": "好的，我会参考这些提示。",
+                "content": "\n\n".join(prefix_parts),
             })
 
-        # 4. 引导消息
-        if guidance_message:
-            messages.append({
-                "role": "user",
-                "content": f"[系统引导]\n{guidance_message}",
-            })
-            messages.append({
-                "role": "assistant",
-                "content": "好的，我会按照引导执行。",
-            })
+        messages.extend(session_messages)
 
         logger.debug(
             "[PromptContextBuilder] 后续轮次消息构建完成 | messages=%d",

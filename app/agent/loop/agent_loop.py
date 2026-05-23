@@ -15,8 +15,6 @@ from app.agent.loop.memory import MemoryManager
 from app.core.util.component_tool_registry import get_component_tool_registry
 from app.agent.heuristics import AgentLoopIntegration
 from app.agent.learning import LearningIntegration
-from app.agent.prompt import PromptBuilder
-from app.agent.prompt.pieces import create_default_builder
 from app.agent.memory.session_notes import SessionNotes
 from app.agent.memory.session_compact import SessionCompactor
 from app.agent.control import ControlLoop, LoopState, HardConstraintRenderer
@@ -143,10 +141,7 @@ class AgentLoop:
             TaskSignalMatcher.initialize(three_layer_memory.repository)
             logger.info("[AgentLoop] TaskSignalMatcher 已连接记忆系统")
 
-        # Prompt 构建器
-        self._prompt_builder = create_default_builder(memory_dir)
         self._prompt_context_builder = PromptContextBuilder(
-            prompt_builder=self._prompt_builder,
             three_layer_memory=three_layer_memory,
             flash_mode=flash_mode,
         )
@@ -1211,7 +1206,7 @@ class AgentLoop:
                         self._loop_state.gene_tool_call_count += len(response.tool_calls)
                         if self._loop_state.gene_tool_call_count > 5:
                             logger.warning("[AgentLoop] Gene 处理轮次工具调用超过 5 次，强制结束")
-                            effective_memory.add_system_message(
+                            effective_memory.add_user_message(
                                 "[系统提示 - Gene 创建评估] Gene 评估工具调用次数过多，请简要说明当前进展后结束。"
                             )
                             # 重置 Gene 处理标记，让正常流程结束
@@ -1231,13 +1226,19 @@ class AgentLoop:
 
                     # 收集本轮所有工具调用信息（先收集，再批量写入 memory）
                     tool_calls_info: List[Dict[str, Any]] = []
+                    # Gene 处理轮次跳过控制约束阻止
+                    is_gene_processing_round = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
                     for tool_call in response.tool_calls:
                         tool_name = getattr(tool_call, 'name', '') or ''
                         arguments = getattr(tool_call, 'arguments', None) or {}
                         if not isinstance(arguments, dict):
                             arguments = {}
-                        forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
-                        blocked_by_constraint = tool_name in forbidden_tools
+                        # Gene 处理轮次不阻止工具调用
+                        if is_gene_processing_round:
+                            blocked_by_constraint = False
+                        else:
+                            forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
+                            blocked_by_constraint = tool_name in forbidden_tools
 
                         # 使用 LLM 返回的原始 tool_call.id，保持 ID 一致性
                         original_tool_call_id = getattr(tool_call, 'id', None)
@@ -1564,27 +1565,25 @@ class AgentLoop:
                     gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
                     if gene_prompt and not getattr(self._loop_state, 'gene_processing_done', False):
                         logger.info("[AgentLoop] Mechanism B: 触发 Gene 评估轮次")
-                        effective_memory.add_system_message(gene_prompt)
-                        # 添加助手回复到 memory
+                        from app.agent.control.gene_post_session import GENE_CREATION_CONFIRM_MESSAGES
+                        for msg in GENE_CREATION_CONFIRM_MESSAGES:
+                            effective_memory.add_ephemeral_message(msg["role"], msg["content"])
+                        effective_memory.add_ephemeral_message("user", gene_prompt)
                         effective_memory.add_assistant_message(
                             content,
                             reasoning_content=response.reasoning_content
                         )
-                        # 标记 Gene 处理已触发
                         self._loop_state.gene_processing_done = True
-                        # 触发一次额外的 LLM 调用让主 Agent 处理 Gene
                         yield {"type": "thinking", "content": "正在评估是否需要创建或进化 Gene..."}
-                        # 继续循环，让 LLM 处理 Gene 提示
                         continue
                     elif getattr(self._loop_state, 'gene_processing_done', False):
-                        # Gene 处理已完成，清除标记并结束
                         logger.info("[AgentLoop] Mechanism B: Gene 评估完成")
                         self._loop_state.gene_creation_source = ""
                         self._loop_state.gene_creation_prompt = None
                         self._loop_state.gene_processing_done = False
                         self._loop_state.gene_tool_call_count = 0
-
                         if effective_memory:
+                            effective_memory.clear_ephemeral_messages()
                             removed = effective_memory.remove_gene_system_messages()
                             if removed > 0:
                                 logger.info(f"[AgentLoop] 已清理 {removed} 条 Gene 相关系统消息")

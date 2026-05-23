@@ -317,6 +317,15 @@ class CelliumShell:
                 result = self.security.check_command(cmd)
                 if not result.get("allowed", False):
                     return {"success": False, "allowed": False, "reason": result.get("message", "被拦截")}
+                
+                if "modified_command" in result:
+                    return {
+                        "success": True,
+                        "allowed": True,
+                        "modified_command": result["modified_command"],
+                        "message": result.get("message", ""),
+                    }
+                
                 risk = RiskLevel(result.get("risk_level", "medium"))
                 return {"success": True, "allowed": True, "timeout": self.security.get_timeout(risk)}
             except Exception:
@@ -440,7 +449,6 @@ class CelliumShell:
         if self._platform != "win32":
             return ("/bin/bash", ["-c"])
 
-        # 检测 cmd.exe 专属语法
         cmd_exe_indicators = [
             "&", "&&", "||", ">nul", "2>nul", "1>nul",
             "2>&1", r"%\w+%", "nul", "cmd /c", "cmd.exe",
@@ -449,7 +457,6 @@ class CelliumShell:
             if indicator in cmd:
                 return ("cmd.exe", ["/c"])
 
-        # Windows 上优先使用 PowerShell（与 ShellTool.description 声明一致）
         if self._pwsh_path:
             return (self._pwsh_path, ["-NoProfile", "-NonInteractive", "-Command"])
 
@@ -501,13 +508,21 @@ class CelliumShell:
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
-        cmd_type = classify_command(cmd)
+        effective_cmd = sec.get("modified_command", cmd)
+        security_message = sec.get("message", "")
+
+        cmd_type = classify_command(effective_cmd)
         effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
 
         if run_in_background:
-            return self._run_background(cmd, effective_timeout, cwd)
+            result = self._run_background(effective_cmd, effective_timeout, cwd)
+        else:
+            result = self._execute_sync(effective_cmd, effective_timeout, cwd, cmd_type)
 
-        return self._execute_sync(cmd, effective_timeout, cwd, cmd_type)
+        if security_message and result.get("success"):
+            result["security_note"] = security_message
+
+        return result
 
     def _run_argv(
         self,

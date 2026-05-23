@@ -259,6 +259,41 @@ class SecurityPolicy:
         import os
         current_pid = os.getpid()
 
+        taskkill_im_match = re.search(
+            r'taskkill\s+(/f\s+)?/im\s+(\S+)',
+            cmd,
+            re.IGNORECASE
+        )
+        if taskkill_im_match:
+            if re.search(rf'/fi\s+["\']?PID\s+ne\s+{current_pid}', cmd, re.IGNORECASE):
+                return None
+            
+            modified_cmd = cmd.rstrip()
+            if '/fi' not in cmd.lower():
+                modified_cmd += f' /fi "PID ne {current_pid}"'
+            return {
+                "allowed": True,
+                "risk_level": RiskLevel.MEDIUM.value,
+                "message": f"已自动添加排除参数，保护当前进程 (PID: {current_pid})",
+                "modified_command": modified_cmd
+            }
+
+        stop_process_name_match = re.search(
+            r'stop-process\s+(-name\s+\S+)',
+            cmd,
+            re.IGNORECASE
+        )
+        if stop_process_name_match:
+            if re.search(rf'-id\s+{current_pid}', cmd) or \
+               re.search(r'-exclude.*{current_pid}', cmd):
+                return None
+            
+            return {
+                "allowed": False,
+                "risk_level": RiskLevel.HIGH.value,
+                "message": f"Stop-Process -Name 会误杀当前进程 (PID: {current_pid})，请指定具体 PID 或使用 taskkill"
+            }
+
         taskkill_pattern = rf'taskkill\s+.*\b{current_pid}\b'
         if re.search(taskkill_pattern, cmd, re.IGNORECASE):
             return {
