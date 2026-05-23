@@ -877,7 +877,6 @@ class AgentLoop:
                 if not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact():
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
                     yield {"type": "thinking", "content": "正在压缩会话记忆..."}
-                    self._persist_snapshot_before_compact(user_input, effective_session, effective_memory)
                     session_notes = self._get_session_notes(effective_session)
                     await self._session_compactor.compact_now(effective_memory, session_notes)
 
@@ -960,7 +959,6 @@ class AgentLoop:
                     if decision.force_memory_compact and not self.flash_mode and not is_gene_processing:
                         logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
                         yield {"type": "thinking", "content": "正在根据控制决策压缩上下文..."}
-                        self._persist_snapshot_before_compact(user_input, effective_session, effective_memory)
                         if effective_memory.should_compact():
                             effective_memory.compact_tool_results()
                         session_notes = self._get_session_notes(effective_session)
