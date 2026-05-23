@@ -69,13 +69,11 @@ class HybridController:
         max_replans: int = 3,
         observe_after_each_step: bool = True,
         auto_continue_on_success: bool = True,
-        suggest_replan_on_mismatch: bool = True,  # 预期不匹配时建议而非强制重新规划
     ):
         self.max_plan_steps = max_plan_steps
         self.max_replans = max_replans
         self.observe_after_each_step = observe_after_each_step
         self.auto_continue_on_success = auto_continue_on_success
-        self.suggest_replan_on_mismatch = suggest_replan_on_mismatch
         self._state = HybridState()
     
     @property
@@ -182,29 +180,18 @@ class HybridController:
         output_str = self._summarize_output(output)
         output_preview = output_str[:200] if len(output_str) > 200 else output_str
         
-        matched = self._check_expectation(step, success, output_str)
-        
-        # 区分强制重新规划和建议重新规划
         if not success:
             # 工具执行失败 - 强制重新规划
             needs_replan = True
             suggest_replan = False
             replan_reason = f"工具 {step.tool} 执行失败"
             suggestion_reason = ""
-        elif not matched and self.suggest_replan_on_mismatch:
-            # 预期不匹配 - 建议重新规划（非强制）
+        elif step.expected_result:
             needs_replan = False
             suggest_replan = True
             replan_reason = ""
-            suggestion_reason = f"结果可能与预期不符: 期望 '{step.expected_result}'，请评估是否需要调整计划"
-        elif not matched:
-            # 预期不匹配且强制模式 - 强制重新规划
-            needs_replan = True
-            suggest_replan = False
-            replan_reason = f"结果不符合预期: 期望 '{step.expected_result}'"
-            suggestion_reason = ""
+            suggestion_reason = f"请检查结果是否符合预期: 期望 '{step.expected_result}'，如不符合请考虑重新规划"
         else:
-            # 成功且匹配
             needs_replan = False
             suggest_replan = False
             replan_reason = ""
@@ -215,7 +202,7 @@ class HybridController:
             success=success,
             output_summary=output_str[:500],
             output_preview=output_preview,
-            matched_expectation=matched,
+            matched_expectation=None, 
             needs_replan=needs_replan,
             replan_reason=replan_reason,
             suggest_replan=suggest_replan,
@@ -282,49 +269,6 @@ class HybridController:
             return str(output)[:500]
         
         return str(output)[:500]
-    
-    def _check_expectation(self, step: ThoughtStep, success: bool, output: str) -> bool:
-
-        if not success:
-            return False
-
-        if not step.expected_result:
-            return True
-
-        actual = output.lower().strip()
-        expected = step.expected_result.lower().strip()
-
-        if expected in actual or actual in expected:
-            return True
-
-        expected_words = set(expected.split())
-        actual_words = set(actual.split())
-
-        if expected_words and actual_words:
-            intersection = expected_words & actual_words
-            jaccard = len(intersection) / len(expected_words) if expected_words else 0
-            if jaccard >= 0.3:
-                return True
-
-        expected_chars = set(re.findall(r'[a-z0-9]+', expected))
-        actual_chars = set(re.findall(r'[a-z0-9]+', actual))
-
-        if expected_chars and actual_chars:
-            common = expected_chars & actual_chars
-            if len(common) >= len(expected_chars) * 0.3:
-                return True
-
-        logger.debug("[Hybrid] 结果与预期匹配度较低")
-        return False
-    
-    def _get_replan_reason(self, step: ThoughtStep, success: bool, output: str) -> str:
-        if not success:
-            return f"工具 {step.tool} 执行失败"
-        
-        if step.expected_result:
-            return f"结果不符合预期: 期望 '{step.expected_result}'"
-        
-        return "需要根据新信息调整计划"
     
     def should_call_llm(self) -> bool:
         if self._state.skip_llm:

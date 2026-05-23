@@ -159,11 +159,8 @@ class TestHybridControllerPhaseTransition(unittest.TestCase):
         self.assertEqual(self.controller.state.replan_count, 1)
         self.assertIn("执行失败", obs.replan_reason)
 
-    def test_execute_to_replan_on_mismatch(self):
-        """结果不符合预期 + 强制模式 → REPLAN"""
-        # 使用强制重新规划模式
-        self.controller.suggest_replan_on_mismatch = False
-        
+    def test_execute_prompt_llm_to_check_result(self):
+        """有预期结果时，提示 LLM 自己检查"""
         step = ThoughtStep(
             tool="search",
             purpose="搜索Python",
@@ -177,18 +174,16 @@ class TestHybridControllerPhaseTransition(unittest.TestCase):
         obs = self.controller.observe_result(
             step=step,
             success=True,
-            output={"result": "Java相关结果"},  # 不符合预期
+            output={"result": "Java相关结果"},  # 不符合预期，但不再自动判断
         )
         
-        self.assertEqual(self.controller.state.phase, HybridPhase.REPLAN)
-        self.assertEqual(self.controller.state.replan_count, 1)
-        self.assertIn("不符合预期", obs.replan_reason)
+        # 不再自动进入 REPLAN，而是提示 LLM 自己判断
+        self.assertEqual(self.controller.state.phase, HybridPhase.DONE)
+        self.assertIn("请检查结果是否符合预期", obs.suggestion_reason)
+        self.assertIsNone(obs.matched_expectation)  # LLM 自己判断
 
-    def test_execute_suggest_replan_on_mismatch(self):
-        """结果不符合预期 + 建议模式 → 建议但不强制 REPLAN"""
-        # 默认是建议模式
-        self.assertTrue(self.controller.suggest_replan_on_mismatch)
-        
+    def test_execute_suggest_replan_with_expected_result(self):
+        """有预期结果时，建议 LLM 检查（不再自动判断是否符合）"""
         step = ThoughtStep(
             tool="search",
             purpose="搜索Python",
@@ -202,14 +197,18 @@ class TestHybridControllerPhaseTransition(unittest.TestCase):
         obs = self.controller.observe_result(
             step=step,
             success=True,
-            output={"result": "Java相关结果"},  # 不符合预期
+            output={"result": "Java相关结果"},
         )
         
-        # 不进入 REPLAN 阶段，而是继续执行或完成
+        # 提示 LLM 检查，但不强制重新规划
+        self.assertTrue(obs.suggest_replan)
+        self.assertIn("请检查结果是否符合预期", obs.suggestion_reason)
+        self.assertIsNone(obs.matched_expectation)  # LLM 自己判断
+        # 不进入 REPLAN 阶段，由 LLM 自己决定
         self.assertEqual(self.controller.state.phase, HybridPhase.DONE)
         # 但会标记建议重新规划
         self.assertTrue(obs.suggest_replan)
-        self.assertIn("预期不符", obs.suggestion_reason)
+        self.assertIn("请检查结果是否符合预期", obs.suggestion_reason)
 
     def test_replan_to_execute_transition(self):
         """REPLAN → EXECUTE 转换"""
@@ -330,61 +329,6 @@ class TestHybridControllerShouldMethods(unittest.TestCase):
         self.controller._state.pending_steps = []
         
         self.assertFalse(self.controller.should_execute_tool())
-
-
-class TestHybridControllerExpectationCheck(unittest.TestCase):
-    """测试结果预期验证"""
-
-    def setUp(self):
-        self.controller = HybridController()
-
-    def test_check_expectation_success_no_expected(self):
-        """没有预期结果时，执行成功即通过"""
-        step = ThoughtStep(
-            tool="search",
-            purpose="搜索",
-            expected_result="",  # 无预期
-        )
-        result = self.controller._check_expectation(
-            step, True, "任意结果"
-        )
-        self.assertTrue(result)
-
-    def test_check_expectation_failed_execution(self):
-        """执行失败时不通过"""
-        step = ThoughtStep(
-            tool="search",
-            purpose="搜索",
-            expected_result="预期结果",
-        )
-        result = self.controller._check_expectation(
-            step, False, "错误信息"
-        )
-        self.assertFalse(result)
-
-    def test_check_expectation_substring_match(self):
-        """子串匹配通过"""
-        step = ThoughtStep(
-            tool="search",
-            purpose="搜索Python",
-            expected_result="Python",
-        )
-        result = self.controller._check_expectation(
-            step, True, "Python 3.12 文档"
-        )
-        self.assertTrue(result)
-
-    def test_check_expectation_jaccard_similarity(self):
-        """Jaccard 相似度匹配"""
-        step = ThoughtStep(
-            tool="search",
-            purpose="搜索",
-            expected_result="python programming language",
-        )
-        result = self.controller._check_expectation(
-            step, True, "python language programming"
-        )
-        self.assertTrue(result)
 
 
 class TestHybridControllerMaxReplans(unittest.TestCase):

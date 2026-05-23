@@ -78,6 +78,14 @@ class RuntimeStatus:
         self.prediction_verified: Optional[bool] = None
         self.prediction_outcome: str = ""
         self.hybrid_phase: Optional[str] = None
+        
+        # Hybrid 观察结果
+        self.last_observation_success: Optional[bool] = None
+        self.last_observation_matched: Optional[bool] = None
+        self.last_observation_needs_replan: bool = False
+        self.last_observation_replan_reason: str = ""
+        self.last_observation_suggest_replan: bool = False
+        self.last_observation_suggestion_reason: str = ""
 
     @property
     def token_pct(self) -> float:
@@ -121,7 +129,32 @@ class RuntimeStatus:
         if self.should_stop:
             lines.append(f"[停止] {self.stop_reason or '强制终止'}")
         if self.hybrid_phase:
+            phase_instructions = {
+                "observe": "观察上一轮结果，分析成功/失败原因",
+                "plan": "制定执行计划，明确步骤和工具",
+                "execute": "执行计划中的当前步骤，不要重新规划",
+                "evaluate": "评估执行结果，判断是否达成目标",
+                "replan": "重新规划，调整策略",
+            }
+            instruction = phase_instructions.get(self.hybrid_phase, "")
             lines.append(f"[PEOP阶段] {self.hybrid_phase}")
+            if instruction:
+                lines.append(f"[阶段指令] {instruction}")
+        
+        # Hybrid 观察结果（提示 LLM 检查结果是否符合预期）
+        if self.last_observation_success is not None:
+            success_str = "✓" if self.last_observation_success else "✗"
+            if self.last_observation_matched is None:
+                matched_str = "?"  # 需要 LLM 自己判断
+            else:
+                matched_str = "✓" if self.last_observation_matched else "✗"
+            lines.append(f"[执行结果] 成功:{success_str} | 符合预期:{matched_str}")
+            
+            if self.last_observation_needs_replan:
+                lines.append(f"[重新规划] {self.last_observation_replan_reason}")
+            elif self.last_observation_suggest_replan:
+                lines.append(f"[检查提示] {self.last_observation_suggestion_reason}")
+        
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -208,6 +241,14 @@ def set_runtime_status(state) -> None:
 
     # PEOP 阶段信息
     rs.hybrid_phase = getattr(state, 'hybrid_phase', None)
+    
+    # Hybrid 观察结果（用于提示 LLM 检查结果是否符合预期）
+    rs.last_observation_success = getattr(state, 'last_observation_success', None)
+    rs.last_observation_matched = getattr(state, 'last_observation_matched', None)
+    rs.last_observation_needs_replan = getattr(state, 'last_observation_needs_replan', False)
+    rs.last_observation_replan_reason = getattr(state, 'last_observation_replan_reason', "")
+    rs.last_observation_suggest_replan = getattr(state, 'last_observation_suggest_replan', False)
+    rs.last_observation_suggestion_reason = getattr(state, 'last_observation_suggestion_reason', "")
 
 
 def get_runtime_status() -> Optional[RuntimeStatus]:

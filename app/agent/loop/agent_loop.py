@@ -67,8 +67,6 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.session_id = session_id
         self.flash_mode = flash_mode
-        self._did_persist_before_compact = False  # 标记压缩前是否已持久化
-        self._enable_hybrid = enable_hybrid
 
         # 事件总线
         self._bus = event_bus_instance or event_bus
@@ -130,7 +128,7 @@ class AgentLoop:
             # flash_mode=True → 只用 Heuristics（轻量模式）
             logger.info("[AgentLoop] 控制环已禁用")
 
-        # ★ 分层协作：Learning → ControlLoop
+        # 分层协作：Learning → ControlLoop
         if self.control_loop and self.learning:
             self.learning.set_control_loop(self.control_loop)
             logger.info("[AgentLoop] Learning 与 ControlLoop 已建立协作")
@@ -524,14 +522,6 @@ class AgentLoop:
 
         return False, "", content
 
-    def _persist_snapshot_before_compact(
-        self,
-        user_input: str,
-        effective_session: str,
-        effective_memory: MemoryManager,
-    ) -> None:
-        self._did_persist_before_compact = True
-
     def _resolve_runtime_max_tokens(self, constraint: Any) -> Optional[int]:
         """将控制约束映射为真正的 LLM 输出限制"""
         if not constraint:
@@ -712,7 +702,6 @@ class AgentLoop:
             self._cleanup_incomplete_tool_calls(effective_memory)
         content_to_persist = final_content or self._get_last_assistant_message(effective_memory)
         self._persist_conversation(user_input, content_to_persist, effective_session, memory=effective_memory)
-        self._did_persist_before_compact = False
 
         # Control Loop: 会话结束
         if self.control_loop and self._loop_state:
@@ -1070,6 +1059,41 @@ class AgentLoop:
                         runtime_status_str = f"{runtime_status_str}\n{plan_context}"
                     else:
                         runtime_status_str = plan_context
+                
+                # 准备 REPLAN 上下文
+                replan_message = None
+                if (self._hybrid_controller and 
+                    self._hybrid_controller.state.phase == HybridPhase.REPLAN):
+                    replan_context = self._hybrid_controller.get_context_for_replan()
+                    executed = replan_context.get("executed_steps", [])
+                    remaining = replan_context.get("remaining_plan", [])
+                    
+                    replan_info = []
+                    replan_info.append("=" * 40)
+                    replan_info.append("[重新规划上下文]")
+                    
+                    if executed:
+                        replan_info.append(f"\n已执行步骤 ({len(executed)}步):")
+                        for i, step in enumerate(executed, 1):
+                            status = "✓" if step.get("success") else "✗"
+                            replan_info.append(f"  {i}. [{status}] {step.get('tool', 'unknown')} - {step.get('purpose', '')}")
+                            if step.get("result_preview"):
+                                preview = step.get("result_preview", "")[:100]
+                                replan_info.append(f"     结果: {preview}...")
+                    
+                    if remaining:
+                        replan_info.append(f"\n剩余计划 ({len(remaining)}步):")
+                        for i, step in enumerate(remaining, 1):
+                            replan_info.append(f"  {i}. {step.get('tool', 'unknown')} - {step.get('purpose', '')}")
+                    
+                    last_obs = replan_context.get("last_observation")
+                    if last_obs and last_obs.get("reason"):
+                        replan_info.append(f"\n重新规划原因: {last_obs['reason']}")
+                    
+                    replan_info.append("=" * 40)
+                    replan_info.append("请基于以上上下文，调整剩余步骤或制定新计划。")
+                    
+                    replan_message = "\n".join(replan_info)
 
                 if iteration == 1:
                     llm_messages = self._prompt_context_builder.build_first_round(
@@ -1094,6 +1118,14 @@ class AgentLoop:
                         runtime_status=runtime_status_str,
                         iteration=iteration,
                     )
+                
+                # REPLAN 阶段：追加动态上下文作为单独的消息
+                if replan_message:
+                    llm_messages.append({
+                        "role": "user",
+                        "content": replan_message,
+                    })
+                    logger.debug("[AgentLoop] 已追加 REPLAN 上下文消息")
 
                 if iteration > 1:
                     yield {"type": "thinking", "content": "分析结果中..."}
@@ -1345,6 +1377,14 @@ class AgentLoop:
                                     obs.matched_expectation,
                                     self._hybrid_controller.state.phase.value,
                                 )
+
+                                self._loop_state.last_observation_success = obs.success
+                                self._loop_state.last_observation_matched = obs.matched_expectation
+                                self._loop_state.last_observation_needs_replan = obs.needs_replan
+                                self._loop_state.last_observation_replan_reason = obs.replan_reason
+                                self._loop_state.last_observation_suggest_replan = obs.suggest_replan
+                                self._loop_state.last_observation_suggestion_reason = obs.suggestion_reason
+                                
                                 if obs.needs_replan:
                                     logger.warning(
                                         "[Hybrid] 需要重新规划 | reason=%s",
