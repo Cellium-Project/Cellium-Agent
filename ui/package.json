@@ -8,15 +8,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "dompurify": "^3.4.5",
-    "i18next": "^26.2.0",
+    "dompurify": "^3.4.7",
+    "i18next": "^26.3.0",
     "i18next-browser-languagedetector": "^8.2.1",
-    "marked": "^18.0.3",
+    "marked": "^18.0.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-i18next": "^17.0.8",
-    "react-router-dom": "^7.15.1",
-    "zustand": "^5.0.13"
+    "react-router-dom": "^7.16.0",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/marked": "^6.0.0",
@@ -24,6 +24,6 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.13"
+    "vite": "^8.0.14"
   }
 }
