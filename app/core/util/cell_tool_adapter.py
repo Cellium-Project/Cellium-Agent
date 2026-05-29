@@ -611,28 +611,12 @@ class CellToolAdapter(BaseTool):
         return ""
 
     def get_commands(self) -> Dict[str, str]:
-        """获取组件的所有可用命令"""
-        if self._use_sandbox:
-            try:
-                from app.core.util.component_sandbox import ComponentSandbox
-                sandbox = ComponentSandbox.get_sandbox(self.name)
-                
-                if sandbox.is_alive():
-                    return sandbox.get_commands()
-                
-                source_file = self._get_component_source()
-                class_name = type(self._cell).__name__
-                if source_file:
-                    sandbox.initialize(source_file, class_name)
-                    if sandbox.is_alive():
-                        return sandbox.get_commands()
-            except Exception as e:
-                logger.warning(
-                    "[CellToolAdapter] %s 从沙箱获取命令失败，回退到直接获取: %s",
-                    self.name, e,
-                )
-        
-        return self._cell.get_commands()
+        """获取组件的所有可用命令（直接获取，不启动沙箱）"""
+        try:
+            return self._cell.get_commands()
+        except Exception as e:
+            logger.warning("[CellToolAdapter] %s 获取命令失败: %s", self.name, e)
+            return {}
 
     @property
     def definition(self) -> Dict:

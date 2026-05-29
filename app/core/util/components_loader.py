@@ -497,7 +497,10 @@ def load_components(
                 instance._source_file = source_file
 
             if hasattr(instance, "on_load"):
-                instance.on_load()
+                try:
+                    instance.on_load()
+                except Exception as e:
+                    logger.warning(f"[Component] {instance.cell_name} on_load 失败: {e}")
             
             status = "NEW" if info.get("is_new") else "OK"
             logger.info(f"[Component] [{status}] {info['class_name']} "
@@ -733,7 +736,10 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 instance._source_file = file_path
 
                 if hasattr(instance, "on_load"):
-                    instance.on_load()
+                    try:
+                        instance.on_load()
+                    except Exception as e:
+                        logger.warning(f"[HotReload] {instance.cell_name} on_load 失败: {e}")
 
                 if container:
                     container.register(type(instance), instance)
@@ -813,7 +819,10 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                         instance._source_file = file_path
 
                         if hasattr(instance, "on_load") and not use_sandbox:
-                            instance.on_load()
+                            try:
+                                instance.on_load()
+                            except Exception as e:
+                                logger.warning(f"[HotReload] {instance.cell_name} on_load 失败: {e}")
 
                         if container:
                             container.register(type(instance), instance)
