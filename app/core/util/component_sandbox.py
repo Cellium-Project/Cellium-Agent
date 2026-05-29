@@ -157,7 +157,8 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
             except Exception as e:
                 logger.debug("[Sandbox] glob清理缓存失败: %s", e)
 
-            spec = importlib.util.spec_from_file_location("sandbox_component", module_path)
+            unique_module_name = f"sandbox_component_{class_name}_{os.path.getmtime(module_path)}"
+            spec = importlib.util.spec_from_file_location(unique_module_name, module_path)
             module = importlib.util.module_from_spec(spec)
 
             module.__dict__['__builtins__'] = builtins.__dict__
@@ -171,7 +172,6 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
         output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
 
         if hasattr(component, "on_load"):
-            import threading
             def run_on_load():
                 try:
                     component.on_load()
