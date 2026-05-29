@@ -268,6 +268,11 @@ class QQAdapter(ChannelAdapter):
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0
 
+        # 发送限流控制
+        self._last_send_time: float = 0
+        self._min_send_interval: float = 0.5  # 最小发送间隔（秒）
+        self._send_lock = asyncio.Lock()
+
         # 数据目录（用于存储下载的文件）
         self._data_dir = Path("workspace") / "downloads" / "qq"
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -352,18 +357,26 @@ class QQAdapter(ChannelAdapter):
             await self._ws.send(json.dumps(data))
 
     async def send_message(self, target_id: str, content: str, message_type: str = "c2c", **kwargs) -> bool:
-        is_markdown = kwargs.get("markdown", False)
-        guild_id = kwargs.get("guild_id", "")
-        try:
-            token = await self._get_access_token()
-            if message_type == "c2c":
-                return await self._send_c2c_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
-            elif message_type == "group":
-                return await self._send_group_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
-            elif message_type == "guild":
-                return await self._send_guild_message(token, target_id, guild_id, content, kwargs.get("msg_id", ""), is_markdown)
-        except Exception as e:
-            logger.error(f"[QQAdapter] Send error: {e}")
+        async with self._send_lock:
+            import time
+            elapsed = time.time() - self._last_send_time
+            if elapsed < self._min_send_interval:
+                await asyncio.sleep(self._min_send_interval - elapsed)
+            self._last_send_time = time.time()
+            
+            is_markdown = kwargs.get("markdown", False)
+            guild_id = kwargs.get("guild_id", "")
+            try:
+                token = await self._get_access_token()
+                if message_type == "c2c":
+                    return await self._send_c2c_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
+                elif message_type == "group":
+                    return await self._send_group_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
+                elif message_type == "guild":
+                    return await self._send_guild_message(token, target_id, guild_id, content, kwargs.get("msg_id", ""), is_markdown)
+            except Exception as e:
+                import traceback
+                logger.error(f"[QQAdapter] Send error: {e}\n{traceback.format_exc()}")
         return False
 
     async def _send_c2c_message(self, token: str, user_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:

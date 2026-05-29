@@ -784,8 +784,11 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
 
                         from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
                         class_name_lower = item["class_name"].lower()
+                        
+                        instance, info = _instantiate_component(item["module_path"])
+                        
                         use_sandbox = class_name_lower not in EXEMPTED_NAMES
-
+                        
                         if use_sandbox:
                             try:
                                 from app.core.util.component_sandbox import ComponentSandbox
@@ -794,27 +797,22 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                                 sandbox.initialize(str(file_path), item["class_name"])
                                 sandbox._source_file = file_path
                                 logger.info(f"[HotReload] 已重启并初始化沙箱: {sandbox_name}")
-                                instance = sandbox
-                                info = {
-                                    "class_name": item["class_name"],
-                                    "module_path": item["module_path"],
-                                    "source_file": str(file_path),
-                                    "is_new": False,
-                                }
                             except Exception as e:
-                                logger.error(f"[HotReload] 重启沙箱失败 {item['class_name']}: {e}")
-                                logger.error(f"[HotReload] 组件 {item['class_name']} 热更新中止：沙箱重启失败")
-                                report["failed"] = report.get("failed", [])
-                                report["failed"].append({"name": class_name_lower, "class": item["class_name"], "reason": f"沙箱重启失败: {e}"})
-                                continue
-                        else:
-                            instance, info = _instantiate_component(item["module_path"])
+                                logger.warning(f"[HotReload] 沙箱重启失败，使用直接模式: {e}")
+                                use_sandbox = False
+                        
+                        info = {
+                            "class_name": item["class_name"],
+                            "module_path": item["module_path"],
+                            "source_file": str(file_path),
+                            "is_new": False,
+                        }
                         register_cell(instance)
                         _loaded_files.add(file_path)
                         _file_mtimes[file_path] = current_mtime
                         instance._source_file = file_path
 
-                        if hasattr(instance, "on_load"):
+                        if hasattr(instance, "on_load") and not use_sandbox:
                             instance.on_load()
 
                         if container:
