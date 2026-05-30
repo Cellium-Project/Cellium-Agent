@@ -414,30 +414,53 @@ class CellToolAdapter(BaseTool):
         
         target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}"
         
+        valid_params = None
+        
         if self._use_sandbox:
             from app.core.util.component_sandbox import ComponentSandbox
             sandbox = ComponentSandbox.get_sandbox(self.name)
             
-            available_cmds = self.get_commands()
-            if cmd_name not in available_cmds:
+            needs_init = not sandbox._sandbox or not sandbox.is_alive()
+            if needs_init:
+                source_file = self._get_component_source()
+                class_name = type(self._cell).__name__
+                if source_file:
+                    try:
+                        sandbox.initialize(source_file, class_name)
+                    except Exception as e:
+                        logger.warning(
+                            "[CellToolAdapter] %s 沙箱初始化失败，回退到直接模式: %s",
+                            self.name, e,
+                        )
+                        self._use_sandbox = False
+                else:
+                    logger.warning(
+                        "[CellToolAdapter] %s 无法获取源文件，回退到直接模式",
+                        self.name,
+                    )
+                    self._use_sandbox = False
+            
+            if self._use_sandbox:
+                available_cmds = self.get_commands()
+                if cmd_name not in available_cmds:
+                    return {
+                        "success": False,
+                        "error": f"未知命令 '{cmd_name}'，可用: {list(available_cmds.keys())}",
+                        "_source": f"component:{self.name}",
+                    }
+                if self._cached_params_map is None:
+                    self._cached_params_map = sandbox.get_command_params()
+                params_map = self._cached_params_map or {}
+                valid_params = set(params_map.get(cmd_name, []))
+        
+        if valid_params is None:
+            if not hasattr(self._cell, target_method_name):
+                available_cmds = list(self.get_commands().keys())
                 return {
                     "success": False,
-                    "error": f"未知命令 '{cmd_name}'，可用: {list(available_cmds.keys())}",
+                    "error": f"未知命令 '{cmd_name}'，可用: {available_cmds}",
                     "_source": f"component:{self.name}",
                 }
-            # 沙箱模式：通过 get_command_params 获取参数签名
-            if self._cached_params_map is None:
-                self._cached_params_map = sandbox.get_command_params()
-            params_map = self._cached_params_map or {}
-            valid_params = set(params_map.get(cmd_name, []))
-        elif not hasattr(self._cell, target_method_name):
-            available_cmds = list(self.get_commands().keys())
-            return {
-                "success": False,
-                "error": f"未知命令 '{cmd_name}'，可用: {available_cmds}",
-                "_source": f"component:{self.name}",
-            }
-        else:
             target_method = getattr(self._cell, target_method_name)
             sig = inspect.signature(target_method)
             valid_params = {p for p in sig.parameters if p != "self"}
@@ -455,7 +478,12 @@ class CellToolAdapter(BaseTool):
         )
         
         try:
-            result = self._cell.execute(cmd_name, **cleaned_args)
+            if self._use_sandbox:
+                from app.core.util.component_sandbox import ComponentSandbox
+                sandbox = ComponentSandbox.get_sandbox(self.name)
+                result = sandbox.execute(cmd_name, **cleaned_args)
+            else:
+                result = self._cell.execute(cmd_name, **cleaned_args)
             
             if not isinstance(result, dict):
                 result = {"result": result}
