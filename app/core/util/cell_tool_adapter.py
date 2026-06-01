@@ -145,7 +145,7 @@ class CellToolAdapter(BaseTool):
 
     @property
     def tool_name(self) -> str:
-        """工具名 = cell_name（LLM 调用时用这个名字）"""
+        """工具名 = cell_name"""
         return self.name
 
     @property
@@ -295,8 +295,7 @@ class CellToolAdapter(BaseTool):
             return self._execute_direct(command, *args, **kwargs)
 
     def _execute_direct(self, command, *args, **kwargs) -> Dict[str, Any]:
-        """直接执行组件命令（无沙箱）"""
-        # 确保实时导入支持：libs 目录在 sys.path 中
+        """直接执行组件命令"""
         _ensure_libs_in_path()
         
         try:
@@ -646,6 +645,39 @@ class CellToolAdapter(BaseTool):
             logger.warning("[CellToolAdapter] %s 获取命令失败: %s", self.name, e)
             return {}
 
+    @staticmethod
+    def _parse_param_descriptions(docstring: str) -> Dict[str, str]:
+        if not docstring:
+            return {}
+        
+        param_descs = {}
+        lines = docstring.split('\n')
+        
+        in_args = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            if stripped.lower().startswith('args:'):
+                in_args = True
+                continue
+            
+            if in_args:
+                if stripped and not line.startswith(' '):
+                    if stripped.lower() in ('returns:', 'return:', 'raises:', 'raise:', 'example:', 'examples:', 'note:', 'notes:'):
+                        break
+                
+                if ':' in stripped:
+                    parts = stripped.split(':', 1)
+                    param_part = parts[0].strip()
+                    
+                    param_name = param_part.split('(')[0].strip()
+                    
+                    if param_name and not param_name.startswith('-'):
+                        desc = parts[1].strip() if len(parts) > 1 else ""
+                        param_descs[param_name] = desc
+        
+        return param_descs
+
     @property
     def definition(self) -> Dict:
         """
@@ -662,16 +694,22 @@ class CellToolAdapter(BaseTool):
             
             params = {}
             required = []
+            param_descriptions = {}
 
             if method is not None and callable(method):
+                method_doc = method.__doc__ or ""
+                param_descriptions = self._parse_param_descriptions(method_doc)
+                
                 sig = inspect.signature(method)
                 for param_name, param in sig.parameters.items():
                     if param_name == "self":
                         continue
 
+                    param_desc = param_descriptions.get(param_name, param_name)
+                    
                     param_info: Dict[str, Any] = {
                         "type": "string",
-                        "description": param_name,
+                        "description": param_desc,
                     }
 
                     annotation = param.annotation
@@ -708,6 +746,7 @@ class CellToolAdapter(BaseTool):
                 "description": cmd_desc.strip(),
                 "parameters": params,
                 "required": required.copy(),
+                "param_descriptions": param_descriptions,
             })
 
         # 单命令模式：简化结构
@@ -736,17 +775,36 @@ class CellToolAdapter(BaseTool):
         all_required = ["command"]
 
         for cmd in commands_info:
+            param_descs = cmd.get("param_descriptions", {})
             for pname, pinfo in cmd["parameters"].items():
+                param_desc = param_descs.get(pname, pname)
                 all_properties[pname] = {
                     **pinfo,
-                    "description": f"[{cmd['command']}] {pname} — {'必填' if pname in cmd.get('required', []) else '选填'}",
+                    "description": param_desc,
                 }
 
+        cmd_help = []
+        for cmd in commands_info:
+            cmd_name = cmd["command"]
+            cmd_desc = cmd["description"].split('\n')[0]
+            
+            params_list = []
+            for pname, pinfo in cmd["parameters"].items():
+                ptype = pinfo.get("type", "string")
+                params_list.append(f"{pname}:{ptype}")
+            
+            if params_list:
+                cmd_help.append(f"  {cmd_name}({', '.join(params_list)}) - {cmd_desc}")
+            else:
+                cmd_help.append(f"  {cmd_name}() - {cmd_desc}")
+        
+        full_desc = f"{self.description}\n\n命令用法:\n" + "\n".join(cmd_help)
+        
         return {
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                "description": f"{self.description}\n\n可用命令: {', '.join(c['command'] for c in commands_info)}\n参数直接使用原始名称，无需添加子命令前缀",
+                "description": full_desc,
                 "parameters": {
                     "type": "object",
                     "properties": all_properties,
