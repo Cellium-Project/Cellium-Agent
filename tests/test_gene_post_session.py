@@ -132,47 +132,46 @@ class TestScoreDelta:
 class TestShouldAnalyze:
     def test_high_score_trigger(self):
         analyzer = GenePostSessionAnalyzer()
-        # 新阈值 0.55
-        assert analyzer.should_analyze(0.55, 0.0) is True
-        assert analyzer.should_analyze(0.7, 0.0) is True
+        # 新阈值 0.70
+        assert analyzer.should_analyze(0.70, 0.0) is True
+        assert analyzer.should_analyze(0.80, 0.0) is True
         assert analyzer.should_analyze(1.0, 0.0) is True
 
     def test_rapid_deterioration_trigger(self):
         """快速恶化提前触发"""
         analyzer = GenePostSessionAnalyzer()
-        # score > 0.45 且 delta > 0.12
-        assert analyzer.should_analyze(0.50, 0.15) is True
-        assert analyzer.should_analyze(0.55, 0.12) is True
+        # score > 0.55 且 delta > 0.15
+        assert analyzer.should_analyze(0.60, 0.16) is True
+        assert analyzer.should_analyze(0.65, 0.20) is True
 
     def test_no_trigger_low_score(self):
         """低分不触发"""
         analyzer = GenePostSessionAnalyzer()
         assert analyzer.should_analyze(0.4, 0.0) is False
-        assert analyzer.should_analyze(0.5, 0.0) is False  # 刚好0.5不触发
-        assert analyzer.should_analyze(0.54, 0.0) is False
+        assert analyzer.should_analyze(0.5, 0.0) is False
+        assert analyzer.should_analyze(0.69, 0.0) is False
 
     def test_no_trigger_slow_deterioration(self):
         """缓慢恶化不提前触发"""
         analyzer = GenePostSessionAnalyzer()
-        assert analyzer.should_analyze(0.50, 0.10) is False
-        # 0.55 >= THRESHOLD_TRIGGER (0.55)，所以会触发，不是缓慢恶化问题
-        # assert analyzer.should_analyze(0.55, 0.05) is False
+        assert analyzer.should_analyze(0.60, 0.10) is False
+        assert analyzer.should_analyze(0.65, 0.14) is False
 
 
 class TestComplexityLevel:
     def test_level_normal(self):
         analyzer = GenePostSessionAnalyzer()
         assert analyzer.get_complexity_level(0.3) == "normal"
-        assert analyzer.get_complexity_level(0.39) == "normal"  # 新阈值 0.4
+        assert analyzer.get_complexity_level(0.49) == "normal"  # 新阈值 0.50
 
     def test_level_warning(self):
         analyzer = GenePostSessionAnalyzer()
-        assert analyzer.get_complexity_level(0.40) == "warning"  # 新阈值 0.4
-        assert analyzer.get_complexity_level(0.54) == "warning"  # 新阈值 0.55
+        assert analyzer.get_complexity_level(0.50) == "warning"  # 新阈值 0.50
+        assert analyzer.get_complexity_level(0.69) == "warning"  # 新阈值 0.70
 
     def test_level_high(self):
         analyzer = GenePostSessionAnalyzer()
-        assert analyzer.get_complexity_level(0.55) == "high"  # 新阈值 0.55
+        assert analyzer.get_complexity_level(0.70) == "high"  # 新阈值 0.70
         assert analyzer.get_complexity_level(1.0) == "high"
 
 
@@ -270,17 +269,17 @@ class TestScoreDeltaTrigger:
         delta1 = analyzer.calculate_score_delta(score1)
         assert analyzer.should_analyze(score1, delta1) is False
 
-        # 第二轮：快速恶化到 0.5
-        score2 = 0.50
+        # 第二轮：快速恶化到 0.65
+        score2 = 0.65
         delta2 = analyzer.calculate_score_delta(score2)
-        assert delta2 == 0.20  # 恶化了0.2
-        assert analyzer.should_analyze(score2, delta2) is True  # >0.45 且 delta>0.12
+        assert abs(delta2 - 0.35) < 0.001  # 恶化了0.35
+        assert analyzer.should_analyze(score2, delta2) is True  # >0.55 且 delta>0.15
 
     def test_slow_deterioration_no_trigger(self):
         """缓慢恶化不应触发"""
         analyzer = GenePostSessionAnalyzer()
 
-        scores = [0.3, 0.35, 0.40, 0.45]
+        scores = [0.3, 0.35, 0.40, 0.50]
         for score in scores:
             delta = analyzer.calculate_score_delta(score)
             # 缓慢恶化，delta 都很小

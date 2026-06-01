@@ -14,9 +14,9 @@ class GenePostSessionAnalyzer:
     WEIGHT_ITERATION = 0.15   # 迭代次数权重
 
     # 阈值配置
-    THRESHOLD_TRIGGER = 0.55   # 强触发阈值
-    THRESHOLD_WARNING = 0.40   # 警告阈值
-    THRESHOLD_DELTA = 0.12     # 恶化速度阈值
+    THRESHOLD_TRIGGER = 0.70   # 强触发阈值
+    THRESHOLD_WARNING = 0.50   # 警告阈值
+    THRESHOLD_DELTA = 0.15     # 恶化速度阈值
     
     def __init__(self):
         self._prev_score = 0.0
@@ -67,12 +67,12 @@ class GenePostSessionAnalyzer:
         """判断是否需要分析
 
         触发条件：
-        1. score >= 0.55：强触发
-        2. score > 0.45 且 delta > 0.12：快速恶化，提前触发
+        1. score >= 0.70：强触发
+        2. score > 0.55 且 delta > 0.15：快速恶化，提前触发
         """
         if score >= self.THRESHOLD_TRIGGER:
             return True
-        if score > 0.45 and delta > self.THRESHOLD_DELTA:
+        if score > 0.55 and delta > self.THRESHOLD_DELTA:
             return True
         return False
     

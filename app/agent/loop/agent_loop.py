@@ -771,6 +771,12 @@ class AgentLoop:
         effective_session = session_id or self.session_id
         start_time = time.time()
 
+        if effective_memory:
+            effective_memory.clear_ephemeral_messages()
+            removed = effective_memory.remove_gene_system_messages()
+            if removed > 0:
+                logger.info(f"[AgentLoop] 已清理上次残留的 {removed} 条 Gene 相关消息")
+
         try:
             # === 1. 消息接收事件 ===
             self._event_publisher.publish_message_received(
@@ -1439,7 +1445,7 @@ class AgentLoop:
                                 self._loop_state.elapsed_ms or 0
                             )
                             delta = self._gene_post_session_analyzer.calculate_score_delta(score)
-                            logger.debug(f"[AgentLoop] Mechanism B 未触发 | score={score:.2f} delta={delta:+.2f} threshold=0.7")
+                            logger.debug(f"[AgentLoop] Mechanism B 未触发 | score={score:.2f} delta={delta:+.2f} threshold=0.70")
 
                     # Gene 创建：根据来源选择处理方式
                     if self._loop_state and getattr(self._loop_state, 'needs_agent_gene_creation', False):
