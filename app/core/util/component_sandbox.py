@@ -60,29 +60,36 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
     """
     import time
     import importlib
+    import builtins
+    import importlib.util
+
+    original_import = builtins.__import__
+
+    ALLOWED_APP_MODULES = {
+        'app.core.interface',
+        'app.core.util.logger',
+    }
+
+    def sandbox_import(name, globals=None, locals=None, fromlist=(), level=0):
+        root_name = name.split('.')[0]
+        
+        if root_name == 'app':
+            allowed = any(name.startswith(prefix) for prefix in ALLOWED_APP_MODULES)
+            if not allowed:
+                raise ImportError(
+                    f"[Sandbox] 禁止导入项目模块 '{name}'。"
+                    f"沙箱组件只能使用基础接口和第三方库。"
+                )
+        elif root_name == 'components':
+            raise ImportError(
+                f"[Sandbox] 禁止导入其他组件 '{name}'。"
+            )
+        
+        return original_import(name, globals, locals, fromlist, level)
+
+    builtins.__import__ = sandbox_import
 
     try:
-        if project_root and project_root not in sys.path:
-            sys.path.insert(0, project_root)
-
-        libs_dir = os.path.join(project_root, "libs")
-        if os.path.exists(libs_dir) and libs_dir not in sys.path:
-            sys.path.insert(0, libs_dir)
-
-        import builtins
-        import importlib.util
-
-        def sandbox_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if libs_dir and os.path.exists(libs_dir) and libs_dir not in sys.path:
-                sys.path.insert(0, libs_dir)
-
-            try:
-                return builtins.__import__(name, globals, locals, fromlist, level)
-            except ImportError:
-                import importlib.machinery
-                importlib.machinery.PathFinder.invalidate_caches()
-                return builtins.__import__(name, globals, locals, fromlist, level)
-
         if os.path.isdir(module_path) and os.path.exists(os.path.join(module_path, "__init__.py")):
             pkg_name = os.path.basename(module_path)
             components_dir = os.path.dirname(module_path)
@@ -208,11 +215,6 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
                 action = request.get("action")
 
                 if action == "execute":
-                    if project_root and project_root not in sys.path:
-                        sys.path.insert(0, project_root)
-                    if libs_dir and os.path.exists(libs_dir) and libs_dir not in sys.path:
-                        sys.path.insert(0, libs_dir)
-
                     command = request.get("command", "")
                     args = request.get("args", [])
                     kwargs = request.get("kwargs", {})

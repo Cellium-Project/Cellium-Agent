@@ -47,7 +47,14 @@ class PatchApplier:
 
         if old_text not in content:
             preview = old_text[:50] + "..." if len(old_text) > 50 else old_text
-            return content, {"count": 0, "error": f"未找到匹配文本: {preview}"}
+            
+            first_line = old_text.split('\n')[0] if '\n' in old_text else old_text
+            if first_line and first_line in content:
+                error_msg = f"未找到完整匹配，但找到首行: '{first_line[:30]}...'。请确保 old_text 与文件内容完全一致。"
+            else:
+                error_msg = f"未找到匹配文本: {preview}"
+            
+            return content, {"count": 0, "error": error_msg}
 
         if replace_all:
             count = content.count(old_text)
