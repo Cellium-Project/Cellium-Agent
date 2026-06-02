@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from typing import Optional, Dict, Any, Callable, List
 
 from .base import ChannelAdapter, UnifiedMessage
@@ -37,6 +38,8 @@ class FeishuAdapter(ChannelAdapter):
         self._running = False
         self._message_handler: Optional[Callable[[UnifiedMessage], None]] = None
         self._event_task: Optional[asyncio.Task] = None
+        self._ws_thread: Optional[threading.Thread] = None
+        self._ws_stop_event = threading.Event()
         
         logger.info("[FeishuAdapter] 初始化完成")
     
@@ -67,12 +70,18 @@ class FeishuAdapter(ChannelAdapter):
     async def disconnect(self):
         """断开连接"""
         self._running = False
+        self._ws_stop_event.set()
+        
         if self._event_task:
             self._event_task.cancel()
             try:
                 await self._event_task
             except asyncio.CancelledError:
                 pass
+        
+        if self._ws_thread and self._ws_thread.is_alive():
+            self._ws_thread.join(timeout=3)
+        
         self._client = None
         self._ws_client = None
         logger.info("[FeishuAdapter] 已断开")
@@ -87,16 +96,20 @@ class FeishuAdapter(ChannelAdapter):
             app_secret: 新的 App Secret
             whitelist_users: 新的白名单用户列表
         """
-        if app_id is not None:
+        credentials_changed = False
+        
+        if app_id is not None and app_id != self._config._app_id:
             self._config._app_id = app_id
+            credentials_changed = True
 
-        if app_secret is not None:
+        if app_secret is not None and app_secret != self._config._app_secret:
             self._config._app_secret = app_secret
+            credentials_changed = True
 
         if whitelist_users is not None:
             self._config._whitelist_users = whitelist_users
 
-        if app_id is not None or app_secret is not None:
+        if credentials_changed:
             logger.info("[FeishuAdapter] 凭证已变更，准备重新连接...")
             await self.disconnect()
             await self.connect()
@@ -148,20 +161,44 @@ class FeishuAdapter(ChannelAdapter):
             .register_p2_im_message_receive_v1(handle_message) \
             .build()
         
-        self._ws_client = lark.ws.Client(
-            self._config.app_id,
-            self._config.app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.ERROR
-        )
+        self._ws_stop_event = threading.Event()
+        
+        def run_ws_in_dedicated_loop():
+            """在独立线程中运行完全独立的事件循环"""
+            import lark_oapi.ws.client as ws_client_module
+            
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            ws_client_module.loop = new_loop
+            
+            self._ws_client = ws_client_module.Client(
+                self._config.app_id,
+                self._config.app_secret,
+                event_handler=event_handler,
+                log_level=lark.LogLevel.ERROR,
+                auto_reconnect=True
+            )
+            
+            while self._running and not self._ws_stop_event.is_set():
+                try:
+                    self._ws_client.start()
+                except Exception as e:
+                    if self._running and not self._ws_stop_event.is_set():
+                        logger.error(f"[FeishuAdapter] WebSocket 错误: {e}")
+                        self._ws_stop_event.wait(5)
+            
+            new_loop.close()
+        
+        self._ws_thread = threading.Thread(target=run_ws_in_dedicated_loop, daemon=True)
+        self._ws_thread.start()
         
         while self._running:
-            try:
-                await asyncio.to_thread(self._ws_client.start)
-            except Exception as e:
-                logger.error(f"[FeishuAdapter] WebSocket 错误: {e}")
-                if self._running:
-                    await asyncio.sleep(5)
+            await asyncio.sleep(1)
+            if not self._ws_thread.is_alive() and self._running:
+                logger.warning("[FeishuAdapter] WebSocket 线程退出，尝试重连...")
+                self._ws_stop_event.clear()
+                self._ws_thread = threading.Thread(target=run_ws_in_dedicated_loop, daemon=True)
+                self._ws_thread.start()
     
     def _handle_message(self, data):
         """处理消息事件"""
