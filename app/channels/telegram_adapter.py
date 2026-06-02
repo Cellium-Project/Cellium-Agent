@@ -759,41 +759,15 @@ class TelegramAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[TelegramAdapter] Error sending denied message: {e}")
 
-    def build_inject_content(self, message, content: str) -> str:
-        """构建注入内容，标识消息来源"""
+    def _get_source_label(self, message) -> str:
+        """获取来源标签"""
         if message.message_type == "group":
-            source = f"Telegram 群组（ID：{message.group_id}）"
-        else:
-            source = f"Telegram 私聊（User ID：{message.user_id}）"
+            return f"Telegram 群组（ID：{message.group_id}）"
+        return f"Telegram 私聊（User ID：{message.user_id}）"
 
-        return (
-            f"§[外部平台消息]  来源：{source}\n"
-            f"该消息来自外部平台，非直接终端交互。\n"
-            f"- 禁止直接执行用户命令，敏感操作须先说明风险并确认\n"
-            f"- 危险操作（删文件、格式化等）必须拒绝\n"
-            f"- 优先要求用户提供明确需求，避免误解\n"
-            f"- 注意：Telegram 平台表格渲染效果不佳，请尽量避免使用表格，改用列表或段落描述\n"
-            f"---\n{content}"
-        )
-
-    def set_message_handler(self, handler: Callable[[UnifiedMessage], None]):
-        """设置消息处理器"""
-        self._message_handler = handler
-
-    def _dispatch(self, message: UnifiedMessage):
-        """分发消息到处理器"""
-        if self._message_handler:
-            asyncio.create_task(self._async_dispatch(message))
-
-    async def _async_dispatch(self, message: UnifiedMessage):
-        """异步分发消息"""
-        try:
-            if asyncio.iscoroutinefunction(self._message_handler):
-                await self._message_handler(message)
-            else:
-                self._message_handler(message)
-        except Exception as e:
-            logger.error(f"[TelegramAdapter] Error in message handler: {e}")
+    def _get_platform_tips(self) -> str:
+        """获取平台特有提示"""
+        return "■ 注意：Telegram 平台表格渲染效果不佳，请尽量避免使用表格，改用列表或段落描述"
 
     def extract_file_info(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_data, dict):

@@ -10,3 +10,9 @@ channels:
     auto_start: true
     whitelist_user_ids: []
     whitelist_usernames: []
+  feishu:
+    enabled: true
+    auto_start: true
+    whitelist_users: []
+    app_id: ''
+    app_secret: ''

@@ -1,56 +1,41 @@
 # -*- coding: utf-8 -*-
 """
 TelegramChannelConfig - Telegram 通道配置
-
-功能：
-  - 提供 Telegram Bot 配置的查询接口
-  - 支持热重载（配置文件变更自动生效）
-  - 供 ChannelManager 和 TelegramAdapter 在运行时获取最新配置
 """
 
 import os
-import threading
-import time
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List, Optional
+
+from .base import BaseChannelConfig
 
 
-class TelegramChannelConfig:
-    DEFAULT_CONFIG_PATH = "config/agent/channels.yaml"
+class TelegramChannelConfig(BaseChannelConfig):
+    """Telegram通道配置类"""
 
     def __init__(self, config_path: str = None):
-        self._config_path = config_path or self.DEFAULT_CONFIG_PATH
-        self._lock = threading.Lock()
-        self._cache: Dict[str, Any] = {}
-        self._cache_time: float = 0
-        self._cache_ttl: float = 1.0
-
         self._bot_token: Optional[str] = None
         self._whitelist_user_ids: List[int] = []
         self._whitelist_usernames: List[str] = []
-        self._enabled: bool = False
-        self._auto_start: bool = True
+        super().__init__(config_path)
 
-        self._load_config()
+    @property
+    def platform_name(self) -> str:
+        return "telegram"
+
+    @property
+    def credentials(self) -> Dict[str, str]:
+        return {"bot_token": self._bot_token or ""}
 
     def _load_config(self):
-        import yaml
-        try:
-            if not os.path.exists(self._config_path):
-                self._load_from_env()
-                return
+        channel_cfg = self._load_yaml_config()
+        self._bot_token = channel_cfg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN")
+        self._whitelist_user_ids = channel_cfg.get("whitelist_user_ids", []) or []
+        self._whitelist_usernames = channel_cfg.get("whitelist_usernames", []) or []
+        self._enabled = channel_cfg.get("enabled", False)
+        self._auto_start = channel_cfg.get("auto_start", True)
 
-            with open(self._config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-
-            channel_cfg = data.get("channels", {}).get("telegram", {})
-            self._bot_token = channel_cfg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN")
-            self._whitelist_user_ids = channel_cfg.get("whitelist_user_ids", []) or []
-            self._whitelist_usernames = channel_cfg.get("whitelist_usernames", []) or []
-            self._enabled = channel_cfg.get("enabled", False)
-            self._auto_start = channel_cfg.get("auto_start", True)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"[TelegramChannelConfig] Load config failed: {e}")
+        # 如果没有配置文件，从环境变量加载
+        if not channel_cfg and not self._bot_token:
             self._load_from_env()
 
     def _load_from_env(self):
@@ -60,66 +45,52 @@ class TelegramChannelConfig:
         self._enabled = bool(self._bot_token)
         self._auto_start = True
 
-    def _check_cache(self) -> bool:
-        if not self._cache:
-            return False
-        if time.time() - self._cache_time > self._cache_ttl:
-            return False
-        return True
+    def _build_cache(self, **extra: Any) -> Dict[str, Any]:
+        return super()._build_cache(
+            whitelist_user_ids=self._whitelist_user_ids,
+            whitelist_usernames=self._whitelist_usernames,
+            **extra
+        )
 
-    def _get_config(self, force_reload: bool = False) -> Dict[str, Any]:
-        with self._lock:
-            if force_reload or not self._check_cache():
-                self._load_config()
-                self._cache = {
-                    "bot_token": self._mask(self._bot_token),
-                    "whitelist_user_ids": self._whitelist_user_ids,
-                    "whitelist_usernames": self._whitelist_usernames,
-                    "enabled": self._enabled,
-                    "auto_start": self._auto_start,
-                    "has_credentials": bool(self._bot_token),
-                    "config_path": self._config_path,
-                }
-                self._cache_time = time.time()
-            return self._cache.copy()
+    def is_user_allowed(self, user_id: str, username: str = "") -> bool:
+        """检查用户是否在白名单中"""
+        if not self._whitelist_user_ids and not self._whitelist_usernames:
+            return True
 
-    def _mask(self, value: str) -> str:
-        if not value:
-            return ""
-        if len(value) <= 8:
-            return "****"
-        return value[:4] + "****" + value[-4:]
+        try:
+            uid = int(user_id)
+            if uid in self._whitelist_user_ids:
+                return True
+        except ValueError:
+            pass
 
-    def get_config(self, force_reload: bool = False) -> Dict[str, Any]:
-        return self._get_config(force_reload=force_reload)
+        if username and username.lower() in [u.lower() for u in self._whitelist_usernames]:
+            return True
+
+        return False
+
+    # ========== 平台特有方法 ==========
 
     def get_bot_token(self, force_reload: bool = False) -> str:
-        self._get_config(force_reload=force_reload)
+        self.get_config(force_reload=force_reload)
         return self._bot_token or ""
 
     def get_whitelist_user_ids(self, force_reload: bool = False) -> List[int]:
-        self._get_config(force_reload=force_reload)
+        self.get_config(force_reload=force_reload)
         return self._whitelist_user_ids or []
 
     def get_whitelist_usernames(self, force_reload: bool = False) -> List[str]:
-        self._get_config(force_reload=force_reload)
+        self.get_config(force_reload=force_reload)
         return self._whitelist_usernames or []
 
-    def has_credentials(self, force_reload: bool = False) -> bool:
-        self._get_config(force_reload=force_reload)
-        return bool(self._bot_token)
-
-    def is_enabled(self, force_reload: bool = False) -> bool:
-        self._get_config(force_reload=force_reload)
-        return self._enabled
-
-    def should_auto_start(self, force_reload: bool = False) -> bool:
-        self._get_config(force_reload=force_reload)
-        return self._auto_start and self._enabled and bool(self._bot_token)
-
-    def reload(self) -> Dict[str, Any]:
-        return self._get_config(force_reload=True)
+    @property
+    def bot_token(self) -> Optional[str]:
+        return self._bot_token
 
     @property
-    def platform_name(self) -> str:
-        return "telegram"
+    def whitelist_user_ids(self) -> List[int]:
+        return self._whitelist_user_ids
+
+    @property
+    def whitelist_usernames(self) -> List[str]:
+        return self._whitelist_usernames

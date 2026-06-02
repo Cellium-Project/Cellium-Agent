@@ -19,3 +19,4 @@ enabled_components:
 - components.skill_manager.SkillManager
 - components.web_search.WebSearch
 - components.scheduler.Scheduler
+- components.feishu_files.FeishuFiles

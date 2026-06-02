@@ -193,6 +193,13 @@ class SessionStore:
                 title = f"QQ-{session_id.split(':')[1][:8]}"
             elif session_id.startswith("telegram:"):
                 title = f"TG-{session_id.split(':')[1][:8]}"
+            elif session_id.startswith("feishu:"):
+                parts = session_id.split(":")
+                if len(parts) >= 3 and parts[1] == "group":
+                    title = f"飞书群-{parts[2][:8]}"
+                else:
+                    uid = parts[1] if len(parts) >= 2 else ""
+                    title = f"飞书私聊-{uid[:8]}"
             else:
                 title = None
 

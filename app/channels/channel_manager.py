@@ -232,9 +232,9 @@ class ChannelManager:
                     elif event_type == "tool_start":
                         tool_name = event.get("tool", "unknown")
                         desc = event.get("description", "")
-                        tool_info = f"### 🔧 正在调用 {tool_name}"
+                        tool_info = f"##### 🔧 正在调用 `{tool_name}`"
                         if desc:
-                            tool_info += f"\n\n> {desc}"
+                            tool_info += f"\n> {desc}"
                         await safe_send(tool_info)
                     elif event_type == "tool_result":
                         tool_name = event.get("tool", "unknown")
@@ -243,7 +243,7 @@ class ChannelManager:
                         content_str = result.get("content", "") if isinstance(result, dict) else str(result)
                         if len(content_str) > 300:
                             content_str = content_str[:300] + "..."
-                        await safe_send(f"> ## ✅ **{tool_name}** 耗时 {duration}ms")
+                        await safe_send(f"###### ✅ {tool_name} 耗时 {duration}ms")
                     elif event_type == "hybrid_phase":
                         phase_msg = event.get("message", "")
                         phase_desc = event.get("description", "")
@@ -409,6 +409,7 @@ class ChannelManager:
             "guild_id": message.guild_id,
             "message_type": message.message_type,
             "target_id": self._resolve_target_id(message),
+            "msg_id": message.msg_id,
         }
         if adapter:
             try:
@@ -503,11 +504,18 @@ class ChannelManager:
                         continue
                     filename = f.get('filename', 'unknown')
                     size = f.get('size', 0)
-                    file_info += f"  {i}. {filename} ({size} bytes)\n"
-                    if f.get('url'):
-                        file_info += f"     下载链接: {f['url']}\n"
+                    platform = f.get('platform', 'unknown')
+                    file_info += f"  {i}. {filename} ({size} bytes) [{platform}]\n"
+
+                    if platform == 'feishu':
+                        if f.get('file_key'):
+                            file_info += f"     file_key: {f['file_key']}\n"
+                        if f.get('image_key'):
+                            file_info += f"     image_key: {f['image_key']}\n"
+                    elif platform in ('qq', 'telegram'):
+                        if f.get('url'):
+                            file_info += f"     file_id: {f['url']}\n"
                 content_to_agent = file_info + "\n" + content_to_agent
-                session_info.pending_files = []
                 logger.info(f"[ChannelManager] Attached {i} pending files to message for session={session_id}")
             
             try:

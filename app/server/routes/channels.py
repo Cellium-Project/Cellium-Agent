@@ -70,6 +70,14 @@ async def reload_channel(platform: str = "qq") -> Dict[str, Any]:
                 whitelist_user_ids=tg_config.get_whitelist_user_ids(force_reload=True),
                 whitelist_usernames=tg_config.get_whitelist_usernames(force_reload=True),
             )
+        elif platform == "feishu":
+            from app.channels.feishu_channel_config import FeishuChannelConfig
+            feishu_config = FeishuChannelConfig()
+            await adapter.update_config(
+                app_id=feishu_config.get_app_id(force_reload=True),
+                app_secret=feishu_config.get_app_secret(force_reload=True),
+                whitelist_users=feishu_config.get_whitelist_users(force_reload=True),
+            )
 
         await adapter.disconnect()
         asyncio.create_task(adapter.connect())

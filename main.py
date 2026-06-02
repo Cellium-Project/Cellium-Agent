@@ -154,43 +154,15 @@ class MainApplication(LogMixin):
         self.logger.info("[OK] 外部平台通道初始化完成")
 
     def _setup_channels(self):
-        from app.channels import ChannelManager, QQAdapter, TelegramAdapter
-        from app.channels.qq_channel_config import QQChannelConfig
-        from app.channels.telegram_channel_config import TelegramChannelConfig
+        from app.channels import register_all_channels, ChannelManager
+
+        registered = register_all_channels(self.logger)
+        if registered:
+            self.logger.info(f"[OK] 已注册 {len(registered)} 个通道适配器: {registered}")
+        else:
+            self.logger.warning("[Channel] 没有注册任何通道适配器")
 
         channel_mgr = ChannelManager.get_instance()
-
-        qq_config = QQChannelConfig()
-        if qq_config.should_auto_start():
-            if channel_mgr.get_adapter("qq"):
-                self.logger.info("[Channel] QQ 适配器已存在，跳过注册")
-            else:
-                qq_adapter = QQAdapter(
-                    app_id=qq_config.get_app_id(),
-                    app_secret=qq_config.get_app_secret(),
-                )
-                channel_mgr.register_adapter(qq_adapter)
-                app_id = qq_config.get_app_id()
-                self.logger.info(f"[Channel] QQ 适配器已注册 (app_id: {app_id[:8] if app_id else '***'}...)")
-        else:
-            self.logger.warning("[Channel] QQ 通道未启用或凭证缺失，跳过加载")
-
-        # 初始化 Telegram 通道
-        tg_config = TelegramChannelConfig()
-        if tg_config.should_auto_start():
-            if channel_mgr.get_adapter("telegram"):
-                self.logger.info("[Channel] Telegram 适配器已存在，跳过注册")
-            else:
-                tg_adapter = TelegramAdapter(
-                    bot_token=tg_config.get_bot_token(),
-                    whitelist_user_ids=tg_config.get_whitelist_user_ids(),
-                    whitelist_usernames=tg_config.get_whitelist_usernames(),
-                )
-                channel_mgr.register_adapter(tg_adapter)
-                self.logger.info("[Channel] Telegram 适配器已注册")
-        else:
-            self.logger.warning("[Channel] Telegram 通道未启用或凭证缺失，跳过加载")
-
         if not channel_mgr._running:
             self.logger.info("[Channel] 适配器已注册，将在服务器启动后自动连接")
 

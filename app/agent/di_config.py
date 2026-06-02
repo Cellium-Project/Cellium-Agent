@@ -78,6 +78,18 @@ async def _do_telegram_channel_start(channel_mgr, tg_config):
         logger.error("[AgentDI] Telegram 通道启动失败: %s", e)
 
 
+async def _do_feishu_channel_start(channel_mgr, feishu_config):
+    """启动飞书通道"""
+    try:
+        from app.channels.feishu_adapter import FeishuAdapter
+        adapter = FeishuAdapter(config=feishu_config)
+        channel_mgr.register_adapter(adapter)
+        await adapter.connect()
+        logger.info("[AgentDI] 飞书通道启动完成")
+    except Exception as e:
+        logger.error("[AgentDI] 飞书通道启动失败: %s", e)
+
+
 def setup_agent_di(
     llm_engine=None,
     shell=None,
@@ -278,6 +290,32 @@ def setup_agent_di(
                 logger.info("[AgentDI] Telegram 通道配置已热更新，正在启动...")
             else:
                 logger.warning("[AgentDI] Telegram 通道配置已更新，但凭证缺失或未启用")
+
+            from app.channels.feishu_channel_config import FeishuChannelConfig
+            feishu_config = FeishuChannelConfig()
+            feishu_config.reload()
+            feishu_adapter = channel_mgr.get_adapter("feishu")
+            if feishu_adapter:
+                new_app_id = feishu_config.get_app_id(force_reload=True)
+                new_app_secret = feishu_config.get_app_secret(force_reload=True)
+                new_whitelist = feishu_config.get_whitelist_users(force_reload=True)
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        feishu_adapter.update_config(
+                            app_id=new_app_id,
+                            app_secret=new_app_secret,
+                            whitelist_users=new_whitelist,
+                        )
+                    )
+                )
+                logger.info("[AgentDI] 飞书通道配置已热更新，正在重连...")
+            elif feishu_config.should_auto_start():
+                asyncio.get_event_loop().call_soon_threadsafe(
+                    lambda: asyncio.create_task(_do_feishu_channel_start(channel_mgr, feishu_config))
+                )
+                logger.info("[AgentDI] 飞书通道配置已热更新，正在启动...")
+            else:
+                logger.warning("[AgentDI] 飞书通道配置已更新，但凭证缺失或未启用")
         except Exception as e:
             logger.error("[AgentDI] Channels 配置热更新失败: %s", e, exc_info=True)
 

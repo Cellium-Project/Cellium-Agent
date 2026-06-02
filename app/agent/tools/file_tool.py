@@ -21,10 +21,39 @@ _MAX_LIST_ENTRIES = 200
 
 
 def _unescape_string(value: str) -> str:
-    """处理双重转义的字符串（如 \\n -> 换行符）"""
+    """处理双重转义的字符串（如 \\n -> 换行符）
+    """
     if not isinstance(value, str):
         return value
-    return value.encode('utf-8').decode('unicode_escape')
+
+    if '\\' not in value:
+        return value
+
+    result = value
+    escape_map = [
+        ('\\n', '\n'),
+        ('\\t', '\t'),
+        ('\\r', '\r'),
+        ('\\"', '"'),
+        ("\\'", "'"),
+        ('\\\\', '\\'),  
+    ]
+
+    has_escape = any(seq in value for seq in ['\\n', '\\t', '\\r', '\\"', "\\'"])
+
+    if not has_escape:
+        if '\\\\' in value:
+            return value.replace('\\\\', '\\')
+        return value
+
+    for escaped, unescaped in escape_map[:-1]:
+        if escaped in result and escaped != '\\\\':
+            result = result.replace(escaped, unescaped)
+
+    if '\\\\' in value:
+        result = result.replace('\\\\', '\\')
+
+    return result
 
 
 @dataclass

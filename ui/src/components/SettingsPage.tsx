@@ -778,6 +778,120 @@ const TelegramChannelCard: React.FC<{
 };
 
 // ═════════════════════════════════════════════════════════════
+// 飞书通道配置子组件
+// ═════════════════════════════════════════════════════════════
+const FeishuChannelCard: React.FC<{
+  config: Record<string, any>;
+  onChange: (config: Record<string, any>) => void;
+  saving: boolean;
+  saved: boolean;
+  onSave: () => void;
+  error: string | null;
+}> = ({ config, onChange, saving, saved, onSave, error }) => {
+  const { t } = useTranslation();
+  const updateField = (field: string, value: any) => {
+    onChange({ ...config, [field]: value });
+  };
+
+  const updateListField = (field: string, value: string) => {
+    const list = value.split(',').map(s => s.trim()).filter(Boolean);
+    onChange({ ...config, [field]: list });
+  };
+
+  return (
+    <div className="settings-card" style={{ marginBottom: 24 }}>
+      <div className="settings-card-header">
+        <div className="settings-card-title">
+          <Icons.Globe size={16} /> {t('settings.channel.feishu.title')}
+        </div>
+        <button className="btn-primary btn-sm" onClick={onSave} disabled={saving}>
+          {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.channel.feishu.save')}
+        </button>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="settings-card-grid">
+        <div className="form-group">
+          <FieldLabel label={t('settings.channel.feishu.enabled')} />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.enabled !== false}
+              onChange={e => updateField('enabled', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.enabled !== false ? t('settings.channel.feishu.enabledOn') : t('settings.channel.feishu.enabledOff')}</span>
+          </label>
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label={t('settings.channel.feishu.autoStart')} />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.auto_start !== false}
+              onChange={e => updateField('auto_start', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.auto_start !== false ? t('settings.channel.feishu.autoStartOn') : t('settings.channel.feishu.autoStartOff')}</span>
+          </label>
+        </div>
+
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label={t('settings.channel.feishu.appId')} />
+          <input
+            type="text"
+            value={config.app_id || ''}
+            onChange={e => updateField('app_id', e.target.value)}
+            placeholder={t('settings.channel.feishu.appIdPlaceholder')}
+          />
+        </div>
+
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label={t('settings.channel.feishu.appSecret')} />
+          <input
+            type="password"
+            value={config.app_secret || ''}
+            onChange={e => updateField('app_secret', e.target.value)}
+            placeholder={t('settings.channel.feishu.appSecretPlaceholder')}
+          />
+        </div>
+
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label={t('settings.channel.feishu.whitelistUsers')} desc={t('settings.channel.feishu.whitelistUsersDesc')} />
+          <input
+            type="text"
+            value={(config.whitelist_users || []).join(', ')}
+            onChange={e => updateListField('whitelist_users', e.target.value)}
+            placeholder={t('settings.channel.feishu.whitelistUsersPlaceholder')}
+          />
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label={t('settings.channel.feishu.credentialStatus')} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: config.app_id && config.app_secret ? 'var(--status-success-bright)' : 'var(--status-danger-bright)',
+            }} />
+            <span style={{ color: 'var(--text-code)', fontSize: 13 }}>
+              {config.app_id && config.app_secret ? t('settings.channel.feishu.credentialConfigured') : t('settings.channel.feishu.credentialMissing')}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-card-footer">
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+          {t('settings.channel.feishu.tip')}
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════
 // 通道配置 Tab (多平台消息入口)
 // ═════════════════════════════════════════════════════════════
 const ChannelSettings: React.FC = () => {
@@ -792,13 +906,15 @@ const ChannelSettings: React.FC = () => {
     fetchJSON<Record<string, any>>(API.configSection('channels')).then(data => {
       setConfigs({
         qq: data?.qq || { enabled: true, auto_start: true },
-        telegram: data?.telegram || { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] }
+        telegram: data?.telegram || { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] },
+        feishu: data?.feishu || { enabled: false, auto_start: true, whitelist_users: [] }
       });
       setLoading(false);
     }).catch(() => {
       setConfigs({
         qq: { enabled: true, auto_start: true },
-        telegram: { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] }
+        telegram: { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] },
+        feishu: { enabled: false, auto_start: true, whitelist_users: [] }
       });
       setLoading(false);
     });
@@ -845,6 +961,14 @@ const ChannelSettings: React.FC = () => {
         saved={saved.telegram || false}
         onSave={() => handleSave('telegram')}
         error={errors.telegram || null}
+      />
+      <FeishuChannelCard
+        config={configs.feishu || {}}
+        onChange={(cfg) => updateConfig('feishu', cfg)}
+        saving={saving.feishu || false}
+        saved={saved.feishu || false}
+        onSave={() => handleSave('feishu')}
+        error={errors.feishu || null}
       />
     </div>
   );
