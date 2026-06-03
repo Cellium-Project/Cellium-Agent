@@ -788,17 +788,15 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                         if old_instance and hasattr(old_instance, "on_unload"):
                             old_instance.on_unload()
 
-                        from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
-                        class_name_lower = item["class_name"].lower()
-                        
                         instance, info = _instantiate_component(item["module_path"])
                         
-                        use_sandbox = class_name_lower not in EXEMPTED_NAMES
+                        from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
+                        use_sandbox = instance.cell_name not in EXEMPTED_NAMES
                         
                         if use_sandbox:
                             try:
                                 from app.core.util.component_sandbox import ComponentSandbox
-                                sandbox_name = old_cell_name or class_name_lower
+                                sandbox_name = old_cell_name or instance.cell_name
                                 sandbox = ComponentSandbox.reload_sandbox(sandbox_name)
                                 sandbox.initialize(str(file_path), item["class_name"])
                                 sandbox._source_file = file_path
@@ -847,7 +845,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             cls_name = type(_cell_registry[target_name]).__name__
             module_path = f"components.{pathlib.Path(file_path).stem}.{cls_name}"
             
-            # 清理沙箱缓存（修复：组件删除时沙箱实例未清理）
             try:
                 from app.core.util.component_sandbox import ComponentSandbox
                 if target_name in ComponentSandbox.get_all_sandbox_names():
@@ -856,7 +853,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug(f"[HotReload] 清理沙箱缓存失败 {target_name}: {e}")
             
-            # 清理组件类引用缓存（修复：清理孤儿引用）
             if cls_name in _component_classes:
                 del _component_classes[cls_name]
                 logger.debug(f"[HotReload] 已清理类引用缓存: {cls_name}")
@@ -865,7 +861,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             unregister_from_config(module_path)
             removed_tool_names.append(target_name)
             
-            # 清理工具注册表（修复：组件删除时从工具注册表移除）
             try:
                 from app.core.util.component_tool_registry import get_component_tool_registry
                 registry = get_component_tool_registry()
@@ -874,7 +869,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug(f"[HotReload] 从工具注册表移除失败 {target_name}: {e}")
             
-            # 清理加载错误缓存（修复：删除组件时清理错误记录）
             if file_path in _load_errors:
                 del _load_errors[file_path]
                 logger.debug(f"[HotReload] 已清理错误缓存: {file_path}")
@@ -885,7 +879,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
         _loaded_files.discard(file_path)
         _file_mtimes.pop(file_path, None)
     
-    # 清理信任白名单中已删除的组件（修复：信任白名单残留）
     if removed_tool_names:
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
@@ -897,7 +890,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"[HotReload] 清理信任白名单失败: {e}")
     
-    # 同步到工具注册表（修复：确保新增/更新的组件能被 Agent 使用）
     if report.get("added") or report.get("updated"):
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
@@ -944,14 +936,12 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
         "warnings": [],
     }
     
-    # 1. 清理加载错误缓存（安全）
     if _load_errors:
         report["load_errors_cleared"] = len(_load_errors)
         if not dry_run:
             _load_errors.clear()
             logger.info(f"[CacheCleanup] 已清理 {report['load_errors_cleared']} 条加载错误缓存")
     
-    # 2. 清理组件类引用缓存（安全，只清理孤儿引用）
     current_classes = {type(cell).__name__ for cell in _cell_registry.values()}
     orphaned = [name for name in list(_component_classes.keys()) if name not in current_classes]
     report["component_classes_cleared"] = len(orphaned)
@@ -960,7 +950,6 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
             del _component_classes[name]
         logger.info(f"[CacheCleanup] 已清理 {len(orphaned)} 个孤儿类引用")
     
-    # 3. 清理沙箱缓存（需要检查是否正在运行）
     try:
         from app.core.util.component_sandbox import ComponentSandbox
         all_sandboxes = ComponentSandbox.get_all_sandbox_names()
@@ -989,13 +978,11 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
         report["warnings"].append(f"清理沙箱缓存失败: {e}")
         logger.warning(f"[CacheCleanup] 清理沙箱缓存失败: {e}")
     
-    # 4. 清理信任白名单（安全，只清理不存在的）
     try:
         from app.core.util.component_tool_registry import get_component_tool_registry
         registry = get_component_tool_registry()
         current_names = set(_cell_registry.keys())
         
-        # 先获取将要清理的列表
         trusted = registry._load_trust_list()
         to_remove = [name for name in trusted if name not in current_names]
         report["trust_list_cleaned"] = to_remove
@@ -1007,7 +994,6 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
         report["warnings"].append(f"清理信任白名单失败: {e}")
         logger.warning(f"[CacheCleanup] 清理信任白名单失败: {e}")
     
-    # 5. 同步工具注册表（清理已删除组件的工具）
     if not dry_run:
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
