@@ -145,21 +145,28 @@ class ComponentBuilder(BaseCell):
         methods_code = "\n".join(methods_parts)
 
         agent_helper = '''
-    def _run_agent(self, prompt: str, session_id: str = None) -> Dict[str, Any]:
+    def _trigger_agent(self, message: str, session_id: str = None, event_type: str = "background_trigger", event_data: dict = None) -> Dict[str, Any]:
         """
-        启动 Agent 循环执行任务（可选功能）
+        主动触发 Agent 执行任务
+
+        推送消息到指定 session 的 Agent 对话，类似定时任务的机制。
+        - 如果该 session 有运行中的任务，消息会追加到当前任务
+        - 如果没有运行中的任务，会启动新任务
 
         Args:
-            prompt: 要 Agent 执行的任务描述
-            session_id: 会话 ID（可选，不传则自动生成）
+            message: 要 Agent 处理的消息内容
+            session_id: 目标会话 ID（必须指定）
+            event_type: 事件类型标识（可选，默认 background_trigger）
+            event_data: 额外的事件数据（可选）
 
         Returns:
-            {"success": True, "session_id": "...", "status": "started"}
+            {"success": True, "result": {...}} 或 {"success": False, "error": "..."}
         """
-        import httpx
-        from datetime import datetime
+        if not session_id:
+            self.logger.warning(f"[{self.cell_name}] _trigger_agent 需要 session_id 参数")
+            return {"success": False, "error": "session_id is required"}
 
-        sid = session_id or f"scheduled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        import httpx
 
         try:
             from app.core.util.agent_config import get_config
@@ -172,19 +179,22 @@ class ComponentBuilder(BaseCell):
 
         try:
             response = httpx.post(
-                f"{base_url}/api/chat/stream",
-                json={"message": prompt, "session_id": sid},
+                f"{base_url}/api/component/event",
+                json={
+                    "session_id": session_id,
+                    "message": message,
+                    "source": self.cell_name,
+                    "event_type": event_type,
+                    "event_data": event_data or {},
+                },
                 timeout=10.0
             )
             result = response.json()
-            return {
-                "success": result.get("status") in ("started", "reconnecting"),
-                "session_id": sid,
-                "status": result.get("status"),
-                "message": f"Agent 任务已启动: {prompt[:50]}..."
-            }
+            self.logger.info(f"[{self.cell_name}] 已触发 Agent | session={session_id} | status={result.get('status')}")
+            return {"success": True, "result": result}
         except Exception as e:
-            return {"success": False, "error": f"启动 Agent 失败: {e}"}
+            self.logger.error(f"[{self.cell_name}] 触发 Agent 失败: {e}")
+            return {"success": False, "error": str(e)}
 '''
 
         examples_parts = []

@@ -189,7 +189,7 @@ class BackgroundMonitorExample(BaseCell):
             
             time.sleep(60)  # 每60秒执行一次
 
-    def _trigger_agent(self, message: str, session_id: str = None):
+    def _trigger_agent(self, message: str, session_id: str = None, event_type: str = "background_trigger", event_data: dict = None):
         """
         主动触发 Agent 执行任务
         
@@ -199,13 +199,15 @@ class BackgroundMonitorExample(BaseCell):
         
         Args:
             message: 要 Agent 处理的消息
-            session_id: 目标会话 ID（必须指定，用于推送到正确的对话）
+            session_id: 目标会话 ID（必须指定）
+            event_type: 事件类型标识（可选）
+            event_data: 额外的事件数据（可选）
         """
-        import httpx
-
         if not session_id:
             self.logger.warning(f"[{self.cell_name}] _trigger_agent 需要 session_id 参数")
             return {"success": False, "error": "session_id is required"}
+
+        import httpx
 
         try:
             from app.core.util.agent_config import get_config
@@ -223,7 +225,8 @@ class BackgroundMonitorExample(BaseCell):
                     "session_id": session_id,
                     "message": message,
                     "source": self.cell_name,
-                    "event_type": "background_trigger"
+                    "event_type": event_type,
+                    "event_data": event_data or {},
                 },
                 timeout=10.0
             )
