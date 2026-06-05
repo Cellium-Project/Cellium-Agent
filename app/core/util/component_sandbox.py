@@ -179,14 +179,23 @@ def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiproce
         output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
 
         if hasattr(component, "on_load"):
-            def run_on_load():
+            is_background = hasattr(component, '_running')
+            
+            if is_background:
                 try:
                     component.on_load()
+                    logger.debug("[Sandbox] on_load completed (background component)")
                 except Exception as e:
                     logger.warning("[Sandbox] on_load failed: %s", e)
-            thread = threading.Thread(target=run_on_load, daemon=True)
-            thread.start()
-            logger.debug("[Sandbox] on_load started in background thread")
+            else:
+                def run_on_load():
+                    try:
+                        component.on_load()
+                    except Exception as e:
+                        logger.warning("[Sandbox] on_load failed: %s", e)
+                thread = threading.Thread(target=run_on_load, daemon=True)
+                thread.start()
+                logger.debug("[Sandbox] on_load started in background thread")
 
         # 心跳管理
         HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
