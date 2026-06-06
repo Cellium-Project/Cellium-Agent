@@ -1,5 +1,15 @@
 // API Types
 
+export interface Attachment {
+  file_id: string;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  url: string;
+  local_path: string;  // 本地文件路径
+  upload_time: string;
+}
+
 export interface Session {
   session_id: string;
   message_count: number;
@@ -16,13 +26,12 @@ export interface ToolTrace {
   result?: any;
   duration_ms: number;
   description?: string;
-  call_id?: string;  // ★ 唯一标识符，用于匹配并行工具调用
+  call_id?: string;  
 }
 
-// ★ 有序时间线片段 — 支持文本和工具调用按时间顺序交错显示
 export type TimelineSegment =
   | { kind: 'text'; content: string }
-  | { kind: 'thinking'; content: string }  // ★ 思考过程，可折叠显示
+  | { kind: 'thinking'; content: string }  
   | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error'; call_id?: string };  // ★ 唯一标识符
 
 export interface Message {
@@ -31,9 +40,10 @@ export interface Message {
   content: string;
   toolTraces?: ToolTrace[];
   htmlContent?: string | null;
-  timeline?: TimelineSegment[];  // ★ 新增：有序时间线
+  timeline?: TimelineSegment[]; 
   type?: 'scheduler_trigger';  // 特殊消息类型
   schedulerTaskName?: string;  // 定时任务名称
+  attachments?: Attachment[];  // 附件列表
 }
 
 export interface HistoryResponse {

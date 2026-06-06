@@ -1,24 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Agent 配置管理器（多文件合并 + 热加载版）
-
-设计原则：
-  1. 配置按职责拆分为独立 YAML 文件（config/agent/*.yaml）
-  2. 启动时一次性加载所有配置并深度合并
-  3. 运行时通过 mtime 检测文件变更，支持自动/手动热重载
-  4. 变更时通过回调通知订阅者（LLM引擎、安全模块等）
-
-目录结构：
-  config/
-    agent/
-      server.yaml      ← 服务端（需重启生效）
-      llm.yaml          ← LLM 引擎（热重载）
-      agent.yaml        ← Agent 行为（热重载）
-      routes.yaml       ← 路由（需重启）
-      memory.yaml       ← 记忆系统（热重载）
-      security.yaml     ← 安全策略（热重载！紧急封禁）
-      logging.yaml      ← 日志（热重载）
-      channels.yaml     ← 通道配置（需重启生效）
+Agent 配置管理器
 """
 
 import os

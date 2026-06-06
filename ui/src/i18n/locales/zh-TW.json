@@ -105,7 +105,9 @@
     "title": "Cellium Agent",
     "paramsAndResult": "參數與結果",
     "executing": "執行中",
-    "waitingForResult": "等待結果..."
+    "waitingForResult": "等待結果...",
+    "uploadFile": "上傳檔案",
+    "removeAttachment": "移除附件"
   },
   "session": {
     "untitled": "未命名會話",

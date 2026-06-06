@@ -4,6 +4,7 @@ import { useChat } from '../hooks/useChat';
 import { useAppStore } from '../stores/appStore';
 import { Icons } from './Icons';
 import { ChatMessage } from './ChatMessage';
+import type { Attachment } from '../types';
 
 const MessageList = memo(({
   messages, streamingMessage,
@@ -62,17 +63,61 @@ const MessageList = memo(({
 export const ChatView: React.FC = () => {
   const { t } = useTranslation();
   const [inputValue, setInputValue] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming } = useChat();
   const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages, hybridPhase, hybridMessage, hybridDescription, toggleMobileSidebar } = useAppStore();
 
+  const handleFileSelect = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    setUploading(true);
+    const uploadedAttachments: Attachment[] = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      try {
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) throw new Error('上传失败');
+        
+        const result = await response.json();
+        uploadedAttachments.push(result);
+      } catch (error) {
+        console.error('上传失败:', error);
+      }
+    }
+    
+    setAttachments(prev => [...prev, ...uploadedAttachments]);
+    setUploading(false);
+    e.target.value = '';
+  };
+
+  const handleRemoveAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
   const handleSend = () => {
-    if (!inputValue.trim()) return;
-    sendMessage(inputValue.trim());
+    if (!inputValue.trim() && attachments.length === 0) return;
+    sendMessage(inputValue.trim(), attachments);
     setInputValue('');
+    setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
@@ -124,8 +169,39 @@ export const ChatView: React.FC = () => {
         fetchMessages={fetchMessages}
       />
 
-      {/* Input — 不再随 streamingMessage 变化而重渲染 */}
       <div className="chat-input-container">
+        {attachments.length > 0 && (
+          <div className="attachments-preview">
+            {attachments.map((att, idx) => (
+              <div key={idx} className="attachment-item">
+                <div className="attachment-icon">
+                  {att.file_type === 'image' ? (
+                    <Icons.Image size={14} />
+                  ) : (
+                    <Icons.File size={14} />
+                  )}
+                </div>
+                <span className="attachment-filename">{att.filename}</span>
+                <button 
+                  className="attachment-remove"
+                  onClick={() => handleRemoveAttachment(idx)}
+                  title={t('chat.removeAttachment')}
+                >
+                  <Icons.X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleFileChange}
+        />
+        
         <div className="chat-input-wrapper">
           <textarea
             ref={textareaRef}
@@ -137,6 +213,14 @@ export const ChatView: React.FC = () => {
             rows={1}
           />
           <div className="input-actions">
+            <button
+              className="btn-upload"
+              onClick={handleFileSelect}
+              disabled={uploading || isStreaming}
+              title={t('chat.uploadFile')}
+            >
+              {uploading ? <Icons.Loader size={18} /> : <Icons.Plus size={18} />}
+            </button>
             {isStreaming && (
               <button className="btn-stop" onClick={stopStreaming} title={t('chat.stopTitle')}>
                 <Icons.Square size={18} />
@@ -145,7 +229,7 @@ export const ChatView: React.FC = () => {
             <button
               className="btn-send"
               onClick={handleSend}
-              disabled={!inputValue.trim()}
+              disabled={(!inputValue.trim() && attachments.length === 0) || isStreaming}
               title={isStreaming ? t('chat.sendSupplementTitle') : t('chat.sendTitle')}
             >
               <Icons.Send size={18} />

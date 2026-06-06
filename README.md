@@ -666,61 +666,6 @@ components/
 
 事件触发结果会自动推送到对应的 session（WebUI/QQ/Telegram）。
 
-
-## 目录结构
-
-```
-Cellium-Agent/
-├── app/                        # 应用核心代码
-│   ├── agent/                  # Agent 核心模块
-│   │   ├── control/            # 控制环：ControlLoop、ActionBandit、FeedbackEvaluator
-│   │   ├── events/             # 事件模型与类型定义
-│   │   ├── heuristics/         # 启发式引擎：规则、特征提取、评分
-│   │   │   └── rules/          # 启发式规则：终止规则、循环检测
-│   │   ├── learning/           # 学习模块：BayesianBandit、Policy
-│   │   ├── llm/                # LLM 引擎，支持 OpenAI 兼容 API
-│   │   ├── loop/               # Agent 主循环：AgentLoop、SessionManager、ToolExecutor
-│   │   ├── memory/             # 三层记忆：FTS5、Repository、ArchiveStore
-│   │   ├── tools/              # 工具基类与内置工具
-│   │   ├── prompt/             # Prompt 构建器
-│   │   ├── shell/              # Shell 交互
-│   │   ├── security/           # 安全策略
-│   │   └── di_config.py        # 依赖注入配置
-│   ├── channels/               # 通道适配层
-│   │   ├── base.py             # 通道基类 IChannelAdapter，支持文件消息抽象接口
-│   │   ├── channel_manager.py  # 通道管理器，消息路由、文件传输与注入
-│   │   ├── qq_adapter.py       # QQBot 适配器（消息 + 文件传输）
-│   │   ├── qq_channel_config.py # QQ 通道配置模型
-│   │   ├── telegram_adapter.py # Telegram Bot 适配器（消息 + 文件传输）
-│   │   └── telegram_channel_config.py # Telegram 通道配置模型
-│   ├── core/                   # 核心基础设施
-│   │   ├── bus/                # 事件总线 EventBus
-│   │   ├── di/                 # 依赖注入容器
-│   │   ├── interface/          # 核心接口定义
-│   │   ├── security/           # 安全模块
-│   │   └── util/               # 工具类：ComponentWatcher、Logger 等
-│   └── server/                 # FastAPI 服务层
-│       └── routes/             # API 路由：chat、memory、channels、session_events
-├── components/                 # 组件目录（热插拔）
-│   ├── _example_component.py   # 组件模板参考
-│   ├── component_builder.py    # 组件生成器（系统内置）
-│   ├── qq_files.py             # QQ 文件传输组件
-│   ├── telegram_files.py       # Telegram 文件传输组件
-│   ├── web_fetch.py            # 网页获取组件
-│   ├── web_search.py           # 网页搜索组件
-│   ├── skill_installer.py      # Skill 安装器（支持 .zip/.tar.gz 压缩包安装）
-│   ├── skill_manager.py        # Skill 管理器（列表、搜索、详情、卸载）
-│   └── skills/                 # Skill 安装目录
-├── config/agent/               # 配置文件
-│   ├── channels.yaml           # 通道配置（QQ、Telegram 等外部平台）
-│   └── llm.yaml                # LLM 模型配置
-├── ui/                         # React 前端源码
-├── html/                       # 前端构建输出
-├── memory/                     # 记忆存储目录
-├── tests/                      # 单元测试
-└── main.py                     # 入口文件
-```
-
 ## Strategy Gene (GEP) 集成
 
 Cellium Agent --- **2026-04-22** 引入 [Strategy Gene](https://arxiv.org/abs/2604.15097) 论文设计理念。

@@ -14,6 +14,39 @@ function safeRenderMarkdown(content: string): string {
   return DOMPurify.sanitize(rawHtml);
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parseAttachmentsFromMessage(content: string): { content: string; attachments: Array<{ filename: string; file_type: string; file_size: number; local_path: string }> } {
+  const attachments: Array<{ filename: string; file_type: string; file_size: number; local_path: string }> = [];
+  
+  const attachmentBlockRegex = /\[附件信息\]([\s\S]*?)(?=\n\n|$)/g;
+  let blockMatch;
+  
+  while ((blockMatch = attachmentBlockRegex.exec(content)) !== null) {
+    const blockContent = blockMatch[1];
+    
+    const itemRegex = /- 文件: (.+?) \(类型: (.+?), 大小: (\d+) bytes\)\n\s+本地路径: (.+?)(?=\n|$)/g;
+    let itemMatch;
+    
+    while ((itemMatch = itemRegex.exec(blockContent)) !== null) {
+      attachments.push({
+        filename: itemMatch[1],
+        file_type: itemMatch[2],
+        file_size: parseInt(itemMatch[3]),
+        local_path: itemMatch[4]
+      });
+    }
+  }
+  
+  const cleanContent = content.replace(attachmentBlockRegex, '').trim();
+  
+  return { content: cleanContent, attachments };
+}
+
 /** Check if a parsed JSON object is a thought JSON (has reasoning field) */
 function isThoughtJson(obj: any): boolean {
   return typeof obj === 'object' && obj !== null && typeof obj.reasoning === 'string';
@@ -232,6 +265,23 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
   
+  // 解析用户消息中的附件信息
+  const parsedMessage = useMemo(() => {
+    if (isUser) {
+      const parsed = parseAttachmentsFromMessage(message.content);
+      // 合并已有的attachments和解析出来的attachments
+      const allAttachments = [
+        ...(message.attachments || []),
+        ...parsed.attachments
+      ];
+      return {
+        content: parsed.content,
+        attachments: allAttachments
+      };
+    }
+    return { content: message.content, attachments: message.attachments || [] };
+  }, [message.content, message.attachments, isUser]);
+  
   if (message.type === 'scheduler_trigger') {
     return (
       <div className="message-row scheduler-trigger">
@@ -251,7 +301,26 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
         </div>
         <div className={`message-content ${isUser ? 'user-content' : 'markdown-body'}`}>
           {isUser ? (
-            <div className="user-text">{message.content}</div>
+            <>
+              <div className="user-text">{parsedMessage.content}</div>
+              {parsedMessage.attachments && parsedMessage.attachments.length > 0 && (
+                <div className="message-attachments">
+                  {parsedMessage.attachments.map((att, idx) => (
+                    <div key={idx} className="message-attachment-item">
+                      <div className="message-attachment-icon">
+                        {att.file_type === 'image' ? (
+                          <Icons.Image size={14} />
+                        ) : (
+                          <Icons.File size={14} />
+                        )}
+                      </div>
+                      <span className="message-attachment-name">{att.filename}</span>
+                      <span className="message-attachment-size">{formatFileSize(att.file_size)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
             renderTimeline(message)
           )}

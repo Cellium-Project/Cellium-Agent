@@ -29,11 +29,13 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default"
     last_event_id: int = 0
+    attachments: Optional[List[dict]] = []
 
 
 class SupplementRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default"
+    attachments: Optional[List[dict]] = []
 
 
 class ChatResponse(BaseModel):
@@ -180,14 +182,25 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             ws_publish_event("chat_event", event, session_id=session_id)
 
         return {"status": "reconnecting", "session_id": session_id, "history_count": len(history)}
-
+        
     if not request.message or not request.message.strip():
-        return {"status": "error", "error": "没有运行中的任务", "session_id": session_id}
+        if not request.attachments or len(request.attachments) == 0:
+            return {"status": "error", "error": "消息内容不能为空", "session_id": session_id}
+
+    user_input = request.message or ""
+    if request.attachments:
+        attachment_info = "\n\n[附件信息]\n"
+        for att in request.attachments:
+            attachment_info += f"- 文件: {att.get('filename', 'unknown')} (类型: {att.get('file_type', 'unknown')}, 大小: {att.get('file_size', 0)} bytes)\n"
+            local_path = att.get('local_path', '')
+            if local_path:
+                attachment_info += f"  本地路径: {local_path}\n"
+        user_input = user_input + attachment_info
 
     started = await task_mgr.start_task(
         session_id=session_id,
         agent_loop=agent_loop,
-        user_input=request.message,
+        user_input=user_input,
         memory=session_memory,
     )
 

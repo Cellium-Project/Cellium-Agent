@@ -106,7 +106,9 @@
     "title": "Cellium Agent",
     "paramsAndResult": "Parameters & Result",
     "executing": "Executing",
-    "waitingForResult": "Waiting for result..."
+    "waitingForResult": "Waiting for result...",
+    "uploadFile": "Upload File",
+    "removeAttachment": "Remove Attachment"
   },
   "session": {
     "untitled": "Untitled Session",

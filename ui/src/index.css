@@ -517,6 +517,7 @@ body {
 
 /* ── 底部输入区 ── */
 .chat-input-container {
+    position: relative;
     padding: 14px 20px 18px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border-primary);

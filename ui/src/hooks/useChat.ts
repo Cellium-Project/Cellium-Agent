@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { API, postJSON } from '../utils/api';
-import type { SSEEvent, Message, ToolTrace, TimelineSegment } from '../types';
+import type { SSEEvent, Message, ToolTrace, TimelineSegment, Attachment } from '../types';
 import type { HybridPhase } from '../stores/appStore';
 
 /**
@@ -568,22 +568,22 @@ export function useChat() {
     }
   }, [buildStreamingContext, updateStreamingMessage, setIsStreaming, setHasRunningTask, fetchSessions, checkTaskStatus, streamingMessage, connectWebSocket]);
 
-  const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim()) return;
+  const sendMessage = useCallback(async (content: string, attachments?: Attachment[]) => {
+    if (!content.trim() && (!attachments || attachments.length === 0)) return;
 
     const sessionId = currentSessionId || 'default';
 
     if (isStreaming) {
-      addMessage({ role: 'user', content: content.trim() });
+      addMessage({ role: 'user', content: content.trim(), attachments });
       try {
-        await postJSON(API.supplement, { message: content.trim(), session_id: sessionId });
+        await postJSON(API.supplement, { message: content.trim(), session_id: sessionId, attachments });
       } catch (error: any) {
         addMessage({ role: 'assistant', content: `补充消息发送失败: ${error.message}` });
       }
       return;
     }
 
-    addMessage({ role: 'user', content: content.trim() });
+    addMessage({ role: 'user', content: content.trim(), attachments });
     setIsStreaming(true);
     setHasRunningTask(true);
 
@@ -605,7 +605,7 @@ export function useChat() {
       const response = await fetch(API.stream, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content.trim(), session_id: sessionId, last_event_id: 0 }),
+        body: JSON.stringify({ message: content.trim(), session_id: sessionId, last_event_id: 0, attachments }),
         signal: abortControllerRef.current.signal,
       });
 

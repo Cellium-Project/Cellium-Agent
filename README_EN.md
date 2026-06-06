@@ -629,60 +629,6 @@ Components can run in the background and actively trigger Agent execution, enabl
 
 Event trigger results are automatically pushed to the corresponding session (WebUI/QQ/Telegram).
 
-## Directory Structure
-
-```
-Cellium-Agent/
-├── app/                        # Application core code
-│   ├── agent/                  # Agent core modules
-│   │   ├── control/            # Control loop: ControlLoop, ActionBandit, FeedbackEvaluator
-│   │   ├── events/             # Event models and type definitions
-│   │   ├── heuristics/         # Heuristic engine: rules, feature extraction, scoring
-│   │   │   └── rules/          # Heuristic rules: termination rules, loop detection
-│   │   ├── learning/           # Learning module: BayesianBandit, Policy
-│   │   ├── llm/                # LLM engine, supports OpenAI-compatible API
-│   │   ├── loop/               # Agent main loop: AgentLoop, SessionManager, ToolExecutor
-│   │   ├── memory/             # Three-layer memory: FTS5, Repository, ArchiveStore
-│   │   ├── tools/              # Tool base classes and built-in tools
-│   │   ├── prompt/             # Prompt builder
-│   │   ├── shell/              # Shell interaction
-│   │   ├── security/           # Security policies
-│   │   └── di_config.py        # Dependency injection configuration
-│   ├── channels/               # Channel adapter layer
-│   │   ├── base.py             # Channel base class IChannelAdapter, supports file message abstraction
-│   │   ├── channel_manager.py  # Channel manager, message routing, file transfer and injection
-│   │   ├── qq_adapter.py       # QQBot adapter (message + file transfer)
-│   │   ├── qq_channel_config.py # QQ channel configuration model
-│   │   ├── telegram_adapter.py # Telegram Bot adapter (message + file transfer)
-│   │   └── telegram_channel_config.py # Telegram channel configuration model
-│   ├── core/                   # Core infrastructure
-│   │   ├── bus/                # Event bus EventBus
-│   │   ├── di/                 # Dependency injection container
-│   │   ├── interface/          # Core interface definitions
-│   │   ├── security/           # Security module
-│   │   └── util/               # Utilities: ComponentWatcher, Logger, etc.
-│   └── server/                 # FastAPI service layer
-│       └── routes/             # API routes: chat, memory, channels, session_events
-├── components/                 # Component directory (hot-plug)
-│   ├── _example_component.py   # Component template reference
-│   ├── component_builder.py    # Component generator (built-in)
-│   ├── qq_files.py             # QQ file transfer component
-│   ├── telegram_files.py       # Telegram file transfer component
-│   ├── web_fetch.py            # Web fetch component
-│   ├── web_search.py           # Web search component
-│   ├── skill_installer.py      # Skill installer (supports .zip/.tar.gz archive installation)
-│   ├── skill_manager.py        # Skill manager (list, search, details, uninstall)
-│   └── skills/                 # Skill installation directory
-├── config/agent/               # Configuration files
-│   ├── channels.yaml           # Channel configuration (QQ, Telegram, etc.)
-│   └── llm.yaml                # LLM model configuration
-├── ui/                         # React frontend source
-├── html/                       # Frontend build output
-├── memory/                     # Memory storage directory
-├── tests/                      # Unit tests
-└── main.py                     # Entry file
-```
-
 ## Strategy Gene (GEP) Integration
 
 This project adopts the [Strategy Gene](https://arxiv.org/abs/2604.15097) design proposed in the paper "From Procedural Skills to Strategy Genes: Towards Experience-Driven Test-Time Evolution" (arXiv:2604.15097).
