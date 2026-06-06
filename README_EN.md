@@ -75,6 +75,11 @@ Cellium Agent is a versatile AI assistant that helps you with various tasks:
 
 ### One-Line Install (with Environment)
 
+<div align="center">
+  <img src="tests/img/gif_1.gif" alt="Quick Start Demo" width="600">
+  <p><strong>No complex configuration required, just download, extract and run</strong></p>
+</div>
+
 ### Windows
 
 ```powershell
