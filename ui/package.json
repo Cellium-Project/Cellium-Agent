@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "@types/marked": "^6.0.0",
-    "@types/react": "^19.2.16",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^6.0.3",
