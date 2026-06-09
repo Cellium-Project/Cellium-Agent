@@ -657,6 +657,16 @@ The paper proposes encoding experience into compact Gene objects (~230 tokens) i
 | Effect Evaluation | `success_rate`, `avg_reward`, `consecutive_success/failure` |
 | Cross Combination | `GeneComposer` merges multiple Genes for multi-task scenarios |
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=Cellium-Project%2FCellium-Agent&type=timeline&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Cellium-Project/Cellium-Agent&type=timeline&theme=dark&logscale&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Cellium-Project/Cellium-Agent&type=timeline&logscale&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Cellium-Project/Cellium-Agent&type=timeline&logscale&legend=top-left" />
+ </picture>
+</a>
+
 ## License
 
 Apache 2.0

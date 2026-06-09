@@ -693,6 +693,16 @@ Cellium Agent --- **2026-04-22** 引入 [Strategy Gene](https://arxiv.org/abs/26
 | 效果评估 | `success_rate`, `avg_reward`, `consecutive_success/failure` |
 | 交叉组合 | `GeneComposer` 多任务时合并多个 Gene |
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=Cellium-Project%2FCellium-Agent&type=timeline&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Cellium-Project/Cellium-Agent&type=timeline&theme=dark&logscale&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Cellium-Project/Cellium-Agent&type=timeline&logscale&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Cellium-Project/Cellium-Agent&type=timeline&logscale&legend=top-left" />
+ </picture>
+</a>
+
 ## License
 
 Apache 2.0
