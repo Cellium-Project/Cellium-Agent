@@ -25,7 +25,7 @@ openai>=2.41.0
 websockets>=16.0
 
 # 飞书 Bot SDK
-lark-oapi>=1.0.0
+lark-oapi>=1.6.8
 
 # HTTP 客户端（用于 QQ 和 Telegram 文件上传）
 httpx>=0.28.1
