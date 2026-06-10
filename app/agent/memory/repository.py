@@ -100,9 +100,20 @@ class MemoryRepository:
         changed = False
         records = self._catalog.setdefault("records", {})
 
-        for item in self.searcher.list_memories(limit=100000):
+        last_indexed_at = self._catalog.get("_meta", {}).get("last_indexed_at")
+        if last_indexed_at:
+            items = self.searcher.list_memories(limit=100000, since=last_indexed_at)
+        else:
+            items = self.searcher.list_memories(limit=100000)
+
+        for item in items:
             record_id = str(item["rowid"])
             if record_id in records:
+                existing = records[record_id]
+                existing_updated = item.get("updated_at") or item.get("created_at", "")
+                if existing.get("updated_at") and existing_updated and existing_updated > existing.get("updated_at"):
+                    existing["updated_at"] = existing_updated
+                    changed = True
                 continue
             records[record_id] = self._build_catalog_entry(
                 record_id=record_id,
@@ -118,10 +129,15 @@ class MemoryRepository:
                 sensitivity_reason="",
                 status="active",
                 created_at=item.get("created_at") or datetime.now().isoformat(),
-                updated_at=item.get("created_at") or datetime.now().isoformat(),
+                updated_at=item.get("updated_at") or item.get("created_at") or datetime.now().isoformat(),
                 revisions=1,
             )
             changed = True
+
+        if items or changed:
+            max_updated = self.searcher.get_max_updated_at()
+            if max_updated:
+                self._catalog.setdefault("_meta", {})["last_indexed_at"] = max_updated
 
         if changed:
             self._save_catalog()
@@ -246,7 +262,9 @@ class MemoryRepository:
             return {"success": False, "error": "写入长期记忆失败"}
 
         record_id = str(rowid)
-        self._catalog.setdefault("records", {})[record_id] = self._build_catalog_entry(
+        existing_entry = self._catalog.setdefault("records", {}).get(record_id)
+        revisions = (existing_entry.get("revisions", 0) + 1) if existing_entry else 1
+        self._catalog["records"][record_id] = self._build_catalog_entry(
             record_id=record_id,
             source_file=source_file,
             title=safe_title,
@@ -259,9 +277,9 @@ class MemoryRepository:
             sensitive=sensitive_state["sensitive"],
             sensitivity_reason=sensitive_state["reason"],
             status="active",
-            created_at=datetime.now().isoformat(),
+            created_at=(existing_entry or {}).get("created_at") or datetime.now().isoformat(),
             updated_at=datetime.now().isoformat(),
-            revisions=1,
+            revisions=revisions,
         )
         self._save_catalog()
         return {
@@ -330,6 +348,8 @@ class MemoryRepository:
             return record["metadata"].get("archive_entry_id")
         return None
 
+    RRF_K = 60
+
     def search(
         self,
         query: str,
@@ -339,6 +359,10 @@ class MemoryRepository:
         note_type: Optional[str] = None,
         schema_type: Optional[str] = None,
         include_sensitive: bool = False,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         query = (query or "").strip()
         if not query:
@@ -348,7 +372,16 @@ class MemoryRepository:
 
         self._backfill_from_index()
         fetch_top_k = max(top_k * 4, 8)
-        fts_results = self.searcher.search(query, top_k=fetch_top_k, category=category, note_type=note_type)
+        fts_results = self.searcher.search(
+            query,
+            top_k=fetch_top_k,
+            category=category,
+            note_type=note_type,
+            date_from=date_from,
+            date_to=date_to,
+            tags=tags,
+            source=source,
+        )
         filtered_fts = []
         for result in fts_results:
             record = self._get_catalog_record(result.get("rowid"))
@@ -364,13 +397,86 @@ class MemoryRepository:
             include_sensitive=include_sensitive,
         )
 
+        if date_from or date_to or tags or source:
+            embedding_results = self._apply_structured_filters(
+                embedding_results, date_from=date_from, date_to=date_to, tags=tags, source=source
+            )
+
+        return self._rrf_fuse(filtered_fts, embedding_results, query, top_k)
+
+    def _apply_structured_filters(
+        self,
+        results: List[Dict],
+        *,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
+    ) -> List[Dict]:
+        import logging
+        logger = logging.getLogger(__name__)
+        filtered = []
+        for item in results:
+            record = self._get_catalog_record(item.get("rowid"))
+            metadata = (record or {}).get("metadata", {}) or {}
+            created_at = (
+                item.get("created_at")
+                or (record or {}).get("created_at")
+                or metadata.get("created_at", "")
+            )
+            item_tags = (
+                item.get("tags")
+                or (record or {}).get("tags")
+                or metadata.get("tags", "")
+            )
+            item_source = (
+                item.get("source_file")
+                or (record or {}).get("source_file")
+                or metadata.get("source", "")
+            )
+            logger.debug(f"[StructuredFilter] rowid={item.get('rowid')} created_at={created_at!r} date_from={date_from!r} source={item_source!r}")
+            if date_from and created_at and created_at < date_from:
+                logger.debug(f"[StructuredFilter]   - filtered by date_from")
+                continue
+            if date_to and created_at and created_at > date_to:
+                continue
+            if tags:
+                tag_list = [t.strip() for t in str(item_tags).split(",") if t.strip()]
+                if not any(t in tag_list for t in tags):
+                    continue
+            if source:
+                if str(source).lower() not in str(item_source or "").lower():
+                    continue
+            item["created_at"] = created_at
+            item["tags"] = item_tags
+            item["source_file"] = item_source
+            filtered.append(item)
+        return filtered
+
+    def _rrf_fuse(
+        self,
+        fts_results: List[Dict],
+        embedding_results: List[Dict],
+        query: str,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        k = self.RRF_K
         merged: Dict[str, Dict[str, Any]] = {}
-        for rank, result in enumerate(filtered_fts, 1):
+
+        max_bm25 = 0.0
+        for r in fts_results:
+            s = r.get("bm25_score", 0.0) or 0.0
+            if s > max_bm25:
+                max_bm25 = s
+
+        for rank, result in enumerate(fts_results, 1):
             record_id = str(result["rowid"])
             entry = merged.setdefault(record_id, self._public_record(record_id))
             if not entry:
                 continue
-            entry["score"] += 1.0 / (60 + rank)
+            rrf_score = 1.0 / (k + rank)
+            bm25_norm = (result.get("bm25_score", 0.0) or 0.0) / max_bm25 if max_bm25 > 0 else 0.0
+            entry["score"] += rrf_score + 0.3 * bm25_norm
             entry.setdefault("search_signals", {})["fts_rank"] = rank
             entry["fts_score"] = result.get("score", 0.0)
 
@@ -379,9 +485,11 @@ class MemoryRepository:
             entry = merged.setdefault(record_id, self._public_record(record_id))
             if not entry:
                 continue
-            entry["score"] += 0.9 / (60 + rank)
+            rrf_score = 1.0 / (k + rank)
+            emb_score = result.get("embedding_score", 0.0)
+            entry["score"] += 0.9 * rrf_score + 0.2 * emb_score
             entry.setdefault("search_signals", {})["embedding_rank"] = rank
-            entry["embedding_score"] = result.get("embedding_score", 0.0)
+            entry["embedding_score"] = emb_score
 
         normalized_query = query.lower()
         for entry in merged.values():

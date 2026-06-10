@@ -145,6 +145,10 @@ class ThreeLayerMemory:
         schema_type: Optional[str] = None,
         include_sensitive: bool = False,
         exclude_schema_types: Optional[List[str]] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """统一长期记忆检索入口。"""
         clean_query = self._preprocess_query(query)
@@ -157,6 +161,10 @@ class ThreeLayerMemory:
             category=category,
             schema_type=schema_type,
             include_sensitive=include_sensitive,
+            date_from=date_from,
+            date_to=date_to,
+            tags=tags,
+            source=source,
         )
 
         if exclude_schema_types:
@@ -202,6 +210,10 @@ class ThreeLayerMemory:
         category: Optional[str] = None,
         schema_type: Optional[str] = None,
         include_sensitive: bool = False,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         return self.retrieve_context(
             query,
@@ -209,6 +221,10 @@ class ThreeLayerMemory:
             category=category,
             schema_type=schema_type,
             include_sensitive=include_sensitive,
+            date_from=date_from,
+            date_to=date_to,
+            tags=tags,
+            source=source,
         )
 
     def list_memories(

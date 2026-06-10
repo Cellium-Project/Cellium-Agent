@@ -53,6 +53,7 @@ class FTS5MemorySearcher:
                 tags,
                 source_file UNINDEXED,
                 created_at UNINDEXED,
+                updated_at UNINDEXED,
                 tokenize = "unicode61"
             )
             '''
@@ -95,6 +96,9 @@ class FTS5MemorySearcher:
             if "note_type" not in columns:
                 logger.info("[FTS5] 检测到旧表结构（缺少note_type列），需要迁移...")
                 needs_rebuild = True
+            if "updated_at" not in columns:
+                logger.info("[FTS5] 检测到旧表结构（缺少updated_at列），需要迁移...")
+                needs_rebuild = True
             if needs_rebuild:
                 self._rebuild_with_tokens()
         except Exception as e:
@@ -126,10 +130,10 @@ class FTS5MemorySearcher:
                 tokens = self.tokenizer.tokenize_for_search(f"{title} {content}")
                 self.cursor.execute(
                     '''
-                    INSERT INTO memory_index (rowid, title, content, tokens, category, note_type, tags, source_file, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO memory_index (rowid, title, content, tokens, category, note_type, tags, source_file, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
-                    (rowid, title, content, tokens, category, note_type, tags, source_file, created_at),
+                    (rowid, title, content, tokens, category, note_type, tags, source_file, created_at, created_at),
                 )
 
             self.conn.commit()
@@ -172,10 +176,10 @@ class FTS5MemorySearcher:
         created_at = datetime.now().isoformat()
         self.cursor.execute(
             '''
-            INSERT INTO memory_index (title, content, tokens, category, note_type, tags, source_file, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memory_index (title, content, tokens, category, note_type, tags, source_file, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
-            (normalized_title, normalized_content, tokens, category, note_type, tags, source_file, created_at),
+            (normalized_title, normalized_content, tokens, category, note_type, tags, source_file, created_at, created_at),
         )
         fts_rowid = int(self.cursor.execute("SELECT last_insert_rowid()").fetchone()[0])
 
@@ -227,13 +231,16 @@ class FTS5MemorySearcher:
             return False
 
         tokens = self.tokenizer.tokenize_for_search(f"{title} {content}")
+        now_iso = datetime.now().isoformat()
         self.cursor.execute(
             '''
             INSERT OR REPLACE INTO memory_index
-            (rowid, title, content, tokens, category, note_type, tags, source_file, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM memory_index WHERE rowid = ?), ?))
+            (rowid, title, content, tokens, category, note_type, tags, source_file, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT created_at FROM memory_index WHERE rowid = ?), ?),
+                    ?)
             ''',
-            (target_rowid, title, content, tokens, category, note_type, tags, source_file, target_rowid, datetime.now().isoformat()),
+            (target_rowid, title, content, tokens, category, note_type, tags, source_file, target_rowid, now_iso, now_iso),
         )
         self.cursor.execute(
             '''
@@ -277,17 +284,37 @@ class FTS5MemorySearcher:
             "created_at": row["created_at"],
         }
 
-    def list_memories(self, limit: Optional[int] = 1000) -> List[Dict[str, Any]]:
+    def list_memories(
+        self,
+        limit: Optional[int] = 1000,
+        since: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         self._ensure_connected()
-        sql = "SELECT rowid, title, content, category, tags, source_file, created_at FROM memory_index ORDER BY rowid ASC"
+        try:
+            self.cursor.execute("PRAGMA table_info(memory_index)")
+            columns = [row[1] for row in self.cursor.fetchall()]
+            has_updated_at = "updated_at" in columns
+        except Exception:
+            has_updated_at = False
+
+        if has_updated_at:
+            sql = "SELECT rowid, title, content, category, tags, source_file, created_at, updated_at FROM memory_index"
+        else:
+            sql = "SELECT rowid, title, content, category, tags, source_file, created_at FROM memory_index"
+
         params: List[Any] = []
+        if since and has_updated_at:
+            sql += " WHERE updated_at > ?"
+            params.append(since)
+        sql += " ORDER BY rowid ASC"
         if limit:
             sql += " LIMIT ?"
             params.append(limit)
         self.cursor.execute(sql, params)
         rows = self.cursor.fetchall()
-        return [
-            {
+        result = []
+        for row in rows:
+            item = {
                 "rowid": int(row["rowid"]),
                 "title": row["title"],
                 "content": row["content"],
@@ -296,8 +323,25 @@ class FTS5MemorySearcher:
                 "source_file": row["source_file"],
                 "created_at": row["created_at"],
             }
-            for row in rows
-        ]
+            if has_updated_at:
+                item["updated_at"] = row["updated_at"]
+            result.append(item)
+        return result
+
+    def get_max_updated_at(self) -> Optional[str]:
+        self._ensure_connected()
+        try:
+            self.cursor.execute("PRAGMA table_info(memory_index)")
+            columns = [row[1] for row in self.cursor.fetchall()]
+            if "updated_at" not in columns:
+                return None
+        except Exception:
+            return None
+        self.cursor.execute("SELECT MAX(updated_at) FROM memory_index")
+        row = self.cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        return str(row[0])
 
     def search(
         self,
@@ -307,6 +351,10 @@ class FTS5MemorySearcher:
         note_type: str = None,
         use_usage_boost: bool = True,
         use_time_decay: bool = True,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
     ) -> List[Dict]:
         """增强搜索：分词 + 多变体查询 + LIKE 兜底"""
         self._ensure_connected()
@@ -314,7 +362,11 @@ class FTS5MemorySearcher:
         all_results = []
 
         for variant in query_variants:
-            results = self._fts5_search(variant, top_k, category, note_type, use_usage_boost, use_time_decay)
+            results = self._fts5_search(
+                variant, top_k, category, note_type,
+                use_usage_boost, use_time_decay,
+                date_from=date_from, date_to=date_to, tags=tags, source=source,
+            )
             all_results.extend(results)
             if len(all_results) >= top_k:
                 break
@@ -330,7 +382,10 @@ class FTS5MemorySearcher:
 
         unique_results.sort(key=lambda item: item.get("score", 0), reverse=True)
         if len(unique_results) < top_k:
-            like_results = self._fallback_search(query, top_k, category)
+            like_results = self._fallback_search(
+                query, top_k, category, note_type,
+                date_from=date_from, date_to=date_to, tags=tags, source=source,
+            )
             for item in like_results:
                 key = item.get("rowid") or item.get("source_file", "") or item.get("content", "")[:50]
                 if key in seen:
@@ -354,15 +409,23 @@ class FTS5MemorySearcher:
                 variants.append(keyword)
         return variants[:5]
 
-    def _fts5_search(self, query: str, top_k: int, category: str, note_type: str, use_usage_boost: bool, use_time_decay: bool) -> List[Dict]:
-        # 检查表结构，确定是否有note_type列
+    def _fts5_search(
+        self, query: str, top_k: int, category: str, note_type: str,
+        use_usage_boost: bool, use_time_decay: bool,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
+    ) -> List[Dict]:
         try:
             self.cursor.execute("PRAGMA table_info(memory_index)")
             columns = [row[1] for row in self.cursor.fetchall()]
             has_note_type = "note_type" in columns
+            has_updated_at = "updated_at" in columns
         except Exception:
             has_note_type = False
-        
+            has_updated_at = False
+
         safe_query = self._escape_fts5(query)
         if has_note_type:
             sql = '''
@@ -405,6 +468,22 @@ class FTS5MemorySearcher:
         if note_type and has_note_type:
             sql += " AND note_type = ?"
             params.append(note_type)
+        if date_from:
+            sql += " AND m.created_at >= ?"
+            params.append(date_from)
+        if date_to:
+            sql += " AND (m.created_at <= ? OR m.created_at IS NULL)"
+            params.append(date_to)
+        if source:
+            sql += " AND m.source_file LIKE ?"
+            params.append(f"%{source}%")
+        if tags:
+            tag_clauses = []
+            for tag in tags:
+                tag_clauses.append("m.tags LIKE ?")
+                params.append(f"%{tag}%")
+            if tag_clauses:
+                sql += " AND (" + " OR ".join(tag_clauses) + ")"
         sql += " ORDER BY final_score DESC LIMIT ?"
         params.append(top_k)
 
@@ -435,28 +514,37 @@ class FTS5MemorySearcher:
             logger.warning("[FTS5] 搜索异常: %s", e)
             return []
 
-    def _fallback_search(self, query: str, top_k: int = 3, category: str = None, note_type: str = None) -> List[Dict]:
-        # 检查表结构，确定是否有note_type列
+    def _fallback_search(
+        self,
+        query: str,
+        top_k: int = 3,
+        category: str = None,
+        note_type: str = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        source: Optional[str] = None,
+    ) -> List[Dict]:
         try:
             self.cursor.execute("PRAGMA table_info(memory_index)")
             columns = [row[1] for row in self.cursor.fetchall()]
             has_note_type = "note_type" in columns
         except Exception:
             has_note_type = False
-        
+
         if has_note_type:
             sql = '''
                 SELECT rowid, title, content, category, note_type, tags, source_file, created_at,
                        1.0 as final_score, 0 as bm25_score, 0 as usage_count, NULL as last_used_at
                 FROM memory_index
-                WHERE title LIKE ? OR content LIKE ? OR tokens LIKE ?
+                WHERE (title LIKE ? OR content LIKE ? OR tokens LIKE ?)
             '''
         else:
             sql = '''
                 SELECT rowid, title, content, category, tags, source_file, created_at,
                        1.0 as final_score, 0 as bm25_score, 0 as usage_count, NULL as last_used_at
                 FROM memory_index
-                WHERE title LIKE ? OR content LIKE ? OR tokens LIKE ?
+                WHERE (title LIKE ? OR content LIKE ? OR tokens LIKE ?)
             '''
         like_pattern = f"%{query}%"
         params: List[Any] = [like_pattern, like_pattern, like_pattern]
@@ -466,6 +554,22 @@ class FTS5MemorySearcher:
         if note_type and has_note_type:
             sql += " AND note_type = ?"
             params.append(note_type)
+        if date_from:
+            sql += " AND created_at >= ?"
+            params.append(date_from)
+        if date_to:
+            sql += " AND (created_at <= ? OR created_at IS NULL)"
+            params.append(date_to)
+        if source:
+            sql += " AND source_file LIKE ?"
+            params.append(f"%{source}%")
+        if tags:
+            tag_clauses = []
+            for tag in tags:
+                tag_clauses.append("tags LIKE ?")
+                params.append(f"%{tag}%")
+            if tag_clauses:
+                sql += " AND (" + " OR ".join(tag_clauses) + ")"
         sql += " LIMIT ?"
         params.append(top_k)
 

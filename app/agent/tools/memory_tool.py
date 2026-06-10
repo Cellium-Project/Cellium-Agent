@@ -61,8 +61,10 @@ class MemoryTool(BaseTool):
                             "description": "结构化 schema 类型",
                             "enum": ["general", "profile", "project", "issue", "control_gene"],
                         },
-                        "tags": {"type": "string", "description": "逗号分隔标签"},
-                        "source": {"type": "string", "description": "[update/delete] 记忆来源 ID"},
+                        "tags": {"type": "string", "description": "标签（search/store: 可选，逗号分隔）"},
+                        "source": {"type": "string", "description": "来源 ID（update/delete: 必需，search: 可选筛选）"},
+                        "date_from": {"type": "string", "description": "[search] 可选，起始日期（ISO 格式，如 2026-01-01）"},
+                        "date_to": {"type": "string", "description": "[search] 可选，结束日期（ISO 格式，如 2026-06-10）"},
                         "memory_key": {"type": "string", "description": "[store/update/delete/merge] 结构化记忆键"},
                         "metadata": {"type": "object", "description": "结构化附加信息，如 field/project_id/problem/resolution"},
                         "allow_sensitive": {"type": "boolean", "description": "是否允许存储敏感信息（默认 false）"},
@@ -89,6 +91,10 @@ class MemoryTool(BaseTool):
         query: str,
         schema_type: Optional[str] = None,
         category: Optional[str] = None,
+        tags: Optional[str] = None,
+        source: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> dict:
         if not self._check_memory():
             return {"success": False, "error": "长期记忆系统未初始化"}
@@ -96,11 +102,16 @@ class MemoryTool(BaseTool):
             return {"success": False, "error": "搜索关键词不能为空"}
 
         try:
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
             results = self.memory.search_memories(
                 query.strip(),
                 top_k=5,
                 category=category,
                 schema_type=schema_type,
+                tags=tag_list,
+                source=source,
+                date_from=date_from,
+                date_to=date_to,
             )
             if not results:
                 return {"success": True, "found": 0, "message": f"未找到与「{query}」相关的记忆", "results": []}
@@ -130,7 +141,22 @@ class MemoryTool(BaseTool):
                 items.append(result_item)
 
             logger.info("[MemoryTool] search | query=%s | found=%d", query[:50], len(items))
-            return {"success": True, "found": len(items), "query": query, "results": items}
+            filters_applied = {
+                "tags": tags,
+                "source": source,
+                "date_from": date_from,
+                "date_to": date_to,
+                "category": category,
+                "schema_type": schema_type,
+            }
+            filters_applied = {k: v for k, v in filters_applied.items() if v}
+            return {
+                "success": True,
+                "found": len(items),
+                "query": query,
+                "filters": filters_applied if filters_applied else None,
+                "results": items,
+            }
         except Exception as e:
             logger.error("[MemoryTool] search 失败 | error=%s", e)
             return {"success": False, "error": f"搜索失败: {e}"}
