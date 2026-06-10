@@ -163,7 +163,7 @@ class MemoryTool(BaseTool):
             }
         except Exception as e:
             logger.error("[MemoryTool] search 失败 | error=%s", e)
-            return {"success": False, "error": f"搜索失败: {e}"}
+            return {"success": False, "found": 0, "error": f"搜索失败: {e}"}
 
     def _cmd_store(
         self,

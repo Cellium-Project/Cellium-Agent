@@ -1235,6 +1235,8 @@ class MemoryRepository:
         schema_type: Optional[str],
         include_sensitive: bool,
     ) -> List[Dict[str, Any]]:
+        if not HAS_NUMPY:
+            return []
         query_vector = self._embed_text(query)
         if not query_vector:
             return []
