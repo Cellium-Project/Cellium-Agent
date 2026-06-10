@@ -160,6 +160,22 @@ xxx.status()       # 查看状态
 | 长期记忆 | 跨会话 | FTS5 检索，需主动调用 memory 工具 |
 | 人格记忆 | 永久 | 本文件 |
 
+### 向量检索 API
+**作用**: 使用外部 API 获取语义向量，提升检索精度
+
+**控制命令**:
+```
+memory.set_embedding(enabled, model, api_key, base_url)  # 设置配置
+memory.get_embedding_status()                            # 查看状态
+memory.get_embedding_migration_status()                  # 查询迁移进度
+memory.start_embedding_migration()                       # 手动启动迁移
+```
+
+**迁移机制**:
+- 启用 API 时自动后台迁移旧记忆向量
+- 迁移过程不阻塞，可正常使用
+- 中断后可续传，已迁移的会跳过
+
 ### 记忆查看
 user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archive(entry_id='...')` 查看当时回复
 

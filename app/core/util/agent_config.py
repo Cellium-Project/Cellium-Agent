@@ -9,10 +9,14 @@ import re
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
+from dotenv import load_dotenv
+
 try:
     import yaml
 except ImportError:
     yaml = None
+
+load_dotenv()
 
 
 # ============================================================
@@ -263,7 +267,7 @@ class AgentConfig:
         self._notify_callbacks({top_key: ("updated", old_value, new_value)})
 
     def _persist_to_file(self, key_path: str, value: Any):
-        """将修改写回对应的 YAML 文件（深度合并而非整体替换）"""
+        """将修改写回对应的 YAML 文件"""
         top_key = key_path.split(".")[0]
         source_file = self._section_sources.get(top_key)
         if not source_file:
@@ -274,12 +278,9 @@ class AgentConfig:
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
             raw = yaml.safe_load(content) or {}
-            existing_section = raw.get(top_key, {})
-            if isinstance(existing_section, dict) and isinstance(value, dict):
-                merged = self._deep_merge(existing_section, value)
-                raw[top_key] = merged
-            else:
-                self._set_nested(raw, key_path.split("."), value)
+            
+            self._set_nested(raw, key_path.split("."), value)
+            
             with open(filepath, "w", encoding="utf-8") as f:
                 yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         except Exception as e:

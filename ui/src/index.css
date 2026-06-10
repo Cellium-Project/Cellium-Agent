@@ -1227,6 +1227,13 @@ body {
     gap: 8px;
 }
 
+.settings-card-subtitle {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-tertiary);
+    margin-left: 8px;
+}
+
 .settings-field-label {
     display: inline-flex;
     align-items: center;

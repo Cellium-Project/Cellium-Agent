@@ -42,7 +42,7 @@ class MemoryTool(BaseTool):
                         "command": {
                             "type": "string",
                             "description": "要执行的命令",
-                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive"],
+                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration"],
                         },
                         "entry_id": {"type": "string", "description": "[read_archive] Archive entry ID，用于读取完整对话历史"},
                         "page": {"type": "integer", "description": "[read_archive] 页码，默认 1"},
@@ -69,6 +69,10 @@ class MemoryTool(BaseTool):
                         "metadata": {"type": "object", "description": "结构化附加信息，如 field/project_id/problem/resolution"},
                         "allow_sensitive": {"type": "boolean", "description": "是否允许存储敏感信息（默认 false）"},
                         "all_matches": {"type": "boolean", "description": "[forget] 是否遗忘所有命中结果"},
+                        "embedding_enabled": {"type": "boolean", "description": "[set_embedding] 是否启用向量检索 API"},
+                        "embedding_model": {"type": "string", "description": "[set_embedding] 向量模型名称（如 text-embedding-3-small）"},
+                        "embedding_api_key": {"type": "string", "description": "[set_embedding] API 密钥"},
+                        "embedding_base_url": {"type": "string", "description": "[set_embedding] API 地址（如 https://api.openai.com/v1）"},
                     },
                     "required": ["command"],
                 },
@@ -562,6 +566,161 @@ class MemoryTool(BaseTool):
         except Exception as e:
             logger.error("[MemoryTool] read_archive 失败 | error=%s", e)
             return {"success": False, "error": f"读取失败: {e}"}
+
+    # ================================================================
+    # 向量 API 配置
+    # ================================================================
+
+    def _cmd_set_embedding(
+        self,
+        embedding_enabled: Optional[bool] = None,
+        embedding_model: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
+    ) -> dict:
+        """设置向量检索 API 配置"""
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+
+        try:
+            from app.core.util.agent_config import get_config
+            
+            agent_config = get_config()
+            current_config = agent_config.get("memory", {}).get("long_term", {}).get("embedding", {})
+            
+            new_config = {
+                "enabled": embedding_enabled if embedding_enabled is not None else current_config.get("enabled", False),
+                "model": embedding_model or current_config.get("model", ""),
+                "api_key": embedding_api_key or current_config.get("api_key", ""),
+                "base_url": embedding_base_url or current_config.get("base_url", ""),
+            }
+            
+            agent_config.set("memory.long_term.embedding", new_config, persist=True)
+            
+            logger.info("[MemoryTool] set_embedding | enabled=%s | model=%s", new_config["enabled"], new_config["model"])
+            
+            return {
+                "success": True,
+                "message": "向量检索 API 配置已更新",
+                "config": {
+                    "enabled": new_config["enabled"],
+                    "model": new_config["model"],
+                    "base_url": new_config["base_url"],
+                    "api_key_set": bool(new_config["api_key"]),
+                },
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] set_embedding 失败 | error=%s", e)
+            return {"success": False, "error": f"设置失败: {e}"}
+
+    def _cmd_get_embedding_status(self) -> dict:
+        """查看向量检索 API 状态"""
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+
+        try:
+            from app.core.util.agent_config import get_config
+            
+            agent_config = get_config()
+            embedding_config = agent_config.get("memory", {}).get("long_term", {}).get("embedding", {})
+            enabled = embedding_config.get("enabled", False)
+            model = embedding_config.get("model", "")
+            api_key = embedding_config.get("api_key", "")
+            base_url = embedding_config.get("base_url", "")
+            
+            status = {
+                "enabled": enabled,
+                "model": model or "未设置",
+                "api_key_set": bool(api_key),
+                "base_url": base_url or "未设置",
+            }
+            
+            if enabled and model and api_key:
+                status["status"] = "已配置"
+                status["hint"] = "向量检索 API 已启用，将使用外部 API 获取向量"
+            elif enabled:
+                status["status"] = "配置不完整"
+                status["hint"] = "已启用但缺少模型名称或 API 密钥"
+            else:
+                status["status"] = "未启用"
+                status["hint"] = "将使用本地 TF-IDF 伪向量"
+            
+            if hasattr(self.memory, '_embedding_config'):
+                repo_config = self.memory._embedding_config
+                status["dimensions"] = repo_config.get("dimensions", 96)
+            
+            return {
+                "success": True,
+                "status": status,
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] get_embedding_status 失败 | error=%s", e)
+            return {"success": False, "error": f"查询失败: {e}"}
+
+    def _cmd_get_embedding_migration_status(self) -> dict:
+        """查询向量迁移进度"""
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+
+        try:
+            repo = self.memory if hasattr(self.memory, '_catalog') else self.memory.repository
+            
+            migration_status = getattr(repo, '_migration_status', None)
+            if not migration_status:
+                migration_status = {
+                    "running": False,
+                    "total": 0,
+                    "migrated": 0,
+                    "failed": 0,
+                }
+            
+            records = repo._catalog.get("records", {})
+            active_records = [r for r in records.values() if r.get("status") == "active"]
+            
+            need_migration = 0
+            for record in active_records:
+                record_id = record.get("id")
+                existing_vector = repo._load_vector(record_id, prefer_api=True)
+                if not existing_vector or len(existing_vector) != repo._embedding_dimensions:
+                    need_migration += 1
+            
+            return {
+                "success": True,
+                "migration_status": migration_status,
+                "need_migration": need_migration,
+                "total_memories": len(active_records),
+                "hint": f"需要迁移 {need_migration} 条记忆" if need_migration > 0 else "所有记忆已迁移完成",
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] get_embedding_migration_status 失败 | error=%s", e)
+            return {"success": False, "error": f"查询失败: {e}"}
+
+    def _cmd_start_embedding_migration(self) -> dict:
+        """手动启动向量迁移"""
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+
+        try:
+            repo = self.memory if hasattr(self.memory, '_catalog') else self.memory.repository
+            
+            migration_running = getattr(repo, '_migration_running', False)
+            if migration_running:
+                return {"success": False, "error": "迁移任务正在运行中"}
+            
+            embedding_enabled = repo._embedding_config.get("enabled", False)
+            if not embedding_enabled:
+                return {"success": False, "error": "向量 API 未启用，请先启用向量 API"}
+            
+            repo._start_background_embedding_migration()
+            
+            return {
+                "success": True,
+                "message": "向量迁移任务已启动",
+                "hint": "使用 get_embedding_migration_status 查询进度",
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] start_embedding_migration 失败 | error=%s", e)
+            return {"success": False, "error": f"启动失败: {e}"}
 
     # ================================================================
     # 内部方法

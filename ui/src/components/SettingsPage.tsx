@@ -1325,11 +1325,6 @@ const MemorySettings: React.FC = () => {
             </label>
           </div>
           <div className="form-group">
-            <FieldLabel label={t('settings.memory.embeddingDimensions')} />
-            <input type="number" value={Number(longTerm.embedding_dimensions) || 96} min={16} max={1024}
-              onChange={e => updateField('long_term.embedding_dimensions', parseInt(e.target.value))} />
-          </div>
-          <div className="form-group">
             <FieldLabel label={t('settings.memory.defaultSchema')} />
             <CustomDropdown
               value={longTerm.default_schema || 'general'}
@@ -1343,7 +1338,7 @@ const MemorySettings: React.FC = () => {
             />
           </div>
           <div className="form-group">
-            <FieldLabel label={t('settings.memory.allowSensitiveStore')} desc={t('settings.memory.allowSensitiveStoreDesc')} />
+            <FieldLabel label={t('settings.memory.allowSensitiveStore')} />
             <label className="toggle-switch">
               <input type="checkbox" checked={!!longTerm.allow_sensitive_store} onChange={e => updateField('long_term.allow_sensitive_store', e.target.checked)} />
               <span className="toggle-slider"></span>
@@ -1351,6 +1346,36 @@ const MemorySettings: React.FC = () => {
             </label>
           </div>
         </div>
+      </div>
+
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <div className="settings-card-title">{t('settings.memory.embeddingApiTitle')}</div>
+          <label className="toggle-switch">
+            <input type="checkbox" checked={!!longTerm.embedding?.enabled} onChange={e => updateField('long_term.embedding.enabled', e.target.checked)} />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{longTerm.embedding?.enabled ? t('settings.memory.embeddingOn') : t('settings.memory.embeddingOff')}</span>
+          </label>
+        </div>
+        {longTerm.embedding?.enabled && (
+          <div className="settings-card-grid">
+            <div className="form-group">
+              <FieldLabel label={t('settings.memory.embeddingModel')} />
+              <input type="text" value={longTerm.embedding?.model || ''} placeholder="text-embedding-3-small"
+                onChange={e => updateField('long_term.embedding.model', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.memory.embeddingApiKey')} />
+              <input type="password" value={longTerm.embedding?.api_key || ''} placeholder="sk-..."
+                onChange={e => updateField('long_term.embedding.api_key', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <FieldLabel label={t('settings.memory.embeddingBaseUrl')} />
+              <input type="text" value={longTerm.embedding?.base_url || ''} placeholder="https://api.openai.com/v1"
+                onChange={e => updateField('long_term.embedding.base_url', e.target.value)} />
+            </div>
+          </div>
+        )}
       </div>
 
       <MemoryManagerPanel />

@@ -16,6 +16,10 @@ memory:
   long_term:
     db_file: memory/memory_index.db
     hybrid_enabled: true
-    embedding_dimensions: 96
+    embedding:
+      enabled: false
+      model: ${EMBEDDING_MODEL}
+      api_key: ${EMBEDDING_API_KEY}
+      base_url: ${EMBEDDING_BASE_URL}
     allow_sensitive_store: false
     default_schema: general
