@@ -1235,8 +1235,6 @@ class MemoryRepository:
         schema_type: Optional[str],
         include_sensitive: bool,
     ) -> List[Dict[str, Any]]:
-        if not HAS_NUMPY:
-            return []
         query_vector = self._embed_text(query)
         if not query_vector:
             return []
@@ -1261,19 +1259,30 @@ class MemoryRepository:
                     ids.append(rid)
             if not vecs:
                 return []
-            emb = np.array(vecs, dtype=np.float32)
-            qv = np.array(query_vec, dtype=np.float32)
-            scores = emb @ qv
-            k = min(top_k, len(scores))
-            top_i = np.argpartition(-scores, k - 1)[:k]
-            top_i = top_i[np.argsort(-scores[top_i])]
-            res = []
-            for idx in top_i:
-                sc = float(scores[idx])
-                if sc <= 0.08:
-                    continue
-                res.append({"rowid": int(ids[idx]), "embedding_score": sc})
-            return res
+            # 使用 numpy 矩阵运算（快）或 Python 循环（兼容）批量计算相似度
+            if HAS_NUMPY:
+                emb = np.array(vecs, dtype=np.float32)
+                qv = np.array(query_vec, dtype=np.float32)
+                scores = emb @ qv
+                top_i = np.argpartition(-scores, min(top_k, len(scores)) - 1)[:top_k]
+                top_i = top_i[np.argsort(-scores[top_i])]
+                res = []
+                for idx in top_i:
+                    sc = float(scores[idx])
+                    if sc <= 0.08:
+                        continue
+                    res.append({"rowid": int(ids[idx]), "embedding_score": sc})
+                return res
+            else:
+                # 无 numpy 时使用 Python 循环兜底
+                scored = []
+                for rid, vec in zip(ids, vecs):
+                    score = self._cosine_similarity(query_vec, vec)
+                    if score <= 0.08:
+                        continue
+                    scored.append({"rowid": int(rid), "embedding_score": score})
+                scored.sort(key=lambda x: x["embedding_score"], reverse=True)
+                return scored[:top_k]
 
         results = search_vectors(existing_vectors, query_dim, query_vector)
 
