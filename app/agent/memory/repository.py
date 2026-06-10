@@ -1259,7 +1259,6 @@ class MemoryRepository:
                     ids.append(rid)
             if not vecs:
                 return []
-            # 使用 numpy 矩阵运算（快）或 Python 循环（兼容）批量计算相似度
             if HAS_NUMPY:
                 emb = np.array(vecs, dtype=np.float32)
                 qv = np.array(query_vec, dtype=np.float32)
@@ -1274,7 +1273,6 @@ class MemoryRepository:
                     res.append({"rowid": int(ids[idx]), "embedding_score": sc})
                 return res
             else:
-                # 无 numpy 时使用 Python 循环兜底
                 scored = []
                 for rid, vec in zip(ids, vecs):
                     score = self._cosine_similarity(query_vec, vec)
