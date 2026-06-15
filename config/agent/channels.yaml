@@ -10,6 +10,7 @@ channels:
     auto_start: true
     whitelist_user_ids: []
     whitelist_usernames: []
+    bot_token: ''
   feishu:
     enabled: true
     auto_start: true

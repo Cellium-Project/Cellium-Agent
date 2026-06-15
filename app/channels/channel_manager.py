@@ -101,6 +101,10 @@ class ChannelManager:
         return cls._instance
 
     def register_adapter(self, adapter: ChannelAdapter):
+        old = self._adapters.get(adapter.platform_name)
+        if old is not None and old is not adapter:
+            logger.info(f"[ChannelManager] Replacing adapter: {adapter.platform_name}")
+            asyncio.create_task(old.disconnect())
         adapter.set_message_handler(self._on_message)
         self._adapters[adapter.platform_name] = adapter
         logger.info(f"[ChannelManager] Registered adapter: {adapter.platform_name}")
@@ -128,7 +132,12 @@ class ChannelManager:
                 # 连接成功后，等待适配器停止运行
                 while self._running and getattr(adapter, '_running', False):
                     await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                break
             except Exception as e:
+                if self._adapters.get(adapter.platform_name) is not adapter:
+                    logger.info(f"[ChannelManager] {adapter.platform_name} adapter replaced, stopping runner")
+                    break
                 logger.error(f"[ChannelManager] {adapter.platform_name} error: {e}")
                 await asyncio.sleep(5)
 

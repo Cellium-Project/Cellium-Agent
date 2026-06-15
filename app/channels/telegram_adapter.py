@@ -26,7 +26,7 @@ class TelegramAdapter(ChannelAdapter):
     """Telegram Bot 适配器"""
 
     def __init__(self, bot_token: str, whitelist_user_ids: Optional[list] = None,
-                 whitelist_usernames: Optional[list] = None, **kwargs):
+                 whitelist_usernames: Optional[list] = None, use_rich_messages: bool = True, **kwargs):
         """
         初始化 Telegram Adapter
 
@@ -34,11 +34,13 @@ class TelegramAdapter(ChannelAdapter):
             bot_token: Telegram Bot Token (从 @BotFather 获取)
             whitelist_user_ids: 允许的用户 ID 列表，空列表表示允许所有人
             whitelist_usernames: 允许的用户名列表，空列表表示允许所有人
+            use_rich_messages: 是否使用 Bot API 10.1 Rich Messages
         """
         self.bot_token = bot_token
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.whitelist_user_ids = set(whitelist_user_ids or [])
         self.whitelist_usernames = set((u.lower() for u in (whitelist_usernames or [])))
+        self._use_rich_messages = use_rich_messages
 
         # 创建下载目录
         self.download_dir = DOWNLOAD_DIR
@@ -299,6 +301,197 @@ class TelegramAdapter(ChannelAdapter):
         
         return final_text, entities
 
+    # ============================================================
+    # Rich Messages (Bot API 10.1)
+    # ============================================================
+
+    @staticmethod
+    def _escape_html(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    def _inline_to_html(self, text: str) -> str:
+        text = self._escape_html(text)
+        placeholders = {}
+        def _save_code(m):
+            idx = len(placeholders)
+            placeholders[idx] = f'<code>{m.group(1)}</code>'
+            return f'%%%CODE_{idx}%%%'
+        text = re.sub(r'`([^`]+)`', _save_code, text)
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+        text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
+        text = re.sub(r'(?<!_)_(?!_)(.+?)(?<!_)_(?!_)', r'<i>\1</i>', text)
+        text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+        for idx in sorted(placeholders):
+            text = text.replace(f'%%%CODE_{idx}%%%', placeholders[idx])
+        return text
+
+    def _table_to_html(self, lines: list) -> Optional[str]:
+        data_rows = [l for l in lines if not re.match(r'^[\s|:\-]+\s*$', l.strip())]
+        if not data_rows:
+            return None
+        header_cells = [c.strip() for c in data_rows[0].split('|') if c.strip()]
+        body_rows = data_rows[1:]
+        parts = ['<table>']
+        if header_cells:
+            parts.append('<tr>' + ''.join(f'<th>{self._inline_to_html(c)}</th>' for c in header_cells) + '</tr>')
+        for row in body_rows:
+            cells = [c.strip() for c in row.split('|') if c.strip()]
+            if cells:
+                parts.append('<tr>' + ''.join(f'<td>{self._inline_to_html(c)}</td>' for c in cells) + '</tr>')
+        parts.append('</table>')
+        return ''.join(parts)
+
+    def _build_nested_list(self, text: str, list_type: str) -> str:
+        pattern = r'^(\s*)[-*+]\s+(.+)$' if list_type == 'ul' else r'^(\s*)\d+\.\s+(.+)$'
+        buf = []
+        i = 0
+        lines = text.split('\n')
+        while i < len(lines):
+            m = re.match(pattern, lines[i])
+            if not m:
+                i += 1
+                continue
+            indent = len(m.group(1))
+            content = self._inline_to_html(m.group(2))
+            sub_lines = []
+            j = i + 1
+            while j < len(lines):
+                sm = re.match(pattern, lines[j])
+                if not sm:
+                    j += 1
+                    continue
+                if len(sm.group(1)) > indent:
+                    sub_lines.append(lines[j])
+                else:
+                    break
+                j += 1
+            inner = content
+            if sub_lines:
+                inner += self._build_nested_list('\n'.join(sub_lines), list_type)
+            buf.append(f'<li>{inner}</li>')
+            i = j
+        tag = 'ul' if list_type == 'ul' else 'ol'
+        return f'<{tag}>{"".join(buf)}</{tag}>'
+
+    def _richify_markdown(self, content: str) -> str:
+        if not content:
+            return ""
+        raw_blocks = re.split(r'\n{2,}', content)
+        html_blocks = []
+
+        for block in raw_blocks:
+            stripped = block.strip()
+            if not stripped:
+                continue
+
+            fenced = re.match(r'```(\w*)\s*\n?(.*?)```', stripped, re.DOTALL)
+            if fenced:
+                lang = fenced.group(1)
+                code = self._escape_html(fenced.group(2))
+                if lang:
+                    html_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
+                else:
+                    html_blocks.append(f'<pre>{code}</pre>')
+                continue
+
+            if re.match(r'^[-*_]{3,}\s*$', stripped):
+                html_blocks.append('<hr/>')
+                continue
+
+            if all(l.startswith('>') for l in stripped.split('\n') if l.strip()):
+                quote_lines = [re.sub(r'^>\s?', '', l) for l in stripped.split('\n')]
+                quote_html = self._inline_to_html('\n'.join(quote_lines))
+                need_expand = len(quote_html) > 300
+                tag = 'blockquote expandable' if need_expand else 'blockquote'
+                html_blocks.append(f'<{tag}>{quote_html}</{tag.split()[0]}>')
+                continue
+
+            h_match = re.match(r'(#{1,6})\s+(.+?)(?:\s+#{1,6})?\s*$', stripped.split('\n')[0], re.MULTILINE)
+            if h_match:
+                level = len(h_match.group(1))
+                heading_text = self._inline_to_html(h_match.group(2))
+                html_blocks.append(f'<h{level}>{heading_text}</h{level}>')
+                rest = stripped[len(h_match.group(0)):].strip()
+                if rest:
+                    rest_lines = rest.split('\n')
+                    if all(l.startswith('>') for l in rest_lines if l.strip()):
+                        quote_lines = [re.sub(r'^>\s?', '', l) for l in rest_lines]
+                        quote_html = self._inline_to_html('\n'.join(quote_lines))
+                        need_expand = len(quote_html) > 300
+                        tag = 'blockquote expandable' if need_expand else 'blockquote'
+                        html_blocks.append(f'<{tag}>{quote_html}</{tag.split()[0]}>')
+                    else:
+                        html_blocks.append(f'<p>{self._inline_to_html(rest)}</p>')
+                continue
+
+            lines = stripped.split('\n')
+            list_start = None
+            list_prefix = ""
+            for i, ln in enumerate(lines):
+                if not ln.strip():
+                    continue
+                if re.match(r'^[-*+]\s+(.+)$', ln):
+                    list_start = 'ul'
+                    list_prefix = '\n'.join(lines[:i])
+                    stripped = '\n'.join(lines[i:])
+                    break
+                if re.match(r'^\d+\.\s+(.+)$', ln):
+                    list_start = 'ol'
+                    list_prefix = '\n'.join(lines[:i])
+                    stripped = '\n'.join(lines[i:])
+                    break
+
+            if list_start == 'ul':
+                part = self._build_nested_list(stripped, 'ul')
+                if list_prefix:
+                    html_blocks.append(f'<p>{self._inline_to_html(list_prefix)}</p>')
+                html_blocks.append(part)
+                continue
+
+            if list_start == 'ol':
+                part = self._build_nested_list(stripped, 'ol')
+                if list_prefix:
+                    html_blocks.append(f'<p>{self._inline_to_html(list_prefix)}</p>')
+                html_blocks.append(part)
+                continue
+
+            lines = stripped.split('\n')
+            if len(lines) >= 2 and all('|' in l for l in lines):
+                table = self._table_to_html(lines)
+                if table:
+                    html_blocks.append(table)
+                    continue
+
+            html_blocks.append(f'<p>{self._inline_to_html(stripped)}</p>')
+
+        return '\n'.join(html_blocks)
+
+    async def _send_rich_message(self, target_id: str, content: str, **kwargs) -> bool:
+        try:
+            html = self._richify_markdown(content)
+            if not html:
+                return False
+            payload = html.encode('utf-8')
+            if len(payload) > 32768:
+                logger.warning("[TelegramAdapter] Rich message too large (%d bytes), falling back", len(payload))
+                return False
+            data = {"chat_id": target_id, "rich_message": {"html": html}}
+            reply_to = kwargs.get("reply_to_message_id")
+            if reply_to:
+                data["reply_to_message_id"] = reply_to
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(f"{self.base_url}/sendRichMessage", json=data)
+                result = resp.json()
+            if not result.get("ok"):
+                logger.warning("[TelegramAdapter] sendRichMessage failed: %s", result.get("description", ""))
+                return False
+            return True
+        except Exception as e:
+            logger.error("[TelegramAdapter] sendRichMessage error: %s", e)
+            return False
+
     def _format_message(self, content: str) -> tuple[str, list]:
         if not content:
             return "", []
@@ -338,10 +531,12 @@ class TelegramAdapter(ChannelAdapter):
         return parts
 
     async def connect(self):
-        """连接到 Telegram Bot API"""
         if self._running:
             logger.warning("[TelegramAdapter] Already connected")
             return
+
+        await self.disconnect()
+
         me = await self._get_me()
         if not me:
             raise ConnectionError("Failed to connect to Telegram API. Please check your bot token.")
@@ -398,7 +593,7 @@ class TelegramAdapter(ChannelAdapter):
         logger.info("[TelegramAdapter] Disconnected")
 
     async def update_config(self, bot_token: str = None, whitelist_user_ids: list = None,
-                            whitelist_usernames: list = None, **kwargs):
+                            whitelist_usernames: list = None, use_rich_messages: bool = None, **kwargs):
         """
         热更新配置
 
@@ -406,6 +601,7 @@ class TelegramAdapter(ChannelAdapter):
             bot_token: 新的 Bot Token
             whitelist_user_ids: 新的白名单用户 ID 列表
             whitelist_usernames: 新的白名单用户名列表
+            use_rich_messages: 是否使用 Rich Messages
         """
         if bot_token is not None:
             self.bot_token = bot_token
@@ -420,17 +616,26 @@ class TelegramAdapter(ChannelAdapter):
             self.whitelist_usernames = set(u.lower() for u in whitelist_usernames)
             logger.info(f"[TelegramAdapter] Whitelist usernames updated: {len(self.whitelist_usernames)} users")
 
+        if use_rich_messages is not None:
+            self._use_rich_messages = use_rich_messages
+            logger.info(f"[TelegramAdapter] Rich Messages {'enabled' if use_rich_messages else 'disabled'}")
+
     async def send_message(self, target_id: str, content: str, message_type: str, **kwargs) -> bool:
         """
         发送消息到 Telegram
 
         Args:
             target_id: 聊天 ID (chat_id)
-            content: 消息内容（会被自动转换为纯文本 + entities）
+            content: 消息内容
             message_type: 消息类型 (private/group)
             **kwargs: 额外参数
                 - reply_to_message_id: 回复的消息 ID
         """
+        if self._use_rich_messages:
+            ok = await self._send_rich_message(target_id, content, **kwargs)
+            if ok:
+                return True
+
         try:
             url = f"{self.base_url}/sendMessage"
 
@@ -766,8 +971,7 @@ class TelegramAdapter(ChannelAdapter):
         return f"Telegram 私聊（User ID：{message.user_id}）"
 
     def _get_platform_tips(self) -> str:
-        """获取平台特有提示"""
-        return "■ 注意：Telegram 平台表格渲染效果不佳，请尽量避免使用表格，改用列表或段落描述"
+        return ""
 
     def extract_file_info(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_data, dict):

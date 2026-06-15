@@ -42,6 +42,7 @@ CHANNEL_REGISTRY = {
             bot_token=config.get_bot_token(),
             whitelist_user_ids=config.get_whitelist_user_ids(),
             whitelist_usernames=config.get_whitelist_usernames(),
+            use_rich_messages=config.use_rich_messages,
         ),
     },
     "feishu": {

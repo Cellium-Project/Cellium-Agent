@@ -16,6 +16,7 @@ class TelegramChannelConfig(BaseChannelConfig):
         self._bot_token: Optional[str] = None
         self._whitelist_user_ids: List[int] = []
         self._whitelist_usernames: List[str] = []
+        self._use_rich_messages: bool = True
         super().__init__(config_path)
 
     @property
@@ -31,6 +32,7 @@ class TelegramChannelConfig(BaseChannelConfig):
         self._bot_token = channel_cfg.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN")
         self._whitelist_user_ids = channel_cfg.get("whitelist_user_ids", []) or []
         self._whitelist_usernames = channel_cfg.get("whitelist_usernames", []) or []
+        self._use_rich_messages = channel_cfg.get("use_rich_messages", True)
         self._enabled = channel_cfg.get("enabled", False)
         self._auto_start = channel_cfg.get("auto_start", True)
 
@@ -47,10 +49,15 @@ class TelegramChannelConfig(BaseChannelConfig):
 
     def _build_cache(self, **extra: Any) -> Dict[str, Any]:
         return super()._build_cache(
+            use_rich_messages=self._use_rich_messages,
             whitelist_user_ids=self._whitelist_user_ids,
             whitelist_usernames=self._whitelist_usernames,
             **extra
         )
+
+    @property
+    def use_rich_messages(self) -> bool:
+        return self._use_rich_messages
 
     def is_user_allowed(self, user_id: str, username: str = "") -> bool:
         """检查用户是否在白名单中"""
