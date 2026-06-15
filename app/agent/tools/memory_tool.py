@@ -63,6 +63,7 @@ class MemoryTool(BaseTool):
                         },
                         "tags": {"type": "string", "description": "标签（search/store: 可选，逗号分隔）"},
                         "source": {"type": "string", "description": "来源 ID（update/delete: 必需，search: 可选筛选）"},
+                        "limit": {"type": "integer", "description": "[list] 可选，筛选条数上限，默认不限制"},
                         "date_from": {"type": "string", "description": "[search] 可选，起始日期（ISO 格式，如 2026-01-01）"},
                         "date_to": {"type": "string", "description": "[search] 可选，结束日期（ISO 格式，如 2026-06-10）"},
                         "memory_key": {"type": "string", "description": "[store/update/delete/merge] 结构化记忆键"},
@@ -380,35 +381,36 @@ class MemoryTool(BaseTool):
             logger.error("[MemoryTool] merge 失败 | error=%s", e)
             return {"success": False, "error": f"合并失败: {e}"}
 
-    def _cmd_list(self, schema_type: Optional[str] = None, category: Optional[str] = None) -> dict:
+    def _cmd_list(
+        self,
+        schema_type: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> dict:
         if not self._check_memory():
             return {"success": False, "error": "长期记忆系统未初始化"}
 
         try:
-            raw = self.memory.list_memories(schema_type=schema_type, category=category, limit=50)
+            kwargs = dict(schema_type=schema_type, category=category)
+            if limit is not None:
+                kwargs["limit"] = limit
+            raw = self.memory.list_memories(**kwargs)
             items = raw.get("items", []) if isinstance(raw, dict) else raw
+            total = raw.get("total", len(items)) if isinstance(raw, dict) else len(items)
             categories = {}
             schemas = {}
             for item in items:
-                categories[item.get("category", "general")] = categories.get(item.get("category", "general"), 0) + 1
-                schemas[item.get("schema_type", "general")] = schemas.get(item.get("schema_type", "general"), 0) + 1
+                cat = item.get("category", "general")
+                categories[cat] = categories.get(cat, 0) + 1
+            for item in items:
+                st = item.get("schema_type", "general")
+                schemas[st] = schemas.get(st, 0) + 1
             return {
                 "success": True,
-                "total_memories": len(items),
-                "categories": [{"category": key, "count": value} for key, value in sorted(categories.items())],
-                "schemas": [{"schema_type": key, "count": value} for key, value in sorted(schemas.items())],
-                "items": [
-                    {
-                        "id": item.get("id"),
-                        "title": item.get("title"),
-                        "category": item.get("category"),
-                        "schema_type": item.get("schema_type"),
-                        "memory_key": item.get("memory_key"),
-                        "source": item.get("source_file"),
-                    }
-                    for item in items[:20]
-                ],
-                "message": f"共 {len(items)} 条活跃记忆",
+                "total": total,
+                "categories": [{"category": k, "count": v} for k, v in sorted(categories.items())],
+                "schemas": [{"schema_type": k, "count": v} for k, v in sorted(schemas.items())],
+                "message": f"共 {total} 条记忆。可使用 memory.search 搜索具体内容。",
             }
         except Exception as e:
             logger.error("[MemoryTool] list 失败 | error=%s", e)

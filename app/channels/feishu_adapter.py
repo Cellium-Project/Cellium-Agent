@@ -13,25 +13,31 @@ from .feishu_channel_config import FeishuChannelConfig
 
 logger = logging.getLogger(__name__)
 
-try:
-    import lark_oapi as lark
-    from lark_oapi.api.im.v1 import (
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-    )
-    LARK_AVAILABLE = True
-except ImportError:
-    LARK_AVAILABLE = False
-    logger.warning("[FeishuAdapter] lark-oapi 未安装，飞书通道不可用。安装: pip install lark-oapi")
+LARK_AVAILABLE = None
+
+
+def _check_lark():
+    global LARK_AVAILABLE
+    if LARK_AVAILABLE is None:
+        try:
+            import lark_oapi  # noqa: F401
+            LARK_AVAILABLE = True
+        except ImportError:
+            LARK_AVAILABLE = False
+            logger.warning("[FeishuAdapter] lark-oapi 未安装，飞书通道不可用。安装: pip install lark-oapi")
+    return LARK_AVAILABLE
 
 
 class FeishuAdapter(ChannelAdapter):
     """飞书 Bot 适配器"""
     
     def __init__(self, config: FeishuChannelConfig = None, **kwargs):
-        if not LARK_AVAILABLE:
+        if not _check_lark():
             raise ImportError("需要安装 lark-oapi: pip install lark-oapi")
         
+        import lark_oapi as lark
+
+        self._lark = lark
         self._config = config or FeishuChannelConfig()
         self._client: Optional[lark.Client] = None
         self._ws_client: Optional[lark.ws.Client] = None
@@ -143,28 +149,24 @@ class FeishuAdapter(ChannelAdapter):
             logger.error(f"[FeishuAdapter] 发送消息失败: {e}")
             return False
     
-    def _create_client(self) -> lark.Client:
-        """创建 lark 客户端"""
-        return lark.Client.builder() \
+    def _create_client(self):
+        return self._lark.Client.builder() \
             .app_id(self._config.app_id) \
             .app_secret(self._config.app_secret) \
             .build()
     
     async def _run_event_loop(self):
-        """运行事件循环（WebSocket 长连接）"""
         
-        def handle_message(data: lark.im.v1.P2ImMessageReceiveV1):
-            """消息接收回调"""
+        def handle_message(data):
             self._handle_message(data)
         
-        event_handler = lark.EventDispatcherHandler.builder("", "") \
+        event_handler = self._lark.EventDispatcherHandler.builder("", "") \
             .register_p2_im_message_receive_v1(handle_message) \
             .build()
         
         self._ws_stop_event = threading.Event()
         
         def run_ws_in_dedicated_loop():
-            """在独立线程中运行完全独立的事件循环"""
             import lark_oapi.ws.client as ws_client_module
             
             new_loop = asyncio.new_event_loop()
@@ -175,7 +177,7 @@ class FeishuAdapter(ChannelAdapter):
                 self._config.app_id,
                 self._config.app_secret,
                 event_handler=event_handler,
-                log_level=lark.LogLevel.ERROR,
+                log_level=self._lark.LogLevel.ERROR,
                 auto_reconnect=True
             )
             
@@ -203,7 +205,7 @@ class FeishuAdapter(ChannelAdapter):
     def _handle_message(self, data):
         """处理消息事件"""
         try:
-            data_dict = json.loads(lark.JSON.marshal(data))
+            data_dict = json.loads(self._lark.JSON.marshal(data))
 
             event = data_dict.get("event", {})
             message = event.get("message", {})
@@ -331,9 +333,9 @@ class FeishuAdapter(ChannelAdapter):
         """发送文本消息"""
         try:
             receive_id_type = "open_id" if target_id.startswith("ou_") else "chat_id"
-            req = CreateMessageRequest.builder() \
+            req = self._lark.api.im.v1.CreateMessageRequest.builder() \
                 .receive_id_type(receive_id_type) \
-                .request_body(CreateMessageRequestBody.builder()
+                .request_body(self._lark.api.im.v1.CreateMessageRequestBody.builder()
                     .receive_id(target_id)
                     .msg_type("text")
                     .content(json.dumps({"text": text}))
@@ -361,9 +363,9 @@ class FeishuAdapter(ChannelAdapter):
             card = self._markdown_to_feishu_card(content, title)
             receive_id_type = "open_id" if target_id.startswith("ou_") else "chat_id"
             
-            req = CreateMessageRequest.builder() \
+            req = self._lark.api.im.v1.CreateMessageRequest.builder() \
                 .receive_id_type(receive_id_type) \
-                .request_body(CreateMessageRequestBody.builder()
+                .request_body(self._lark.api.im.v1.CreateMessageRequestBody.builder()
                     .receive_id(target_id)
                     .msg_type("interactive")
                     .content(json.dumps(card))
