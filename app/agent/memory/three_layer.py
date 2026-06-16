@@ -22,12 +22,13 @@ from .repository import MemoryRepository
 class ThreeLayerMemory:
     """三层记忆：人格 + 会话上下文(外部注入) + 统一长期记忆仓库"""
 
-    def __init__(self, memory_dir: str = "memory"):
+    def __init__(self, memory_dir: str = "memory", allow_sensitive_store: bool = False):
         self.memory_dir = memory_dir
+        self.allow_sensitive_store = allow_sensitive_store
         self.searcher = FTS5MemorySearcher(memory_dir)
         self.archive = ArchiveStore(os.path.join(memory_dir, "archive"))
         self.extractor = KnowledgeExtractor(searcher=self.searcher)
-        self.repository = MemoryRepository(memory_dir, self.searcher)
+        self.repository = MemoryRepository(memory_dir, self.searcher, allow_sensitive_store=allow_sensitive_store)
         self.tokenizer = get_tokenizer()
         os.makedirs(os.path.join(memory_dir, "archive"), exist_ok=True)
 
@@ -114,7 +115,6 @@ class ThreeLayerMemory:
                 schema_type=item.get("schema_type", "general"),
                 memory_key=item.get("memory_key", ""),
                 metadata=metadata,
-                allow_sensitive=False,
                 merge_strategy="merge",
             )
 

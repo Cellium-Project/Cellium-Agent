@@ -98,6 +98,7 @@
     "thinking": "思考中...",
     "emptyState": "開始一個新的對話吧",
     "loadMore": "載入更多",
+    "loadingMessages": "載入訊息中...",
     "noMore": "沒有更多了",
     "inputTip": "按 Enter 發送，Shift + Enter 換行",
     "backToChat": "返回對話",

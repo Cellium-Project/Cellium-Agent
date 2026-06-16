@@ -99,6 +99,7 @@
     "thinking": "Thinking...",
     "emptyState": "Start a new conversation",
     "loadMore": "Load more",
+    "loadingMessages": "Loading messages...",
     "noMore": "No more messages",
     "inputTip": "Press Enter to send, Shift + Enter for new line",
     "backToChat": "Back to chat",

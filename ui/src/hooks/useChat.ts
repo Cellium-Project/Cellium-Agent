@@ -87,6 +87,13 @@ export function useChat() {
   const connectionIdRef = useRef(0);
   const lastEventIdBySessionRef = useRef<Record<string, number>>({});
   const isManualCloseRef = useRef(false);
+  
+  // 批量处理chunk的缓冲区
+  const chunkBufferRef = useRef<{ chunks: string[]; timer: ReturnType<typeof setTimeout> | null }>({
+    chunks: [],
+    timer: null
+  });
+  
   const {
     currentSessionId,
     messages,
@@ -114,6 +121,51 @@ export function useChat() {
       sawDone: false,
     };
   }
+
+  type StreamingContext = ReturnType<typeof buildStreamingContext>;
+
+  // 批量处理chunk，减少渲染次数
+  const flushChunkBuffer = useCallback((ctx: StreamingContext, sessionId: string, connectionId: number) => {
+    const buffer = chunkBufferRef.current;
+    if (buffer.chunks.length === 0) return;
+    
+    const mergedChunk = buffer.chunks.join('');
+    buffer.chunks = [];
+    
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = null;
+    }
+    
+    if (mergedChunk.length > 0) {
+      ctx.timeline.push({ kind: 'text', content: mergedChunk });
+      updateStreamingMessage({
+        role: 'assistant',
+        content: '',
+        toolTraces: ctx.traces,
+        timeline: [...ctx.timeline],
+      });
+    }
+  }, [updateStreamingMessage]);
+
+  // 添加chunk到缓冲区，延迟批量处理
+  const addToChunkBuffer = useCallback((chunk: string, ctx: StreamingContext, sessionId: string, connectionId: number) => {
+    const buffer = chunkBufferRef.current;
+    buffer.chunks.push(chunk);
+    
+    // 如果缓冲区没有定时器，设置一个16ms的延迟（约60fps）
+    if (!buffer.timer) {
+      buffer.timer = setTimeout(() => {
+        flushChunkBuffer(ctx, sessionId, connectionId);
+      }, 16);
+    }
+    
+    // 如果缓冲区累积超过500字符，立即刷新
+    const totalLength = buffer.chunks.reduce((sum, c) => sum + c.length, 0);
+    if (totalLength > 500) {
+      flushChunkBuffer(ctx, sessionId, connectionId);
+    }
+  }, [flushChunkBuffer]);
 
   const finalizeMessage = useCallback((ctx: ReturnType<typeof buildStreamingContext>, connectionId?: number) => {
     if (ctx.finalized) {
@@ -280,24 +332,19 @@ export function useChat() {
           console.log('[content_chunk] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
         }
         if (rawChunk.length > 0) {
-          // 直接添加原始内容，不预先解析 JSON thinking
-          // 避免在 finalizeMessage 中重复处理
-          ctx.timeline.push({ kind: 'text', content: rawChunk });
+          // 使用批量处理，减少渲染次数
+          addToChunkBuffer(rawChunk, ctx, sessionId, connectionId);
         }
-        updateStreamingMessage({
-          role: 'assistant',
-          content: '',
-          toolTraces: ctx.traces,
-          timeline: [...ctx.timeline],
-        });
         if (import.meta.env.DEV) {
-          console.log('[content_chunk] updated timeline length:', ctx.timeline.length);
+          console.log('[content_chunk] timeline length:', ctx.timeline.length);
         }
         break;
       }
 
       case 'done':
         ctx.sawDone = true;
+        // 在完成前刷新所有缓冲的chunk
+        flushChunkBuffer(ctx, sessionId, connectionId);
         if (event.tool_traces && event.tool_traces.length > 0) {
           if (ctx.traces.length === 0) {
             ctx.traces = event.tool_traces;
@@ -701,6 +748,10 @@ export function useChat() {
       disconnectWebSocket();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
+      }
+      if (chunkBufferRef.current.timer) {
+        clearTimeout(chunkBufferRef.current.timer);
+        chunkBufferRef.current.timer = null;
       }
     };
     // 空依赖，只在卸载时执行

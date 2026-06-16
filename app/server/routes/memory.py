@@ -22,7 +22,7 @@ class MemoryUpsertRequest(BaseModel):
     schema_type: str = "general"
     memory_key: str = ""
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    allow_sensitive: bool = False
+    allow_sensitive: Optional[bool] = None
     merge_strategy: str = "merge"
 
 
@@ -34,7 +34,7 @@ class MemoryUpdateRequest(BaseModel):
     schema_type: Optional[str] = None
     memory_key: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    allow_sensitive: bool = False
+    allow_sensitive: Optional[bool] = None
 
 
 class MemoryForgetRequest(BaseModel):

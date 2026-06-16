@@ -122,6 +122,7 @@ def setup_agent_di(
     flash_mode = _cfg.get("agent.flash_mode", False)
     if memory_dir is None:
         memory_dir = _cfg.get("memory.memory_dir", "memory")
+    allow_sensitive_store = _cfg.get("memory.allow_sensitive_store", False)
 
     _client_logger = logging.getLogger("app.client")
     _client_logger.setLevel(logging.DEBUG if _cfg.get("logging.client_log", False) else logging.CRITICAL + 1)
@@ -355,7 +356,7 @@ def setup_agent_di(
         CelliumShell._di_registered = True
 
     # --- 4. 注册三层记忆 ---
-    _memory = ThreeLayerMemory(memory_dir)
+    _memory = ThreeLayerMemory(memory_dir, allow_sensitive_store=allow_sensitive_store)
     if not hasattr(ThreeLayerMemory, '_di_registered'):
         container.register(ThreeLayerMemory, _memory, singleton=True)
         ThreeLayerMemory._di_registered = True

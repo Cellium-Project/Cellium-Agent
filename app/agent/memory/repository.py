@@ -66,9 +66,10 @@ class MemoryRepository:
         ),
     ]
 
-    def __init__(self, memory_dir: str, searcher):
+    def __init__(self, memory_dir: str, searcher, allow_sensitive_store: bool = False):
         self.memory_dir = memory_dir
         self.searcher = searcher
+        self.allow_sensitive_store = allow_sensitive_store
         self.tokenizer = get_tokenizer()
         self.catalog_path = os.path.join(memory_dir, self.CATALOG_FILE)
         self.vector_db_path = os.path.join(memory_dir, "memory_vectors_api.db")
@@ -449,7 +450,7 @@ class MemoryRepository:
         schema_type: str = "general",
         memory_key: str = "",
         metadata: Optional[Dict[str, Any]] = None,
-        allow_sensitive: bool = False,
+        allow_sensitive: Optional[bool] = None,
         merge_strategy: str = "merge",
     ) -> Dict[str, Any]:
         title = (title or "").strip()
@@ -458,6 +459,10 @@ class MemoryRepository:
             return {"success": False, "error": "标题不能为空"}
         if not content:
             return {"success": False, "error": "内容不能为空"}
+
+        # 使用全局配置作为默认值
+        if allow_sensitive is None:
+            allow_sensitive = self.allow_sensitive_store
 
         metadata = dict(metadata or {})
         schema_type = self._normalize_schema_type(schema_type=schema_type, category=category)

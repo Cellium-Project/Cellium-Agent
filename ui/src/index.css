@@ -448,20 +448,87 @@ body {
     padding: 8px 0;
 }
 
-.scheduler-trigger-bubble {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-primary);
-    border-radius: 20px;
-    font-size: 13px;
-    color: var(--text-secondary);
+.scheduler-trigger-container {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 20px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  max-width: 600px;
 }
 
-.scheduler-trigger-bubble svg {
-    color: var(--accent-primary);
+.scheduler-trigger-container.expanded {
+  border-radius: 12px;
+}
+
+.scheduler-trigger-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.scheduler-trigger-bubble .task-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.scheduler-trigger-bubble.clickable {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.scheduler-trigger-bubble.clickable:hover {
+  color: var(--text-primary);
+}
+
+.scheduler-trigger-bubble svg:first-child {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.scheduler-trigger-bubble .rotated {
+  transform: rotate(180deg);
+}
+
+.scheduler-trigger-bubble .chevron-icon {
+  transition: transform 0.2s ease;
+}
+
+.scheduler-trigger-detail {
+  width: 100%;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  box-sizing: border-box;
+}
+
+.scheduler-trigger-container.expanded .scheduler-trigger-detail {
+  max-height: 500px;
+  padding: 0 12px 12px 12px;
+}
+
+.scheduler-trigger-detail pre {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  margin: 0;
+  padding: 12px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  box-sizing: border-box;
 }
 
 .message-wrapper {
@@ -1850,6 +1917,23 @@ input:focus, select:focus, textarea:focus {
     border-top: 1px solid var(--border-primary);
     display: flex;
     gap: 12px;
+}
+
+.memory-settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.memory-settings-header {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+}
+
+.memory-settings-header-actions {
+    display: flex;
+    gap: 8px;
 }
 
 .btn-primary {
@@ -4063,6 +4147,105 @@ input:focus, select:focus, textarea:focus {
 .archive-tool-call code {
     color: var(--accent-primary);
     font-weight: 600;
+}
+
+/* Memory Editor Modal - reuses skill-detail-modal styles */
+.memory-editor-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    pointer-events: none;
+    animation: modalFadeIn 0.2s ease-out;
+}
+
+.memory-editor-modal.closing {
+    animation: modalFadeOut 0.15s ease-in forwards;
+}
+
+.memory-editor-modal .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    pointer-events: auto;
+    z-index: 1;
+}
+
+.memory-editor-modal .modal-content {
+    position: relative;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 600px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    z-index: 2;
+    animation: modalSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.memory-editor-modal.closing .modal-content {
+    animation: modalSlideOut 0.15s ease-in forwards;
+}
+
+.memory-editor-modal .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.memory-editor-modal .modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.memory-editor-modal .modal-body {
+    padding: 20px;
+}
+
+.memory-editor-modal .memory-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+}
+
+.memory-editor-modal .memory-editor-full {
+    grid-column: 1 / -1;
+}
+
+.memory-editor-modal .memory-editor-sensitive {
+    margin-top: 16px;
+    margin-bottom: 16px;
+}
+
+.memory-editor-modal .memory-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-primary);
+}
+
+.load-more-trigger {
+    text-align: center;
+    padding: 16px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.load-more-trigger .btn-secondary {
+    margin: 0 auto;
 }
 
 .loading-indicator {

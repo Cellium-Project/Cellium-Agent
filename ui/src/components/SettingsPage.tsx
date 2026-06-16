@@ -1378,13 +1378,15 @@ const MemorySettings: React.FC = () => {
         )}
       </div>
 
-      <MemoryManagerPanel />
-
-      <div className="form-actions">
-
-        <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
-          {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.memory.save')}
-        </button>
+      <div className="memory-settings-section">
+        <div className="memory-settings-header">
+          <div className="memory-settings-header-actions">
+            <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
+              {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.memory.save')}
+            </button>
+          </div>
+        </div>
+        <MemoryManagerPanel />
       </div>
     </div>
   );

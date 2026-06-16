@@ -8,10 +8,25 @@ import { Collapsible } from './Collapsible';
 
 marked.setOptions({ gfm: true });
 
+const markdownCache = new Map<string, string>();
+const MAX_CACHE_SIZE = 100;
+
 function safeRenderMarkdown(content: string): string {
   if (!content) return '';
+  
+  const cached = markdownCache.get(content);
+  if (cached) return cached;
+  
   const rawHtml = marked.parse(content) as string;
-  return DOMPurify.sanitize(rawHtml);
+  const sanitized = DOMPurify.sanitize(rawHtml);
+  
+  if (markdownCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = markdownCache.keys().next().value;
+    if (firstKey) markdownCache.delete(firstKey);
+  }
+  markdownCache.set(content, sanitized);
+  
+  return sanitized;
 }
 
 function formatFileSize(bytes: number): string {
@@ -37,14 +52,48 @@ function parseAttachmentsFromMessage(content: string): { content: string; attach
         filename: itemMatch[1],
         file_type: itemMatch[2],
         file_size: parseInt(itemMatch[3]),
-        local_path: itemMatch[4]
+        local_path: itemMatch[4],
       });
     }
   }
   
-  const cleanContent = content.replace(attachmentBlockRegex, '').trim();
+  const cleanedContent = content.replace(attachmentBlockRegex, '').trim();
   
-  return { content: cleanContent, attachments };
+  return { content: cleanedContent, attachments };
+}
+
+function parseSchedulerTrigger(content: string): { isSchedulerTrigger: boolean; taskName?: string; fullContent?: string } {
+  // 检查是否包含定时任务触发关键字
+  if (!content.includes('[定时任务触发]')) {
+    return { isSchedulerTrigger: false };
+  }
+  
+  // 尝试多种方式提取任务名称
+  let taskName = '未知任务';
+  
+  // 方式1: 任务名称: xxx 触发时间
+  const taskNameMatch1 = content.match(/任务名称:\s*(.+?)\s*触发时间/);
+  if (taskNameMatch1) {
+    taskName = taskNameMatch1[1].trim();
+  } else {
+    // 方式2: 任务名称: xxx 后面跟着其他字段
+    const taskNameMatch2 = content.match(/任务名称:\s*(.+?)(?:\s+\S+?:|$)/);
+    if (taskNameMatch2) {
+      taskName = taskNameMatch2[1].trim();
+    } else {
+      // 方式3: 更宽松的匹配
+      const taskNameMatch3 = content.match(/任务名称:\s*(.+)/);
+      if (taskNameMatch3) {
+        taskName = taskNameMatch3[1].trim();
+      }
+    }
+  }
+  
+  return {
+    isSchedulerTrigger: true,
+    taskName: taskName,
+    fullContent: content,
+  };
 }
 
 /** Check if a parsed JSON object is a thought JSON (has reasoning field) */
@@ -57,7 +106,13 @@ function isThoughtJson(obj: any): boolean {
  * Detects both ```json ... ``` fenced blocks AND raw JSON objects
  * that look like thought blocks ({reasoning, plan, action, ...}).
  */
+const jsonBlockCache = new Map<string, Array<{ type: 'text' | 'json'; content: string }>>();
+const MAX_JSON_CACHE_SIZE = 50;
+
 function splitJsonBlocks(content: string): Array<{ type: 'text' | 'json'; content: string }> {
+  const cached = jsonBlockCache.get(content);
+  if (cached) return cached;
+  
   const segments: Array<{ type: 'text' | 'json'; content: string }> = [];
 
   // Phase 1: split by ```json ... ``` fences
@@ -81,7 +136,6 @@ function splitJsonBlocks(content: string): Array<{ type: 'text' | 'json'; conten
   }
 
   // Phase 2: for each text segment, detect raw JSON thought blocks
-  // Pattern: a JSON object starting with { that contains reasoning/plan/action keys
   for (const seg of fencedSegments) {
     if (seg.type === 'json') {
       segments.push(seg);
@@ -89,15 +143,12 @@ function splitJsonBlocks(content: string): Array<{ type: 'text' | 'json'; conten
     }
 
     const text = seg.content;
-    // Try to find a raw JSON thought object in the text
     const rawJsonResult = extractRawThoughtJson(text);
     if (rawJsonResult) {
-      // Text before the JSON
       if (rawJsonResult.before.trim()) {
         segments.push({ type: 'text', content: rawJsonResult.before });
       }
       segments.push({ type: 'json', content: rawJsonResult.json });
-      // Text after the JSON
       if (rawJsonResult.after.trim()) {
         segments.push({ type: 'text', content: rawJsonResult.after });
       }
@@ -106,6 +157,12 @@ function splitJsonBlocks(content: string): Array<{ type: 'text' | 'json'; conten
     }
   }
 
+  if (jsonBlockCache.size >= MAX_JSON_CACHE_SIZE) {
+    const firstKey = jsonBlockCache.keys().next().value;
+    if (firstKey) jsonBlockCache.delete(firstKey);
+  }
+  jsonBlockCache.set(content, segments);
+  
   return segments;
 }
 
@@ -213,31 +270,48 @@ function renderContentWithCollapsibleJson(content: string): React.ReactNode {
 }
 
 /** Collapsible card for a JSON reasoning/plan block */
-const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
+const jsonParseCache = new Map<string, { label: string; content: string }>();
+const MAX_PARSE_CACHE_SIZE = 30;
+
+const JsonBlockCard: React.FC<{ jsonStr: string }> = memo(({ jsonStr }) => {
   const { t } = useTranslation();
 
   const { label, content } = useMemo(() => {
+    const cached = jsonParseCache.get(jsonStr);
+    if (cached) return cached;
+    
     let parsed: any = null;
     try {
       parsed = JSON.parse(jsonStr);
     } catch {
-      return {
+      const result = {
         label: 'Thinking',
         content: jsonStr,
       };
+      jsonParseCache.set(jsonStr, result);
+      return result;
     }
 
     if (isThoughtJson(parsed)) {
-      return {
+      const result = {
         label: 'Thinking',
         content: parsed.reasoning || jsonStr,
       };
+      jsonParseCache.set(jsonStr, result);
+      return result;
     }
 
-    return {
+    const result = {
       label: 'JSON',
       content: JSON.stringify(parsed, null, 2),
     };
+    
+    if (jsonParseCache.size >= MAX_PARSE_CACHE_SIZE) {
+      const firstKey = jsonParseCache.keys().next().value;
+      if (firstKey) jsonParseCache.delete(firstKey);
+    }
+    jsonParseCache.set(jsonStr, result);
+    return result;
   }, [jsonStr]);
 
   return (
@@ -255,7 +329,7 @@ const JsonBlockCard: React.FC<{ jsonStr: string }> = ({ jsonStr }) => {
       </Collapsible>
     </div>
   );
-};
+});
 
 interface ChatMessageProps {
   message: Message;
@@ -264,6 +338,7 @@ interface ChatMessageProps {
 export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
+  const [showSchedulerDetail, setShowSchedulerDetail] = useState(false);
   
   // 解析用户消息中的附件信息
   const parsedMessage = useMemo(() => {
@@ -282,12 +357,44 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
     return { content: message.content, attachments: message.attachments || [] };
   }, [message.content, message.attachments, isUser]);
   
+  // 检测定时任务触发格式的消息
+  const schedulerTrigger = useMemo(() => {
+    if (isUser && parsedMessage.content) {
+      return parseSchedulerTrigger(parsedMessage.content);
+    }
+    return { isSchedulerTrigger: false };
+  }, [isUser, parsedMessage.content]);
+  
   if (message.type === 'scheduler_trigger') {
     return (
       <div className="message-row scheduler-trigger">
         <div className="scheduler-trigger-bubble">
           <Icons.Clock size={16} />
           <span>{t('common.schedulerTrigger')}：{message.schedulerTaskName}</span>
+        </div>
+      </div>
+    );
+  }
+  
+  // 检测到定时任务触发格式的消息
+  if (schedulerTrigger.isSchedulerTrigger) {
+    return (
+      <div className="message-row scheduler-trigger user">
+        <div 
+          className={`scheduler-trigger-container ${showSchedulerDetail ? 'expanded' : ''}`}
+        >
+          <div 
+            className="scheduler-trigger-bubble clickable"
+            onClick={() => setShowSchedulerDetail(!showSchedulerDetail)}
+          >
+            <Icons.Clock size={16} />
+            <span>{t('common.schedulerTrigger')}：</span>
+            <span className="task-name">{schedulerTrigger.taskName}</span>
+            <Icons.ChevronDown size={14} className={`chevron-icon ${showSchedulerDetail ? 'rotated' : ''}`} />
+          </div>
+          <div className="scheduler-trigger-detail">
+            <pre>{schedulerTrigger.fullContent}</pre>
+          </div>
         </div>
       </div>
     );

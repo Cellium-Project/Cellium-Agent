@@ -41,7 +41,6 @@ interface MemoryEditorState {
   tags: string;
   memory_key: string;
   metadataText: string;
-  allow_sensitive: boolean;
 }
 
 interface ArchiveEntry {
@@ -64,7 +63,6 @@ const EMPTY_EDITOR: MemoryEditorState = {
   tags: '',
   memory_key: '',
   metadataText: '{}',
-  allow_sensitive: false,
 };
 
 function formatDateTime(value?: string, t?: (key: string) => string): string {
@@ -84,7 +82,6 @@ function buildEditorState(memory?: MemoryRecord | null): MemoryEditorState {
     tags: memory.tags || '',
     memory_key: memory.memory_key || '',
     metadataText: JSON.stringify(memory.metadata || {}, null, 2),
-    allow_sensitive: !!memory.sensitive,
   };
 }
 
@@ -112,6 +109,7 @@ export const MemoryManagerPanel: React.FC = () => {
   const [editor, setEditor] = useState<MemoryEditorState>(EMPTY_EDITOR);
   const [archiveModal, setArchiveModal] = useState<{ open: boolean; entry: ArchiveEntry | null; loading: boolean; error: string }>({ open: false, entry: null, loading: false, error: '' });
   const [isArchiveClosing, setIsArchiveClosing] = useState(false);
+  const [isEditorClosing, setIsEditorClosing] = useState(false);
 
   const summaryCards = useMemo(() => {
     if (!summary) return [];
@@ -196,7 +194,6 @@ export const MemoryManagerPanel: React.FC = () => {
         tags: editor.tags,
         memory_key: editor.memory_key,
         metadata,
-        allow_sensitive: editor.allow_sensitive,
       };
 
       if (editorMode === 'edit' && editingMemory) {
@@ -278,6 +275,7 @@ export const MemoryManagerPanel: React.FC = () => {
     setError('');
     setEditingMemory(null);
     setEditor(buildEditorState(null));
+    setIsEditorClosing(false);
     setEditorMode('create');
   };
 
@@ -286,6 +284,7 @@ export const MemoryManagerPanel: React.FC = () => {
     setError('');
     setEditingMemory(memory);
     setEditor(buildEditorState(memory));
+    setIsEditorClosing(false);
     setEditorMode('edit');
   };
 
@@ -309,9 +308,13 @@ export const MemoryManagerPanel: React.FC = () => {
   };
 
   const closeEditor = () => {
-    setEditorMode(null);
-    setEditingMemory(null);
-    setEditor(EMPTY_EDITOR);
+    setIsEditorClosing(true);
+    setTimeout(() => {
+      setEditorMode(null);
+      setEditingMemory(null);
+      setEditor(EMPTY_EDITOR);
+      setIsEditorClosing(false);
+    }, 150);
   };
 
   const updateEditorField = <K extends keyof MemoryEditorState>(key: K, value: MemoryEditorState[K]) => {
@@ -327,6 +330,9 @@ export const MemoryManagerPanel: React.FC = () => {
         <div className="memory-manager-header-actions">
           <button className="btn-secondary btn-sm" onClick={refreshAll} disabled={loading || loadingSummary}>
             {loading || loadingSummary ? t('common.refreshing') : t('common.refresh')}
+          </button>
+          <button className="btn-primary btn-sm" onClick={loadItems} disabled={loading}>
+            {loading ? t('memoryManager.searching') : query.trim() ? t('memoryManager.search') : t('memoryManager.loadList')}
           </button>
           <button className="btn-primary btn-sm" onClick={openCreate}>{t('memoryManager.createMemory')}</button>
         </div>
@@ -388,68 +394,10 @@ export const MemoryManagerPanel: React.FC = () => {
           <input type="checkbox" checked={includeDeleted} onChange={e => setIncludeDeleted(e.target.checked)} disabled={!!query.trim()} />
           <span>{t('memoryManager.showInactive')}</span>
         </label>
-        <button className="btn-primary btn-sm" onClick={loadItems} disabled={loading}>
-          {loading ? t('memoryManager.searching') : query.trim() ? t('memoryManager.search') : t('memoryManager.loadList')}
-        </button>
       </div>
 
       {error && <div className="memory-feedback error">{error}</div>}
       {notice && <div className="memory-feedback success">{notice}</div>}
-
-      {editorMode && (
-        <div className="memory-editor-card">
-          <div className="memory-editor-header">
-            <h4>{editorMode === 'edit' ? t('memoryManager.editMemory') : t('memoryManager.createMemory')}</h4>
-            <button className="btn-icon" onClick={closeEditor} title={t('common.close')}>
-              <Icons.X size={16} />
-            </button>
-          </div>
-          <div className="memory-editor-grid">
-            <div className="form-group">
-              <label className="settings-field-label">{t('memoryManager.title')}</label>
-              <input type="text" value={editor.title} onChange={e => updateEditorField('title', e.target.value)} />
-            </div>
-            <div className="form-group">
-              <label className="settings-field-label">{t('memoryManager.schema')}</label>
-              <CustomDropdown
-                value={editor.schema_type}
-                items={SCHEMA_OPTIONS.slice(1).map(item => ({ value: item.value, label: item.label }))}
-                onChange={value => updateEditorField('schema_type', value as MemoryEditorState['schema_type'])}
-              />
-            </div>
-            <div className="form-group">
-              <label className="settings-field-label">{t('memoryManager.category')}</label>
-              <CustomDropdown value={editor.category} items={CATEGORY_OPTIONS.slice(1).map(item => ({ value: item.value, label: item.label }))} onChange={value => updateEditorField('category', value)} />
-            </div>
-            <div className="form-group">
-              <label className="settings-field-label">{t('memoryManager.memoryKeyLabel')}</label>
-              <input type="text" value={editor.memory_key} onChange={e => updateEditorField('memory_key', e.target.value)} placeholder={t('memoryManager.memoryKeyPlaceholder')} />
-            </div>
-            <div className="form-group memory-editor-full">
-              <label className="settings-field-label">{t('memoryManager.tags')}</label>
-              <input type="text" value={editor.tags} onChange={e => updateEditorField('tags', e.target.value)} placeholder={t('memoryManager.tagsPlaceholder')} />
-            </div>
-            <div className="form-group memory-editor-full">
-              <label className="settings-field-label">{t('memoryManager.content')}</label>
-              <textarea value={editor.content} onChange={e => updateEditorField('content', e.target.value)} rows={6} />
-            </div>
-            <div className="form-group memory-editor-full">
-              <label className="settings-field-label">{t('memoryManager.metadataJson')}</label>
-              <textarea value={editor.metadataText} onChange={e => updateEditorField('metadataText', e.target.value)} rows={6} />
-            </div>
-          </div>
-          <label className="memory-inline-check memory-editor-sensitive">
-            <input type="checkbox" checked={editor.allow_sensitive} onChange={e => updateEditorField('allow_sensitive', e.target.checked)} />
-            <span>{t('memoryManager.allowSensitiveDesc')}</span>
-          </label>
-          <div className="memory-editor-actions">
-            <button className="btn-secondary" onClick={closeEditor}>{t('common.cancel')}</button>
-            <button className="btn-primary" onClick={handleSave} disabled={actionKey === 'save'}>
-              {actionKey === 'save' ? t('common.saving') : editorMode === 'edit' ? t('memoryManager.saveChanges') : t('memoryManager.create')}
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="memory-results-header">
         <h4>{query.trim() ? t('memoryManager.searchResults') : t('memoryManager.recentMemories')}</h4>
@@ -599,6 +547,64 @@ export const MemoryManagerPanel: React.FC = () => {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Editor Modal */}
+      {editorMode && createPortal(
+        <div className={`memory-editor-modal ${isEditorClosing ? 'closing' : ''}`}>
+          <div className="modal-overlay" onClick={closeEditor} />
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>{editorMode === 'edit' ? t('memoryManager.editMemory') : t('memoryManager.createMemory')}</h3>
+              <button className="btn-close" onClick={closeEditor}>
+                <Icons.X size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="memory-editor-grid">
+                <div className="form-group">
+                  <label className="settings-field-label">{t('memoryManager.title')}</label>
+                  <input type="text" value={editor.title} onChange={e => updateEditorField('title', e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label className="settings-field-label">{t('memoryManager.schema')}</label>
+                  <CustomDropdown
+                    value={editor.schema_type}
+                    items={SCHEMA_OPTIONS.slice(1).map(item => ({ value: item.value, label: item.label }))}
+                    onChange={value => updateEditorField('schema_type', value as MemoryEditorState['schema_type'])}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="settings-field-label">{t('memoryManager.category')}</label>
+                  <CustomDropdown value={editor.category} items={CATEGORY_OPTIONS.slice(1).map(item => ({ value: item.value, label: item.label }))} onChange={value => updateEditorField('category', value)} />
+                </div>
+                <div className="form-group">
+                  <label className="settings-field-label">{t('memoryManager.memoryKeyLabel')}</label>
+                  <input type="text" value={editor.memory_key} onChange={e => updateEditorField('memory_key', e.target.value)} placeholder={t('memoryManager.memoryKeyPlaceholder')} />
+                </div>
+                <div className="form-group memory-editor-full">
+                  <label className="settings-field-label">{t('memoryManager.tags')}</label>
+                  <input type="text" value={editor.tags} onChange={e => updateEditorField('tags', e.target.value)} placeholder={t('memoryManager.tagsPlaceholder')} />
+                </div>
+                <div className="form-group memory-editor-full">
+                  <label className="settings-field-label">{t('memoryManager.content')}</label>
+                  <textarea value={editor.content} onChange={e => updateEditorField('content', e.target.value)} rows={6} />
+                </div>
+                <div className="form-group memory-editor-full">
+                  <label className="settings-field-label">{t('memoryManager.metadataJson')}</label>
+                  <textarea value={editor.metadataText} onChange={e => updateEditorField('metadataText', e.target.value)} rows={6} />
+                </div>
+              </div>
+              <div className="memory-editor-actions">
+                <button className="btn-secondary" onClick={closeEditor}>{t('common.cancel')}</button>
+                <button className="btn-primary" onClick={handleSave} disabled={actionKey === 'save'}>
+                  {actionKey === 'save' ? t('common.saving') : editorMode === 'edit' ? t('memoryManager.saveChanges') : t('memoryManager.create')}
+                </button>
+              </div>
             </div>
           </div>
         </div>,

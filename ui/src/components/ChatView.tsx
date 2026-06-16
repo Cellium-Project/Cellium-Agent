@@ -1,10 +1,10 @@
-import React, { useState, useRef, useEffect, memo } from 'react';
+import React, { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChat } from '../hooks/useChat';
 import { useAppStore } from '../stores/appStore';
 import { Icons } from './Icons';
 import { ChatMessage } from './ChatMessage';
-import type { Attachment } from '../types';
+import type { Attachment, Message } from '../types';
 
 const MessageList = memo(({
   messages, streamingMessage,
@@ -12,8 +12,8 @@ const MessageList = memo(({
   isLoadingMessages, hasMoreHistory, currentSessionId,
   fetchMessages,
 }: {
-  messages: ReturnType<typeof useChat>['messages'];
-  streamingMessage: ReturnType<typeof useChat>['streamingMessage'];
+  messages: Message[];
+  streamingMessage: Message | null;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   messagesContainerRef: React.RefObject<HTMLDivElement | null>;
   isLoadingMessages: boolean;
@@ -23,38 +23,77 @@ const MessageList = memo(({
 }) => {
   const { t } = useTranslation();
   const prevMessagesCountRef = useRef<number>(0);
-  const wasEmptyRef = useRef<boolean>(true);
+  const prevSessionIdRef = useRef<string | null>(null);
+  const isSwitchingSessionRef = useRef<boolean>(false);
+
+  const allMessages = streamingMessage 
+    ? [...messages, streamingMessage] 
+    : messages;
 
   useEffect(() => {
     const prevCount = prevMessagesCountRef.current;
-    const wasEmpty = wasEmptyRef.current;
-    prevMessagesCountRef.current = messages.length;
-    wasEmptyRef.current = messages.length === 0;
+    const prevSession = prevSessionIdRef.current;
+    prevMessagesCountRef.current = allMessages.length;
+    prevSessionIdRef.current = currentSessionId;
 
-    if ((messages.length > prevCount && messages.length - prevCount < 50) || (wasEmpty && messages.length > 0)) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    // 切换对话时标记为正在切换
+    if (prevSession !== currentSessionId) {
+      isSwitchingSessionRef.current = true;
+      return;
     }
-  }, [messages]);
 
-  const handleScroll = () => {
+    // 正在加载消息时不滚动
+    if (isLoadingMessages) {
+      return;
+    }
+
+    // 切换对话完成且消息加载完成后，立即跳转到底部
+    if (isSwitchingSessionRef.current && allMessages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      isSwitchingSessionRef.current = false;
+      return;
+    }
+
+    // 同一对话内新增消息时平滑滚动
+    if (allMessages.length > prevCount && !isSwitchingSessionRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [allMessages.length, currentSessionId, isLoadingMessages, messagesEndRef]);
+
+  const handleScroll = useCallback(() => {
     if (!messagesContainerRef.current || isLoadingMessages || !hasMoreHistory || !currentSessionId) return;
     if (messagesContainerRef.current.scrollTop < 100) {
       fetchMessages(currentSessionId, messages.length);
     }
-  };
+  }, [isLoadingMessages, hasMoreHistory, currentSessionId, fetchMessages, messages.length]);
+
+  if (isLoadingMessages && messages.length === 0) {
+    return (
+      <div className="chat-messages">
+        <div className="history-loading">
+          <span className="loading-dots"><span></span><span></span><span></span></span>
+          {t('chat.historyLoading')}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="chat-messages" ref={messagesContainerRef} onScroll={handleScroll}>
-      {isLoadingMessages && messages.length === 0 && (
-        <div className="history-loading"><span className="loading-dots"><span></span><span></span><span></span></span> {t('chat.historyLoading')}</div>
+      {hasMoreHistory && isLoadingMessages && (
+        <div className="load-more-trigger">
+          <div className="loading-indicator">
+            <span className="loading-dots"><span></span><span></span><span></span></span>
+            {t('chat.loadingMessages')}
+          </div>
+        </div>
       )}
-      {messages.map((msg, idx) => (
+      {allMessages.map((msg, idx) => (
         <ChatMessage 
           key={msg.id || `${msg.role}-${idx}-${msg.content?.slice(0, 20)}`} 
           message={msg} 
         />
       ))}
-      {streamingMessage && <ChatMessage message={streamingMessage} />}
       <div ref={messagesEndRef} />
     </div>
   );

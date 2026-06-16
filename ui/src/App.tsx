@@ -1,9 +1,16 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, lazy, Suspense } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
-import { SettingsPage } from './components/SettingsPage';
 import { useAppStore } from './stores/appStore';
 import { API, fetchJSON } from './utils/api';
+
+const SettingsPage = lazy(() => import('./components/SettingsPage').then(m => ({ default: m.SettingsPage })));
+
+const LoadingFallback = () => (
+  <div className="loading-fallback">
+    <div className="loading-spinner"></div>
+  </div>
+);
 
 const App: React.FC = () => {
   const {
@@ -74,7 +81,9 @@ const App: React.FC = () => {
           <ChatView />
         </div>
         <div className={`page-container settings-page ${showSettingsPage ? 'active' : ''}`}>
-          <SettingsPage />
+          <Suspense fallback={<LoadingFallback />}>
+            <SettingsPage />
+          </Suspense>
         </div>
       </div>
     </div>
