@@ -17,71 +17,71 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2FmacOS%2FLinux-blue)]()
 
-**这是一个自进化AI Agent**
+**A Self-Evolving AI Agent**
 
-[English](README_EN.md) | 中文
+English | [中文](README_zh.md)
 
 </div>
 
-> **传统 Agent 重复犯错、陷入死循环、不会总结经验。所以我们选择让Agent无限进化**
+> **Traditional Agents repeat mistakes, get stuck in loops, and never learn from experience. That's why we chose to make Agents evolve infinitely.**
 
-基于微内核架构（EventBus + DI + BaseTool），支持任意 OpenAI 兼容 API
+Based on microkernel architecture (EventBus + DI + BaseTool), supporting any OpenAI-compatible API.
 
+Core design: Self-learning Agent driven by Control Loop, with adaptive decision optimization through Bayesian Bandit.
 
-核心设计：决策环（Control Loop）驱动的自学习 Agent，通过贝叶斯 Bandit 实现自适应决策优化。
+> Thanks to the [Strategy Gene](https://arxiv.org/abs/2604.15097) research team. This project adopts their compact experience representation method, enabling the Agent to automatically learn avoidance strategies from failures.
 
-> 感谢 [Strategy Gene](https://arxiv.org/abs/2604.15097) 研究团队，本项目参考并使用了其提出的紧凑经验表示方法，让 Agent 从失败中自动进化，持续优化决策策略。
+## What Can It Do
 
-## 能做什么
+Cellium Agent is a versatile AI assistant that helps you with various tasks:
 
-Cellium Agent 是一个通用的 AI 助手，可以帮助你完成各种任务：
+| Feature | Example |
+|---------|---------|
+| **File Operations** | Read, write, search files, manage directory structures |
+| **Code Development** | Write code, debug, refactor, explain code logic |
+| **Web Search** | Search the internet for real-time information, summarize web content |
+| **Data Analysis** | Process data files, generate reports and visualizations |
+| **Automation** | Create scheduled tasks, e.g., "check weather every morning at 8 AM" |
+| **Component Extension** | Create new components via natural language to extend Agent capabilities |
+| **Multi-Platform** | Support WebUI, QQ, Telegram and other platforms |
 
-| 功能 | 示例 |
-|------|------|
-| **文件操作** | 读取、写入、搜索文件，管理目录结构 |
-| **代码开发** | 编写代码、调试、重构、解释代码逻辑 |
-| **网页搜索** | 搜索互联网获取实时信息，总结网页内容 |
-| **数据分析** | 处理数据文件，生成报告和可视化 |
-| **自动化任务** | 创建定时任务，如"每天早上8点查询天气" |
-| **组件扩展** | 通过自然语言创建新组件，扩展 Agent 能力 |
-| **多平台接入** | 支持 WebUI、QQ、Telegram 等多平台对话 |
+**Usage Examples**:
+- "Read all files in the workspace directory and count the number of functions in each file"
+- "Search for the latest AI technology developments, create a word component, and summarize into a report for me"
+- "Create a scheduled task to check server status every hour, and notify me automatically when the status is abnormal"
+- "Help me write a Python script to process CSV files and automatically generate data visualization charts"
+- "Create a new component to monitor stock prices and notify me automatically when the price fluctuates by more than 5%"
 
-**使用示例**：
-- "帮我读取 workspace 目录下的所有文件，统计每个文件的函数数量"
-- "搜索最新的 AI 技术发展动态，并创建一个word组件，总结成一份报告发给我"
-- "创建一个定时任务，每小时检查一次服务器状态，当状态异常时自动通知我。"
-- "帮我写一个 Python 脚本处理 CSV 文件，自动生成数据可视化图表"
-- "创建一个新组件，用于监控股票价格，当价格波动超过 5% 时自动通知我"
+## Features
 
-## 特性
+| Feature | Description |
+|---------|-------------|
+| Runtime Self-Awareness | Real-time perception of running state (progress, stagnation, loops, saturation), dynamically adjusting decisions |
+| Control Loop Architecture | Closed-loop control of decision - execution - feedback - learning in each iteration |
+| Self-Learning System | Action selection based on Bayesian Bandit, continuously optimizing decision strategies |
+| Three-Layer Memory | Personality memory + Session memory + Long-term memory (FTS5 full-text retrieval + 96-dim hash vector hybrid recall) |
+| Heuristic Decision Engine | Rule-based feature extraction + Bandit for tie-breaking, balancing interpretability and learning ability |
+| Tool Usage Control | Dynamic prohibition/recommendation of tool switching, avoiding loops from repeated tool calls |
+| Sensitive Info Control | Auto-detect and redact sensitive info like private keys, tokens, passwords; supports write blocking |
+| Component Hot-Plug | Files in app/components/ automatically load and take effect within 3 seconds |
+| Component Sandbox Security | Three-layer protection: Process isolation + transparent path mapping + dangerous method interception |
+| Event-Driven Architecture | Publish-subscribe pattern based on EventBus, loose coupling between components |
+| Flash Mode | Skip memory injection to accelerate simple tasks |
+| Multi-Channel Access | Support external platforms like QQ (currently supports QQ Bot, Telegram, more coming), unified message routing, file transfer and injection through ChannelManager |
+| Scheduled Tasks | Support interval tasks, daily tasks, weekly tasks. Create tasks via natural language, Agent executes and pushes results to the corresponding platform when triggered |
+| Background Component Events | Components can run in background and actively trigger Agent execution, supporting real-time scenarios (e.g., crypto price monitoring, real-time data push, Agent auto-analysis) |
 
-| 特性 | 说明 |
-|------|------|
-| Agent 运行时自感知 | 实时感知运行状态（进度、停滞、循环、饱和度），动态调整决策 |
-| 决策环架构 | 每轮决策 - 执行 - 反馈 - 学习的闭环控制 |
-| 自学习系统 | 基于贝叶斯 Bandit 的 Action 选择，持续优化决策策略 |
-| 三层记忆系统 | 人格记忆 + 会话记忆 + 长期记忆（FTS5全文检索 + 96维哈希向量混合召回） |
-| 启发式决策引擎 | 规则提取特征 + Bandit 做 tie-break，兼顾可解释性与学习能力 |
-| 工具使用控制 | 动态禁止/推荐工具切换，避免重复调用同一工具陷入循环 |
-| 敏感信息控制 | 自动检测并脱敏私钥、Token、密码等敏感信息，支持写入拦截 |
-| 组件热插拔 | app/components/ 下文件 3 秒自动加载生效 |
-| 组件沙箱安全 | 三层防护：进程隔离 + 路径透明映射 + 危险方法拦截 |
-| 事件驱动架构 | 基于 EventBus 的发布-订阅模式，组件松耦合 |
-| Flash 模式 | 跳过记忆注入，加速简单任务 |
-| 多通道接入 | 支持 QQ 等外部平台（目前只支持qqbot,telegram,持续更新中），通过 ChannelManager 统一管理消息路由、文件传输与注入 |
-| 定时任务调度 | 支持间隔任务、每日任务、每周任务，通过自然语言创建任务，触发时自动调用 Agent 执行并推送结果到对应平台 |
-| 后台组件事件触发 | 组件可在后台运行并主动触发 Agent 执行任务，支持实时场景（如虚拟币价格监控、实时数据推送、Agent 自动总结分析） |
+## Quick Start
 
-## 快速开始
-
-### 一键安装启动 (带环境)
+### One-Line Install (with Environment)
 
 <div align="center">
-  <img src="tests/img/gif_1.gif" alt="快速运行演示" width="600">
-  <p><strong>无需复杂配置，下载解压即可运行</strong></p>
+  <img src="tests/img/gif_1.gif" alt="Quick Start Demo" width="600">
+  <p><strong>No complex configuration required, just download, extract and run</strong></p>
 </div>
 
-**Windows:**
+### Windows
+
 ```powershell
 powershell -Command "Invoke-WebRequest -Uri 'https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-Windows.zip' -OutFile 'Cellium-Agent-Windows.zip'; Expand-Archive -Path 'Cellium-Agent-Windows.zip' -DestinationPath '.' -Force; cd Cellium-Agent-Windows; .\CelliumAgent.exe"
 ```
@@ -101,60 +101,60 @@ curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/downlo
 curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-macOS.tar.gz && tar -xzf Cellium-Agent-macOS.tar.gz && cd Cellium-Agent-macOS && ./start-cellium.sh
 ```
 
-> 更多安装选项见 [INSTALL.md](INSTALL.md)
+> See [INSTALL.md](INSTALL.md) for more installation options
 
-### 从源码运行
+### Run from Source
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
-主要依赖：
-- FastAPI + Uvicorn（Web 框架）
-- PyYAML（配置解析）
-- Jieba（中文分词）
-- DrissionPage（用于网页搜索和操作浏览器）
-- openai（OpenAI API 客户端）
-- websockets（QQ Bot WebSocket 客户端）
-- httpx（HTTP 客户端，用于外部平台文件上传）
+Main dependencies:
+- FastAPI + Uvicorn (Web framework)
+- PyYAML (Configuration parsing)
+- Jieba (Chinese word segmentation)
+- DrissionPage (Web search and browser automation)
+- openai (OpenAI API client)
+- websockets (QQ Bot WebSocket client)
+- httpx (HTTP client for external platform file upload)
 
-### 配置模型
+### Configure Models
 
-编辑 `config/agent/llm.yaml` 文件，配置 API 密钥、服务地址和模型名称。
+Edit the `config/agent/llm.yaml` file to configure API keys, service addresses, and model names.
 
-### 启动服务
+### Start Service
 
 ```bash
 python main.py
 ```
 
-启动后访问 http://localhost:18000 打开聊天界面，访问 http://localhost:18000/docs 查看 API 文档。
-（默认端口 18000，如被占用会自动切换，请查看启动日志获取实际端口）
+After startup, visit http://localhost:18000 to open the chat interface, and http://localhost:18000/docs to view API documentation.
+(Default port 18000, will automatically switch if occupied, check startup logs for actual port)
 
-## 核心架构：决策环 + 自学习
+## Core Architecture: Control Loop + Self-Learning
 
-Cellium Agent 的核心是 **Control Loop（控制环）** 驱动的决策系统，结合 **贝叶斯 Bandit** 实现自学习优化。
+The core of Cellium Agent is a **Control Loop** driven decision-making system, combined with **Bayesian Bandit** for self-learning optimization.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           自学习层 (Learning)                            │
+│                           Learning Layer                                │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐  │
 │  │   Policy    │    │  Bayesian   │    │      PolicyBanditMemory     │  │
-│  │  Templates  │───▶│   Bandit    │◄───│  (Thompson Sampling 统计)    │  │
-│  │ (策略模板)   │    │ (策略选择)   │    │                             │  │
+│  │  Templates  │───▶│   Bandit    │◄───│  (Thompson Sampling Stats)  │  │
+│  │             │    │             │    │                             │  │
 │  └─────────────┘    └──────┬──────┘    └─────────────────────────────┘  │
 │                            │                                            │
 └────────────────────────────┼────────────────────────────────────────────┘
-                             │ 选择 Policy
+                             │ Select Policy
                              ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          决策环层 (Control Loop)                         │
+│                          Control Loop Layer                             │
 │                                                                         │
 │   ┌──────────┐     ┌──────────────┐     ┌──────────────┐               │
-│   │  Step    │────▶│   Feature    │────▶│    Rule      │               │
-│   │ (每轮开始)│     │  Extraction  │     │  Evaluation  │               │
-│   └──────────┘     │  (特征提取)   │     │  (规则评估)   │               │
+│   │   Step   │────▶│   Feature    │────▶│    Rule      │               │
+│   │ (Start)  │     │  Extraction  │     │  Evaluation  │               │
+│   └──────────┘     │              │     │              │               │
 │        │           └──────────────┘     └──────┬───────┘               │
 │        │                                        │                       │
 │        │           ┌────────────────────────────┘                       │
@@ -162,26 +162,26 @@ Cellium Agent 的核心是 **Control Loop（控制环）** 驱动的决策系统
 │        │     ┌──────────────┐     ┌──────────────┐                     │
 │        │     │   Action     │◄────│   Action     │                     │
 │        │     │  Candidates  │     │   Bandit     │                     │
-│        │     │  (候选动作)   │     │ (Tie-break)  │                     │
+│        │     │              │     │ (Tie-break)  │                     │
 │        │     └──────┬───────┘     └──────────────┘                     │
 │        │            │                                                  │
 │        │            ▼                                                  │
 │        │     ┌──────────────┐                                         │
 │        │     │   Control    │                                         │
 │        │     │   Decision   │                                         │
-│        │     │   (决策输出)  │                                         │
+│        │     │   (Output)   │                                         │
 │        │     └──────┬───────┘                                         │
 │        │            │                                                  │
 │        │     ┌──────┴───────┐     ┌──────────────┐                    │
 │        └────▶│   Execute    │────▶│  End Round   │                    │
-│              │   (执行)      │     │  (每轮结束)   │                    │
+│              │              │     │              │                    │
 │              └──────────────┘     └──────┬───────┘                    │
 │                                          │                             │
 │                                          ▼                             │
 │                              ┌──────────────────────┐                  │
 │                              │  Feedback Evaluator  │                  │
-│                              │    (反馈评估)         │                  │
-│                              │   - 分段式评估        │                  │
+│                              │  (Feedback Eval)     │                  │
+│                              │   - Segmented Eval   │                  │
 │                              │   - n-step return    │                  │
 │                              └──────────┬───────────┘                  │
 │                                         │                              │
@@ -189,509 +189,473 @@ Cellium Agent 的核心是 **Control Loop（控制环）** 驱动的决策系统
 │                              ▼                      ▼                  │
 │                    ┌─────────────────┐   ┌─────────────────┐          │
 │                    │   Bandit Update │   │   Stats Persist │          │
-│                    │   (更新统计)     │   │   (持久化)       │          │
+│                    │   (Update Stats)│   │   (Persistence) │          │
 │                    └─────────────────┘   └─────────────────┘          │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Control Loop Workflow
+![Control Loop](tests/img/1.png)
+Each loop contains 5 stages:
 
+1. **Feature Extraction**
+   - Heuristic engine extracts current state features
+   - Includes: stagnation iterations, progress trends, repetition scores, context saturation, etc.
 
-### 决策环（Control Loop）工作流程
-![决策环](tests/img/1.png)
-每轮循环包含 5 个阶段：
+2. **Rule Evaluation**
+   - Hard rules provide action candidate sets
+   - Example: detect loops and candidate [redirect, compress]
 
-1. **特征提取（Feature Extraction）**
-   - 启发式引擎提取当前状态特征
-   - 包括：停滞迭代数、进展趋势、重复分数、上下文饱和度等
+3. **Bandit Tie-break (Action Selection)**
+   - When candidate actions > 1, Bandit intervenes
+   - Uses Thompson Sampling + Heuristic Bias to select optimal action
 
-2. **规则评估（Rule Evaluation）**
-   - 硬规则给出 action 候选集合
-   - 例如：检测到循环时候选 [redirect, compress]
+4. **Execute & Feedback**
+   - Execute selected action (continue/retry/redirect/compress/terminate)
+   - FeedbackEvaluator performs segmented evaluation of this round's performance
 
-3. **Bandit Tie-break（Action 选择）**
-   - 当候选 action 多于 1 个时，Bandit 介入
-   - 使用 Thompson Sampling + Heuristic Bias 选择最优 action
+5. **Learning & Update**
+   - Use n-step return to accumulate rewards
+   - Update Bandit's Beta distribution parameters
+   - Regularly decay old data to prevent overfitting
 
-4. **执行与反馈（Execute & Feedback）**
-   - 执行选中的 action（continue/retry/redirect/compress/terminate）
-   - FeedbackEvaluator 分段式评估本轮表现
+### PEOP Loop (Plan-Execute-Observe-RePlan Loop)
 
-5. **学习与更新（Learning & Update）**
-   - 使用 n-step return 累积 reward
-   - 更新 Bandit 的 Beta 分布参数
-   - 定期衰减旧数据防止过拟合
-
-### PEOP 循环（Plan-Execute-Observe-RePlan 循环）
-
-PEOP 循环是决策环的扩展模块，实现**自适应计划-执行循环**。该模块根据任务复杂度动态调整策略：简单任务直接响应，复杂任务自动启用多步规划；执行过程中持续验证结果，发现偏差时局部重规划，通过显式状态管理实现高效、可靠的任务分解与执行：
+The PEOP Loop is an extension module of the Control Loop, implementing an **adaptive plan-execute cycle**. This module dynamically adjusts strategy based on task complexity: simple tasks receive direct responses, complex tasks automatically enable multi-step planning; during execution, results are continuously validated, and local replanning is triggered when deviations are detected, achieving efficient and reliable task decomposition through explicit state management:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 计划执行引擎状态机                            │
-│                                                             │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐                 │
-│  │ OBSERVE │───▶│  PLAN   │───▶│ EXECUTE │◄─────────────┐  │
-│  │  观察   │    │  规划   │    │  执行   │   验证成功    │  │
-│  └─────────┘    └─────────┘    └────┬────┘   继续下一步  │  │
-│       ▲                             │                     │  │
-│       │                      验证失败│                     │  │
-│       │                             ▼                     │  │
-│       │                        ┌─────────┐   重规划成功   │  │
-│       │                        │ REPLAN  │───────────────┘  │
-│       │                        │ 重规划  │                  │  │
-│       │                        └────┬────┘                  │  │
-│       │                             │                     │  │
-│       └─────────────────────────────┘   重规划次数超限      │  │
-│                                         或任务完成          │  │
-│                                         ▼                  │  │
-│                                       ┌─────┐              │  │
-│                                       │DONE │              │  │
-│                                       │完成 │              │  │
-│                                       └─────┘              │  │
+│              Plan-Execute Engine State Machine               │
+│                                                              │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐                  │
+│  │ OBSERVE │───▶│  PLAN   │───▶│ EXECUTE │◄──────────────┐  │
+│  │ Observe │    │  Plan   │    │ Execute │  Validation    │  │
+│  └─────────┘    └─────────┘    └────┬────┘  Success → Next │  │
+│       ▲                             │                      │  │
+│       │                   Validation│                      │  │
+│       │                      Failed │                      │  │
+│       │                             ▼                      │  │
+│       │                        ┌─────────┐  Replan Success │  │
+│       │                        │ REPLAN  │─────────────────┘  │
+│       │                        │ Replan  │                   │  │
+│       │                        └────┬────┘                   │  │
+│       │                             │                      │  │
+│       └─────────────────────────────┘  Max Replan Reached   │  │
+│                                        or Task Complete     │  │
+│                                        ▼                    │  │
+│                                      ┌─────┐                │  │
+│                                      │DONE │                │  │
+│                                      │Done │                │  │
+│                                      └─────┘                │  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**核心机制**：
+**Core Mechanisms**:
 
-| 机制 | 说明 |
-|------|------|
-| **批量规划** | 一次生成多步执行计划（1-5步）支持并行执行工具调用（如果无依赖关系），减少 LLM 调用次数 |
-| **状态驱动** | 5阶段显式状态机（OBSERVE/PLAN/EXECUTE/REPLAN/DONE） |
-| **执行内验证** | 每步执行后自动验证结果 |
-| **局部重规划** | 验证失败时保留成功步骤，仅重新规划失败及后续步骤 |
+| Mechanism | Description |
+|-----------|-------------|
+| **Batch Planning** | Generate multi-step execution plan at once (1-5 steps), reducing LLM call frequency |
+| **State-Driven** | 5-phase explicit state machine (OBSERVE/PLAN/EXECUTE/REPLAN/DONE) |
+| **In-Execution Validation** | Automatic result validation after each step (semantic matching + Jaccard similarity + purpose-driven) |
+| **Local Replanning** | Preserve successful steps on validation failure, only replan failed and subsequent steps |
 
-**工作流程**：
+**Workflow**:
 
-1. **观察（OBSERVE）**：分析用户输入，理解任务目标与上下文
-2. **规划（PLAN）**：LLM 生成结构化计划，每步包含：工具名、参数、执行目的、预期结果
-3. **执行（EXECUTE）**：按顺序执行计划步骤，每步执行后自动验证结果
-   - 验证成功 → 继续执行下一步
-   - 验证失败 → 进入 REPLAN 阶段
-4. **重规划（REPLAN）**：保留已成功的步骤，仅对失败及后续步骤重新生成计划
-5. **完成（DONE）**：所有步骤执行成功，或重规划次数超限
+1. **OBSERVE**: Analyze user input, understand task goals and context
+2. **PLAN**: LLM generates structured plan, each step contains: tool name, parameters, execution purpose, expected result
+3. **EXECUTE**: Execute plan steps sequentially, automatic validation after each step
+   - Validation Success → Continue to next step
+   - Validation Failed → Enter REPLAN phase
+4. **REPLAN**: Preserve successful steps, only regenerate plan for failed and subsequent steps
+5. **DONE**: All steps executed successfully, or max replanning reached
 
-**设计特点**：
-- **高效**：多步计划一次生成，执行阶段零 LLM 调用
-- **稳定**：局部重规划避免全盘推翻，保持上下文连续性
-- **可观测**：5阶段状态机提供清晰的执行轨迹，便于调试与监控
-- **协同**：状态信息实时同步给 Control Loop，重规划触发 redirect 决策
+**Design Characteristics**:
+- **Efficient**: Multi-step plan generated once, zero LLM calls during execution phase
+- **Reliable**: Expectation validation uses semantic matching, avoiding misjudgment (e.g., "function X" and "get_X" considered matching)
+- **Stable**: Local replanning avoids total overhaul, maintaining context continuity
+- **Observable**: 5-phase state machine provides clear execution trace for debugging and monitoring
+- **Collaborative**: State information synchronized to Control Loop in real-time, replanning triggers redirect decision
 
-**配置参数**：
-- `max_plan_steps=5`：单次规划最多 5 个步骤
-- `max_replans=3`：最多允许 3 次重规划
+**Configuration**:
+- `max_plan_steps=5`: Maximum 5 steps per plan
+- `max_replans=3`: Maximum 3 replanning attempts
 
-### Action 类型与策略
+### Action Types & Strategies
 
-代码定义：`ACTION_TYPES = ["continue", "retry", "redirect", "compress", "terminate"]`
+Code definition: `ACTION_TYPES = ["continue", "retry", "redirect", "compress", "terminate"]`
 
-| Action | 说明 | Heuristic Bias 条件 |
-|--------|------|---------------------|
-| continue | 继续当前方向 | 进展分数 > 0.5 或停滞迭代为 0 |
-| retry | 保持方向但修正策略 | 轻微停滞（1 <= stuck < threshold）或进展趋势在 0~0.3 |
-| redirect | 换方向/换工具 | 重复分数 > 0.5 或停滞 >= stuck_threshold |
-| compress | 压缩上下文 | 上下文饱和度 > 0.6 或停滞 >= stuck_threshold // 2 |
-| terminate | 终止会话 | 硬规则触发：输出循环且 exact_repetition_count >= 5 |
+| Action | Description | Heuristic Bias Condition |
+|--------|-------------|--------------------------|
+| continue | Continue current direction | Progress score > 0.5 or stagnation iterations = 0 |
+| retry | Maintain direction but correct strategy | Mild stagnation (1 <= stuck < threshold) or progress trend 0~0.3 |
+| redirect | Change direction/tool | Repetition score > 0.5 or stagnation >= stuck_threshold |
+| compress | Compress context | Context saturation > 0.6 or stagnation >= stuck_threshold // 2 |
+| terminate | Terminate session | Hard rule triggered: output loop and exact_repetition_count >= 5 |
 
-
-
-### 自学习机制
-![自学习机制](tests/img/2.png)
-**Policy - Bandit - Action 三层架构**：
+### Self-Learning Mechanism
+![Self-Learning Mechanism](tests/img/2.png)
+**Policy - Bandit - Action Three-Layer Architecture**:
 
 ```
 ┌─────────────────────────────────────────┐
 │           Policy Templates              │
 │  ┌─────────┬───────────┬─────────────┐  │
 │  │ default │ efficient │ aggressive  │  │
-│  │ 平衡策略 │  高效策略  │   激进策略   │  │
 │  │(stuck=3)│ (stuck=2) │  (stuck=5)  │  │
 │  └────┬────┴─────┬─────┴──────┬──────┘  │
 │       │          │            │         │
 │       ▼          ▼            ▼         │
 │  ┌─────────────────────────────────┐    │
 │  │      Bayesian Bandit            │    │
-│  │  Thompson Sampling 选择最优 Policy │   │
-│  │  - 从 Beta 分布采样              │    │
-│  │  - 选择期望收益最高的 Policy      │    │
+│  │  Thompson Sampling selects      │    │
+│  │  optimal Policy                 │    │
+│  │  - Sample from Beta dist        │    │
+│  │  - Select highest expected      │    │
+│  │    return Policy                │    │
 │  └─────────────┬───────────────────┘    │
 │                │                        │
 │                ▼                        │
 │  ┌─────────────────────────────────┐    │
 │  │        Action Bandit            │    │
-│  │  在候选 action 内做 tie-break    │    │
-│  │  - Heuristic 提供 bias          │    │
-│  │  - 动态调整阈值参数              │    │
+│  │  Tie-break within candidates    │    │
+│  │  - Heuristic provides bias      │    │
+│  │  - Dynamic threshold adjustment │    │
 │  └─────────────────────────────────┘    │
 └─────────────────────────────────────────┘
 ```
 
-**学习过程**：
+**Learning Process**:
 
-1. **Policy 选择**：会话开始时，Bayesian Bandit 从多个 Policy（default/efficient/aggressive）中选择当前最优策略
-2. **阈值注入**：选中的 Policy 参数（如 stuck_iterations=3）注入 HeuristicEngine 和 ActionBandit
-3. **Action 学习**：每轮结束后，根据 FeedbackEvaluator 的评分更新 Action 的 Beta 分布
-4. **n-step return**：累积最近 n 轮的 reward，支持延迟反馈和序列优化
-5. **数据衰减**：每 50 个会话衰减一次旧数据（衰减因子 0.99），防止过拟合
+1. **Policy Selection**: At session start, Bayesian Bandit selects current optimal policy from multiple Policies (default/efficient/aggressive)
+2. **Threshold Injection**: Selected Policy parameters (e.g., stuck_iterations=3) inject into HeuristicEngine and ActionBandit
+3. **Action Learning**: After each round, update Action's Beta distribution based on FeedbackEvaluator's score
+4. **n-step return**: Accumulate rewards from recent n rounds, supporting delayed feedback and sequence optimization
+5. **Data Decay**: Decay old data every 50 sessions (decay factor 0.99) to prevent overfitting
 
-### 反馈评估（Feedback Evaluation）
+### Feedback Evaluation
 
-采用**分段式设计**，先区分成功/失败，再优化细节：
+Uses **segmented design**, first distinguishing success/failure, then optimizing details:
 
-- **成功分支**：基础分 1.0，扣除效率和成本
-  - 迭代惩罚：迭代越少分越高
-  - Token 惩罚：超出阈值扣分
-  - 顺畅度奖励：无停滞加分
+- **Success Branch**: Base score 1.0, deduct efficiency and cost
+  - Iteration penalty: fewer iterations = higher score
+  - Token penalty: deduct points if exceeding threshold
+  - Smoothness reward: bonus for no stagnation
 
-- **失败分支**：基础分 0.0，根据停滞程度扣分
-  - 停滞迭代越多扣分越多
-  - 错误类型影响扣分幅度
+- **Failure Branch**: Base score 0.0, deduct points based on stagnation degree
+  - More stagnation iterations = more points deducted
+  - Error type affects deduction magnitude
 
-## 微内核架构
+## Microkernel Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        EventBus                              │
-│              (发布-订阅，组件松耦合通信)                      │
+│              (Publish-Subscribe, Loose Coupling)            │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
 │  │  LLM     │  │  Memory  │  │  Tools   │  │ Heuristics│  │
 │  │  Engine  │  │  System  │  │          │  │  Engine   │  │
 │  └──────────┘  └──────────┘  └──────────┘  └───────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                     AgentLoop（主循环）                      │
+│                     AgentLoop (Main Loop)                  │
 │  ┌────────────┐  ┌────────────┐  ┌────────────────────┐    │
-│  │   Control   │  │   Tool    │  │   Prompt           │    │
-│  │   Loop      │  │  Executor │  │   Context Builder  │    │
+│  │   Control  │  │   Tool     │  │   Prompt           │    │
+│  │   Loop     │  │  Executor  │  │   Context Builder  │    │
 │  └────────────┘  └────────────┘  └────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 核心组件
+### Core Components
 
-| 组件 | 说明 |
-|------|------|
-| AgentLoop | 事件驱动的核心主循环，协调 LLM、工具、记忆 |
-| LLM Engine | 统一 LLM 接口，内置 40+ 模型注册表，自动检测上下文窗口、工具支持、最大输出 |
-| ThreeLayerMemory | 三层记忆：人格 + 会话 + FTS5 长期检索 |
-| HeuristicEngine | 启发式规则引擎，作为特征提取器为 Bandit 提供输入 |
-| ControlLoop | 控制环核心，每轮决策 - 执行 - 反馈 - 学习 |
-| ActionBandit | Action 选择器，Thompson Sampling + Heuristic Bias |
-| LearningIntegration | 学习模块集成，Policy 选择和参数注入 |
-| EventBus | 事件总线，组件间松耦合通信 |
-| BaseTool | 工具基类，声明式命令注册模式 |
+| Component | Description |
+|-----------|-------------|
+| AgentLoop | Event-driven core main loop, coordinating LLM, tools, memory |
+| LLM Engine | Unified LLM interface, built-in 40+ model registry, auto-detecting context window, tool support, max output |
+| ThreeLayerMemory | Three-layer memory: Personality + Session + FTS5 long-term retrieval |
+| HeuristicEngine | Heuristic rule engine, serves as feature extractor for Bandit |
+| ControlLoop | Control loop core, decision - execution - feedback - learning each round |
+| ActionBandit | Action selector, Thompson Sampling + Heuristic Bias |
+| LearningIntegration | Learning module integration, Policy selection and parameter injection |
+| EventBus | Event bus, loose coupling communication between components |
+| BaseTool | Tool base class, declarative command registration pattern |
 
-### 组件沙箱安全机制
+### Component Sandbox Security
 
-Agent 编写的组件代码在独立的沙箱环境中运行，采用三层安全防护：
+Agent-written component code runs in an isolated sandbox environment with three-layer security protection:
 
-| 层级 | 机制 | 作用 |
-|------|------|------|
-| **进程隔离** | 组件在独立子进程运行 | 崩溃不影响主程序，通过 Queue 通信 |
-| **路径透明映射** | 文件操作路径映射到 sandbox_root | 防路径穿越，保护真实系统文件 |
-| **危险方法拦截** | 运行时拦截 os.system/subprocess 等 | 禁止执行系统命令 |
+| Layer | Mechanism | Function |
+|-------|-----------|----------|
+| **Process Isolation** | Components run in separate subprocess | Crash won't affect main process, communicate via Queue |
+| **Transparent Path Mapping** | File operation paths mapped to sandbox_root | Prevent path traversal, protect real system files |
+| **Dangerous Method Interception** | Runtime interception of os.system/subprocess | Block system command execution |
 
-组件可以正常使用 `open()`、`os.listdir()` 等文件操作，但路径会被透明映射到项目目录下的 `sandbox_root/` 文件夹中。同时 `os.system()`、`subprocess.run()` 等危险方法会被拦截。
+Component code can use `open()`, `os.listdir()` normally, but paths are transparently mapped to the `sandbox_root/` folder in the project directory. Meanwhile, dangerous methods like `os.system()`, `subprocess.run()` are intercepted at runtime.
 
-### Agent 运行时自状态感知
+### Agent Runtime Self-State Awareness
 
-Agent 通过 FeatureExtractor 实时感知运行状态，动态调整决策策略：
+Agent perceives running state in real-time through FeatureExtractor, dynamically adjusting decision strategies:
 
-| 状态维度 | 特征 | 说明 |
-|----------|------|------|
-| **进度状态** | progress_score | 任务完成进度估计 (0-1) |
-| | stuck_iterations | 连续无进展迭代次数 |
-| | is_making_progress | 是否在取得进展 |
-| **趋势状态** | progress_trend | EMA 平滑后的进展趋势 (-1 到 1) |
-| | convergence_rate | 收敛速度 |
-| | is_plateau | 是否进入平台期 |
-| **工具状态** | unique_tools_used | 使用过的不同工具数 |
-| | tool_diversity_score | 工具多样性分数 |
-| | repetition_score | 工具重复调用分数 |
-| | pattern_detected | 检测到的循环模式 |
-| **上下文状态** | context_saturation | 上下文饱和度 (0-1) |
-| | context_saturation_level | 饱和等级: idle/normal/warn/redirect/stop |
-| **结果质量** | error_rate | 工具调用错误率 |
-| | empty_result_rate | 空结果率 |
-| | result_quality_score | 结果质量综合分数 |
-| **输出状态** | exact_repetition_count | LLM 输出完全重复次数 |
-| | is_output_loop | 是否陷入输出循环 |
+| State Dimension | Feature | Description |
+|-----------------|---------|-------------|
+| **Progress** | progress_score | Task completion progress estimate (0-1) |
+| | stuck_iterations | Consecutive non-progress iterations |
+| | is_making_progress | Whether progress is being made |
+| **Trend** | progress_trend | EMA-smoothed progress trend (-1 to 1) |
+| | convergence_rate | Convergence speed |
+| | is_plateau | Whether in plateau phase |
+| **Tool** | unique_tools_used | Number of different tools used |
+| | tool_diversity_score | Tool diversity score |
+| | repetition_score | Tool repetition call score |
+| | pattern_detected | Detected loop pattern |
+| **Context** | context_saturation | Context saturation (0-1) |
+| | context_saturation_level | Saturation level: idle/normal/warn/redirect/stop |
+| **Quality** | error_rate | Tool call error rate |
+| | empty_result_rate | Empty result rate |
+| | result_quality_score | Comprehensive result quality score |
+| **Output** | exact_repetition_count | LLM output exact repetition count |
+| | is_output_loop | Whether in output loop |
 
-**自适应调整机制**：
+**Adaptive Adjustment Mechanisms**:
 
-1. **进展停滞检测**：stuck_iterations > threshold 时触发 redirect/retry
-2. **上下文压力感知**：saturation > 0.7 时触发 compress，> 0.95 时触发 stop
-3. **工具循环检测**：repetition_score > 0.5 时触发 redirect 换工具
-4. **输出循环检测**：exact_repetition_count >= 5 时强制 terminate
-5. **动态 HardConstraint**：根据状态实时生成控制指令（如 REDIRECT/COMPRESS/RETRY）
+1. **Stagnation Detection**: Trigger redirect/retry when stuck_iterations > threshold
+2. **Context Pressure Awareness**: Trigger compress when saturation > 0.7, stop when > 0.95
+3. **Tool Loop Detection**: Trigger redirect to change tool when repetition_score > 0.5
+4. **Output Loop Detection**: Force terminate when exact_repetition_count >= 5
+5. **Dynamic HardConstraint**: Real-time generation of control commands (e.g., REDIRECT/COMPRESS/RETRY) based on state
 
+### Three-Layer Memory
+![Memory System](tests/img/3.png)
+| Layer | Implementation | Description |
+|-------|----------------|-------------|
+| Personality | personality.md | Static personality setting file |
+| Session | MemoryManager | Short-term context, automatically maintains bounded history |
+| Long-term | FTS5 + Repository | Vector retrieval + hybrid recall, supports knowledge extraction and archiving |
 
+**Lightweight Vector Model (96-dim)**:
 
-### 三层记忆
-![记忆系统](tests/img/3.png)
-| 层级 | 实现 | 说明 |
-|------|------|------|
-| 人格记忆 | personality.md | 静态人格设定文件 |
-| 会话记忆 | MemoryManager | 短期上下文，自动维护有界历史 |
-| 长期记忆 | FTS5 + Repository | 向量检索 + 混合召回，支持知识提取和归档 |
+Long-term memory uses a lightweight hybrid memory retrieval system without external dependencies, achieving locally efficient semantic approximate recall through feature hash vector and full-text retrieval fusion:
 
-**轻量级向量模型（96维）**：
+- **Dimensions**: 96 dim
+- **Generation**: Vector encoding based on SHA1 hashing
+  - English: character 3-gram
+  - Chinese: word-level bigram + full pinyin hash + pinyin bigram
+  - Tokenization (Jieba) + keyword extraction
+  - Each token mapped to 96-dim vector bucket through SHA1 hash
+  - Position weighting (first 8 tokens get extra +0.25 weight)
+- **Similarity**: Cosine similarity
+- **Hybrid Recall**: FTS5 full-text retrieval + vector similarity fusion sorting
+- **Chinese Enhancement**: Pinyin hash for Chinese homophone, pinyin initial matching
+- **Dependencies**: jieba (Chinese tokenization), optional pypinyin (pinyin enhancement)
 
-长期记忆使用无需外部依赖的轻量级混合记忆检索系统，通过特征哈希向量与全文检索融合，实现本地高效的语义近似召回：
+**Structured Schema & Category System**:
 
-- **维度**：96 维
-- **生成方式**：基于 SHA1 哈希的向量编码
-  - 英文：字符 3-gram
-  - 中文：词级 bigram + 完整拼音哈希 + 拼音 bigram
-  - 分词（Jieba）+ 关键词提取
-  - 每个 token 通过 SHA1 哈希映射到 96 维向量桶
-  - 位置加权（前 8 个 token 额外 +0.25 权重）
-- **相似度计算**：余弦相似度（cosine similarity）
-- **混合召回**：FTS5 全文检索 + 向量相似度融合排序
-- **中文增强**：拼音哈希实现中文谐音、拼音首字母匹配
-- **依赖**：jieba（中文分词），可选 pypinyin（拼音增强）
+Long-term memory uses a hierarchical classification design. Schema types determine data structure, while Categories determine content types:
 
-**结构化 Schema 与分类系统**：
+**Schema Types (4 types)**:
 
-长期记忆采用分层分类设计，Schema 类型决定数据结构，Category 分类决定内容类型：
+| Schema Type | Purpose | Included Categories |
+|-------------|---------|---------------------|
+| `general` | General memory, session notes | `general`, `user_info`, `command`, `project` |
+| `profile` | User profile | `preference` |
+| `project` | Project-related | `project` |
+| `issue` | Troubleshooting | `troubleshooting`, `code` |
 
-**Schema 类型（4种）**：
+**Category Classification (7 types)**:
 
-| Schema 类型 | 用途 | 包含的 Category |
-|-------------|------|-----------------|
-| `general` | 通用记忆、会话笔记 | `general`, `user_info`, `command`, `project` |
-| `profile` | 用户画像 | `preference` |
-| `project` | 项目相关 | `project` |
-| `issue` | 问题排查 | `troubleshooting`, `code` |
+| Category | Description | Source |
+|----------|-------------|--------|
+| `general` | Daily conversations, Q&A | General memory |
+| `user_info` | User preferences, session goals | Session notes (goal/goal_history) |
+| `command` | Executed operation commands | Session notes (completed) |
+| `project` | Project config, key findings | General memory / Session notes (finding) |
+| `preference` | User profile information | General memory |
+| `troubleshooting` | Error records, solutions | General memory / Session notes (error) |
+| `code` | Code-related records | General memory / Session notes |
 
-**Category 分类（8种）**：
+**Session Compression Auto-Extraction**:
 
-| Category | 说明 | 来源 |
-|----------|------|------|
-| `general` | 日常对话、知识问答 | 通用记忆 |
-| `user_info` | 用户偏好、会话目标 | 会话笔记 (goal/goal_history) |
-| `command` | 已执行的操作命令 | 会话笔记 (completed) |
-| `project` | 项目配置、关键发现 | 通用记忆 / 会话笔记 (finding) |
-| `preference` | 用户画像信息 | 通用记忆 |
-| `troubleshooting` | 故障记录、解决方案 | 通用记忆 / 会话笔记 (error) |
-| `code` | 代码相关记录 | 通用记忆 / 会话笔记 |
-
-**会话压缩自动提取**：
-
-会话压缩时自动提取以下类型的笔记，并映射到相应 Category 存入长期记忆：
+During session compression, the following note types are automatically extracted and mapped to corresponding Categories for long-term memory storage:
 - `goal` / `goal_history` → `user_info`
 - `completed` → `command` / `code`
 - `finding` → `project` / `code` / `command`
 - `error` → `troubleshooting`
 - `pending` → `general`
 
-**敏感信息控制**：
+**Sensitive Information Control**:
 
-记忆系统内置敏感信息检测与保护机制：
+The memory system has built-in sensitive information detection and protection mechanisms:
 
-- **自动检测**：识别私钥、AWS 密钥、GitHub Token、API Key 等敏感内容
-- **脱敏处理**：自动将敏感值替换为 `[REDACTED]`
-- **写入拦截**：高风险敏感信息（如私钥）默认禁止写入记忆
-- **分类标记**：敏感记忆会被标记，支持检索时过滤排除
+- **Auto-Detection**: Identifies sensitive content like private keys, AWS keys, GitHub tokens, API keys
+- **Redaction**: Automatically replaces sensitive values with `[REDACTED]`
+- **Write Blocking**: High-risk sensitive information (e.g., private keys) is blocked from memory by default
+- **Classification Marking**: Sensitive memories are tagged and can be filtered out during retrieval
 
-### 启发式决策规则
+### Heuristic Decision Rules
 
-| 规则 | 说明 |
-|------|------|
-| MaxIterationRule | 迭代次数上限终止 |
-| TokenBudgetRule | Token 预算耗尽终止 |
-| EmptyResultChainRule | 空结果链检测 |
-| NoProgressRule | 无进展检测（EMA 平滑） |
-| SameToolRepetitionRule | 同工具+参数重复调用检测 |
-| PatternLoopRule | 模式循环检测 |
-| ParameterSimilarityRule | 参数相似度检测 |
+| Rule | Description |
+|------|-------------|
+| MaxIterationRule | Iteration count limit termination |
+| TokenBudgetRule | Token budget exhaustion termination |
+| EmptyResultChainRule | Empty result chain detection |
+| NoProgressRule | No progress detection (EMA smoothing) |
+| SameToolRepetitionRule | Same tool + parameter repeated call detection |
+| PatternLoopRule | Pattern loop detection |
+| ParameterSimilarityRule | Parameter similarity detection |
 
-### 组件系统
+### Component System
 
-| 功能 | 说明 |
-|------|------|
-| 自动发现 | 扫描 components/ 目录，自动发现继承 BaseCell 的组件类 |
-| 热插拔 | ComponentWatcher 后台监控，3 秒间隔扫描，动态加载/卸载 |
-| 工具包装 | ComponentToolRegistry 将 BaseCell 包装为 BaseTool，注入 AgentLoop |
-| 信任白名单 | 组件需用户 /trust 确认，持久化到 trusted_components.json |
-| 配置自动维护 | 发现新组件自动追加到 settings.yaml 的 enabled_components |
+| Feature | Description |
+|---------|-------------|
+| Auto Discovery | Scan components/ directory, auto-discover component classes inheriting BaseCell |
+| Hot-Plug | ComponentWatcher background monitoring, 3-second interval scanning, dynamic load/unload |
+| Tool Wrapping | ComponentToolRegistry wraps BaseCell as BaseTool, injects into AgentLoop |
+| Trust Whitelist | Components require user /trust confirmation, persisted to trusted_components.json |
+| Config Auto-Maintenance | Auto-append discovered new components to settings.yaml enabled_components |
 
-**保留工具名**（不可被组件覆盖）：
+**Reserved Tool Names** (cannot be overridden by components):
 - `shell` — ShellTool
 - `memory` — MemoryTool
-- `file` — FileTool
 
-### 原生组件自扩展
+### QQBot File Transfer Component (qq_files)
 
-Cellium Agent 支持**运行时自扩展**能力，Agent 可在运行时动态创建并注入新组件，无需重启服务，实现Agent自我改装进化。
+Supports file transfer between QQBot and local:
 
-**核心原理**：
+| Command | Function | Example |
+|---------|----------|---------|
+| `download` | Download file from QQ | `{"url": "...", "filename": "doc.pdf"}` |
+| `send_file` | Send file to QQ | `{"target_id": "...", "file_path": "...", "is_group": false}` |
+| `send_image` | Send image to QQ | `{"target_id": "...", "image_path": "..."}` |
+| `list_downloads` | List downloaded files | `{}` |
 
-ComponentWatcher 后台进程每 3 秒扫描 `components/` 目录，发现新文件或文件变更后，自动触发加载流程：扫描发现 → 实例化组件类 → 审计合规性 → 写入配置文件 → 注册到工具注册表 → AgentLoop 动态读取。整个过程全自动，新工具立即可用。
+**File Save Path**: `workspace/downloads/qq/`
 
-**组件规范**：
+### Native Browser Operation Component (web_fetch)
+![Operation Demo](tests/img/qq.png)
+Headless browser component based on DrissionPage, supports web automation:
 
-组件必须继承 BaseCell，定义唯一的 cell_name 标识，命令方法以 `_cmd_` 前缀命名并附带 docstring 描述。文件放入 `components/` 目录即自动生效。
+| Command | Function | Example |
+|---------|----------|---------|
+| `navigate` | Visit specified URL | `{"url": "https://example.com"}` |
+| `get_screenshot` | Screenshot (supports element-level) | `{"full_page": false, "selector": "#content"}` |
+| `find_qrcode` | Find page QR code | `{}` |
+| `js_action` | Page action (click/input/scroll_to) | `{"selector": "button", "action": "click"}` |
+| `find_button` | Find button element | `{"value": "Login"}` |
+| `get_page_info` | Get page info | `{}` |
+| `scroll` | Scroll page | `{"direction": "down", "amount": 500}` |
+| `save_cookies` / `load_cookies` | Cookie persistence | `{"path": "cookies.json"}` |
 
-**组件生成器**：
+**Use Cases**:
+- Web content crawling and analysis
+- Automated login flow (supports QR code recognition)
+- Web screenshots and visual verification
+- Form auto-fill and submission
 
-系统内置 ComponentBuilder 组件，Agent 可通过 `component.generate` 命令快速创建符合规范的组件，自动生成完整的类结构、命令方法和帮助文档。
+**Screenshot Save Path**: `workspace/web_fetch_screenshots/domain_timestamp.png`
 
-**管理 API**：
+**Core Mechanisms**:
+- `_cell_registry`: cell_name → ICell instance
+- `get_all_tools()`: AgentLoop dynamically reads component tools at runtime
+- `get_tool_definitions()`: Returns LLM-format tool definitions
 
-系统提供完整的组件管理接口，支持扫描发现、热重载、手动加载、卸载等操作，Agent 可通过 API 自主管理自身能力。
+**Tool Operation Visibility**:
+- All tool calls generate user-friendly operation descriptions
+- Supports `_intent` parameter for custom description (highest priority)
+- Example: `{"command": "read", "path": "test.py", "_intent": "Reading configuration file"}`
 
-**目录约定**：
-```
-components/
-├── __init__.py              # 包标记
-├── _example_component.py    # 组件模板参考
-├── component_builder.py     # 组件生成器（系统内置）
-├── skill_installer.py       # Skill 安装器（支持从压缩包安装）
-├── skill_manager.py         # Skill 管理器（列表、搜索、详情、卸载）
-└── my_tool.py               # Agent 创建的组件（系统级）
-```
+### Skill Management System (skill_installer + skill_manager)
 
-### QQBot 文件传输组件 (qq_files)
+Complete Skill package management solution, supporting installation from archives, list display, search, detail view, and uninstallation.
 
-支持在 QQBot 和本地之间传输文件：
+**Installation Methods**:
+- Supports `.zip`, `.tar.gz`, `.tgz`, `.tar` archive formats
+- Archive must contain `SKILL.md` file
+- Auto-parses YAML Frontmatter metadata from `SKILL.md`
 
-| 命令 | 功能 | 示例 |
-|------|------|------|
-| `download` | 从 QQ 下载文件 | `{"url": "...", "filename": "doc.pdf"}` |
-| `send_file` | 发送文件到 QQ | `{"target_id": "...", "file_path": "...", "is_group": false}` |
-| `send_image` | 发送图片到 QQ | `{"target_id": "...", "image_path": "..."}` |
-| `list_downloads` | 列出下载的文件 | `{}` |
+**Management Functions**:
 
-**文件保存路径**：`workspace/downloads/qq/`
+| Component | Function | Command/Interface |
+|-----------|----------|-------------------|
+| `skill_installer` | Install Skill | `install_from_archive(path)` |
+| `skill_installer` | Refresh Index | `refresh_index()` |
+| `skill_manager` | List all Skills | `list(show_details=True)` |
+| `skill_manager` | Search Skills | `search(query)` |
+| `skill_manager` | Get Details | `get_info(name)` |
+| `skill_manager` | Uninstall Skill | `uninstall(name)` |
 
-### 原生览器操作组件 (web_fetch)
-![操作演示](tests/img/qq.png)
-基于 DrissionPage 的无头浏览器组件，支持网页自动化操作：
-
-| 命令 | 功能 | 示例 |
-|------|------|------|
-| `navigate` | 访问指定 URL | `{"url": "https://example.com"}` |
-| `get_screenshot` | 截图（支持元素级截图） | `{"full_page": false, "selector": "#content"}` |
-| `find_qrcode` | 查找页面二维码 | `{}` |
-| `js_action` | 页面操作（click/input/scroll_to） | `{"selector": "button", "action": "click"}` |
-| `find_button` | 查找按钮元素 | `{"value": "登录"}` |
-| `get_page_info` | 获取页面信息 | `{}` |
-| `scroll` | 滚动页面 | `{"direction": "down", "amount": 500}` |
-| `save_cookies` / `load_cookies` | Cookie 持久化 | `{"path": "cookies.json"}` |
-
-**使用场景**：
-- 网页内容抓取与分析
-- 自动化登录流程（支持二维码识别）
-- 网页截图与视觉验证
-- 表单自动填写与提交
-
-**截图保存路径**：`workspace/web_fetch_screenshots/域名_时间戳.png`
-
-**核心机制**：
-- `_cell_registry`: cell_name → ICell 实例
-- `get_all_tools()`: AgentLoop 运行时动态读取组件工具
-- `get_tool_definitions()`: 返回 LLM 格式的工具定义
-
-**工具操作可见性**：
-- 所有工具调用都会生成用户友好的操作描述
-- 支持 `_intent` 参数自定义描述（最高优先级）
-- 示例：`{"command": "read", "path": "test.py", "_intent": "正在读取配置文件"}`
-
-### Skill 管理系统 (skill_installer + skill_manager)
-
-完整的 Skill 包管理解决方案，支持从压缩包安装、列表展示、搜索、详情查看和卸载。
-
-**安装方式**：
-- 支持 `.zip`、`.tar.gz`、`.tgz`、`.tar` 格式压缩包
-- 压缩包内需包含 `SKILL.md` 文件
-- 自动解析 `SKILL.md` 的 YAML Frontmatter 元信息
-
-**管理功能**：
-
-| 组件 | 功能 | 命令/接口 |
-|------|------|-----------|
-| `skill_installer` | 安装 Skill | `install_from_archive(path)` |
-| `skill_installer` | 刷新索引 | `refresh_index()` |
-| `skill_manager` | 列出所有 Skill | `list(show_details=True)` |
-| `skill_manager` | 搜索 Skill | `search(query)` |
-| `skill_manager` | 获取详情 | `get_info(name)` |
-| `skill_manager` | 卸载 Skill | `uninstall(name)` |
-
-**前端界面**：
+**Frontend Interface**:
 ![skill](tests/img/4.png)
-- 设置页面提供 Skill 管理面板
-- 支持压缩包上传安装
-- 支持按名称、描述、分类过滤
-- 详情弹窗展示完整元信息
+- Settings page provides Skill management panel
+- Supports archive upload installation
+- Supports filtering by name, description, category
+- Detail modal displays complete metadata
 
-**目录约定**：
+**Directory Convention**:
 ```
 components/
-├── skill_installer.py        # Skill 安装器
-├── skill_manager.py          # Skill 管理器
-└── skills/                   # Skill 安装目录
-    ├── skill-a/              # 已安装的 Skill
+├── skill_installer.py        # Skill installer
+├── skill_manager.py          # Skill manager
+└── skills/                   # Skill installation directory
+    ├── skill-a/              # Installed Skill
     │   └── SKILL.md
     ├── skill-b/
     │   └── SKILL.md
-    └── _index.json           # 索引文件（自动生成）
-    
+    └── _index.json           # Index file (auto-generated)
 ```
 
-### 定时任务调度 (scheduler)
+### Scheduled Tasks (scheduler)
 
-![定时任务](tests/img/5.png)
+![Scheduled Tasks](tests/img/scheduler.png)
 
-支持三种任务类型：
+Three task types are supported:
 
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| 间隔任务 | 每隔固定时间执行一次 | 每30分钟提醒喝水 |
-| 每日任务 | 每天固定时间执行 | 每天9点发送日报 |
-| 每周任务 | 每周固定时间执行 | 每周一10点发送周报 |
+| Type | Description | Example |
+|------|-------------|---------|
+| Interval Task | Execute at fixed intervals | Remind to drink water every 30 minutes |
+| Daily Task | Execute at a fixed time every day | Send daily report at 9 AM |
+| Weekly Task | Execute at a fixed time every week | Send weekly report at 10 AM every Monday |
 
-**使用方式**：通过自然语言创建定时任务，任务触发时 Agent 会自动执行任务内容。支持复杂任务场景：
-- "每隔1小时检查服务器状态并汇报结果"
-- "每天早上8点查询今日天气"
-- "每周五下午5点总结本周工作进度"
+**Usage**: Create scheduled tasks via natural language. When triggered, Agent automatically executes the task content. Supports complex task scenarios:
+- "Check server status and report results every hour"
+- "Query today's weather at 8 AM every day"
+- "Summarize this week's work progress every Friday at 5 PM"
 
-任务执行结果会自动推送到创建任务的平台（WebUI/QQ/Telegram）。
+Task execution results are automatically pushed to the platform where the task was created (WebUI/QQ/Telegram).
 
-### 后台组件事件触发
+### Background Component Event Trigger
 
-组件可以在后台运行并主动触发 Agent 执行任务，实现实时数据推送和自动分析。
+Components can run in the background and actively trigger Agent execution, enabling real-time data push and auto-analysis.
 
-**实时场景示例**：
-- 虚拟币价格监控：检测到价格突破阈值时推送数据，Agent 自动分析趋势
-- 服务器状态监控：CPU/内存异常时推送告警，Agent 生成诊断报告
-- 实时新闻订阅：检测到关键词新闻时推送，Agent 自动总结要点
-- 数据库变更监听：关键数据变化时推送，Agent 执行相应处理逻辑
+**Real-time Scenario Examples**:
+- Crypto price monitoring: Push data when price breaks threshold, Agent auto-analyzes trends
+- Server status monitoring: Push alerts when CPU/memory is abnormal, Agent generates diagnostic reports
+- Real-time news subscription: Push when keyword news detected, Agent auto-summarizes key points
+- Database change listening: Push when critical data changes, Agent executes corresponding logic
 
-事件触发结果会自动推送到对应的 session（WebUI/QQ/Telegram）。
+Event trigger results are automatically pushed to the corresponding session (WebUI/QQ/Telegram).
 
-## Strategy Gene (GEP) 集成
+## Strategy Gene (GEP) Integration
 
-Cellium Agent --- **2026-04-22** 引入 [Strategy Gene](https://arxiv.org/abs/2604.15097) 论文设计理念。
+This project adopts the [Strategy Gene](https://arxiv.org/abs/2604.15097) design proposed in the paper "From Procedural Skills to Strategy Genes: Towards Experience-Driven Test-Time Evolution" (arXiv:2604.15097).
 
-### 实现方式
+### Implementation
 
-论文提出将经验编码为紧凑的 Gene 对象（~230 tokens），替代文档型 Skill 包（~2,500 tokens）。本项目在 Control Loop 的 Hard Constraint 层实现：
+The paper proposes encoding experience into compact Gene objects (~230 tokens) instead of documentation-heavy Skill packages (~2,500 tokens). This project implements this in the Control Loop's Hard Constraint layer:
 
-- **任务匹配**：用户输入关键词匹配 Gene 模板
-- **动态注入**：匹配到的 Gene 作为系统提示注入 LLM
-- **经验进化**：失败时自动提取 Avoid_Cues 并更新 Gene
+- **Task Matching**: Match Gene templates using keywords from user input
+- **Dynamic Injection**: Inject matched Gene as system prompt into LLM
+- **Experience Evolution**: Automatically extract Avoid_Cues from failure feedback and update Gene
 
-### 实现的功能
+### Implemented Features
 
-| 论文概念 | 本项目实现 |
-|----------|-----------|
-| Gene 结构 | `[HARD CONSTRAINTS]` + `[CONTROL ACTION]` + `[AVOID]` |
-| 任务匹配 | `TaskSignalMatcher` 关键词匹配 |
-| Avoid_Cues | 从失败反馈自动提取，写入 `[AVOID]` 段 |
-| 版本管理 | `version` 字段 + `evolution_history` 记录变更 |
-| 效果评估 | `success_rate`, `avg_reward`, `consecutive_success/failure` |
-| 交叉组合 | `GeneComposer` 多任务时合并多个 Gene |
+| Paper Concept | This Project Implementation |
+|---------------|----------------------------|
+| Gene Structure | `[HARD CONSTRAINTS]` + `[CONTROL ACTION]` + `[AVOID]` |
+| Task Matching | `TaskSignalMatcher` keyword matching |
+| Avoid_Cues | Auto-extract from failure feedback, write to `[AVOID]` section |
+| Version Management | `version` field + `evolution_history` tracking changes |
+| Effect Evaluation | `success_rate`, `avg_reward`, `consecutive_success/failure` |
+| Cross Combination | `GeneComposer` merges multiple Genes for multi-task scenarios |
 
 ## Star History
 
