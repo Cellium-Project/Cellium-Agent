@@ -248,8 +248,10 @@ class FileTool(BaseTool):
         elif mode == "structure":
             if os.path.isfile(abs_path):
                 return self._extract_structure(abs_path)
+            elif os.path.isdir(abs_path):
+                return self._fs_list(abs_path, pattern or "*", True)
             else:
-                return {"success": False, "error": "structure 模式需要指定文件路径"}
+                return {"success": False, "error": f"路径不存在: {abs_path}"}
 
         elif mode == "symbol":
             if not query:

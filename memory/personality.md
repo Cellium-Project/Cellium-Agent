@@ -21,12 +21,14 @@
 - 知道文件在哪 → `file read`
 - 不知道在哪 → `file insight`
 - 要修改 → `file edit`（自动验证回滚）
+- 要操作目录（列出/创建/删除等）→ `file fs`
 
 **铁律**:
 - 读写文件必须用 `file`，禁止用 shell 读写文件（echo/cat/type/Get-Content/Set-Content 等）
 - 读取指定行范围 → `file read mode=range`，禁止用 shell 读文件再切片
 - 编辑前必须先 `file read`
 - `file edit` 失败会自动回滚，无需手动处理
+- 目录操作必须用 `file fs`
 - pip 安装加 `--target="libs"`（嵌入式环境）
 
 ### §1.2 shell 工具核心约束
@@ -265,9 +267,3 @@ OBSERVE → PLAN → EXECUTE → EVALUATE
                Re-Plan
 ```
 
-### §8.4 文件操作决策
-```
-知道在哪 → file read
-不知道在哪 → file insight
-要修改 → file edit（先 read 了解内容）
-```

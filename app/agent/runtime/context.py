@@ -177,7 +177,10 @@ class SymbolSummary:
             return SymbolSummary._extract_go(content)
         elif ext in ('.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.java', '.rs', '.cs', '.swift', '.kt'):
             return SymbolSummary._extract_c_style(content)
-        return {"symbols": [], "raw": content[:500]}
+        elif ext in ('.md', '.mdx'):
+            return SymbolSummary._extract_markdown(content)
+
+        return SymbolSummary._extract_generic(content)
 
     @staticmethod
     def _extract_python(content: str) -> Dict[str, Any]:
@@ -667,6 +670,114 @@ class SymbolSummary:
             "summary": "\n".join(summary_lines),
             "total_symbols": len(symbols),
         }
+
+    @staticmethod
+    def _extract_markdown(content: str) -> Dict[str, Any]:
+        lines = content.split('\n')
+        n = len(lines)
+        heading_pattern = re.compile(r'^(#{1,6})\s+(.+)$')
+        symbols = []
+
+        for i, line in enumerate(lines):
+            m = heading_pattern.match(line)
+            if m:
+                level = len(m.group(1))
+                title = m.group(2).strip()
+                end_line = n
+                for j in range(i + 1, n):
+                    if heading_pattern.match(lines[j]):
+                        end_line = j
+                        break
+                symbols.append({
+                    "type": f"h{level}",
+                    "name": title,
+                    "line": i + 1,
+                    "end_line": end_line,
+                })
+
+        summary_lines = [f"h{s['type'][1]} {s['name']} (lines {s['line']}-{s['end_line']})" for s in symbols]
+        return {
+            "symbols": symbols,
+            "summary": "\n".join(summary_lines) if summary_lines else f"Markdown 文件，共 {n} 行",
+            "total_symbols": len(symbols),
+        }
+
+    @staticmethod
+    def _extract_generic(content: str) -> Dict[str, Any]:
+        lines = content.split('\n')
+        n = len(lines)
+        symbols = []
+
+        def_patterns = [
+            re.compile(r'^\s*(?:class|struct|interface|trait|enum|type|namespace|module|package)\s+(\w+)'),
+            re.compile(r'^\s*(?:function|func|fn|def|sub|macro|procedure|method|define|typedef)\s+(\w+)'),
+            re.compile(r'^\s*public\s+(?:class|interface|enum)\s+(\w+)'),
+            re.compile(r'^\s*(?:export\s+)?(?:class|interface|type|enum|function)\s+(\w+)'),
+        ]
+        kw_line = re.compile(r'^\s*(?:class|struct|interface|trait|enum|type|namespace|module|package|function|func|fn|def|sub|macro|procedure|method|define|typedef|public|export)\b')
+
+        i = 0
+        while i < n:
+            stripped = lines[i].strip()
+            if not stripped or stripped.startswith('//') or stripped.startswith('#'):
+                i += 1
+                continue
+
+            matched = None
+            for p in def_patterns:
+                m = p.match(stripped)
+                if m:
+                    matched = m
+                    break
+
+            if not matched:
+                m = re.match(r'^\s*(\w+)\s*\(', stripped)
+                if m and kw_line.match(stripped):
+                    matched = m
+
+            if matched:
+                indent = len(lines[i]) - len(lines[i].lstrip())
+                end_line = n
+                for j in range(i + 1, n):
+                    if lines[j].strip() and not lines[j].strip().startswith(('//', '#', '/*', '*', '}')):
+                        next_indent = len(lines[j]) - len(lines[j].lstrip())
+                        if next_indent <= indent and kw_line.match(lines[j].strip()):
+                            end_line = j
+                            break
+                        if next_indent <= indent and lines[j].strip() in (')', '}', '];', '`'):
+                            continue
+                        if next_indent < indent:
+                            end_line = j
+                            break
+                symbols.append({
+                    "type": "definition",
+                    "name": stripped[:80],
+                    "line": i + 1,
+                    "end_line": end_line,
+                })
+                i = end_line
+            else:
+                i += 1
+
+        if not symbols:
+            symbols.append({
+                "type": "text",
+                "name": lines[0][:80] if lines[0].strip() else "(空文件)",
+                "line": 1,
+                "end_line": n,
+            })
+
+        summary_lines = []
+        for s in symbols:
+            kind = "def" if s["type"] == "definition" else "text"
+            summary_lines.append(f"[{kind}] {s['name']} (line {s['line']}-{s['end_line']})")
+
+        return {
+            "symbols": symbols,
+            "summary": "\n".join(summary_lines) if summary_lines else f"文本文件，共 {n} 行",
+            "total_symbols": len(symbols),
+        }
+
 
 class OutputCompactor:
     @staticmethod
