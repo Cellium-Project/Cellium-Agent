@@ -6,7 +6,7 @@ QQChannelConfig - QQ 通道配置
 import os
 from typing import Dict, Any, Optional
 
-from .base import BaseChannelConfig
+from ..base import BaseChannelConfig
 
 
 class QQChannelConfig(BaseChannelConfig):

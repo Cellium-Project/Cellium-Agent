@@ -17,6 +17,11 @@ from typing import Callable, Optional, Dict, Any, List
 logger = logging.getLogger(__name__)
 
 
+class NonRetryableError(Exception):
+    """不重试错误，ChannelManager 捕获后停止重试"""
+    pass
+
+
 @dataclass
 class UnifiedMessage:
     platform: str
@@ -168,6 +173,7 @@ class ChannelAdapter(ABC):
                 "url": file_info.get("url"),
                 "file_key": file_info.get("file_key"),
                 "image_key": file_info.get("image_key"),
+                "aes_key": file_info.get("aes_key"),
                 "size": file_info.get("size", 0),
                 "mime_type": file_info.get("mime_type"),
                 "msg_id": message.msg_id,

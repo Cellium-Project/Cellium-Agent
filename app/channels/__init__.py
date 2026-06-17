@@ -5,12 +5,11 @@ app.channels - 多平台消息通道模块
 
 from .base import UnifiedMessage, ChannelAdapter, BaseChannelConfig
 from .channel_manager import ChannelManager
-from .qq_adapter import QQAdapter
-from .qq_channel_config import QQChannelConfig
-from .telegram_adapter import TelegramAdapter
-from .telegram_channel_config import TelegramChannelConfig
-from .feishu_adapter import FeishuAdapter
-from .feishu_channel_config import FeishuChannelConfig
+
+from .qq import QQAdapter, QQChannelConfig
+from .telegram import TelegramAdapter, TelegramChannelConfig
+from .feishu import FeishuAdapter, FeishuChannelConfig
+from .weixin import WeixinAdapter, WeixinChannelConfig
 
 __all__ = [
     "UnifiedMessage",
@@ -23,6 +22,8 @@ __all__ = [
     "TelegramChannelConfig",
     "FeishuAdapter",
     "FeishuChannelConfig",
+    "WeixinAdapter",
+    "WeixinChannelConfig",
     "register_all_channels",
 ]
 
@@ -49,6 +50,11 @@ CHANNEL_REGISTRY = {
         "adapter_cls": FeishuAdapter,
         "config_cls": FeishuChannelConfig,
         "factory": lambda config: FeishuAdapter(config=config),
+    },
+    "weixin": {
+        "adapter_cls": WeixinAdapter,
+        "config_cls": WeixinChannelConfig,
+        "factory": lambda config: WeixinAdapter(config=config),
     },
 }
 

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import httpx
 import websockets
 
-from .base import ChannelAdapter, UnifiedMessage
+from ..base import ChannelAdapter, UnifiedMessage
 
 logger = logging.getLogger(__name__)
 

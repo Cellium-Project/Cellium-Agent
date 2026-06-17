@@ -8,8 +8,8 @@ import re
 import threading
 from typing import Optional, Dict, Any, Callable, List
 
-from .base import ChannelAdapter, UnifiedMessage
-from .feishu_channel_config import FeishuChannelConfig
+from ..base import ChannelAdapter, UnifiedMessage
+from .feishu_config import FeishuChannelConfig
 
 logger = logging.getLogger(__name__)
 

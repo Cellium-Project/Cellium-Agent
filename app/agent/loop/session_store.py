@@ -200,6 +200,11 @@ class SessionStore:
                 else:
                     uid = parts[1] if len(parts) >= 2 else ""
                     title = f"飞书私聊-{uid[:8]}"
+            elif session_id.startswith("weixin:"):
+                # weixin:user_id@xxx 格式
+                uid_part = session_id.split(":")[1] if ":" in session_id else ""
+                uid = uid_part.split("@")[0] if "@" in uid_part else uid_part
+                title = f"微信-{uid[:8]}"
             else:
                 title = None
 

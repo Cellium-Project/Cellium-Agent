@@ -63,6 +63,14 @@ class ToolDescriptionGenerator:
             "list":        "正在列出 QQ 下载文件",
             "_default":    "正在处理 QQ 文件",
         },
+        "weixin_files": {
+            "download":    "正在从微信下载文件",
+            "send_file":   "正在发送文件到微信：{filename}",
+            "send_image":  "正在发送图片到微信：{filename}",
+            "send_video":  "正在发送视频到微信：{filename}",
+            "list":        "正在列出微信下载文件",
+            "_default":    "正在处理微信文件",
+        },
         "_default":    "正在调用 {tool_name}：{param_value}",
     }
 

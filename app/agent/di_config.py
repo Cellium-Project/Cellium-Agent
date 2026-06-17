@@ -49,7 +49,7 @@ async def _do_channel_reconnect(adapter):
 async def _do_channel_start(channel_mgr, qq_config):
     """启动新通道"""
     try:
-        from app.channels.qq_adapter import QQAdapter
+        from app.channels.qq import QQAdapter
         adapter = QQAdapter(
             app_id=qq_config.get_app_id(),
             app_secret=qq_config.get_app_secret(),
@@ -65,7 +65,7 @@ async def _do_channel_start(channel_mgr, qq_config):
 async def _do_telegram_channel_start(channel_mgr, tg_config):
     """启动 Telegram 通道"""
     try:
-        from app.channels.telegram_adapter import TelegramAdapter
+        from app.channels.telegram import TelegramAdapter
         adapter = TelegramAdapter(
             bot_token=tg_config.get_bot_token(),
             whitelist_user_ids=tg_config.get_whitelist_user_ids(),
@@ -81,7 +81,7 @@ async def _do_telegram_channel_start(channel_mgr, tg_config):
 async def _do_feishu_channel_start(channel_mgr, feishu_config):
     """启动飞书通道"""
     try:
-        from app.channels.feishu_adapter import FeishuAdapter
+        from app.channels.feishu import FeishuAdapter
         adapter = FeishuAdapter(config=feishu_config)
         channel_mgr.register_adapter(adapter)
         await adapter.connect()
@@ -250,8 +250,8 @@ def setup_agent_di(
         if section != "channels":
             return
         try:
-            from app.channels.qq_channel_config import QQChannelConfig
-            from app.channels.telegram_channel_config import TelegramChannelConfig
+            from app.channels.qq import QQChannelConfig
+            from app.channels.telegram import TelegramChannelConfig
             from app.channels import ChannelManager
             channel_mgr = ChannelManager.get_instance()
 
@@ -292,7 +292,7 @@ def setup_agent_di(
             else:
                 logger.warning("[AgentDI] Telegram 通道配置已更新，但凭证缺失或未启用")
 
-            from app.channels.feishu_channel_config import FeishuChannelConfig
+            from app.channels.feishu import FeishuChannelConfig
             feishu_config = FeishuChannelConfig()
             feishu_config.reload()
             feishu_adapter = channel_mgr.get_adapter("feishu")

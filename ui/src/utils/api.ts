@@ -53,6 +53,8 @@ export const API = {
   channelStatus: `${API_BASE}/channels/status`,
   channelStart: `${API_BASE}/channels/start`,
   channelStop: `${API_BASE}/channels/stop`,
+  weixinQrcode: `${API_BASE}/channels/weixin/qrcode`,
+  weixinQrcodeStatus: (qrcode: string) => `${API_BASE}/channels/weixin/qrcode/status?qrcode=${qrcode}`,
 
   // Skills
   skills: `${API_BASE}/skills`,

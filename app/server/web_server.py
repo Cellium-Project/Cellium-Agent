@@ -37,9 +37,6 @@ async def lifespan_context(app: FastAPI):
     channel_mgr = ChannelManager.get_instance()
     if channel_mgr.list_platforms() and not channel_mgr.is_running:
         await channel_mgr.start_all(with_queue=False)
-        import logging
-        platforms = ", ".join(channel_mgr.list_platforms())
-        logging.getLogger(__name__).info(f"[Channel] 通道已在启动时自动连接: {platforms}")
     
     from app.core.scheduler import get_scheduler_manager, start_executor
     from app.agent.loop import AgentLoopManager

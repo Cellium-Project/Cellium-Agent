@@ -17,3 +17,8 @@ channels:
     whitelist_users: []
     app_id: ''
     app_secret: ''
+  weixin:
+    enabled: true
+    auto_start: true
+    state_dir: data/weixin
+    bot_agent: Cellium Agent

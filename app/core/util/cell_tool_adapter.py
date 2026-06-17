@@ -57,6 +57,7 @@ EXEMPTED_NAMES: Set[str] = {
     "qq_files",
     "telegram_files",
     "feishu_files",
+    "weixin_files",
     "web_fetch",
     "scheduler",
 }

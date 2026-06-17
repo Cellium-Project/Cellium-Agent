@@ -338,6 +338,30 @@
         "credentialMissing": "缺少凭证",
         "tip": "申请地址：https://open.feishu.cn/app → 创建企业自建应用 → 获取 App ID 和 App Secret",
         "save": "保存配置"
+      },
+      "weixin": {
+        "title": "微信 Bot 通道",
+        "enabled": "启用通道",
+        "enabledOn": "已启用",
+        "enabledOff": "已禁用",
+        "autoStart": "自动启动",
+        "autoStartOn": "已开启",
+        "autoStartOff": "已关闭",
+        "connectionStatus": "连接状态",
+        "connected": "已连接",
+        "disconnected": "未连接",
+        "stateDir": "登录态目录",
+        "stateDirDesc": "存储微信登录态的目录",
+        "qrcode": "登录二维码",
+        "getQrcode": "获取二维码",
+        "openQrcode": "打开二维码",
+        "waitingScan": "等待扫码...",
+        "scanned": "已扫码，等待确认",
+        "confirmed": "登录成功",
+        "expired": "二维码已过期",
+        "scanTip": "请使用微信扫描上方二维码登录",
+        "tip": "首次使用需扫码登录，登录态会保存到 state_dir 目录",
+        "save": "保存配置"
       }
     },
     "server": {

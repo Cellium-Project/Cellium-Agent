@@ -338,6 +338,30 @@
         "credentialMissing": "Missing credentials",
         "tip": "Apply at: https://open.feishu.cn/app → Create enterprise app → Get App ID and App Secret",
         "save": "Save Config"
+      },
+      "weixin": {
+        "title": "WeChat Bot Channel",
+        "enabled": "Enable Channel",
+        "enabledOn": "Enabled",
+        "enabledOff": "Disabled",
+        "autoStart": "Auto Start",
+        "autoStartOn": "Enabled",
+        "autoStartOff": "Disabled",
+        "connectionStatus": "Connection Status",
+        "connected": "Connected",
+        "disconnected": "Disconnected",
+        "stateDir": "State Directory",
+        "stateDirDesc": "Directory to store WeChat login state",
+        "qrcode": "Login QR Code",
+        "getQrcode": "Get QR Code",
+        "openQrcode": "Open QR Code",
+        "waitingScan": "Waiting for scan...",
+        "scanned": "Scanned, waiting for confirm",
+        "confirmed": "Login successful",
+        "expired": "QR Code expired",
+        "scanTip": "Please scan the QR code above with WeChat to login",
+        "tip": "First time use requires QR code login, state will be saved to state_dir",
+        "save": "Save Config"
       }
     },
     "logging": {

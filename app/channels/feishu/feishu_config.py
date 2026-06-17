@@ -6,7 +6,7 @@ FeishuChannelConfig - 飞书通道配置
 import os
 from typing import Dict, Any, List, Optional
 
-from .base import BaseChannelConfig
+from ..base import BaseChannelConfig
 
 
 class FeishuChannelConfig(BaseChannelConfig):

@@ -126,6 +126,7 @@ class ChannelManager:
         logger.info(f"[ChannelManager] Started {len(self._adapters)} adapters")
 
     async def _run_adapter(self, adapter: ChannelAdapter):
+        from .base import NonRetryableError
         while self._running:
             try:
                 await adapter.connect()
@@ -133,6 +134,9 @@ class ChannelManager:
                 while self._running and getattr(adapter, '_running', False):
                     await asyncio.sleep(1)
             except asyncio.CancelledError:
+                break
+            except NonRetryableError as e:
+                logger.warning(f"[ChannelManager] {adapter.platform_name} 不可重试错误: {e}")
                 break
             except Exception as e:
                 if self._adapters.get(adapter.platform_name) is not adapter:
@@ -199,6 +203,9 @@ class ChannelManager:
         pending = ""
         MAX_MSG_LEN = 1000
 
+        adapter = self._adapters.get(message.platform)
+        minimal_output = getattr(adapter, 'minimal_output', False) if adapter else False
+
         async def safe_send(content: str):
             if not content:
                 return
@@ -223,61 +230,69 @@ class ChannelManager:
                     break
                 try:
                     event_type = event.get("type")
-                    if event_type == "scheduler_task_start":
-                        task_name = event.get("task_name", "未命名任务")
-                        task_id = event.get("task_id", "unknown")
-                        await safe_send(f"⏰ **定时任务触发**: {task_name}")
-                    elif event_type == "component_event_start":
-                        task_name = event.get("task_name", "未知来源")
-                        task_id = event.get("task_id", "unknown")
-                        await safe_send(f"🔔 **组件事件触发**: {task_name}")
-                    elif event_type == "thinking":
-                        thinking_content = event.get("content", "Thinking...")
-                        if thinking_content:
-                            await safe_send(f"> 💭 **Thinking**: {thinking_content}")
-                    elif event_type == "error":
-                        error_msg = event.get("error", "未知错误")
-                        await safe_send(f"> ❌ **错误**: `{error_msg}`")
-                    elif event_type == "tool_start":
-                        tool_name = event.get("tool", "unknown")
-                        desc = event.get("description", "")
-                        tool_info = f"##### 🔧 正在调用 `{tool_name}`"
-                        if desc:
-                            tool_info += f"\n> {desc}"
-                        await safe_send(tool_info)
-                    elif event_type == "tool_result":
-                        tool_name = event.get("tool", "unknown")
-                        result = event.get("result", {})
-                        duration = event.get("duration_ms", 0)
-                        content_str = result.get("content", "") if isinstance(result, dict) else str(result)
-                        if len(content_str) > 300:
-                            content_str = content_str[:300] + "..."
-                        await safe_send(f"###### ✅ {tool_name} 耗时 {duration}ms")
-                    elif event_type == "hybrid_phase":
-                        phase_msg = event.get("message", "")
-                        phase_desc = event.get("description", "")
-                        if phase_msg in ("观察中", "完成"):
-                            continue
-                        if phase_msg and phase_desc:
-                            await safe_send(f"> [{phase_msg}] {phase_desc}")
-                        elif phase_msg:
-                            await safe_send(f"> [{phase_msg}]")
-                    elif event_type == "content_chunk":
-                        chunk_content = event.get("content", "")
-                        logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
-                        await safe_send(chunk_content)
-                        sent_any = True
-                        logger.debug("[ChannelManager] content_chunk sent successfully")
-                    elif event_type == "done":
-                        done_content = event.get("content", "")
-                        logger.debug(f"[ChannelManager] done event | sent_any={sent_any} | pending_len={len(pending)} | content_len={len(done_content)}")
-                        if sent_any and pending:
-                            await safe_send(pending)
-                            pending = ""
-                        elif not sent_any:
+
+                    if minimal_output:
+                        if event_type == "done":
+                            done_content = event.get("content", "")
                             await safe_send(done_content or "...")
-                    elif event_type == "stopped":
-                        await safe_send("> ⏹ **已停止**: 当前任务已终止")
+                        elif event_type == "stopped":
+                            await safe_send("> ⏹ **已停止**: 当前任务已终止")
+                    else:
+                        if event_type == "scheduler_task_start":
+                            task_name = event.get("task_name", "未命名任务")
+                            task_id = event.get("task_id", "unknown")
+                            await safe_send(f"⏰ **定时任务触发**: {task_name}")
+                        elif event_type == "component_event_start":
+                            task_name = event.get("task_name", "未知来源")
+                            task_id = event.get("task_id", "unknown")
+                            await safe_send(f"🔔 **组件事件触发**: {task_name}")
+                        elif event_type == "thinking":
+                            thinking_content = event.get("content", "Thinking...")
+                            if thinking_content:
+                                await safe_send(f"> 💭 **Thinking**: {thinking_content}")
+                        elif event_type == "error":
+                            error_msg = event.get("error", "未知错误")
+                            await safe_send(f"> ❌ **错误**: `{error_msg}`")
+                        elif event_type == "tool_start":
+                            tool_name = event.get("tool", "unknown")
+                            desc = event.get("description", "")
+                            tool_info = f"##### 🔧 正在调用 `{tool_name}`"
+                            if desc:
+                                tool_info += f"\n> {desc}"
+                            await safe_send(tool_info)
+                        elif event_type == "tool_result":
+                            tool_name = event.get("tool", "unknown")
+                            result = event.get("result", {})
+                            duration = event.get("duration_ms", 0)
+                            content_str = result.get("content", "") if isinstance(result, dict) else str(result)
+                            if len(content_str) > 300:
+                                content_str = content_str[:300] + "..."
+                            await safe_send(f"###### ✅ {tool_name} 耗时 {duration}ms")
+                        elif event_type == "hybrid_phase":
+                            phase_msg = event.get("message", "")
+                            phase_desc = event.get("description", "")
+                            if phase_msg in ("观察中", "完成"):
+                                continue
+                            if phase_msg and phase_desc:
+                                await safe_send(f"> [{phase_msg}] {phase_desc}")
+                            elif phase_msg:
+                                await safe_send(f"> [{phase_msg}]")
+                        elif event_type == "content_chunk":
+                            chunk_content = event.get("content", "")
+                            logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
+                            await safe_send(chunk_content)
+                            sent_any = True
+                            logger.debug("[ChannelManager] content_chunk sent successfully")
+                        elif event_type == "done":
+                            done_content = event.get("content", "")
+                            logger.debug(f"[ChannelManager] done event | sent_any={sent_any} | pending_len={len(pending)} | content_len={len(done_content)}")
+                            if sent_any and pending:
+                                await safe_send(pending)
+                                pending = ""
+                            elif not sent_any:
+                                await safe_send(done_content or "...")
+                        elif event_type == "stopped":
+                            await safe_send("> ⏹ **已停止**: 当前任务已终止")
                 except Exception as e:
                     logger.warning(f"[ChannelManager] Failed to handle task event {event.get('type')}: {e}")
         except Exception as e:
@@ -524,8 +539,14 @@ class ChannelManager:
                     elif platform in ('qq', 'telegram'):
                         if f.get('url'):
                             file_info += f"     file_id: {f['url']}\n"
+                    elif platform == 'weixin':
+                        if f.get('file_key'):
+                            file_info += f"     encrypt_query_param: {f['file_key']}\n"
+                        if f.get('aes_key'):
+                            file_info += f"     aes_key: {f['aes_key']}\n"
                 content_to_agent = file_info + "\n" + content_to_agent
                 logger.info(f"[ChannelManager] Attached {i} pending files to message for session={session_id}")
+                session_info.pending_files.clear()
             
             try:
                 session_memory = session_info.memory

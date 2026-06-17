@@ -891,6 +891,200 @@ const FeishuChannelCard: React.FC<{
   );
 };
 
+const WeixinChannelCard: React.FC<{
+  config: Record<string, any>;
+  onChange: (config: Record<string, any>) => void;
+  saving: boolean;
+  saved: boolean;
+  onSave: () => void;
+  error: string | null;
+}> = ({ config, onChange, saving, saved, onSave, error }) => {
+  const { t } = useTranslation();
+  const [qrcodeUrl, setQrcodeUrl] = useState<string | null>(null);
+  const [qrcodeId, setQrcodeId] = useState<string | null>(null);
+  const [scanStatus, setScanStatus] = useState<string>('idle');
+  const [loadingQr, setLoadingQr] = useState(false);
+  const [connected, setConnected] = useState<boolean>(false);
+
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(API.channelStatus);
+        const data = await res.json();
+        if (data.platforms?.weixin?.connected) {
+          setConnected(true);
+        } else {
+          setConnected(false);
+        }
+      } catch {
+        setConnected(false);
+      }
+    };
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const updateField = (field: string, value: any) => {
+    onChange({ ...config, [field]: value });
+  };
+
+  const fetchQrcode = async () => {
+    setLoadingQr(true);
+    setScanStatus('waiting');
+    try {
+      const res = await fetch(API.weixinQrcode);
+      const data = await res.json();
+      if (data.status === 'ok') {
+        setQrcodeUrl(data.qrcode_url);
+        setQrcodeId(data.qrcode);
+        pollScanStatus(data.qrcode);
+      } else {
+        setScanStatus('error');
+      }
+    } catch {
+      setScanStatus('error');
+    } finally {
+      setLoadingQr(false);
+    }
+  };
+
+  const pollScanStatus = async (qr: string) => {
+    for (let i = 0; i < 120; i++) {
+      try {
+        const res = await fetch(API.weixinQrcodeStatus(qr));
+        const data = await res.json();
+        const status = data.scan_status;
+        setScanStatus(status);
+        if (status === 'confirmed') {
+          setQrcodeUrl(null);
+          setQrcodeId(null);
+          // 登录成功后触发通道重载
+          await fetch(`${API.channelReload}?platform=weixin`, { method: 'POST' });
+          return;
+        }
+        if (status === 'expired' || status === 'canceled') {
+          setQrcodeUrl(null);
+          setQrcodeId(null);
+          return;
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      } catch {
+        break;
+      }
+    }
+    setScanStatus('expired');
+    setQrcodeUrl(null);
+    setQrcodeId(null);
+  };
+
+  return (
+    <div className="settings-card" style={{ marginBottom: 24 }}>
+      <div className="settings-card-header">
+        <div className="settings-card-title">
+          <Icons.Globe size={16} /> {t('settings.channel.weixin.title')}
+        </div>
+        <button className="btn-primary btn-sm" onClick={onSave} disabled={saving}>
+          {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.channel.weixin.save')}
+        </button>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="settings-card-grid">
+        <div className="form-group">
+          <FieldLabel label={t('settings.channel.weixin.enabled')} />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.enabled !== false}
+              onChange={e => updateField('enabled', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.enabled !== false ? t('settings.channel.weixin.enabledOn') : t('settings.channel.weixin.enabledOff')}</span>
+          </label>
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label={t('settings.channel.weixin.autoStart')} />
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={config.auto_start !== false}
+              onChange={e => updateField('auto_start', e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-label">{config.auto_start !== false ? t('settings.channel.weixin.autoStartOn') : t('settings.channel.weixin.autoStartOff')}</span>
+          </label>
+        </div>
+
+        <div className="form-group">
+          <FieldLabel label={t('settings.channel.weixin.connectionStatus')} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: connected ? 'var(--status-success-bright)' : 'var(--status-danger-bright)',
+            }} />
+            <span style={{ color: 'var(--text-code)', fontSize: 13 }}>
+              {connected ? t('settings.channel.weixin.connected') : t('settings.channel.weixin.disconnected')}
+            </span>
+          </div>
+        </div>
+
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label={t('settings.channel.weixin.stateDir')} desc={t('settings.channel.weixin.stateDirDesc')} />
+          <input
+            type="text"
+            value={config.state_dir || 'data/weixin'}
+            onChange={e => updateField('state_dir', e.target.value)}
+            placeholder="data/weixin"
+          />
+        </div>
+
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label={t('settings.channel.weixin.qrcode')} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button
+              className="btn-secondary btn-sm"
+              onClick={fetchQrcode}
+              disabled={loadingQr || scanStatus === 'waiting'}
+            >
+              {loadingQr ? t('common.loading') : t('settings.channel.weixin.getQrcode')}
+            </button>
+            {scanStatus === 'waiting' && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{t('settings.channel.weixin.waitingScan')}</span>}
+            {scanStatus === 'scanned' && <span style={{ color: 'var(--status-success)', fontSize: 13 }}>{t('settings.channel.weixin.scanned')}</span>}
+            {scanStatus === 'confirmed' && <span style={{ color: 'var(--status-success-bright)', fontSize: 13 }}>{t('settings.channel.weixin.confirmed')}</span>}
+            {scanStatus === 'expired' && <span style={{ color: 'var(--status-danger)', fontSize: 13 }}>{t('settings.channel.weixin.expired')}</span>}
+          </div>
+        </div>
+
+        {qrcodeUrl && (
+          <div className="form-group" style={{ gridColumn: 'span 2' }}>
+            <a
+              href={qrcodeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-secondary btn-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <Icons.Globe size={14} /> {t('settings.channel.weixin.openQrcode')}
+            </a>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+              {t('settings.channel.weixin.scanTip')}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="settings-card-footer">
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+          {t('settings.channel.weixin.tip')}
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ═════════════════════════════════════════════════════════════
 // 通道配置 Tab (多平台消息入口)
 // ═════════════════════════════════════════════════════════════
@@ -907,14 +1101,16 @@ const ChannelSettings: React.FC = () => {
       setConfigs({
         qq: data?.qq || { enabled: true, auto_start: true },
         telegram: data?.telegram || { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] },
-        feishu: data?.feishu || { enabled: false, auto_start: true, whitelist_users: [] }
+        feishu: data?.feishu || { enabled: false, auto_start: true, whitelist_users: [] },
+        weixin: data?.weixin || { enabled: false, auto_start: true, state_dir: 'data/weixin' }
       });
       setLoading(false);
     }).catch(() => {
       setConfigs({
         qq: { enabled: true, auto_start: true },
         telegram: { enabled: false, auto_start: true, whitelist_user_ids: [], whitelist_usernames: [] },
-        feishu: { enabled: false, auto_start: true, whitelist_users: [] }
+        feishu: { enabled: false, auto_start: true, whitelist_users: [] },
+        weixin: { enabled: false, auto_start: true, state_dir: 'data/weixin' }
       });
       setLoading(false);
     });
@@ -969,6 +1165,14 @@ const ChannelSettings: React.FC = () => {
         saved={saved.feishu || false}
         onSave={() => handleSave('feishu')}
         error={errors.feishu || null}
+      />
+      <WeixinChannelCard
+        config={configs.weixin || {}}
+        onChange={(cfg) => updateConfig('weixin', cfg)}
+        saving={saving.weixin || false}
+        saved={saved.weixin || false}
+        onSave={() => handleSave('weixin')}
+        error={errors.weixin || null}
       />
     </div>
   );

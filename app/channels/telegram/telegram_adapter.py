@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, Callable
 from pathlib import Path
 import httpx
 
-from .base import ChannelAdapter, UnifiedMessage
+from ..base import ChannelAdapter, UnifiedMessage
 
 logger = logging.getLogger(__name__)
 
