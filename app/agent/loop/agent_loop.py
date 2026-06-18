@@ -272,6 +272,33 @@ class AgentLoop:
         """请求停止当前推理"""
         self._loop_controller.request_stop()
 
+    def update_config(self, flash_mode: bool = None, max_iterations: int = None):
+        """动态更新配置"""
+        if flash_mode is not None and flash_mode != self.flash_mode:
+            self.flash_mode = flash_mode
+            if flash_mode and self.control_loop:
+                self.control_loop = None
+                self._constraint_renderer = None
+                self._loop_state = None
+                self._gene_post_session_analyzer = None
+                logger.info("[AgentLoop] flash_mode 已热更新为 True，控制环已禁用")
+            elif not flash_mode and not self.control_loop and self.heuristics:
+                from app.agent.control import create_control_loop
+                from app.agent.control.gene_post_session import GenePostSessionAnalyzer
+                self.control_loop = create_control_loop(memory_path="data/control/bandit_stats.json")
+                self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100)
+                self._gene_post_session_analyzer = GenePostSessionAnalyzer()
+                if self.learning:
+                    self.learning.set_control_loop(self.control_loop)
+                logger.info("[AgentLoop] flash_mode 已热更新为 False，控制环已启用")
+            else:
+                logger.info(f"[AgentLoop] flash_mode 已热更新为 {flash_mode}")
+            if hasattr(self._prompt_context_builder, 'update_flash_mode'):
+                self._prompt_context_builder.update_flash_mode(self.flash_mode)
+        if max_iterations is not None:
+            self.max_iterations = max_iterations
+            logger.info(f"[AgentLoop] max_iterations 已热更新为 {max_iterations}")
+
     def _should_update_goal(self, new_input: str, current_goal: str) -> bool:
         """
         判断是否应该更新用户目标

@@ -134,6 +134,18 @@ def setup_agent_di(
         "enable_learning": True,
     }
 
+    def _update_all_loops():
+        """热更新所有活跃 loop 的配置"""
+        try:
+            from app.agent.loop import AgentLoopManager
+            mgr = AgentLoopManager.get_instance()
+            mgr.update_all_loops(
+                flash_mode=_agent_config_holder.get("flash_mode", False),
+                max_iterations=_agent_config_holder['max_iterations'] if _agent_config_holder['max_iterations'] != float('inf') else None,
+            )
+        except Exception as e:
+            logger.warning(f"[AgentDI] 热更新 loop 失败: {e}")
+
     def _on_agent_config_change(section, old_val, new_val):
         """agent 配置变更时更新 _agent_config_holder"""
         if section != "agent":
@@ -163,6 +175,7 @@ def setup_agent_di(
             else:
                 logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
                            _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
+            _update_all_loops()
         except Exception as e:
             logger.error("[AgentDI] Agent 配置热更新失败: %s", e, exc_info=True)
 
