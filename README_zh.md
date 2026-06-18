@@ -3,8 +3,10 @@
 <div align="center">
 
 <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="tests/img/logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="logo.png">
+    <source media="(prefers-color-scheme: dark)" srcset="tests/img/logo-dark.webp" type="image/webp">
+    <source media="(prefers-color-scheme: dark)" srcset="tests/img/logo-dark_optimized.png" type="image/png">
+    <source media="(prefers-color-scheme: light)" srcset="tests/img/logo.webp" type="image/webp">
+    <source media="(prefers-color-scheme: light)" srcset="tests/img/logo_optimized.png" type="image/png">
     <img src="logo.png" alt="Cellium Agent Banner" style="width:100%;max-width:1856px;">
   </picture>
 
