@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="logo.png" width="200" style="background:#1e90ff;padding:20px;border-radius:10px;">
+<img src="logo.png" width="80%" style="max-width:800px;background:#1e90ff;padding:30px;border-radius:15px;">
 
 <div align="center">
   <a href="https://www.producthunt.com/products/cellium-agent?utm_source=badge-follow&utm_medium=badge" target="_blank">
