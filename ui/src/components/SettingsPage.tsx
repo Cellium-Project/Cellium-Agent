@@ -564,11 +564,86 @@ const QQChannelCard: React.FC<{
   saving: boolean;
   saved: boolean;
   onSave: () => void;
+  onReload: () => void;
   error: string | null;
-}> = ({ config, onChange, saving, saved, onSave, error }) => {
+}> = ({ config, onChange, saving, saved, onSave, onReload, error }) => {
   const { t } = useTranslation();
+  const [qrcodeUrl, setQrcodeUrl] = useState<string | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [key, setKey] = useState<string | null>(null);
+  const [scanStatus, setScanStatus] = useState<string>('idle');
+  const [loadingQr, setLoadingQr] = useState(false);
+  const [connected, setConnected] = useState<boolean>(false);
+
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(API.channelStatus);
+        const data = await res.json();
+        if (data.platforms?.qq?.connected) {
+          setConnected(true);
+        } else {
+          setConnected(false);
+        }
+      } catch {
+        setConnected(false);
+      }
+    };
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   const updateField = (field: string, value: any) => {
     onChange({ ...config, [field]: value });
+  };
+
+  const pollScanStatus = async (tid: string, k: string) => {
+    const poll = async () => {
+      try {
+        const res = await fetch(API.qqQrcodeStatus(tid, k));
+        const data = await res.json();
+        if (data.status === 'ok') {
+          const s = data.scan_status;
+          if (s === 'confirmed') {
+            setScanStatus('confirmed');
+            // 重新获取配置并触发 reload
+            onReload();
+            return;
+          } else if (s === 'expired') {
+            setScanStatus('expired');
+            return;
+          }
+          setTimeout(() => poll(), 2000);
+        } else {
+          setTimeout(() => poll(), 2000);
+        }
+      } catch {
+        setTimeout(() => poll(), 2000);
+      }
+    };
+    poll();
+  };
+
+  const fetchQrcode = async () => {
+    setLoadingQr(true);
+    setScanStatus('waiting');
+    try {
+      const res = await fetch(API.qqQrcode);
+      const data = await res.json();
+      if (data.status === 'ok') {
+        setQrcodeUrl(data.qrcode_url);
+        setTaskId(data.task_id);
+        setKey(data.key);
+        pollScanStatus(data.task_id, data.key);
+      } else {
+        setScanStatus('error');
+      }
+    } catch {
+      setScanStatus('error');
+    } finally {
+      setLoadingQr(false);
+    }
   };
 
   return (
@@ -578,7 +653,7 @@ const QQChannelCard: React.FC<{
           <Icons.Globe size={16} /> {t('settings.channel.qq.title')}
         </div>
         <button className="btn-primary btn-sm" onClick={onSave} disabled={saving}>
-          {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.channel.telegram.save')}
+          {saving ? t('common.saving') : saved ? `✓ ${t('common.saved')}` : t('settings.channel.qq.save')}
         </button>
       </div>
 
@@ -612,6 +687,19 @@ const QQChannelCard: React.FC<{
         </div>
 
         <div className="form-group">
+          <FieldLabel label={t('settings.channel.qq.connectionStatus')} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: connected ? 'var(--status-success-bright)' : 'var(--status-danger-bright)',
+            }} />
+            <span style={{ color: 'var(--text-code)', fontSize: 13 }}>
+              {connected ? t('settings.channel.qq.connected') : t('settings.channel.qq.disconnected')}
+            </span>
+          </div>
+        </div>
+
+        <div className="form-group">
           <FieldLabel label={t('settings.channel.qq.appId')} />
           <input
             type="text"
@@ -640,18 +728,39 @@ const QQChannelCard: React.FC<{
           />
         </div>
 
-        <div className="form-group">
-          <FieldLabel label={t('settings.channel.qq.credentialStatus')} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: config.app_id && config.app_secret ? 'var(--status-success-bright)' : 'var(--status-danger-bright)',
-            }} />
-            <span style={{ color: 'var(--text-code)', fontSize: 13 }}>
-              {config.app_id && config.app_secret ? t('settings.channel.qq.credentialConfigured') : t('settings.channel.qq.credentialMissing')}
-            </span>
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <FieldLabel label={t('settings.channel.qq.qrcode')} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button
+              className="btn-secondary btn-sm"
+              onClick={fetchQrcode}
+              disabled={loadingQr || scanStatus === 'waiting'}
+            >
+              {loadingQr ? t('common.loading') : t('settings.channel.qq.getQrcode')}
+            </button>
+            {scanStatus === 'waiting' && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{t('settings.channel.qq.waitingScan')}</span>}
+            {scanStatus === 'scanned' && <span style={{ color: 'var(--status-success)', fontSize: 13 }}>{t('settings.channel.qq.scanned')}</span>}
+            {scanStatus === 'confirmed' && <span style={{ color: 'var(--status-success-bright)', fontSize: 13 }}>{t('settings.channel.qq.confirmed')}</span>}
+            {scanStatus === 'expired' && <span style={{ color: 'var(--status-danger)', fontSize: 13 }}>{t('settings.channel.qq.expired')}</span>}
           </div>
         </div>
+
+        {qrcodeUrl && (
+          <div className="form-group" style={{ gridColumn: 'span 2' }}>
+            <a
+              href={qrcodeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-secondary btn-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <Icons.Globe size={14} /> {t('settings.channel.qq.openQrcode')}
+            </a>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+              {t('settings.channel.qq.scanTip')}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="settings-card-footer">
@@ -1136,6 +1245,17 @@ const ChannelSettings: React.FC = () => {
     setConfigs(prev => ({ ...prev, [platform]: config }));
   };
 
+  const reloadQQ = async () => {
+    // 重新获取配置
+    const res = await fetch(API.configSection('channels'));
+    const data = await res.json();
+    if (data?.qq) {
+      setConfigs(prev => ({ ...prev, qq: data.qq }));
+    }
+    // 触发 reload
+    await fetch(`${API.channelReload}?platform=qq`, { method: 'POST' });
+  };
+
   if (loading) {
     return <div className="settings-card"><div className="settings-loading"><span className="loading-dots"><span></span><span></span><span></span></span> {t('common.loading')}</div></div>;
   }
@@ -1148,6 +1268,7 @@ const ChannelSettings: React.FC = () => {
         saving={saving.qq || false}
         saved={saved.qq || false}
         onSave={() => handleSave('qq')}
+        onReload={reloadQQ}
         error={errors.qq || null}
       />
       <TelegramChannelCard

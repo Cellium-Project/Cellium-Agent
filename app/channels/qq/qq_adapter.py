@@ -245,7 +245,7 @@ def _clear_session(app_id: str):
 class QQAdapter(ChannelAdapter):
     platform_name = "qq"
 
-    def __init__(self, app_id: str, app_secret: str, intents: int = 1107296256):
+    def __init__(self, app_id: str = "", app_secret: str = "", intents: int = 1107296256):
         self.app_id = app_id
         self.app_secret = app_secret
         self.intents = intents
@@ -261,21 +261,93 @@ class QQAdapter(ChannelAdapter):
         self._connect_lock = asyncio.Lock()
 
         self._session: Optional[SessionState] = None
-        loaded = _load_session(app_id)
-        if loaded and loaded.last_seq > 1:
-            self._session = loaded
+        if app_id:
+            loaded = _load_session(app_id)
+            if loaded and loaded.last_seq > 1:
+                self._session = loaded
 
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0
 
+        self._connect_client: Optional["QQConnectClient"] = None
+
         # 发送限流控制
         self._last_send_time: float = 0
-        self._min_send_interval: float = 0.5  # 最小发送间隔（秒）
+        self._min_send_interval: float = 0.5
         self._send_lock = asyncio.Lock()
 
         # 数据目录（用于存储下载的文件）
         self._data_dir = Path("workspace") / "downloads" / "qq"
         self._data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_connect_client(self):
+        if self._connect_client is None:
+            from .qq_connect_client import QQConnectClient
+            self._connect_client = QQConnectClient()
+        return self._connect_client
+
+    async def login_qr_start(self) -> dict:
+        client = self._get_connect_client()
+        return await client.login_qr_start()
+
+    async def login_qr_poll(self, task_id: str, key: str) -> dict:
+        client = self._get_connect_client()
+        result = await client.login_qr_poll(task_id, key)
+        if result.get("status") == "confirmed":
+            self.app_id = result["app_id"]
+            self.app_secret = result["app_secret"]
+            self._access_token = None
+            self._token_expires_at = 0
+        return result
+
+    async def _login_with_qr(self, timeout: float = 300.0):
+        import time
+        client = self._get_connect_client()
+        start = await client.login_qr_start()
+        qrcode_url = start.get("qrcode_url", "")
+        task_id = start.get("task_id", "")
+        key = start.get("key", "")
+
+        if not qrcode_url:
+            raise RuntimeError(f"获取二维码失败: {start}")
+
+        logger.info(f"[QQAdapter] 请扫码登录 QQ Bot: {qrcode_url}")
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = await client.login_qr_poll(task_id, key)
+            status = result.get("status", "waiting")
+
+            if status == "confirmed":
+                self.app_id = result["app_id"]
+                self.app_secret = result["app_secret"]
+                self._access_token = None
+                self._token_expires_at = 0
+                logger.info(f"[QQAdapter] 扫码登录成功: app_id={self.app_id}")
+                self._save_credentials_to_config(self.app_id, self.app_secret)
+                return
+            elif status == "expired":
+                raise RuntimeError("二维码已过期")
+            await asyncio.sleep(2)
+
+        raise RuntimeError("扫码登录超时")
+
+    def _save_credentials_to_config(self, app_id: str, app_secret: str):
+        import yaml
+        from pathlib import Path
+        config_path = Path("config/agent/channels.yaml")
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        else:
+            data = {}
+        data.setdefault("channels", {}).setdefault("qq", {})
+        data["channels"]["qq"]["app_id"] = str(app_id)
+        data["channels"]["qq"]["app_secret"] = str(app_secret)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        logger.info(f"[QQAdapter] 配置已保存到 {config_path}")
 
     async def update_config(self, app_id: str = None, app_secret: str = None, intents: int = None):
         if app_id is not None:
@@ -286,7 +358,6 @@ class QQAdapter(ChannelAdapter):
             self.intents = intents
         self._access_token = None
         self._token_expires_at = 0
-        logger.info(f"[QQAdapter] Config updated: app_id={app_id}")
 
     def _get_source_label(self, message) -> str:
         """获取来源标签"""
@@ -527,6 +598,11 @@ class QQAdapter(ChannelAdapter):
                     break
 
     async def connect(self):
+        if self._running:
+            return
+        if not self.app_id or not self.app_secret:
+            await self._login_with_qr()
+            # 扫码成功后继续连接
         if self._connect_lock.locked():
             logger.info("[QQAdapter] 连接已在进行中，跳过此次调用")
             return
@@ -577,7 +653,6 @@ class QQAdapter(ChannelAdapter):
                                         },
                                     })
                                 else:
-                                    logger.info("[QQAdapter] 新建会话")
                                     await self._send_json({
                                         "op": OpCode.IDENTIFY,
                                         "d": {
@@ -597,10 +672,9 @@ class QQAdapter(ChannelAdapter):
                                         app_id=self.app_id,
                                     )
                                     _save_session(self._session)
-                                    logger.info(f"[QQAdapter] Session ready: {self._session_id}")
 
                                 elif t == "RESUMED":
-                                    logger.info("[QQAdapter] 会话恢复成功: %s", self._session_id)
+                                    pass
 
                                 msg = self._parse_message(t, d)
                                 if msg and self._message_handler:

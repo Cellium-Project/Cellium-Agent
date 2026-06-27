@@ -1,24 +1,24 @@
 channels:
-  qq:
-    enabled: true
-    auto_start: true
+  feishu:
     app_id: ''
     app_secret: ''
+    auto_start: true
+    enabled: true
+    whitelist_users: []
+  qq:
+    app_id: ''
+    app_secret:
+    auto_start: true
+    enabled: true
     intents: 1107296256
   telegram:
-    enabled: true
     auto_start: true
+    bot_token: ''
+    enabled: true
     whitelist_user_ids: []
     whitelist_usernames: []
-    bot_token: ''
-  feishu:
-    enabled: true
-    auto_start: true
-    whitelist_users: []
-    app_id: ''
-    app_secret: ''
   weixin:
-    enabled: true
     auto_start: true
-    state_dir: data/weixin
     bot_agent: Cellium Agent
+    enabled: true
+    state_dir: data/weixin

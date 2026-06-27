@@ -1165,7 +1165,6 @@ class WeixinAdapter(ChannelAdapter):
             logger.warning(f"[WeixinAdapter] notify_start 失败: {e}")
 
         self._listen_task = asyncio.create_task(self._run_listen())
-        logger.info("[WeixinAdapter] 已连接，开始监听消息")
 
     async def _run_listen(self):
         try:

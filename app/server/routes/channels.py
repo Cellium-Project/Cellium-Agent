@@ -234,3 +234,73 @@ async def get_weixin_qrcode_status(qrcode: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[ChannelAPI] 查询微信扫码状态失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/qq/qrcode")
+async def get_qq_qrcode() -> Dict[str, Any]:
+    """获取 QQ 登录二维码"""
+    from app.channels import ChannelManager
+
+    channel_mgr = ChannelManager.get_instance()
+    adapter = channel_mgr.get_adapter("qq")
+
+    if not adapter:
+        raise HTTPException(status_code=404, detail="QQ 通道未注册")
+
+    try:
+        result = await adapter.login_qr_start()
+        return {
+            "status": "ok",
+            "qrcode_url": result.get("qrcode_url", ""),
+            "task_id": result.get("task_id", ""),
+            "key": result.get("key", ""),
+        }
+    except Exception as e:
+        logger.error(f"[ChannelAPI] 获取 QQ 二维码失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/qq/qrcode/status")
+async def get_qq_qrcode_status(task_id: str, key: str) -> Dict[str, Any]:
+    """查询 QQ 扫码状态"""
+    from app.channels import ChannelManager
+    import asyncio
+
+    channel_mgr = ChannelManager.get_instance()
+    adapter = channel_mgr.get_adapter("qq")
+
+    if not adapter:
+        raise HTTPException(status_code=404, detail="QQ 通道未注册")
+
+    try:
+        result = await adapter.login_qr_poll(task_id, key)
+        scan_status = result.get("status", "waiting")
+        
+        if scan_status == "confirmed":
+            app_id = result.get("app_id", "")
+            app_secret = result.get("app_secret", "")
+            if app_id and app_secret:
+                adapter._save_credentials_to_config(app_id, app_secret)
+                asyncio.create_task(_reload_qq_adapter(adapter, app_id, app_secret))
+        
+        return {
+            "status": "ok",
+            "scan_status": scan_status,
+            "detail": result,
+        }
+    except Exception as e:
+        logger.error(f"[ChannelAPI] 查询 QQ 扫码状态失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _reload_qq_adapter(adapter, app_id: str, app_secret: str):
+    """后台重连 QQ 适配器"""
+    import asyncio
+    try:
+        await adapter.update_config(app_id=app_id, app_secret=app_secret)
+        await adapter.disconnect()
+        await asyncio.sleep(1)
+        await adapter.connect()
+        logger.info("[ChannelAPI] QQ 适配器已重连")
+    except Exception as e:
+        logger.error(f"[ChannelAPI] QQ 重连失败: {e}")
