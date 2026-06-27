@@ -462,6 +462,14 @@ class FTS5MemorySearcher:
         '''
 
         params: List[Any] = [safe_query]
+
+        cjk_tokens = [t for t in self.tokenizer.tokenize(query) if len(t) >= 2]
+        if cjk_tokens:
+            clauses = []
+            for t in cjk_tokens:
+                clauses.append("m.tokens LIKE ?")
+                params.append(f"%{t}%")
+            sql += " AND (" + " OR ".join(clauses) + ")"
         if category:
             sql += " AND category = ?"
             params.append(category)

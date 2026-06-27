@@ -110,7 +110,7 @@ class MemoryTool(BaseTool):
             tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
             results = self.memory.search_memories(
                 query.strip(),
-                top_k=5,
+                top_k=10,
                 category=category,
                 schema_type=schema_type,
                 tags=tag_list,
