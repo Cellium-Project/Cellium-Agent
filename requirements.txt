@@ -1,7 +1,7 @@
 # Python Cellium Agent - 依赖包
 
 # Web 框架
-fastapi>=0.138.0
+fastapi>=0.138.1
 uvicorn[standard]>=0.49.0
 pydantic>=2.13.4
 python-multipart>=0.0.32
