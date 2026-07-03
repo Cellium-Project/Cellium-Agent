@@ -303,34 +303,40 @@ class QQAdapter(ChannelAdapter):
     async def _login_with_qr(self, timeout: float = 300.0):
         import time
         client = self._get_connect_client()
-        start = await client.login_qr_start()
-        qrcode_url = start.get("qrcode_url", "")
-        task_id = start.get("task_id", "")
-        key = start.get("key", "")
+        for attempt in range(2):
+            start = await client.login_qr_start()
+            qrcode_url = start.get("qrcode_url", "")
+            task_id = start.get("task_id", "")
+            key = start.get("key", "")
 
-        if not qrcode_url:
-            raise RuntimeError(f"获取二维码失败: {start}")
+            if not qrcode_url:
+                raise RuntimeError(f"获取二维码失败: {start}")
 
-        logger.info(f"[QQAdapter] 请扫码登录 QQ Bot: {qrcode_url}")
+            logger.info(f"[QQAdapter] 请扫码登录 QQ Bot: {qrcode_url}")
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = await client.login_qr_poll(task_id, key)
-            status = result.get("status", "waiting")
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                result = await client.login_qr_poll(task_id, key)
+                status = result.get("status", "waiting")
 
-            if status == "confirmed":
-                self.app_id = result["app_id"]
-                self.app_secret = result["app_secret"]
-                self._access_token = None
-                self._token_expires_at = 0
-                logger.info(f"[QQAdapter] 扫码登录成功: app_id={self.app_id}")
-                self._save_credentials_to_config(self.app_id, self.app_secret)
-                return
-            elif status == "expired":
-                raise RuntimeError("二维码已过期")
-            await asyncio.sleep(2)
+                if status == "confirmed":
+                    self.app_id = result["app_id"]
+                    self.app_secret = result["app_secret"]
+                    self._access_token = None
+                    self._token_expires_at = 0
+                    logger.info(f"[QQAdapter] 扫码登录成功: app_id={self.app_id}")
+                    self._save_credentials_to_config(self.app_id, self.app_secret)
+                    return
+                elif status == "expired":
+                    if attempt == 0:
+                        logger.info("[QQAdapter] 二维码已过期，重新生成...")
+                        break
+                    else:
+                        logger.warning("[QQAdapter] 二维码再次过期，放弃登录")
+                        return
+                await asyncio.sleep(2)
 
-        raise RuntimeError("扫码登录超时")
+        logger.warning("[QQAdapter] 扫码登录失败，请通过 WebUI 手动扫码")
 
     def _save_credentials_to_config(self, app_id: str, app_secret: str):
         import yaml
