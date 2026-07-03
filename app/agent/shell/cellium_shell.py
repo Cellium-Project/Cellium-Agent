@@ -212,7 +212,7 @@ class CelliumShell:
         # ═══ 文件系统破坏 ═══
         "remove-item -recurse", "rm -rf /", "rmdir /s /q", "del /f /s /q",
         # ═══ 磁盘操作 ═══
-        "format", "diskpart", "mkfs", "dd if=", "cipher /w",
+        "diskpart", "mkfs", "dd if=", "cipher /w",
         # ═══ 系统控制 ═══
         "shutdown", "stop-computer", "reboot", "restart-computer", "init 0", "init 6",
         # ═══ 启动/引导 ═══

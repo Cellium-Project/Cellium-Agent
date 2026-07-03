@@ -102,24 +102,10 @@ class PromptContextBuilder:
         
         return {"role": "system", "content": content}
     
-    def _build_context_message(self, runtime_status: Optional[str] = None) -> str:
-        """
-        构建动态上下文信息
-        
-        Returns:
-            动态上下文字符串
-        """
+    def _build_static_context(self) -> str:
         context_parts = []
-        
-        current_date = self._get_current_date()
-        context_parts.append(f"**当前日期**: {current_date}")
-        
-        system_info = self._get_system_info()
-        context_parts.append(f"**系统环境**: {system_info}")
-        
-        if runtime_status:
-            context_parts.append(f"\n[运行时状态]\n{runtime_status}")
-        
+        context_parts.append(f"**当前日期**: {self._get_current_date()}")
+        context_parts.append(f"**系统环境**: {self._get_system_info()}")
         return "\n".join(context_parts)
 
     def build_first_round(
@@ -147,24 +133,11 @@ class PromptContextBuilder:
 
         messages.append(self._build_system_message())
 
-        prefix_parts = []
-
-        if system_injection:
-            prefix_parts.append(f"[系统指令]\n{system_injection}")
-
-        context_content = self._build_context_message(runtime_status)
+        context_content = self._build_static_context()
         if context_content:
-            prefix_parts.append(f"[上下文信息]\n{context_content}")
-
-        if not self._flash_mode and self._three_layer_memory:
-            long_term_context = self._retrieve_long_term_memory(user_input)
-            if long_term_context:
-                prefix_parts.append(f"[长期记忆检索结果]\n{long_term_context}")
-
-        if prefix_parts:
             messages.append({
                 "role": "user",
-                "content": "\n\n".join(prefix_parts),
+                "content": f"[上下文信息]\n{context_content}",
             })
 
         messages.extend(session_messages)
@@ -172,11 +145,31 @@ class PromptContextBuilder:
         if self._flash_mode and not session_messages:
             messages.append({"role": "user", "content": user_input})
 
+        if system_injection:
+            messages.append({
+                "role": "user",
+                "content": f"[系统指令]\n{system_injection}",
+            })
+
+        if runtime_status:
+            messages.append({
+                "role": "user",
+                "content": f"[运行时状态]\n{runtime_status}",
+            })
+
         if guidance_message:
             messages.append({
                 "role": "user",
                 "content": f"[系统引导]\n{guidance_message}",
             })
+
+        if not self._flash_mode and self._three_layer_memory:
+            long_term_context = self._retrieve_long_term_memory(user_input)
+            if long_term_context:
+                messages.append({
+                    "role": "user",
+                    "content": f"[长期记忆检索结果]\n{long_term_context}",
+                })
 
         logger.debug(
             "[PromptContextBuilder] 第一轮消息构建完成 | messages=%d | flash_mode=%s",
@@ -225,28 +218,37 @@ class PromptContextBuilder:
 
         messages.append(self._build_system_message())
 
-        prefix_parts = []
-
-        if system_injection:
-            prefix_parts.append(f"[系统指令]\n{system_injection}")
-
-        context_content = self._build_context_message(runtime_status)
+        context_content = self._build_static_context()
         if context_content:
-            prefix_parts.append(f"[上下文信息]\n{context_content}")
-
-        if auto_hints:
-            prefix_parts.append(f"[工具使用提示]\n{auto_hints}")
-
-        if guidance_message:
-            prefix_parts.append(f"[系统引导]\n{guidance_message}")
-
-        if prefix_parts:
             messages.append({
                 "role": "user",
-                "content": "\n\n".join(prefix_parts),
+                "content": f"[上下文信息]\n{context_content}",
             })
 
         messages.extend(session_messages)
+        if auto_hints:
+            messages.append({
+                "role": "user",
+                "content": f"[工具使用提示]\n{auto_hints}",
+            })
+
+        if system_injection:
+            messages.append({
+                "role": "user",
+                "content": f"[系统指令]\n{system_injection}",
+            })
+
+        if runtime_status:
+            messages.append({
+                "role": "user",
+                "content": f"[运行时状态]\n{runtime_status}",
+            })
+
+        if guidance_message:
+            messages.append({
+                "role": "user",
+                "content": f"[系统引导]\n{guidance_message}",
+            })
 
         logger.debug(
             "[PromptContextBuilder] 后续轮次消息构建完成 | messages=%d",

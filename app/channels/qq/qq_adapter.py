@@ -608,7 +608,9 @@ class QQAdapter(ChannelAdapter):
             return
         if not self.app_id or not self.app_secret:
             await self._login_with_qr()
-            # 扫码成功后继续连接
+            if not self.app_id or not self.app_secret:
+                from ..base import NonRetryableError
+                raise NonRetryableError("QQ 通道未配置凭证，请先扫码登录")
         if self._connect_lock.locked():
             logger.info("[QQAdapter] 连接已在进行中，跳过此次调用")
             return
@@ -621,6 +623,9 @@ class QQAdapter(ChannelAdapter):
                     break
                 need_reconnect = False
                 try:
+                    if not self.app_id or not self.app_secret:
+                        from ..base import NonRetryableError
+                        raise NonRetryableError("QQ 通道凭证已失效，请重新扫码登录")
                     self._token = await self._get_access_token()
                     self._gateway_url = await self._get_gateway_url(self._token)
                     headers = {"User-Agent": "QQBotPlugin/1.0.0 (Python/websockets)"}

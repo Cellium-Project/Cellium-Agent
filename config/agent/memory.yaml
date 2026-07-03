@@ -8,8 +8,8 @@ memory:
     auto_compact_threshold: 5000
   session_compact:
     enabled: true
-    token_threshold: 80000
-    tool_call_threshold: 40
+    token_threshold: 100000
+    tool_call_threshold: 50
     keep_recent_messages: 20
     max_notes_length: 2000
     notes_dir: memory/notes

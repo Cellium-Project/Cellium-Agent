@@ -25,11 +25,21 @@
 
 **铁律**:
 - 读写文件必须用 `file`，禁止用 shell 读写文件（echo/cat/type/Get-Content/Set-Content 等）
-- 读取指定行范围 → `file read mode=range`，禁止用 shell 读文件再切片
+- 读取指定行范围 → `file read mode=full offset=N limit=M`，禁止用 shell 读文件再切片
+- 按行号编辑文件 → `file edit mode=range`（这是 edit 命令，不是 read）
 - 编辑前必须先 `file read`
 - `file edit` 失败会自动回滚，无需手动处理
 - 目录操作必须用 `file fs`
 - pip 安装加 `--target="libs"`（嵌入式环境）
+
+**⚠️ mode 参数是命令专用的**:
+| 命令 | 支持的 mode |
+|------|-------------|
+| read | full, context, summary, compact |
+| edit | replace, replace_all, insert, append, regex, range, delete |
+| insight | grep, structure, symbol, files |
+
+**禁止混用！** 例如：`read` 不支持 `range`，`edit` 不支持 `full`
 
 ### §1.2 shell 工具核心约束
 
@@ -61,12 +71,14 @@ _intent: "正在{动作}：{对象}"
 ### §2.2 代码阅读流程 [强制]
 1. `file insight mode=structure` 看骨架（不知道在哪时）
 2. `file read mode=context` 精准读取目标附近（节省 token）
-3. `file edit mode=range` 按行号编辑（更稳定）
+3. `file read mode=full offset=N limit=M` 分页读取大文件
+4. `file edit mode=range` 按行号编辑（更稳定）
 
 **铁律**:
 - 不知道在哪 → 先 `insight`
 - 知道在哪 → 用 `read mode=context`
-- 编辑优先用 `mode=range`（比 old_text 更稳定）
+- 读取大文件 → 用 `read mode=full offset=N limit=M` 分页
+- 编辑优先用 `edit mode=range`（比 old_text 更稳定）
 
 ### §2.3 危险操作
 - 格式化磁盘、删系统文件 → **禁止**

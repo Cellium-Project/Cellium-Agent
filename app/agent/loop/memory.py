@@ -164,9 +164,10 @@ class MemoryManager:
         })
 
     def get_messages(self) -> List[Dict]:
+        """获取消息列表"""
         messages = self._smart_truncate(self.messages, self.max_history)
-        messages = self._truncate_long_tool_contents(messages)
         messages = self._fix_message_sequence(messages)
+        
         if self._ephemeral_messages:
             messages = messages + self._ephemeral_messages
         return messages
@@ -235,16 +236,6 @@ class MemoryManager:
         if removed_count > 0:
             logger.debug(f"[MemoryManager] 移除了 {removed_count} 条 Gene 评估提示")
         return removed_count
-
-    def _truncate_long_tool_contents(self, messages: List[Dict]) -> List[Dict]:
-        """截断过长的工具结果内容"""
-        for msg in messages:
-            if msg.get("role") == "tool" and not msg.get("_compacted"):
-                content = msg.get("content", "")
-                if len(content) > self.max_tool_result_length:
-                    msg["content"] = content[:self.max_tool_result_length] + "\n...[已截断]"
-                    msg["_truncated"] = True
-        return messages
 
     def _smart_truncate(self, messages: List[Dict], max_count: int) -> List[Dict]:
         if len(messages) <= max_count:
@@ -335,77 +326,6 @@ class MemoryManager:
         """清空对话历史"""
         self.messages = []
         self.tool_call_counter = 0
-
-    # ============================================================
-    #  工具结果压缩
-    # ============================================================
-
-    def compact_tool_results(self) -> int:
-        """
-        清理过期的工具返回内容
-
-        - 保留最近 max_tool_results 次完整结果
-        - 较旧的结果截断为摘要
-        - 返回清理的字节数
-        """
-        # 1. 找出所有 tool 角色的消息
-        tool_messages = [
-            (i, msg) for i, msg in enumerate(self.messages)
-            if msg.get("role") == "tool"
-        ]
-
-        if len(tool_messages) <= self.max_tool_results:
-            return 0  # 无需清理
-
-        # 2. 确定需要截断的消息（较旧的）
-        to_compact = tool_messages[:-self.max_tool_results]
-        saved_bytes = 0
-
-        # 3. 截断内容
-        for idx, msg in to_compact:
-            original = msg.get("content", "")
-            if len(original) > self.max_tool_result_length:
-                compacted = original[:self.max_tool_result_length] + "\n...[已压缩]"
-                saved_bytes += len(original) - len(compacted)
-                self.messages[idx]["content"] = compacted
-                self.messages[idx]["_compacted"] = True
-
-        if saved_bytes > 0:
-            logger.info(
-                "[MemoryManager] 压缩工具结果 | 共 %d 条 | 节省 %d 字节",
-                len(to_compact), saved_bytes
-            )
-
-        return saved_bytes
-
-    def should_compact(self) -> bool:
-        """检查是否需要压缩"""
-        total_length = sum(
-            len(msg.get("content", ""))
-            for msg in self.messages
-            if msg.get("role") == "tool" and not msg.get("_compacted")
-        )
-        return total_length > self.auto_compact_threshold
-
-    def get_tool_result_stats(self) -> Dict:
-        """获取工具结果统计信息"""
-        tool_messages = [
-            msg for msg in self.messages
-            if msg.get("role") == "tool"
-        ]
-        total_length = sum(len(msg.get("content", "")) for msg in tool_messages)
-        compacted_count = sum(1 for msg in tool_messages if msg.get("_compacted"))
-
-        return {
-            "total_tool_results": len(tool_messages),
-            "compacted_count": compacted_count,
-            "total_bytes": total_length,
-            "should_compact": self.should_compact(),
-        }
-
-    # ============================================================
-    #  会话压缩支持
-    # ============================================================
 
     def replace_with_notes(self, notes_message: Dict, keep_recent: int = 10):
         """

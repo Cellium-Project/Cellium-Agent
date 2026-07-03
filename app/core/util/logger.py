@@ -65,6 +65,8 @@ class RuntimeStatus:
         self.iteration: int = 0
         self.max_iterations: int = 10
         self.tokens_used: int = 0
+        self.last_prompt_tokens: int = 0
+        self.total_completion_tokens: int = 0
         self.token_budget: int = 10000000
         self.elapsed_ms: int = 0
         self.tool_traces: List[Dict] = []
@@ -113,7 +115,7 @@ class RuntimeStatus:
         elapsed_s = "∞" if self.elapsed_ms == float('inf') else f"{self.elapsed_ms}ms"
         lines = [
             f"[时间] {self.current_time}",
-            f"[运行状态] 迭代:{self.progress} | Token:{self.tokens_used:,}/{self.token_budget:,} ({self.token_pct}%) | 耗时:{elapsed_s}",
+            f"[运行状态] 迭代:{self.progress} | Token:{self.tokens_used:,}/{self.token_budget:,} ({self.token_pct}%) | Prompt(最新):{self.last_prompt_tokens:,} | Completion(累计):{self.total_completion_tokens:,} | 耗时:{elapsed_s}",
         ]
         if self.recent_tools_summary != "无":
             lines.append(f"[工具] 最近:{self.recent_tools_summary}")
@@ -165,6 +167,8 @@ class RuntimeStatus:
             "max_iterations": None if self.max_iterations == float('inf') else self.max_iterations,
             "progress": self.progress,
             "tokens_used": self.tokens_used,
+            "last_prompt_tokens": self.last_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
             "token_budget": self.token_budget,
             "token_pct": self.token_pct,
             "elapsed_ms": elapsed_ms,
@@ -194,6 +198,8 @@ def set_runtime_status(state) -> None:
         snapshot.iteration = _runtime_status.iteration
         snapshot.max_iterations = _runtime_status.max_iterations
         snapshot.tokens_used = _runtime_status.tokens_used
+        snapshot.last_prompt_tokens = _runtime_status.last_prompt_tokens
+        snapshot.total_completion_tokens = _runtime_status.total_completion_tokens
         snapshot.token_budget = _runtime_status.token_budget
         snapshot.elapsed_ms = _runtime_status.elapsed_ms
         snapshot.tool_traces = list(_runtime_status.tool_traces)
@@ -215,6 +221,8 @@ def set_runtime_status(state) -> None:
     rs.iteration = state.iteration
     rs.max_iterations = state.max_iterations
     rs.tokens_used = state.tokens_used
+    rs.last_prompt_tokens = state.last_prompt_tokens
+    rs.total_completion_tokens = state.total_completion_tokens
     rs.token_budget = state.token_budget
     rs.elapsed_ms = state.elapsed_ms
     rs.tool_traces = state.tool_traces[-3:] if state.tool_traces else []

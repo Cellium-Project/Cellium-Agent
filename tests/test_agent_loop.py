@@ -1159,7 +1159,8 @@ class TestPromptContextBuilder(unittest.TestCase):
         )
 
         mock_memory.retrieve_context.assert_called()
-        self.assertIn("长期记忆", messages[1]["content"])
+        all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
+        self.assertIn("长期记忆", all_content)
 
     def test_build_first_round_no_memory(self):
         """无长期记忆时应正常构建"""
@@ -1187,8 +1188,9 @@ class TestPromptContextBuilder(unittest.TestCase):
             system_injection="优先使用文件工具",
         )
 
-        self.assertIn("系统指令", messages[1]["content"])
-        self.assertIn("优先使用文件工具", messages[1]["content"])
+        all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
+        self.assertIn("系统指令", all_content)
+        self.assertIn("优先使用文件工具", all_content)
 
     def test_build_first_round_with_guidance(self):
         """应正确注入引导消息"""
@@ -1292,7 +1294,8 @@ class TestPromptContextBuilder(unittest.TestCase):
             auto_hints="建议使用 file 工具",
         )
 
-        self.assertIn("工具使用提示", messages[1]["content"])
+        all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
+        self.assertIn("工具使用提示", all_content)
 
     def test_prefix_cache_works(self):
         """固定人格应被缓存"""
@@ -1332,7 +1335,7 @@ class TestPromptContextBuilder(unittest.TestCase):
 
         builder = PromptContextBuilder(flash_mode=True)
 
-        context = builder._build_context_message()
+        context = builder._build_static_context()
 
         self.assertIn("日期", context)
         self.assertIn("系统环境", context)

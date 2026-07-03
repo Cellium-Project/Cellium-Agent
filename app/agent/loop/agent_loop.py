@@ -992,8 +992,6 @@ class AgentLoop:
                     if decision.force_memory_compact and not self.flash_mode and not is_gene_processing:
                         logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
                         yield {"type": "thinking", "content": "正在根据控制决策压缩上下文..."}
-                        if effective_memory.should_compact():
-                            effective_memory.compact_tool_results()
                         session_notes = self._get_session_notes(effective_session)
                         await self._session_compactor.compact_now(effective_memory, session_notes)
 
@@ -1018,12 +1016,16 @@ class AgentLoop:
                         return
 
                 if self.heuristics:
+                    token_usage_dict = None
+                    if self._loop_state:
+                        token_usage_dict = {"total": self._loop_state.tokens_used}
                     context = self.heuristics.build_context(
                         session_id=effective_session,
                         iteration=iteration,
                         max_iterations=self.max_iterations,
                         tool_traces=tool_traces,
                         user_input=user_input,
+                        token_usage=token_usage_dict,
                         elapsed_ms=int((time.time() - start_time) * 1000),
                     )
 
@@ -1240,14 +1242,20 @@ class AgentLoop:
                     if len(self._loop_state.recent_llm_outputs) > 10:
                         self._loop_state.recent_llm_outputs.pop(0)
 
-                # 更新 token 统计（从 LLM 响应中获取实际值）
+                # 更新 token 统计
+                # tokens_used = latest_prompt + 累计 completion
                 if response.usage and self._loop_state:
                     prompt_tokens = response.usage.get("prompt_tokens", 0)
                     completion_tokens = response.usage.get("completion_tokens", 0)
-                    self._loop_state.tokens_used += prompt_tokens + completion_tokens
+                    self._loop_state.last_prompt_tokens = prompt_tokens
+                    self._loop_state.total_completion_tokens += completion_tokens
+                    self._loop_state.tokens_used = prompt_tokens + self._loop_state.total_completion_tokens
                     logger.debug(
-                        "[AgentLoop] Token 统计 | prompt=%d | completion=%d | 累计=%d",
-                        prompt_tokens, completion_tokens, self._loop_state.tokens_used
+                        "[AgentLoop] Token 统计 | prompt=%d | completion=%d | 累计prompt(最新)=%d | 累计completion=%d | total=%d",
+                        prompt_tokens, completion_tokens,
+                        self._loop_state.last_prompt_tokens,
+                        self._loop_state.total_completion_tokens,
+                        self._loop_state.tokens_used
                     )
 
                 set_runtime_status(self._loop_state)
@@ -1515,16 +1523,9 @@ class AgentLoop:
                     if response and response.content:
                         self.save_agent_created_gene(response.content)
 
-                    # 两级压缩（在所有工具调用结束后，按顺序执行）
+                    # 会话笔记压缩（在下一次迭代开始时执行）
                     # Gene 处理轮次跳过压缩，避免丢失 Gene 评估上下文
                     if not self.flash_mode and not is_gene_processing:
-                        # 第一级：快速压缩 tool_result
-                        if effective_memory.should_compact():
-                            saved = effective_memory.compact_tool_results()
-                            if saved > 0:
-                                logger.info("[AgentLoop] 压缩工具结果 | saved=%d bytes", saved)
-
-                        # 第二级：标记会话笔记压缩（在下一次迭代开始时执行）
                         if self._session_compactor.should_compact(effective_memory):
                             self._session_compactor.request_compact()
 

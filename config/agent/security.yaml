@@ -1,7 +1,6 @@
 security:
   command_blacklist:
   - remove-item -recurse -force
-  - 'format '
   - diskpart
   - mkfs
   - dd if=

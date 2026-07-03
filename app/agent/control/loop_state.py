@@ -88,6 +88,8 @@ class LoopState:
 
     # ===== 资源状态 =====
     tokens_used: int = 0
+    last_prompt_tokens: int = 0 
+    total_completion_tokens: int = 0  
     token_budget: int = 10000000
     token_budget_warn_ratio: float = 0.7
     token_budget_compress_ratio: float = 0.5
@@ -153,6 +155,8 @@ class LoopState:
             "session_id": self.session_id,
             "tool_traces_count": len(self.tool_traces),
             "tokens_used": self.tokens_used,
+            "last_prompt_tokens": self.last_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
             "token_budget": self.token_budget,
             "elapsed_ms": self.elapsed_ms,
             "decision_count": len(self.decision_trace),
