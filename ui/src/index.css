@@ -724,7 +724,11 @@ body {
 }
 
 /* 流式输出指示器 - 三个点 */
-.streaming-cursor {
+.assistant-content-wrap {
+    display: inline;
+}
+
+.assistant-content-wrap > .streaming-cursor {
     display: inline-flex;
     align-items: center;
     gap: 3px;

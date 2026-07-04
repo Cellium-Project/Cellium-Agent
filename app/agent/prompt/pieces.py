@@ -1,17 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 预定义提示词拼图块
-
-包含：
-  - BASE_PIECES: 基础层（始终存在）
-  - DYNAMIC_PIECES: 动态层（按需启用）
-
-注意：personality.md 已包含工具调用规范和约束，
-      基础层只加载 personality.md，避免重复。
 """
 
 import os
-from typing import List, TYPE_CHECKING
+import platform
+from datetime import datetime
+from typing import Optional, TYPE_CHECKING
 
 from app.agent.prompt.piece import PromptPiece
 
@@ -20,26 +15,38 @@ if TYPE_CHECKING:
 
 
 # ============================================================
-# 基础层 - 始终存在
+# Helpers
 # ============================================================
 
-def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
+def _get_current_date() -> str:
+    now = datetime.now()
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    return f"{now.year}年{now.month}月{now.day}号 {weekdays[now.weekday()]}"
+
+
+def _get_system_info() -> str:
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Windows":
+        shell = "PowerShell"
+    elif system == "Darwin":
+        shell = "zsh/bash"
+    else:
+        shell = "bash"
+    return f"{system} {machine} | {shell}"
+
+
+def _read_personality(memory_dir: str = "memory") -> str:
+    if not isinstance(memory_dir, str):
+        return DEFAULT_IDENTITY
     personality_path = os.path.join(memory_dir, "personality.md")
     if os.path.exists(personality_path):
         try:
             with open(personality_path, "r", encoding="utf-8") as f:
-                content = f.read()
+                return f.read()
         except Exception:
-            content = DEFAULT_IDENTITY
-    else:
-        content = DEFAULT_IDENTITY
-
-    return PromptPiece(
-        name="identity",
-        content=content,
-        priority=0,
-        is_base=True,
-    )
+            pass
+    return DEFAULT_IDENTITY
 
 
 DEFAULT_IDENTITY = """# Cellium Agent
@@ -50,114 +57,151 @@ DEFAULT_IDENTITY = """# Cellium Agent
 - 回答技术问题
 - 协助开发和调试
 
-## 工具调用规范
-- 每次工具调用必须包含 `_intent` 字段
-- `_intent` 格式：`正在{动词}{对象}`，15~30字中文
 """
 
 
 # ============================================================
-# 动态层 - 按需启用
+# 静态层 — role: system，永远不变
 # ============================================================
 
-DYNAMIC_PIECES: List[PromptPiece] = [
-    PromptPiece(
-        name="coherence_reminder",
-        template="""##  §重要 连贯性保持 [强制]
+def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
+    from app.agent.control.thought_parser import THOUGHT_SCHEMA
 
-**保持对话连贯性**：
-- 如果用户提到"它"、"那个"、"之前"等指代词，但上下文不清晰 → 使用 memory:search 检索相关记忆
-- 如果用户的问题涉及之前讨论的内容但你没有相关信息 → 主动查询长期记忆
-- 如果当前上下文无法确定用户意图 → 先查询记忆再决策
+    personality = _read_personality(memory_dir)
+    content = f"{personality}\n\n{THOUGHT_SCHEMA}"
 
-**禁止**：在上下文不足时凭空猜测或假设用户意图""",
-        priority=95,
-        enabled=True,
-    ),
-    PromptPiece(
-        name="session_context",
-        template="""## 当前对话上下文
+    return PromptPiece(
+        name="identity",
+        content=content,
+        stability="static",
+        priority=0,
+        role="system",
+    )
 
-{% if session_messages %}
-{% for msg in session_messages %}
-{% if msg.content %}
-> **{{ msg.role }}**: {{ msg.content[:300] if msg.content | length > 300 else msg.content }}
-{% endif %}
-{% endfor %}
-{% else %}
-（新会话，无历史上下文）
-{% endif %}""",
-        priority=110,
-        enabled=False,  # 有历史时启用
-    ),
-    PromptPiece(
-        name="long_memory",
-        template="""## 相关历史记忆
 
-{% if long_term_results %}
-{% for item in long_term_results %}
-{% if item.content %}
-### {{ item.title | default('记忆') }} (相关度: {{ item.score | default(0) }})
-{{ item.content[:500] if item.content | length > 500 else item.content }}
-{% endif %}
-{% endfor %}
-{% else %}
-（未检索到相关历史记忆）
-{% endif %}""",
-        priority=120,
-        enabled=False,
-    ),
-    PromptPiece(
+# ============================================================
+# 日更层 — role: user，至少每天才变一次
+# ============================================================
+
+def get_context_piece() -> PromptPiece:
+    context_lines = [
+        f"**当前日期**: {_get_current_date()}",
+        f"**系统环境**: {_get_system_info()}",
+    ]
+    content = "[上下文信息]\n" + "\n".join(context_lines)
+
+    return PromptPiece(
+        name="context",
+        content=content,
+        stability="dynamic",
+        priority=550,
+    )
+
+
+# ============================================================
+# 会话层 — role: user，同一会话内不变
+# ============================================================
+
+def get_long_term_memory_piece() -> PromptPiece:
+    """
+    长期记忆检索结果。
+    由外部（agent_loop）检索后将结果传入 context["long_term_results"]。
+    模板根据是否为空值自动跳过。
+    """
+    return PromptPiece(
+        name="long_term_memory",
+        template=(
+            "{% if not _flash_mode and long_term_results %}"
+            "[长期记忆检索结果]\n{{ long_term_results }}"
+            "{% endif %}"
+        ),
+        stability="dynamic",
+        priority=800,
+    )
+
+
+# ============================================================
+# 动态层 — role: user，每次请求都可能变化
+# ============================================================
+
+def get_user_input_piece() -> PromptPiece:
+    """
+    极速模式下将用户输入作为独立消息（flash_mode 且无历史时启用）。
+    """
+    return PromptPiece(
         name="user_input",
-        template="""## 用户新问题
+        template=(
+            "{% if _flash_mode and _is_first_round and not session_messages %}"
+            "{{ user_input }}"
+            "{% endif %}"
+        ),
+        stability="dynamic",
+        priority=300,
+    )
 
-{{ user_input }}""",
-        priority=200,
-        enabled=True,
-    ),
-    PromptPiece(
-        name="self_awareness",
-        template="""## 运行时状态参考
 
-{% if runtime_status %}
-{{ runtime_status }}
+def get_system_injection_piece() -> PromptPiece:
+    """
+    系统指令注入（来自控制环 Gene）。
+    """
+    return PromptPiece(
+        name="system_injection",
+        template=(
+            "{% if system_injection %}"
+            "[系统指令]\n{{ system_injection }}"
+            "{% endif %}"
+        ),
+        stability="dynamic",
+        priority=400,
+    )
 
-**请在决策时参考以上运行状态**，特别是：
-- 出现 `[错误]` 或 `[警告]` → 当前方法有问题，应换策略
-- 出现 `[决策] redirect` → 被要求换工具，不要重复
-- 出现 `[停止]` → 已达终止条件，整理结果并结束
-{% endif %}""",
-        priority=105,
-        enabled=False,  # 有 runtime_status 时才启用
-    ),
-    PromptPiece(
-        name="thinking_reminder",
-        template="""## ⚡ 思考输出格式 [强制]
 
-**调用工具前必须先输出结构化思考**：
+def get_runtime_status_piece() -> PromptPiece:
+    """
+    运行时状态摘要（来自 LoopState）。
+    """
+    return PromptPiece(
+        name="runtime_status",
+        template=(
+            "{% if runtime_status %}"
+            "[运行时状态]\n{{ runtime_status }}"
+            "{% endif %}"
+        ),
+        stability="dynamic",
+        priority=500,
+    )
 
-```json
-{
-  "reasoning": "分析当前情况（50-200字）",
-  "plan": [
-    {"tool": "工具名", "purpose": "目的", "expected_result": "预期结果"}
-  ],
-  "action": "tool_call",
-  "confidence": 0.8,
-  "estimated_steps": 2
-}
-```
 
-**action 类型**：
-- `tool_call`: 需要调用工具
-- `direct_response`: 可以直接回答，无需工具
-- `clarify`: 需要用户澄清
+def get_guidance_message_piece() -> PromptPiece:
+    """
+    系统引导消息（来自启发式模块 / 控制环）。
+    """
+    return PromptPiece(
+        name="guidance_message",
+        template=(
+            "{% if guidance_message %}"
+            "[系统引导]\n{{ guidance_message }}"
+            "{% endif %}"
+        ),
+        stability="dynamic",
+        priority=600,
+    )
 
-**禁止**：不输出思考直接调用工具、逐个工具试探""",
-        priority=150,
-        enabled=True,
-    ),
-]
+
+def get_auto_hints_piece() -> PromptPiece:
+    """
+    工具使用提示。
+    """
+    return PromptPiece(
+        name="auto_hints",
+        template=(
+            "{% if auto_hints %}"
+            "[工具使用提示]\n{{ auto_hints }}"
+            "{% endif %}"
+        ),
+        stability="dynamic",
+        priority=350,
+    )
 
 
 # ============================================================
@@ -165,22 +209,24 @@ DYNAMIC_PIECES: List[PromptPiece] = [
 # ============================================================
 
 def create_default_builder(memory_dir: str = "memory") -> "PromptBuilder":
-    """
-    创建默认配置的 PromptBuilder
-
-    Args:
-        memory_dir: 记忆目录路径
-
-    Returns:
-        配置好基础层和动态层的 PromptBuilder
-    """
     from app.agent.prompt.builder import PromptBuilder
 
     builder = PromptBuilder()
 
+    # static
     builder.register(get_identity_piece(memory_dir))
 
-    for piece in DYNAMIC_PIECES:
-        builder.register(piece)
+    # daily
+    builder.register(get_context_piece())
+
+    # session
+    builder.register(get_long_term_memory_piece())
+
+    # dynamic（按 priority 排序 → 固定顺序）
+    builder.register(get_user_input_piece())
+    builder.register(get_system_injection_piece())
+    builder.register(get_runtime_status_piece())
+    builder.register(get_guidance_message_piece())
+    builder.register(get_auto_hints_piece())
 
     return builder

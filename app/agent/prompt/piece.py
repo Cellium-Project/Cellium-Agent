@@ -3,8 +3,17 @@
 PromptPiece - 提示词拼图块
 """
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Literal
+
+
+Stability = Literal["static", "daily", "session", "dynamic"]
+
+# 稳定性说明:
+#   static  — 永远不变（personality, thought_schema），对应 role: system
+#   daily   — 每天变一次（日期, 环境信息），对应 role: user
+#   session — 会话内稳定（长期记忆检索结果），对应 role: user
+#   dynamic — 每次请求都变（runtime_status, 系统指令等），对应 role: user
 
 
 @dataclass
@@ -16,17 +25,24 @@ class PromptPiece:
         name: 唯一标识
         content: 静态内容
         template: Jinja 模板（动态渲染）
+        stability: 稳定性级别（static/daily/session/dynamic）
         priority: 拼接顺序（小在前）
         enabled: 开关
-        is_base: 是否基础层（基础层始终存在）
+        role: 消息角色（默认 auto → static=system, 其余=user）
     """
 
     name: str
     content: str = ""
     template: str = ""
+    stability: Stability = "dynamic"
     priority: int = 100
     enabled: bool = True
-    is_base: bool = False
+    role: str = ""  # 空 = auto 推断
+
+    @property
+    def effective_role(self) -> str:
+        """推断消息角色：static→system，其余→user"""
+        return self.role or ("system" if self.stability == "static" else "user")
 
     def render(self, context: dict = None) -> str:
         """
@@ -52,4 +68,7 @@ class PromptPiece:
         return self.content
 
     def __repr__(self) -> str:
-        return f"PromptPiece(name={self.name!r}, priority={self.priority}, enabled={self.enabled}, is_base={self.is_base})"
+        return (
+            f"PromptPiece(name={self.name!r}, stability={self.stability}, "
+            f"priority={self.priority}, enabled={self.enabled})"
+        )

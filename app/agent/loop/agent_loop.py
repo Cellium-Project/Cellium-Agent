@@ -36,7 +36,7 @@ from .tool_executor import (
 from .command_handler import CommandHandler
 from .auto_hints import AutoHintManager
 from .loop_controller import LoopController
-from .prompt_context_builder import PromptContextBuilder
+from app.agent.prompt import PromptBuilder, PromptDiffTracker, create_default_builder
 from .loop_event_publisher import LoopEventPublisher
 
 logger = logging.getLogger(__name__)
@@ -139,10 +139,9 @@ class AgentLoop:
             TaskSignalMatcher.initialize(three_layer_memory.repository)
             logger.info("[AgentLoop] TaskSignalMatcher 已连接记忆系统")
 
-        self._prompt_context_builder = PromptContextBuilder(
-            three_layer_memory=three_layer_memory,
-            flash_mode=flash_mode,
-        )
+        # 提示词构建（新 pieces 系统，按 stability 分层优化 KV 缓存）
+        self._prompt_builder = create_default_builder(memory_dir=memory_dir)
+        self._prompt_diff_tracker = PromptDiffTracker()
 
         # 会话笔记压缩
         session_config = self._mem_config.get("session_compact", {})
@@ -293,8 +292,7 @@ class AgentLoop:
                 logger.info("[AgentLoop] flash_mode 已热更新为 False，控制环已启用")
             else:
                 logger.info(f"[AgentLoop] flash_mode 已热更新为 {flash_mode}")
-            if hasattr(self._prompt_context_builder, 'update_flash_mode'):
-                self._prompt_context_builder.update_flash_mode(self.flash_mode)
+            # 新版：flash_mode 通过 context dict 传至 builder.build()
         if max_iterations is not None:
             self.max_iterations = max_iterations
             logger.info(f"[AgentLoop] max_iterations 已热更新为 {max_iterations}")
@@ -1128,31 +1126,44 @@ class AgentLoop:
                     
                     replan_message = "\n".join(replan_info)
 
-                if iteration == 1:
-                    llm_messages = self._prompt_context_builder.build_first_round(
-                        user_input=user_input,
-                        session_messages=session_messages,
-                        guidance_message=_pending_guidance_msg,
-                        system_injection=_pending_system_injection,
-                        runtime_status=runtime_status_str,
-                    )
-                else:
-                    auto_hints = self._auto_hints.get_auto_tool_hints(self.tools)
+                # ---- 新版 PromptBuilder + PromptDiffTracker ----
+                # 构建通用 context（所有轮次共用）
+                context = {
+                    "_is_first_round": iteration == 1,
+                    "_flash_mode": self.flash_mode,
+                    "session_messages": session_messages,
+                    "user_input": user_input,
+                    "system_injection": _pending_system_injection,
+                    "runtime_status": runtime_status_str,
+                    "guidance_message": _pending_guidance_msg,
+                }
 
+                if iteration == 1:
+                    # 第一轮：检索长期记忆（非 flash_mode）
+                    if not self.flash_mode and self.three_layer_memory:
+                        try:
+                            mem_results = self.three_layer_memory.retrieve_context(
+                                user_input, top_k=3,
+                                exclude_schema_types=["control_gene"],
+                            )
+                            if mem_results:
+                                context["long_term_results"] = \
+                                    self.three_layer_memory.format_retrieved_context(mem_results)
+                        except Exception as e:
+                            logger.warning("[AgentLoop] 长期记忆检索失败: %s", e)
+                else:
+                    # 后续轮次：自动工具提示
+                    auto_hints = self._auto_hints.get_auto_tool_hints(self.tools)
                     security_hint = self._auto_hints.check_security_error_and_suggest(tool_traces)
                     if security_hint:
                         auto_hints = auto_hints + "\n\n" + security_hint if auto_hints else security_hint
+                    if auto_hints:
+                        context["auto_hints"] = auto_hints
 
-                    llm_messages = self._prompt_context_builder.build_subsequent_round(
-                        session_messages=session_messages,
-                        auto_hints=auto_hints,
-                        guidance_message=_pending_guidance_msg,
-                        system_injection=_pending_system_injection,
-                        runtime_status=runtime_status_str,
-                        iteration=iteration,
-                    )
-                
-                # REPLAN 阶段：追加动态上下文作为单独的消息
+                # 通过 PromptBuilder 构建结构化消息列表
+                llm_messages = self._prompt_builder.build(context)
+
+                # REPLAN 阶段：追加动态上下文（老代码保留不变）
                 if replan_message:
                     llm_messages.append({
                         "role": "user",
@@ -1167,7 +1178,9 @@ class AgentLoop:
                 tool_defs = self._get_tools_definition()
                 logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
                            iteration, len(llm_messages), len(tool_defs))
-                response = await self.llm.chat(
+                # 经 PromptDiffTracker 调用 LLM（自动追踪前缀缓存）
+                response = await self._prompt_diff_tracker.chat(
+                    llm_engine=self.llm,
                     messages=llm_messages,
                     tools=tool_defs,
                     max_tokens=self._resolve_runtime_max_tokens(_active_constraint),

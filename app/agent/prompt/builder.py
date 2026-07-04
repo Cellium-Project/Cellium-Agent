@@ -4,179 +4,160 @@ PromptBuilder - 提示词构建器
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
-from app.agent.prompt.piece import PromptPiece
+from app.agent.prompt.piece import PromptPiece, Stability
 
 logger = logging.getLogger(__name__)
 
 
 class PromptBuilder:
-    """
-    提示词构建器
 
-    功能：
-      - register: 注册拼图块
-      - enable: 启用/禁用拼图块
-      - inject: 动态注入一次性内容
-      - build: 构建完整提示词
-    """
-
-    def __init__(self, separator: str = "\n\n---\n\n"):
+    def __init__(self):
         self._pieces: Dict[str, PromptPiece] = {}
-        self._separator = separator
-        self._dynamic_counter = 0  # 动态注入计数器
+        self._dynamic_counter = 0
 
     def register(self, piece: PromptPiece) -> None:
-        """
-        注册拼图块
-
-        Args:
-            piece: PromptPiece 实例
-        """
         self._pieces[piece.name] = piece
-        logger.debug("[PromptBuilder] 注册拼图块: %s", piece.name)
+        logger.debug("[PromptBuilder] 注册: %s (stability=%s)", piece.name, piece.stability)
 
     def unregister(self, name: str) -> bool:
-        """
-        注销拼图块
-
-        Args:
-            name: 拼图块名称
-
-        Returns:
-            是否成功注销
-        """
         if name in self._pieces:
             del self._pieces[name]
-            logger.debug("[PromptBuilder] 注销拼图块: %s", name)
+            logger.debug("[PromptBuilder] 注销: %s", name)
             return True
         return False
 
     def enable(self, name: str, enabled: bool = True) -> bool:
-        """
-        启用/禁用拼图块
-
-        Args:
-            name: 拼图块名称
-            enabled: 是否启用
-
-        Returns:
-            是否成功设置
-        """
         if name in self._pieces:
             self._pieces[name].enabled = enabled
-            logger.debug("[PromptBuilder] %s 拼图块: %s", "启用" if enabled else "禁用", name)
+            logger.debug("[PromptBuilder] %s: %s", "启用" if enabled else "禁用", name)
             return True
         return False
 
-    def inject(self, content: str, name: Optional[str] = None, priority: int = 200, is_base: bool = False) -> str:
-        """
-        动态注入一次性内容
+    def get_piece(self, name: str) -> Optional[PromptPiece]:
+        return self._pieces.get(name)
 
-        Args:
-            content: 注入内容
-            name: 拼图块名称（可选，自动生成）
-            priority: 优先级
-            is_base: 是否基础层
-
-        Returns:
-            注入的拼图块名称
-        """
+    def inject(self, content: str, name: Optional[str] = None,
+               stability: Stability = "dynamic", priority: int = 200) -> str:
         self._dynamic_counter += 1
         piece_name = name or f"_dynamic_{self._dynamic_counter}"
-
         self._pieces[piece_name] = PromptPiece(
             name=piece_name,
             content=content,
+            stability=stability,
             priority=priority,
             enabled=True,
-            is_base=is_base,
         )
-
-        logger.debug("[PromptBuilder] 动态注入: %s (priority=%d)", piece_name, priority)
+        logger.debug("[PromptBuilder] 动态注入: %s (stability=%s, priority=%d)",
+                     piece_name, stability, priority)
         return piece_name
 
     def clear_dynamic(self) -> int:
-        """
-        清除所有动态注入的拼图块
-
-        Returns:
-            清除的数量
-        """
         dynamic_names = [
             name for name in self._pieces
             if name.startswith("_dynamic_") or name.startswith("_control_")
         ]
         for name in dynamic_names:
             del self._pieces[name]
-        if dynamic_names:
-            logger.debug("[PromptBuilder] 清除动态拼图块: %d 个", len(dynamic_names))
-        return len(dynamic_names)
+        count = len(dynamic_names)
+        if count:
+            logger.debug("[PromptBuilder] 清除动态注入: %d 个", count)
+        return count
 
-    def get_piece(self, name: str) -> Optional[PromptPiece]:
-        """获取拼图块"""
-        return self._pieces.get(name)
+    # ---- listing ----
 
     def list_pieces(self, enabled_only: bool = False) -> List[PromptPiece]:
-        """
-        列出所有拼图块
-
-        Args:
-            enabled_only: 是否只返回启用的
-
-        Returns:
-            拼图块列表
-        """
         pieces = list(self._pieces.values())
         if enabled_only:
             pieces = [p for p in pieces if p.enabled]
         return sorted(pieces, key=lambda p: p.priority)
 
-    def build(self, context: dict = None) -> str:
-        """
-        构建完整提示词
+    def _get_enabled_by_stability(self, stability: Stability) -> List[PromptPiece]:
+        return sorted(
+            [p for p in self._pieces.values() if p.enabled and p.stability == stability],
+            key=lambda p: p.priority,
+        )
 
-        Args:
-            context: 模板渲染上下文
+    # ---- build ----
 
-        Returns:
-            完整提示词字符串
-        """
+    def build(self, context: dict = None) -> List[Dict]:
         context = context or {}
+        messages: List[Dict] = []
 
-        base_parts = []
-        dynamic_parts = []
+        static_parts = self._render_group("static", context)
+        if static_parts:
+            messages.append({
+                "role": "system",
+                "content": "\n\n".join(static_parts),
+            })
 
-        for piece in self.list_pieces(enabled_only=True):
+        daily_parts = self._render_group("daily", context)
+        if daily_parts:
+            messages.append({
+                "role": "user",
+                "content": "\n".join(daily_parts),
+            })
+
+        session_messages = context.get("session_messages", [])
+        messages.extend(session_messages)
+
+        for piece in self._get_enabled_by_stability("session"):
             try:
                 content = piece.render(context)
                 if content and content.strip():
-                    if piece.is_base:
-                        base_parts.append(content.strip())
-                    else:
-                        dynamic_parts.append(content.strip())
+                    messages.append({
+                        "role": piece.effective_role,
+                        "content": content.strip(),
+                    })
             except Exception as e:
-                logger.warning("[PromptBuilder] 渲染拼图块失败 %s: %s", piece.name, e)
+                logger.warning("[PromptBuilder] 渲染 session piece %s 失败: %s", piece.name, e)
 
-        # 拼接：基础层 + 动态层
-        result = ""
-        if base_parts:
-            result = self._separator.join(base_parts)
-        if dynamic_parts:
-            if result:
-                result += self._separator
-            result += self._separator.join(dynamic_parts)
+        for piece in self._get_enabled_by_stability("dynamic"):
+            try:
+                content = piece.render(context)
+                if content and content.strip():
+                    messages.append({
+                        "role": piece.effective_role,
+                        "content": content.strip(),
+                    })
+            except Exception as e:
+                logger.warning("[PromptBuilder] 渲染 dynamic piece %s 失败: %s", piece.name, e)
 
-        return result
+        if messages:
+            prefix_info = "; ".join(
+                f"{i}:<{m.get('role', '?')}>" + (
+                    f" ({m.get('content', '')[:50]}...)" if i < 3 else ""
+                )
+                for i, m in enumerate(messages[:3])
+            )
+            logger.debug("[PromptBuilder] 构建完成 | total=%d | prefix=[%s]",
+                         len(messages), prefix_info)
+
+        return messages
+
+    def _render_group(self, stability: Stability, context: dict) -> List[str]:
+        rendered = []
+        for piece in self._get_enabled_by_stability(stability):
+            try:
+                content = piece.render(context)
+                if content and content.strip():
+                    if stability == "static":
+                        rendered.append(content)
+                    else:
+                        rendered.append(content.strip())
+            except Exception as e:
+                logger.warning("[PromptBuilder] render %s 失败: %s", piece.name, e)
+        return rendered
 
     def reset(self) -> None:
         self.clear_dynamic()
-
         for piece in self._pieces.values():
             piece.enabled = True
 
     def __repr__(self) -> str:
-        base_count = sum(1 for p in self._pieces.values() if p.is_base)
-        dynamic_count = len(self._pieces) - base_count
-        return f"PromptBuilder(base={base_count}, dynamic={dynamic_count})"
+        counts = {}
+        for p in self._pieces.values():
+            counts[p.stability] = counts.get(p.stability, 0) + 1
+        parts = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        return f"PromptBuilder({parts})"

@@ -1121,72 +1121,59 @@ class TestMemoryConfigLoading(unittest.TestCase):
 
 
 class TestPromptContextBuilder(unittest.TestCase):
-    """测试 PromptContextBuilder 上下文构建"""
+    """测试 PromptBuilder 上下文构建（迁移自旧 PromptContextBuilder 测试）"""
+
+    def setUp(self):
+        from app.agent.prompt import create_default_builder
+        self.builder = create_default_builder()
 
     def test_build_first_round_structure(self):
-        """第一轮应包含 system + prefix + user_input"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(flash_mode=True)
-
-        messages = builder.build_first_round(
-            user_input="你好",
-            session_messages=[],
-        )
+        """第一轮应包含 system + daily + user_input"""
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "你好",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
 
         self.assertGreaterEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "system")
         self.assertTrue(any(m.get("role") == "user" and "你好" in m.get("content", "") for m in messages))
 
     def test_build_first_round_with_long_term_memory(self):
-        """有长期记忆时应检索并注入"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
+        """有长期记忆时应注入"""
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "继续上次的问题",
+            "_flash_mode": False,
+            "_is_first_round": True,
+            "long_term_results": "用户之前问过Python问题",
+        })
 
-        mock_memory = Mock()
-        mock_memory.retrieve_context.return_value = [
-            {"content": "用户之前问过Python问题", "score": 0.9}
-        ]
-        mock_memory.format_retrieved_context.return_value = "用户之前问过Python问题"
-
-        builder = PromptContextBuilder(
-            three_layer_memory=mock_memory,
-            flash_mode=False,
-        )
-
-        messages = builder.build_first_round(
-            user_input="继续上次的问题",
-            session_messages=[],
-        )
-
-        mock_memory.retrieve_context.assert_called()
         all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
-        self.assertIn("长期记忆", all_content)
+        self.assertIn("长期记忆检索结果", all_content)
 
     def test_build_first_round_no_memory(self):
         """无长期记忆时应正常构建"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(three_layer_memory=None, flash_mode=False)
-
-        messages = builder.build_first_round(
-            user_input="你好",
-            session_messages=[],
-        )
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "你好",
+            "_flash_mode": False,
+            "_is_first_round": True,
+        })
 
         self.assertEqual(len(messages), 2)
-        self.assertNotIn("长期记忆", messages[1]["content"])
+        self.assertNotIn("长期记忆检索结果", messages[1]["content"])
 
     def test_build_first_round_with_system_injection(self):
         """应正确注入系统指令"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(flash_mode=True)
-
-        messages = builder.build_first_round(
-            user_input="执行任务",
-            session_messages=[],
-            system_injection="优先使用文件工具",
-        )
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "执行任务",
+            "_flash_mode": True,
+            "_is_first_round": True,
+            "system_injection": "优先使用文件工具",
+        })
 
         all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
         self.assertIn("系统指令", all_content)
@@ -1194,151 +1181,149 @@ class TestPromptContextBuilder(unittest.TestCase):
 
     def test_build_first_round_with_guidance(self):
         """应正确注入引导消息"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "测试",
+            "_flash_mode": True,
+            "_is_first_round": True,
+            "guidance_message": "建议使用read_file",
+        })
 
-        builder = PromptContextBuilder(flash_mode=True)
-
-        messages = builder.build_first_round(
-            user_input="测试",
-            session_messages=[],
-            guidance_message="建议使用read_file",
-        )
-
-        self.assertIn("系统引导", messages[-1]["content"])
+        self.assertTrue(any("系统引导" in m.get("content", "") for m in messages))
 
     def test_build_subsequent_round_different_structure(self):
-        """后续轮次不应重复 system_injection"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
+        """后续轮次 system 不变，且无动态注入残留"""
+        first_round = self.builder.build({
+            "session_messages": [{"role": "assistant", "content": "回复1"}],
+            "user_input": "第一轮",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
 
-        builder = PromptContextBuilder(flash_mode=True)
-
-        first_round = builder.build_first_round(
-            user_input="第一轮",
-            session_messages=[{"role": "assistant", "content": "回复1"}],
-        )
-
-        subsequent_round = builder.build_subsequent_round(
-            session_messages=[
+        subsequent_round = self.builder.build({
+            "session_messages": [
                 {"role": "user", "content": "第一轮"},
                 {"role": "assistant", "content": "回复1"},
                 {"role": "user", "content": "第二轮"},
             ],
-        )
+            "_flash_mode": True,
+            "_is_first_round": False,
+        })
 
         self.assertEqual(first_round[0]["role"], "system")
         self.assertEqual(subsequent_round[0]["role"], "system")
-        self.assertNotIn("系统指令", subsequent_round[1]["content"])
+        self.assertEqual(first_round[0]["content"], subsequent_round[0]["content"])
 
     def test_system_message_contains_thought_schema(self):
         """system 消息必须包含 THOUGHT_SCHEMA（关键结构）"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(flash_mode=True)
-
-        messages = builder.build_first_round("test", [])
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "test",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
         system_msg = messages[0]
 
         self.assertEqual(system_msg["role"], "system")
-        # THOUGHT_SCHEMA 是 JSON 思考格式定义，必须存在
         self.assertIn("reasoning", system_msg["content"])
         self.assertIn("action", system_msg["content"])
 
     def test_system_message_contains_identity(self):
         """system 消息必须包含身份定义"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(flash_mode=True)
-
-        messages = builder.build_first_round("test", [])
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "test",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
         system_msg = messages[0]
 
-        # 身份定义（Cellium Agent）必须存在
         self.assertIn("Cellium", system_msg["content"])
         self.assertIn("桌面助手", system_msg["content"])
 
     def test_system_message_unchanged_across_rounds(self):
-        """system 消息在多轮对话中应保持不变"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
+        """system 消息在多轮/多请求中应保持不变"""
+        first = self.builder.build({
+            "session_messages": [],
+            "user_input": "第一轮",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
+        second = self.builder.build({
+            "session_messages": [],
+            "user_input": "第二轮",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
+        subsequent = self.builder.build({
+            "session_messages": [{"role": "user", "content": "test"}],
+            "_flash_mode": True,
+            "_is_first_round": False,
+        })
 
-        builder = PromptContextBuilder(flash_mode=True)
-
-        first = builder.build_first_round("第一轮", [])
-        second = builder.build_first_round("第二轮", [])
-        subsequent = builder.build_subsequent_round([{"role": "user", "content": "test"}])
-
-        # 三种调用方式的 system 消息应该相同
         self.assertEqual(first[0]["content"], second[0]["content"])
         self.assertEqual(first[0]["content"], subsequent[0]["content"])
 
     def test_system_message_not_modified_by_injection(self):
         """system_injection 不会修改 system 消息"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
+        normal = self.builder.build({
+            "session_messages": [],
+            "user_input": "test",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
+        with_injection = self.builder.build({
+            "session_messages": [],
+            "user_input": "test",
+            "_flash_mode": True,
+            "_is_first_round": True,
+            "system_injection": "注入内容",
+        })
 
-        builder = PromptContextBuilder(flash_mode=True)
-
-        normal = builder.build_first_round("test", [])
-        with_injection = builder.build_first_round("test", [], system_injection="注入内容")
-
-        # system 消息应该完全相同
         self.assertEqual(normal[0]["content"], with_injection[0]["content"])
-        self.assertEqual(normal[0]["role"], "system")
 
     def test_build_subsequent_round_with_auto_hints(self):
         """后续轮次应包含 auto_hints"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(flash_mode=True)
-
-        messages = builder.build_subsequent_round(
-            session_messages=[{"role": "user", "content": "test"}],
-            auto_hints="建议使用 file 工具",
-        )
+        messages = self.builder.build({
+            "session_messages": [{"role": "user", "content": "test"}],
+            "_flash_mode": True,
+            "_is_first_round": False,
+            "auto_hints": "建议使用 file 工具",
+        })
 
         all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
         self.assertIn("工具使用提示", all_content)
 
     def test_prefix_cache_works(self):
-        """固定人格应被缓存"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(flash_mode=True)
-
-        msg1 = builder.build_first_round("第一", [])
-        msg2 = builder.build_first_round("第二", [])
+        """固定人格应被缓存（system 消息相同）"""
+        msg1 = self.builder.build({
+            "session_messages": [],
+            "user_input": "第一",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
+        msg2 = self.builder.build({
+            "session_messages": [],
+            "user_input": "第二",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
 
         self.assertEqual(msg1[0]["content"], msg2[0]["content"])
 
-    def test_retrieve_long_term_memory_returns_none_without_memory(self):
-        """无三层记忆时应返回 None"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        builder = PromptContextBuilder(three_layer_memory=None)
-
-        result = builder._retrieve_long_term_memory("查询")
-        self.assertIsNone(result)
-
-    def test_retrieve_long_term_memory_handles_error(self):
-        """检索失败时应返回 None"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
-
-        mock_memory = Mock()
-        mock_memory.retrieve_context.side_effect = Exception("检索失败")
-
-        builder = PromptContextBuilder(three_layer_memory=mock_memory)
-
-        result = builder._retrieve_long_term_memory("查询")
-        self.assertIsNone(result)
-
     def test_build_context_message_includes_date(self):
-        """上下文信息应包含日期"""
-        from app.agent.loop.prompt_context_builder import PromptContextBuilder
+        """上下文信息应包含日期和系统环境"""
+        messages = self.builder.build({
+            "session_messages": [],
+            "user_input": "test",
+            "_flash_mode": True,
+            "_is_first_round": True,
+        })
 
-        builder = PromptContextBuilder(flash_mode=True)
-
-        context = builder._build_static_context()
-
-        self.assertIn("日期", context)
-        self.assertIn("系统环境", context)
+        context_msg = next((m for m in messages if "上下文信息" in (m.get("content") or "")), None)
+        self.assertIsNotNone(context_msg, "未找到上下文信息消息")
+        self.assertIn("日期", context_msg["content"])
+        self.assertIn("系统环境", context_msg["content"])
 
 
 class TestStopMethod(unittest.TestCase):

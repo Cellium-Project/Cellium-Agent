@@ -638,7 +638,7 @@ export function useChat() {
     lastEventIdBySessionRef.current[sessionId] = 0;
     updateStreamingMessage({
       role: 'assistant',
-      content: '正在思考...',
+      content: '',
       toolTraces: [],
       timeline: [],
     });

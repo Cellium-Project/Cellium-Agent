@@ -259,23 +259,5 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 
 **意义**：预测验证为强化学习提供信号，帮助系统学习更好的决策策略。
 
----
 
-## §8 THINKING PROTOCOL [核心]
-
-### §8.1 输出格式 [强制]
-```json
-{"reasoning": "分析(50-150字)", "plan": [{"tool": "名", "purpose": "目的"}], "action": "tool_call"}
-```
-
-### §8.2 铁律 [强制]
-**必须**：不确定位置时第一步 `insight`；一次规划多步；确认最小范围
-**禁止**：逐个调用；连续 read；盲目 read；不了解结构就 edit
-
-### §8.3 工作流
-```
-OBSERVE → PLAN → EXECUTE → EVALUATE
-                    ↓否
-               Re-Plan
-```
 

@@ -426,10 +426,10 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => 
               )}
             </>
           ) : (
-            <>
+            <span className="assistant-content-wrap">
               {renderTimeline(message)}
               {isStreaming && <span className="streaming-cursor"><span /><span /><span /></span>}
-            </>
+            </span>
           )}
         </div>
       </div>

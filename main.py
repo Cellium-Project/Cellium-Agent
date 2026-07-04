@@ -216,10 +216,8 @@ class MainApplication(LogMixin):
             marker = "[ACTIVE]" if count > 0 else "       "
             self.logger.info("  %s %s (%d subscribers)", marker, et.value, count)
 
-
 def main():
     MainApplication().run()
-
 
 if __name__ == "__main__":
     main()
