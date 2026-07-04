@@ -88,7 +88,7 @@ def get_context_piece() -> PromptPiece:
         f"**当前日期**: {_get_current_date()}",
         f"**系统环境**: {_get_system_info()}",
     ]
-    content = "[上下文信息]\n" + "\n".join(context_lines)
+    content = "[系统信息]\n" + "\n".join(context_lines)
 
     return PromptPiece(
         name="context",
