@@ -77,10 +77,10 @@ const App: React.FC = () => {
     <div className="app-layout">
       <Sidebar />
       <div className="main-content">
-        <div className={`page-container chat-page ${!showSettingsPage ? 'active' : ''}`}>
+        <div className={`page-container chat-page ${!showSettingsPage ? 'active' : 'inactive'}`}>
           <ChatView />
         </div>
-        <div className={`page-container settings-page ${showSettingsPage ? 'active' : ''}`}>
+        <div className={`page-container settings-page ${showSettingsPage ? 'active' : 'inactive'}`}>
           <Suspense fallback={<LoadingFallback />}>
             <SettingsPage />
           </Suspense>

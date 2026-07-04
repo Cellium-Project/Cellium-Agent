@@ -79,7 +79,11 @@
     "sessions": "会话列表",
     "emptySessions": "暂无会话",
     "settings": "设置",
-    "status": "状态"
+    "status": "状态",
+    "today": "今天",
+    "yesterday": "昨天",
+    "thisWeek": "本周",
+    "earlier": "更早"
   },
   "chat": {
     "placeholder": "输入消息...",

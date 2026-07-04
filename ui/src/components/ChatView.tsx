@@ -54,9 +54,9 @@ const MessageList = memo(({
       return;
     }
 
-    // 同一对话内新增消息时平滑滚动
+    // 同一对话内新增消息时滚动到底部
     if (allMessages.length > prevCount && !isSwitchingSessionRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }
   }, [allMessages.length, currentSessionId, isLoadingMessages, messagesEndRef]);
 
@@ -92,6 +92,7 @@ const MessageList = memo(({
         <ChatMessage 
           key={msg.id || `${msg.role}-${idx}-${msg.content?.slice(0, 20)}`} 
           message={msg} 
+          isStreaming={streamingMessage !== null && msg === streamingMessage}
         />
       ))}
       <div ref={messagesEndRef} />

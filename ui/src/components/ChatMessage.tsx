@@ -333,18 +333,17 @@ const JsonBlockCard: React.FC<{ jsonStr: string }> = memo(({ jsonStr }) => {
 
 interface ChatMessageProps {
   message: Message;
+  isStreaming?: boolean;
 }
 
-export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
+export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
   const [showSchedulerDetail, setShowSchedulerDetail] = useState(false);
   
-  // 解析用户消息中的附件信息
   const parsedMessage = useMemo(() => {
     if (isUser) {
       const parsed = parseAttachmentsFromMessage(message.content);
-      // 合并已有的attachments和解析出来的attachments
       const allAttachments = [
         ...(message.attachments || []),
         ...parsed.attachments
@@ -357,7 +356,6 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
     return { content: message.content, attachments: message.attachments || [] };
   }, [message.content, message.attachments, isUser]);
   
-  // 检测定时任务触发格式的消息
   const schedulerTrigger = useMemo(() => {
     if (isUser && parsedMessage.content) {
       return parseSchedulerTrigger(parsedMessage.content);
@@ -376,7 +374,6 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
     );
   }
   
-  // 检测到定时任务触发格式的消息
   if (schedulerTrigger.isSchedulerTrigger) {
     return (
       <div className="message-row scheduler-trigger user">
@@ -429,7 +426,10 @@ export const ChatMessage = memo<ChatMessageProps>(({ message }) => {
               )}
             </>
           ) : (
-            renderTimeline(message)
+            <>
+              {renderTimeline(message)}
+              {isStreaming && <span className="streaming-cursor"><span /><span /><span /></span>}
+            </>
           )}
         </div>
       </div>

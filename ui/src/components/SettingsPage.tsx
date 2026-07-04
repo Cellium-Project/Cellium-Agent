@@ -2381,7 +2381,7 @@ export const SettingsPage: React.FC = () => {
         <h2><Icons.Settings size={20} /> {t('settings.title')}</h2>
         <div className="settings-header-actions">
           <button
-            className="settings-nav-toggle mobile-only"
+            className={`settings-nav-toggle mobile-only ${mobileNavOpen ? 'open' : ''}`}
             onClick={() => setMobileNavOpen(true)}
           >
             {currentTab && <currentTab.Icon size={16} />}

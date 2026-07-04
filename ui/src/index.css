@@ -89,6 +89,7 @@ body {
     display: flex;
     align-items: center;
     flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-new-chat {
@@ -107,6 +108,7 @@ body {
     justify-content: flex-start;
     gap: 8px;
     overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-new-chat:hover {
@@ -143,6 +145,154 @@ body {
     overflow-y: auto;
     overflow-x: hidden;
     padding: 0 8px 12px;
+    scrollbar-width: none;
+}
+
+.session-list::-webkit-scrollbar {
+    display: none;
+}
+
+/* 会话时间线 */
+.session-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-height: 100%;
+}
+
+.session-group {
+    padding-left: 20px;
+    position: relative;
+}
+
+/* 竖线 - 在 group 上 */
+.session-group::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 21px;
+    bottom: 0;
+    width: 2px;
+    background: var(--border-primary);
+    border-radius: 1px;
+    transition: opacity 0.3s ease;
+}
+
+/* 折叠时淡出竖线 */
+.session-group:has(.session-group-body.collapsed)::before {
+    opacity: 0;
+}
+
+/* 圆点 */
+.session-group-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 12px 12px 6px;
+    user-select: none;
+    cursor: pointer;
+    transition: color 0.15s ease;
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.session-group-header::before {
+    content: '';
+    position: absolute;
+    left: -16px;
+    top: 16px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    border: 2px solid var(--text-tertiary);
+    z-index: 1;
+    transition: all 0.15s ease;
+    box-sizing: border-box;
+}
+
+/* 竖线 - 在 body 上，折叠时自动隐藏 */
+
+.group-chevron {
+    flex-shrink: 0;
+    transition: transform 0.3s ease;
+    opacity: 0.5;
+}
+
+.group-chevron.open {
+    transform: rotate(90deg);
+}
+
+.session-group-header:hover {
+    color: var(--accent-primary);
+}
+
+.session-group-header:hover .group-chevron {
+    opacity: 1;
+}
+
+.session-group-header:hover::before {
+    border-color: var(--accent-primary);
+    background: var(--accent-primary);
+    transform: scale(1.15);
+}
+
+/* 分组内容折叠动画 */
+.session-group-body {
+    position: relative;
+    overflow: hidden;
+    max-height: 1000px;
+    opacity: 1;
+    transition: max-height 0.35s ease, opacity 0.3s ease, margin 0.3s ease;
+}
+
+.session-group-body.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
+}
+
+/* 展开时瀑布动画 */
+.session-group-body:not(.collapsed) .session-item {
+    animation: waterfallIn 0.35s ease-out both;
+    opacity: 0;
+}
+
+.session-group-body:not(.collapsed) .session-item:nth-child(1)  { animation-delay: 0.02s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(2)  { animation-delay: 0.06s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(3)  { animation-delay: 0.10s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(4)  { animation-delay: 0.14s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(5)  { animation-delay: 0.18s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(6)  { animation-delay: 0.22s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(7)  { animation-delay: 0.26s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(8)  { animation-delay: 0.30s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(9)  { animation-delay: 0.34s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(10) { animation-delay: 0.38s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(11) { animation-delay: 0.42s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(12) { animation-delay: 0.46s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(13) { animation-delay: 0.50s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(14) { animation-delay: 0.54s; }
+.session-group-body:not(.collapsed) .session-item:nth-child(15) { animation-delay: 0.58s; }
+
+@keyframes waterfallIn {
+    from {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.timeline-groups {
+    flex: 1;
+    min-width: 0;
 }
 
 .session-empty {
@@ -166,9 +316,11 @@ body {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    position: relative;
     transition: all 0.15s ease;
     color: var(--text-secondary);
     overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .session-item:hover {
@@ -204,6 +356,52 @@ body {
     height: 0;
 }
 
+/* 会话更多操作按钮（...） */
+.session-menu-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    width: 24px;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    transition: all 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.session-item:hover .session-menu-btn {
+    display: flex;
+}
+
+.session-menu-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.session-menu-btn.hidden {
+    display: none !important;
+}
+
+/* 触屏设备始终显示 ... 按钮 */
+@media (pointer: coarse) {
+    .session-menu-btn {
+        display: flex;
+    }
+    .session-item .session-menu-btn {
+        display: flex;
+    }
+}
+
 /* 会话重命名输入框 */
 .session-title-edit {
     width: 100%;
@@ -217,6 +415,72 @@ body {
     background: var(--input-bg);
     outline: none;
     box-shadow: var(--input-focus-shadow);
+}
+
+/* 右键上下文菜单 */
+.context-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 140px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    padding: 4px;
+    animation: contextMenuIn 0.12s ease;
+}
+
+.context-menu.closing {
+    animation: contextMenuOut 0.1s ease forwards;
+}
+
+@keyframes contextMenuIn {
+    from { opacity: 0; transform: scale(0.92); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes contextMenuOut {
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(0.92); }
+}
+
+.context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-primary);
+    transition: background 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.context-menu-item:hover {
+    background: var(--bg-hover);
+}
+
+.context-menu-item-danger {
+    color: var(--danger-color, #e74c3c);
+}
+
+.context-menu-item-danger:hover {
+    background: rgba(231, 76, 60, 0.1);
+}
+
+.context-menu-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.context-menu-divider {
+    height: 1px;
+    margin: 4px 8px;
+    background: var(--border-color);
+    border: none;
 }
 
 .session-title-edit:focus {
@@ -241,6 +505,7 @@ body {
     font-weight: 500;
     transition: background 0.2s, gap 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .sidebar-settings-btn svg {
@@ -297,18 +562,34 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    opacity: 0;
-    transform: translateX(50px) scale(0.98);
-    transition: opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1), 
-                transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-    pointer-events: none;
     overflow: hidden;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .page-container.active {
     opacity: 1;
-    transform: translateX(0) scale(1);
+    visibility: visible;
     pointer-events: auto;
+    animation: pageIn 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.page-container.inactive {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+@keyframes pageIn {
+    from {
+        opacity: 0;
+        transform: translateX(50px) scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+    }
 }
 
 .chat-page {
@@ -413,6 +694,7 @@ body {
     cursor: pointer;
     padding: 4px;
     border-radius: 4px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .icon-btn:hover {
@@ -433,6 +715,37 @@ body {
 .message-row {
     display: flex;
     width: 100%;
+    animation: messageIn 0.45s ease-out forwards;
+}
+
+@keyframes messageIn {
+    from { opacity: 0; transform: translateY(-12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* 流式输出指示器 - 三个点 */
+.streaming-cursor {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+.streaming-cursor span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    animation: dotPulse 1.4s ease-in-out infinite;
+}
+
+.streaming-cursor span:nth-child(2) { animation-delay: 0.2s; }
+.streaming-cursor span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dotPulse {
+    0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+    40% { opacity: 1; transform: scale(1); }
 }
 
 .message-row.user {
@@ -487,6 +800,7 @@ body {
 .scheduler-trigger-bubble.clickable {
   cursor: pointer;
   transition: all 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .scheduler-trigger-bubble.clickable:hover {
@@ -643,6 +957,7 @@ body {
     align-items: center;
     justify-content: center;
     height: 44px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-send {
@@ -755,7 +1070,7 @@ body {
     color: var(--text-primary); margin: 12px 0 6px; font-weight: 600;
 }
 .markdown-body pre {
-    background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 8px;
+    background: var(--bg-primary); border-radius: 8px;
     padding: 14px 16px; overflow-x: auto; font-size: 14px; line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
@@ -779,7 +1094,7 @@ body {
 .markdown-body table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
 .markdown-body th, .markdown-body td { border: 1px solid var(--border-primary); padding: 8px 12px; text-align: left; }
 .markdown-body th { background: var(--bg-tertiary); font-weight: 600; color: var(--text-primary); }
-.markdown-body a { color: var(--text-link); text-decoration: none; }
+.markdown-body a { color: var(--text-link); text-decoration: none; -webkit-tap-highlight-color: transparent; }
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body hr { border: none; border-top: 1px solid var(--border-primary); margin: 14px 0; }
 .markdown-body .assistant-text {
@@ -803,6 +1118,12 @@ body {
     border-radius: 6px;
     overflow: hidden;
     font-size: 12px;
+    animation: toolIn 0.25s ease-out forwards;
+}
+
+@keyframes toolIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 .tool-trace-header {
@@ -836,6 +1157,7 @@ body {
     display: flex;
     align-items: center;
     transition: background 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .collapsible-summary:hover {
@@ -889,6 +1211,7 @@ body {
 .tool-trace-detail summary {
     padding: 5px 10px; cursor: pointer; color: var(--text-secondary); font-size: 11px; outline: none; user-select: none;
     list-style: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .tool-trace-detail summary::-webkit-details-marker {
@@ -978,6 +1301,7 @@ body {
     overflow: hidden;
     font-size: 12px;
     margin-bottom: 8px;
+    animation: toolIn 0.25s ease-out forwards;
 }
 
 .thinking-card .collapsible-summary {
@@ -989,6 +1313,7 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .thinking-card .collapsible-summary::before {
@@ -1024,6 +1349,7 @@ body {
     font-size: 12px;
     margin-bottom: 8px;
     max-width: 100%;
+    animation: toolIn 0.25s ease-out forwards;
 }
 
 .json-block-card .collapsible-summary {
@@ -1037,6 +1363,7 @@ body {
     gap: 6px;
     background: var(--bg-hover);
     border-bottom: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .json-block-card .collapsible-summary:hover {
@@ -1082,7 +1409,8 @@ body {
     margin: 0;
     padding: 12px;
     background: var(--bg-secondary);
-    border-radius: 0;
+    border-radius: 0 !important;
+    border-top: none !important;
     font-family: 'Consolas', 'Monaco', 'Menlo', monospace;
     font-size: 12px;
     line-height: 1.6;
@@ -1092,7 +1420,6 @@ body {
     overflow-x: auto;
     max-height: 400px;
     overflow-y: auto;
-    border-top: 1px solid var(--border-primary);
 }
 
 
@@ -1139,6 +1466,7 @@ body {
     gap: 6px;
     font-weight: 500;
     transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-back-chat:hover {
@@ -1180,6 +1508,7 @@ body {
     font-weight: 500;
     color: var(--text-secondary);
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .settings-nav-item:hover {
@@ -1252,6 +1581,7 @@ body {
     font-size: 13px;
     cursor: pointer;
     transition: all 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .settings-tab:hover {
@@ -1350,6 +1680,7 @@ body {
     cursor: pointer;
     transition: all 0.2s ease;
     background: var(--bg-secondary);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .preset-card:hover {
@@ -1631,6 +1962,7 @@ input[type="number"] {
     line-height: 1;
     transition: all 0.15s ease;
     padding: 0;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .number-input-btn:hover {
@@ -1677,6 +2009,7 @@ input[type="checkbox"] {
     transition: all 0.15s ease;
     vertical-align: middle;
     margin-right: 8px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 input[type="checkbox"]:hover {
@@ -1721,6 +2054,7 @@ input[type="checkbox"]:disabled:checked {
     user-select: none;
     font-size: 13px;
     color: var(--text-primary);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .checkbox-label.disabled {
@@ -1743,6 +2077,7 @@ select {
     background-repeat: no-repeat;
     background-position: right 8px center;
     transition: all 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 select:hover {
@@ -1787,6 +2122,7 @@ input:focus, select:focus, textarea:focus {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .dropdown-trigger:hover {
@@ -1864,6 +2200,7 @@ input:focus, select:focus, textarea:focus {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .dropdown-item:hover {
@@ -1887,6 +2224,7 @@ input:focus, select:focus, textarea:focus {
     align-items: center;
     gap: 10px;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
 }
 .toggle-switch input { display: none; }
 .toggle-slider {
@@ -1949,6 +2287,7 @@ input:focus, select:focus, textarea:focus {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 /* ── 模型列表 ── */
@@ -1979,6 +2318,7 @@ input:focus, select:focus, textarea:focus {
     font-size: 12px;
     cursor: pointer;
     transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-small:hover {
@@ -2028,6 +2368,7 @@ input:focus, select:focus, textarea:focus {
     color: var(--text-secondary);
     border-radius: 4px;
     transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-icon:hover {
@@ -2082,6 +2423,7 @@ input:focus, select:focus, textarea:focus {
     font-size: 13px;
     cursor: pointer;
     transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 .btn-secondary:hover { background: var(--bg-hover); }
 .btn-secondary:active { transform: scale(0.97); filter: brightness(0.95); }
@@ -2097,6 +2439,7 @@ input:focus, select:focus, textarea:focus {
     font-size: 12px;
     border-radius: 4px;
     transition: background-color 0.2s;
+    -webkit-tap-highlight-color: transparent;
 }
 .btn-link:hover {
     background: var(--accent-primary-light);
@@ -2129,7 +2472,7 @@ input:focus, select:focus, textarea:focus {
     gap: 6px;
     font-size: 12px;
 }
-.tag-remove { border: none; background: none; color: var(--text-secondary); cursor: pointer; }
+.tag-remove { border: none; background: none; color: var(--text-secondary); cursor: pointer; -webkit-tap-highlight-color: transparent; }
 
 .config-status-card {
     background: var(--bg-tertiary);
@@ -2158,13 +2501,13 @@ input:focus, select:focus, textarea:focus {
 .saved-models { flex: 1; max-width: 300px; border-right: 1px solid var(--border-primary); padding-right: 24px; }
 .saved-models h4, .model-form h4, .quick-presets h4 { margin-bottom: 16px; font-size: 16px; font-weight: 600; color: var(--text-primary); }
 .model-list { display: flex; flex-direction: column; gap: 8px; }
-.model-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-primary); background: var(--bg-secondary); cursor: pointer; transition: all 0.2s ease; }
+.model-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-primary); background: var(--bg-secondary); cursor: pointer; transition: all 0.2s ease; -webkit-tap-highlight-color: transparent; }
 .model-item:hover { border-color: var(--accent-primary); box-shadow: var(--shadow-sm); }
 .model-item.active { border-color: var(--accent-primary); background: var(--accent-primary-light); }
 .model-item-name { font-weight: 500; font-size: 14px; color: var(--text-primary); flex: 1; }
 .model-item-actions { display: flex; gap: 8px; opacity: 0; transition: opacity 0.2s; }
 .model-item:hover .model-item-actions { opacity: 1; }
-.model-item-btn { background: transparent; border: none; font-size: 14px; cursor: pointer; opacity: 0.6; }
+.model-item-btn { background: transparent; border: none; font-size: 14px; cursor: pointer; opacity: 0.6; -webkit-tap-highlight-color: transparent; }
 .model-item-btn:hover { opacity: 1; }
 .model-list-empty { font-size: 14px; color: var(--text-tertiary); padding: 20px; text-align: center; background: var(--bg-tertiary); border-radius: 8px; border: 1px dashed var(--border-primary); }
 .model-form { flex: 2; }
@@ -2460,6 +2803,7 @@ input:focus, select:focus, textarea:focus {
   font-size: 12px;
   padding: 2px 8px;
   text-decoration: underline;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .memory-archive-link .btn-link:hover {
@@ -2620,6 +2964,7 @@ input:focus, select:focus, textarea:focus {
     border-radius: 6px;
     cursor: pointer;
     transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -2647,6 +2992,7 @@ input:focus, select:focus, textarea:focus {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-warning:hover:not(:disabled) {
@@ -2896,6 +3242,7 @@ input:focus, select:focus, textarea:focus {
     opacity: 0;
     transform: translateX(-10px);
     animation: slideInLeft 0.3s ease forwards;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .scheduler-task-item:nth-child(1) { animation-delay: 0.05s; }
@@ -3405,6 +3752,7 @@ input:focus, select:focus, textarea:focus {
     justify-content: center;
     border-radius: 4px;
     transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-close:hover {
@@ -3427,6 +3775,7 @@ input:focus, select:focus, textarea:focus {
     font-size: 12px;
     cursor: pointer;
     transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .weekday-btn:hover {
@@ -3519,6 +3868,7 @@ input:focus, select:focus, textarea:focus {
     transition: all 0.15s ease;
     text-align: center;
     margin: 2px 4px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .time-picker-item:hover {
@@ -3561,6 +3911,7 @@ input:focus, select:focus, textarea:focus {
     cursor: pointer;
     transition: all 0.2s ease;
     background: var(--bg-secondary);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .settings-option-card:hover {
@@ -3599,6 +3950,7 @@ input:focus, select:focus, textarea:focus {
     cursor: pointer;
     transition: all 0.2s ease;
     background: var(--bg-secondary);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .theme-option-card:hover {
@@ -3833,6 +4185,7 @@ input:focus, select:focus, textarea:focus {
     align-items: center;
     justify-content: center;
     border-radius: 6px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .skill-info {
@@ -4261,6 +4614,7 @@ input:focus, select:focus, textarea:focus {
     font-size: 12px;
     background: var(--bg-secondary);
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .log-viewer {
@@ -4516,6 +4870,15 @@ input:focus, select:focus, textarea:focus {
         font-size: 12px;
         color: var(--text-primary);
         cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .settings-nav-toggle svg:last-child {
+        transition: transform 0.25s ease;
+    }
+
+    .settings-nav-toggle.open svg:last-child {
+        transform: rotate(180deg);
     }
 
     .settings-body {
@@ -4577,6 +4940,7 @@ input:focus, select:focus, textarea:focus {
         color: var(--text-secondary);
         cursor: pointer;
         padding: 4px;
+        -webkit-tap-highlight-color: transparent;
     }
 
     .settings-nav-drawer-content {
@@ -4600,6 +4964,7 @@ input:focus, select:focus, textarea:focus {
         color: var(--text-secondary);
         cursor: pointer;
         transition: all 0.2s ease;
+        -webkit-tap-highlight-color: transparent;
     }
 
     .settings-nav-drawer-item:active {
@@ -4780,6 +5145,69 @@ input:focus, select:focus, textarea:focus {
 
     .settings-card {
         overflow-x: hidden;
+    }
+
+    .settings-card-header {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .settings-card-header .btn-primary.btn-sm {
+        font-size: 12px;
+        padding: 6px 12px;
+        white-space: nowrap;
+    }
+
+    .settings-card-grid .form-group {
+        min-width: 0;
+    }
+
+    .settings-card-grid input:not([type="checkbox"]):not([type="radio"]),
+    .settings-card-grid textarea,
+    .settings-card-grid select {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        font-size: 13px;
+    }
+
+    .settings-card-grid .toggle-switch {
+        flex-wrap: nowrap;
+    }
+
+    .settings-card-grid .toggle-label {
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .settings-card-footer {
+        padding: 8px 12px 12px;
+    }
+
+    .settings-card-footer p {
+        font-size: 11px !important;
+    }
+
+    /* 通道配置 QR 码等特殊区域 */
+    .settings-card-grid img[alt*="QR"],
+    .settings-card-grid img[alt*="qrcode"],
+    .settings-card-grid canvas {
+        max-width: 100%;
+        height: auto;
+    }
+
+    .settings-card-grid .qr-display,
+    .settings-card-grid [class*="qrcode"],
+    .settings-card-grid [class*="qrCode"] {
+        max-width: 100%;
+        overflow: hidden;
+    }
+
+    .settings-card-grid .credential-status {
+        flex-wrap: wrap;
+        gap: 4px;
     }
 
     .preset-grid {

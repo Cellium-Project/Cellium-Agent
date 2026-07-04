@@ -80,7 +80,11 @@
     "sessions": "Sessions",
     "emptySessions": "No sessions",
     "settings": "Settings",
-    "status": "Status"
+    "status": "Status",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "thisWeek": "This Week",
+    "earlier": "Earlier"
   },
   "chat": {
     "placeholder": "Type a message...",

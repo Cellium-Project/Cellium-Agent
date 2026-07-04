@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../stores/appStore';
-import { API, patchJSON } from '../utils/api';
+import { API, patchJSON, deleteJSON } from '../utils/api';
 import { Icons } from './Icons';
 import type { Session, TimelineSegment, ToolTrace } from '../types';
 
@@ -16,6 +17,43 @@ function formatTimeAgo(isoStr: string, t: (key: string) => string): string {
   } catch {
     return '';
   }
+}
+
+/** 按日期分组 */
+interface DateGroup {
+  key: string;
+  label: string;
+  sessions: Session[];
+}
+
+function groupSessionsByDate(sessions: Session[], t: (key: string) => string): DateGroup[] {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const weekAgo = new Date(today.getTime() - 6 * 86400000);
+
+  const groups: { key: string; label: string; sessions: Session[] }[] = [
+    { key: 'today', label: t('sidebar.today'), sessions: [] },
+    { key: 'yesterday', label: t('sidebar.yesterday'), sessions: [] },
+    { key: 'thisWeek', label: t('sidebar.thisWeek'), sessions: [] },
+    { key: 'earlier', label: t('sidebar.earlier'), sessions: [] },
+  ];
+
+  for (const s of sessions) {
+    const d = new Date(s.last_active || s.created_at);
+    const dateOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (dateOnly.getTime() === today.getTime()) {
+      groups[0].sessions.push(s);
+    } else if (dateOnly.getTime() === yesterday.getTime()) {
+      groups[1].sessions.push(s);
+    } else if (dateOnly >= weekAgo) {
+      groups[2].sessions.push(s);
+    } else {
+      groups[3].sessions.push(s);
+    }
+  }
+
+  return groups.filter(g => g.sessions.length > 0);
 }
 
 interface SchedulerContext {
@@ -69,7 +107,6 @@ export const Sidebar: React.FC = () => {
 
       ws.onopen = () => {
         console.log('[WS] Connected to session events');
-        // 启动心跳
         heartbeatTimer = setInterval(() => {
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping' }));
@@ -259,13 +296,31 @@ export const Sidebar: React.FC = () => {
   }, []);
 
   const { t } = useTranslation();
+  const groupedSessions = groupSessionsByDate(sessions, t);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => ({
+    earlier: true,
+  }));
+
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleToggleSidebar = () => {
+    window.dispatchEvent(new CustomEvent('close-all-context-menus'));
+    toggleSidebar();
+  };
 
   const handleNewChat = async () => {
     await createSession();
   };
 
-  const handleSessionClick = (sessionId: string) => {
-    switchSession(sessionId);
+  const handleSessionClick = async (sessionId: string) => {
+    if (showSettingsPage) {
+      await switchSession(sessionId);
+      setShowSettingsPage(false);
+    } else {
+      switchSession(sessionId);
+    }
   };
 
   return (
@@ -279,7 +334,7 @@ export const Sidebar: React.FC = () => {
           <img src="/logo.png" alt="Cellium" />
           <h1>Cellium Agent</h1>
         </div>
-        <button className="sidebar-toggle" onClick={toggleSidebar} title={sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}>
+        <button className="sidebar-toggle" onClick={handleToggleSidebar} title={sidebarCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}>
           {sidebarCollapsed ? <Icons.Menu size={20} /> : <Icons.ChevronLeft size={20} />}
         </button>
       </div>
@@ -293,16 +348,44 @@ export const Sidebar: React.FC = () => {
         {sessions.length === 0 ? (
           <div className="session-empty">{t('sidebar.emptySessions')}</div>
         ) : (
-          sessions.map((session) => (
-            <SessionItem
-              key={session.session_id}
-              session={session}
-              isActive={session.session_id === currentSessionId}
-              collapsed={sidebarCollapsed}
-              onClick={() => handleSessionClick(session.session_id)}
-              onRenamed={() => fetchSessions()}
-            />
-          ))
+           <div className="session-timeline">
+             <div className="timeline-groups">
+              {groupedSessions.map(g => {
+                const collapsed = !!collapsedGroups[g.key];
+                return (
+                  <div key={g.key} id={`session-group-${g.key}`} className="session-group">
+                    <div
+                      className={`session-group-header ${collapsed ? 'collapsed' : ''}`}
+                      onClick={() => toggleGroup(g.key)}
+                    >
+                      <span>{g.label}</span>
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        className={`group-chevron ${collapsed ? '' : 'open'}`}
+                      >
+                        <path d="M4 2L8 6L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                    <div className={`session-group-body ${collapsed ? 'collapsed' : ''}`}>
+                      {g.sessions.map((session) => (
+                        <SessionItem
+                          key={session.session_id}
+                          session={session}
+                          isActive={session.session_id === currentSessionId}
+                          collapsed={sidebarCollapsed}
+                          onClick={() => handleSessionClick(session.session_id)}
+                          onRenamed={() => fetchSessions()}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
 
@@ -338,7 +421,14 @@ const SessionItem: React.FC<SessionItemProps> = ({
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [closingMenu, setClosingMenu] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const closingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
   const timeLabel = formatTimeAgo(session.last_active || session.created_at, t);
 
@@ -367,6 +457,89 @@ const SessionItem: React.FC<SessionItemProps> = ({
     if (e.key === 'Escape') setEditing(false);
   };
 
+  const closeMenuWithAnimation = useCallback(() => {
+    if (closingTimerRef.current) clearTimeout(closingTimerRef.current);
+    if (!contextMenu) return;
+    setClosingMenu(true);
+    closingTimerRef.current = setTimeout(() => {
+      setContextMenu(null);
+      setClosingMenu(false);
+      closingTimerRef.current = null;
+    }, 100);
+  }, [contextMenu]);
+
+  const openMenuAt = (x: number, y: number) => {
+    window.dispatchEvent(new CustomEvent('close-all-context-menus'));
+    const menuWidth = 140;
+    const finalX = Math.min(x, window.innerWidth - menuWidth);
+    const finalY = Math.min(y, window.innerHeight - 80);
+    setContextMenu({ x: finalX, y: finalY });
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (collapsed) return;
+    if (isTouchDevice) return;
+    openMenuAt(e.clientX, e.clientY);
+  };
+
+  const handleMenuButtonClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (contextMenu || closingMenu) { closeMenuWithAnimation(); return; }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    openMenuAt(rect.right - 140, rect.bottom + 4);
+  };
+
+  useEffect(() => {
+    const handleClose = () => closeMenuWithAnimation();
+    window.addEventListener('close-all-context-menus', handleClose);
+    window.addEventListener('scroll', handleClose, true);
+    return () => {
+      window.removeEventListener('close-all-context-menus', handleClose);
+      window.removeEventListener('scroll', handleClose, true);
+      if (closingTimerRef.current) clearTimeout(closingTimerRef.current);
+    };
+  }, [closeMenuWithAnimation]);
+
+  const handleDelete = async () => {
+    closeMenuWithAnimation();
+    if (!window.confirm(t('session.deleteConfirm') || '确定要删除这个会话吗？此操作不可撤销。')) return;
+
+    setDeleting(true);
+    try {
+      await deleteJSON(API.sessionDelete(session.session_id));
+      const store = useAppStore.getState();
+      store.removeSession(session.session_id);
+      if (store.currentSessionId === session.session_id) {
+        const remaining = store.sessions.filter(s => s.session_id !== session.session_id);
+        if (remaining.length > 0) {
+          store.switchSession(remaining[0].session_id);
+        } else {
+          store.createSession();
+        }
+      }
+    } catch (err) {
+      console.error('删除会话失败:', err);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (contextMenu) {
+      const close = () => closeMenuWithAnimation();
+      const timerId = setTimeout(() => {
+        document.addEventListener('click', close);
+        document.addEventListener('contextmenu', close);
+      }, 0);
+      return () => {
+        clearTimeout(timerId);
+        document.removeEventListener('click', close);
+        document.removeEventListener('contextmenu', close);
+      };
+    }
+  }, [contextMenu, closeMenuWithAnimation]);
+
   if (editing && !collapsed) {
     return (
       <div className={`session-item ${isActive ? 'active' : ''}`}>
@@ -387,12 +560,49 @@ const SessionItem: React.FC<SessionItemProps> = ({
     <div
       className={`session-item ${isActive ? 'active' : ''}`}
       onClick={onClick}
+      onContextMenu={handleContextMenu}
       title={session.session_id}
     >
       <span className="session-title" onDoubleClick={startEdit}>
         {getSessionTitle(session, t)}
       </span>
       <span className="session-time">{timeLabel}</span>
+      <button
+        ref={menuBtnRef}
+        className={`session-menu-btn ${collapsed ? 'hidden' : ''}`}
+        onClick={handleMenuButtonClick}
+        title={t('common.more') || '更多'}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="3" cy="8" r="1.5" fill="currentColor"/>
+          <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+          <circle cx="13" cy="8" r="1.5" fill="currentColor"/>
+        </svg>
+      </button>
+
+      {(contextMenu || closingMenu) && createPortal(
+        <div
+          className={`context-menu ${closingMenu ? 'closing' : ''}`}
+          style={contextMenu ? { left: contextMenu.x, top: contextMenu.y } : {}}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            onClick={(e) => { closeMenuWithAnimation(); startEdit(e); }}
+          >
+            {t('session.rename') || '重命名'}
+          </button>
+          <div className="context-menu-divider" />
+          <button
+            className="context-menu-item context-menu-item-danger"
+            onClick={handleDelete}
+            disabled={deleting}
+          >
+            {deleting ? (t('common.deleting') || '删除中...') : (t('session.delete') || '删除会话')}
+          </button>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };
