@@ -22,47 +22,65 @@ const MessageList = memo(({
   fetchMessages: (sessionId: string, offset?: number) => Promise<void>;
 }) => {
   const { t } = useTranslation();
-  const prevMessagesCountRef = useRef<number>(0);
   const prevSessionIdRef = useRef<string | null>(null);
-  const isSwitchingSessionRef = useRef<boolean>(false);
+  const historyLoadSnapshotRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  const isLoadingHistoryRef = useRef<boolean>(false);
+  const needsScrollToBottomRef = useRef<boolean>(false); // 切换对话后需要滚动到底部
 
   const allMessages = streamingMessage 
     ? [...messages, streamingMessage] 
     : messages;
 
   useEffect(() => {
-    const prevCount = prevMessagesCountRef.current;
     const prevSession = prevSessionIdRef.current;
-    prevMessagesCountRef.current = allMessages.length;
+    const wasLoadingHistory = isLoadingHistoryRef.current;
+    const needsScrollToBottom = needsScrollToBottomRef.current;
+    
     prevSessionIdRef.current = currentSessionId;
 
-    // 切换对话时标记为正在切换
+    // 切换对话时重置状态，标记需要滚动到底部
     if (prevSession !== currentSessionId) {
-      isSwitchingSessionRef.current = true;
+      historyLoadSnapshotRef.current = null;
+      isLoadingHistoryRef.current = false;
+      needsScrollToBottomRef.current = true;
       return;
     }
 
-    // 正在加载消息时不滚动
+    // 加载历史消息完成后恢复滚动位置
+    if (wasLoadingHistory && !isLoadingMessages && historyLoadSnapshotRef.current !== null && messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      const snapshot = historyLoadSnapshotRef.current;
+      const newScrollHeight = container.scrollHeight;
+      const addedHeight = newScrollHeight - snapshot.scrollHeight;
+      container.scrollTop = snapshot.scrollTop + addedHeight;
+      historyLoadSnapshotRef.current = null;
+      isLoadingHistoryRef.current = false;
+      return;
+    }
+
+    // 正在加载时不处理
     if (isLoadingMessages) {
       return;
     }
 
-    // 切换对话完成且消息加载完成后，立即跳转到底部
-    if (isSwitchingSessionRef.current && allMessages.length > 0) {
+    // 切换对话后首次加载完成，滚动到底部
+    if (needsScrollToBottom && allMessages.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-      isSwitchingSessionRef.current = false;
-      return;
+      needsScrollToBottomRef.current = false;
     }
-
-    // 同一对话内新增消息时滚动到底部
-    if (allMessages.length > prevCount && !isSwitchingSessionRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-    }
-  }, [allMessages.length, currentSessionId, isLoadingMessages, messagesEndRef]);
+  }, [currentSessionId, isLoadingMessages, allMessages.length, messagesContainerRef, messagesEndRef]);
 
   const handleScroll = useCallback(() => {
     if (!messagesContainerRef.current || isLoadingMessages || !hasMoreHistory || !currentSessionId) return;
+    
+    // 触发加载前保存当前 scrollTop 和 scrollHeight（用于加载后恢复位置）
     if (messagesContainerRef.current.scrollTop < 100) {
+      const container = messagesContainerRef.current;
+      historyLoadSnapshotRef.current = {
+        scrollTop: container.scrollTop,
+        scrollHeight: container.scrollHeight,
+      };
+      isLoadingHistoryRef.current = true;
       fetchMessages(currentSessionId, messages.length);
     }
   }, [isLoadingMessages, hasMoreHistory, currentSessionId, fetchMessages, messages.length]);

@@ -3,8 +3,8 @@
 PromptPiece - 提示词拼图块
 """
 
-from dataclasses import dataclass
-from typing import Optional, Literal
+from dataclasses import dataclass, field
+from typing import Optional, Literal, Callable
 
 
 Stability = Literal["static", "daily", "session", "dynamic"]
@@ -23,8 +23,10 @@ class PromptPiece:
 
     Attributes:
         name: 唯一标识
-        content: 静态内容
-        template: Jinja 模板（动态渲染）
+        content: 静态内容（直接返回，不经过变量替换）
+        template: 带 {{ var }} 占位符的模板文本
+        condition: 可选条件函数，接收 context dict 返回 bool，
+                   为 False 时该 piece 不渲染
         stability: 稳定性级别（static/daily/session/dynamic）
         priority: 拼接顺序（小在前）
         enabled: 开关
@@ -34,6 +36,7 @@ class PromptPiece:
     name: str
     content: str = ""
     template: str = ""
+    condition: Optional[Callable[[dict], bool]] = None
     stability: Stability = "dynamic"
     priority: int = 100
     enabled: bool = True
@@ -48,22 +51,32 @@ class PromptPiece:
         """
         渲染内容
 
+        处理顺序:
+          1. condition 条件过滤（返回空字符串）
+          2. template 变量替换（{{ var }} → value）
+          3. content 直接返回（无需替换）
+
         Args:
             context: 模板上下文
 
         Returns:
             渲染后的字符串
         """
-        if self.template:
+        ctx = context or {}
+
+        if self.condition is not None:
             try:
-                from jinja2 import Template
-                return Template(self.template).render(**(context or {}))
-            except ImportError:
-                result = self.template
-                if context:
-                    for key, value in context.items():
-                        result = result.replace("{{ " + key + " }}", str(value))
-                return result
+                if not self.condition(ctx):
+                    return ""
+            except Exception:
+                pass
+
+        if self.template:
+            result = self.template
+            for key, value in ctx.items():
+                result = result.replace("{{ " + key + " }}", str(value))
+                result = result.replace("{{" + key + "}}", str(value))
+            return result
 
         return self.content
 

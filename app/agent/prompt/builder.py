@@ -127,7 +127,7 @@ class PromptBuilder:
         if messages:
             prefix_info = "; ".join(
                 f"{i}:<{m.get('role', '?')}>" + (
-                    f" ({m.get('content', '')[:50]}...)" if i < 3 else ""
+                    f" ({(m.get('content') or '')[:50]}...)" if i < 3 else ""
                 )
                 for i, m in enumerate(messages[:3])
             )

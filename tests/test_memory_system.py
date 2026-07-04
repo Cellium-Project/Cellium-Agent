@@ -13,6 +13,7 @@ from unittest.mock import Mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.agent.loop.memory import MemoryManager
+from app.agent.loop.prompt_context_builder import PromptContextBuilder
 from app.agent.loop.session_manager import SessionManager
 from app.agent.memory.archive_store import ArchiveStore
 from app.agent.memory.fts5_searcher import FTS5MemorySearcher
@@ -67,8 +68,8 @@ class TestThreeLayerMemory(unittest.TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0]["raw"]["id"], source_id)
 
-    def test_duplicate_snapshot_is_stored_as_separate_archive(self):
-        """相同内容也会归档为独立记录（用户有权发相同消息）"""
+    def test_duplicate_snapshot_creates_separate_records(self):
+        """每次持久化都会创建新记录，即使内容相同。"""
         messages = [
             {"role": "user", "content": "如何查看进程？"},
             {"role": "assistant", "content": "使用 Get-Process"},
@@ -77,7 +78,9 @@ class TestThreeLayerMemory(unittest.TestCase):
         first = self.memory.persist_session("如何查看进程？", "使用 Get-Process", session_id="dup-session", messages=messages)
         second = self.memory.persist_session("如何查看进程？", "使用 Get-Process", session_id="dup-session", messages=messages)
 
+        # 每次持久化生成独立 ID
         self.assertNotEqual(first, second)
+        # 两条记录都会被保存
         records = self.memory.archive.get_by_session("dup-session")
         self.assertEqual(len(records), 2)
 
@@ -377,21 +380,17 @@ class TestMemoryTool(unittest.TestCase):
 
 
 class TestPromptContextBuilder(unittest.TestCase):
-    """测试 PromptBuilder 正确渲染长期记忆（检索已在 agent_loop 中完成）"""
+    """测试统一检索入口是否经过 ThreeLayerMemory"""
 
-    def test_long_term_memory_piece_renders_when_provided(self):
-        """builder 应渲染 long_term_results 为 [长期记忆检索结果]"""
-        from app.agent.prompt import create_default_builder
+    def test_build_first_round_uses_three_layer_memory_api(self):
+        three_layer_memory = Mock()
+        three_layer_memory.retrieve_context.return_value = [{"title": "记忆", "content": "历史内容"}]
+        three_layer_memory.format_retrieved_context.return_value = "1. 记忆\n   历史内容"
 
-        builder = create_default_builder()
-        messages = builder.build({
-            "session_messages": [],
-            "user_input": "请回忆之前的命令",
-            "_flash_mode": False,
-            "_is_first_round": True,
-            "long_term_results": "1. 记忆\n   历史内容",
-        })
+        builder = PromptContextBuilder(three_layer_memory=three_layer_memory)
+        messages = builder.build_first_round("请回忆之前的命令", session_messages=[{"role": "user", "content": "请回忆之前的命令"}])
 
+        three_layer_memory.retrieve_context.assert_called_once_with("请回忆之前的命令", top_k=3, exclude_schema_types=["control_gene"])
         self.assertTrue(any("长期记忆检索结果" in (msg.get("content") or "") for msg in messages))
 
 

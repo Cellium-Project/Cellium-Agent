@@ -103,18 +103,10 @@ def get_context_piece() -> PromptPiece:
 # ============================================================
 
 def get_long_term_memory_piece() -> PromptPiece:
-    """
-    长期记忆检索结果。
-    由外部（agent_loop）检索后将结果传入 context["long_term_results"]。
-    模板根据是否为空值自动跳过。
-    """
     return PromptPiece(
         name="long_term_memory",
-        template=(
-            "{% if not _flash_mode and long_term_results %}"
-            "[长期记忆检索结果]\n{{ long_term_results }}"
-            "{% endif %}"
-        ),
+        template="[长期记忆检索结果]\n{{ long_term_results }}",
+        condition=lambda ctx: not ctx.get('_flash_mode', False) and bool(ctx.get('long_term_results')),
         stability="dynamic",
         priority=800,
     )
@@ -130,11 +122,8 @@ def get_user_input_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="user_input",
-        template=(
-            "{% if _flash_mode and _is_first_round and not session_messages %}"
-            "{{ user_input }}"
-            "{% endif %}"
-        ),
+        template="{{ user_input }}",
+        condition=lambda ctx: ctx.get('_flash_mode', False) and ctx.get('_is_first_round', False) and not ctx.get('session_messages'),
         stability="dynamic",
         priority=300,
     )
@@ -146,11 +135,8 @@ def get_system_injection_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="system_injection",
-        template=(
-            "{% if system_injection %}"
-            "[系统指令]\n{{ system_injection }}"
-            "{% endif %}"
-        ),
+        template="[系统指令]\n{{ system_injection }}",
+        condition=lambda ctx: bool(ctx.get('system_injection')),
         stability="dynamic",
         priority=400,
     )
@@ -162,11 +148,8 @@ def get_runtime_status_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="runtime_status",
-        template=(
-            "{% if runtime_status %}"
-            "[运行时状态]\n{{ runtime_status }}"
-            "{% endif %}"
-        ),
+        template="[运行时状态]\n{{ runtime_status }}",
+        condition=lambda ctx: bool(ctx.get('runtime_status')),
         stability="dynamic",
         priority=500,
     )
@@ -178,11 +161,8 @@ def get_guidance_message_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="guidance_message",
-        template=(
-            "{% if guidance_message %}"
-            "[系统引导]\n{{ guidance_message }}"
-            "{% endif %}"
-        ),
+        template="[系统引导]\n{{ guidance_message }}",
+        condition=lambda ctx: bool(ctx.get('guidance_message')),
         stability="dynamic",
         priority=600,
     )
@@ -194,11 +174,8 @@ def get_auto_hints_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="auto_hints",
-        template=(
-            "{% if auto_hints %}"
-            "[工具使用提示]\n{{ auto_hints }}"
-            "{% endif %}"
-        ),
+        template="[工具使用提示]\n{{ auto_hints }}",
+        condition=lambda ctx: bool(ctx.get('auto_hints')),
         stability="dynamic",
         priority=350,
     )
