@@ -68,7 +68,8 @@ class TestThreeLayerMemory(unittest.TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0]["raw"]["id"], source_id)
 
-    def test_duplicate_snapshot_is_not_archived_twice(self):
+    def test_duplicate_snapshot_is_stored_as_separate_archive(self):
+        """相同内容也会归档为独立记录（用户有权发相同消息）"""
         messages = [
             {"role": "user", "content": "如何查看进程？"},
             {"role": "assistant", "content": "使用 Get-Process"},
@@ -77,9 +78,9 @@ class TestThreeLayerMemory(unittest.TestCase):
         first = self.memory.persist_session("如何查看进程？", "使用 Get-Process", session_id="dup-session", messages=messages)
         second = self.memory.persist_session("如何查看进程？", "使用 Get-Process", session_id="dup-session", messages=messages)
 
-        self.assertEqual(first, second)
+        self.assertNotEqual(first, second)
         records = self.memory.archive.get_by_session("dup-session")
-        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records), 2)
 
 
 class TestFTS5MemorySearcher(unittest.TestCase):

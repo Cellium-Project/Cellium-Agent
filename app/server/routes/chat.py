@@ -704,7 +704,7 @@ async def get_session_history(
                 
                 raw_msgs = list(reversed(all_messages))
                 
-                _hist_log.info(
+                _hist_log.debug(
                     "[History] 从 archive 恢复 | session=%s | %d 条记录 | 去重后 %d 条消息",
                     session_id, len(records), len(raw_msgs),
                 )
@@ -714,7 +714,7 @@ async def get_session_history(
     if not raw_msgs:
         info = mgr.get_or_create(session_id)
         raw_msgs = info.memory.get_messages()
-        _hist_log.info(
+        _hist_log.debug(
             "[History] 从内存读取 | session=%s | raw=%d 条",
             session_id, len(raw_msgs),
         )
@@ -727,7 +727,7 @@ async def get_session_history(
     start_idx = max(0, end_idx - limit)
     paged_raw = raw_msgs[start_idx:end_idx]
 
-    _hist_log.info(
+    _hist_log.debug(
         "[History] session=%s | paged=%d 条 (slice[%d:%d]) | total=%d",
         session_id, len(paged_raw), start_idx, end_idx, total,
     )

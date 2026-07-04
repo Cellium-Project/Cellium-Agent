@@ -29,10 +29,11 @@ class ArchiveStore:
         file_path = os.path.join(self.base_dir, f"{date_str}.jsonl")
 
         normalized_messages = messages or []
+        now = datetime.now().isoformat()
 
         record = {
-            "id": self._gen_id(normalized_messages),
-            "time": datetime.now().isoformat(),
+            "id": self._gen_id(normalized_messages, timestamp=now),
+            "time": now,
             "session_id": session_id,
             "messages": normalized_messages,
             "snapshot_hash": snapshot_hash or self._hash_messages(normalized_messages),
@@ -58,25 +59,25 @@ class ArchiveStore:
         return None
 
     def get_by_session(self, session_id: str, limit: int = 20) -> List[Dict]:
-        """按 session_id 恢复历史对话。"""
         records: List[Dict] = []
-        all_files = []
-        for fname in os.listdir(self.base_dir):
-            if fname.endswith(".jsonl"):
-                all_files.append(os.path.join(self.base_dir, fname))
-        all_files.sort()
+        all_files = sorted(
+            [f for f in os.listdir(self.base_dir) if f.endswith(".jsonl")],
+            reverse=True,
+        )
 
-        for file_path in all_files:
+        for fname in all_files:
+            file_path = os.path.join(self.base_dir, fname)
             with open(file_path, "r", encoding="utf-8-sig") as f:
-                for line in f:
+                for line in reversed(f.readlines()):
                     try:
                         record = json.loads(line)
                         if record.get("session_id") == session_id:
-                            records.append(record)
+                            records.insert(0, record)
+                            if len(records) >= limit:
+                                return records
                     except (json.JSONDecodeError, KeyError):
                         continue
-
-        return records[-limit:] if len(records) > limit else records
+        return records
 
     def get_latest_by_session(self, session_id: str) -> Optional[Dict]:
         records = self.get_by_session(session_id, limit=1)
@@ -94,9 +95,10 @@ class ArchiveStore:
                 records.append(json.loads(line))
         return records
 
-    def _gen_id(self, messages: Optional[list] = None) -> str:
+    def _gen_id(self, messages: Optional[list] = None, timestamp: Optional[str] = None) -> str:
         payload = json.dumps(messages or [], ensure_ascii=False, sort_keys=True)
-        return hashlib.md5(payload.encode("utf-8")).hexdigest()
+        ts = (timestamp or datetime.now().isoformat()).encode("utf-8")
+        return hashlib.md5(payload.encode("utf-8") + ts).hexdigest()
 
     @staticmethod
     def _hash_messages(messages: Optional[list]) -> str:
