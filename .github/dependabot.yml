@@ -14,9 +14,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "python"
     allow:
       - dependency-type: "direct"
       - dependency-type: "indirect"
@@ -48,9 +45,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    labels:
-      - "dependencies"
-      - "javascript"
     groups:
       frontend-minor-updates:
         patterns:
@@ -70,9 +64,6 @@ updates:
     open-pull-requests-limit: 5
     reviewers:
       - "xiaojinao"
-    labels:
-      - "dependencies"
-      - "github-actions"
     groups:
       actions-updates:
         patterns:
