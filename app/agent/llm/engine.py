@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LLM 引擎 — 统一接口 + OpenAI 兼容实现 + 模型能力自动检测"""
+"""LLM 引擎"""
 
 import json
 import logging
@@ -20,6 +20,7 @@ class ModelInfo:
     context_window: int      # 最大输入上下文 (tokens)
     max_output_tokens: int   # 单次最大输出 (tokens)
     supports_tools: bool     # 是否支持 function calling / tool use
+    supports_vision: bool = False  # 是否支持多模态/视觉
 
 
 @dataclass
@@ -71,6 +72,7 @@ def _load_model_registry() -> Dict[str, ModelInfo]:
                         context_window=int(values[0]),
                         max_output_tokens=int(values[1]),
                         supports_tools=bool(values[2]),
+                        supports_vision=bool(values[3]) if len(values) >= 4 else False,
                     )
             if result:
                 logger.info("[LLM] 从 %s 加载了 %d 个模型", registry_path, len(result))
@@ -220,6 +222,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         omit_max_tokens: bool = True,
         thinking: bool = False,
         thinking_budget: int = None,
+        vision: bool = False,
         **kwargs,
     ):
         self.api_key = api_key
@@ -229,7 +232,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self.timeout = timeout
         self._extra_client_args = kwargs
         self._verify_model = verify_model
-        self._verify_deferred = False  
+        self._verify_deferred = False
         self._verify_done = False
         self._omit_max_tokens = omit_max_tokens
         self._thinking = thinking
@@ -241,6 +244,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             context_window=context_window or (detected.context_window if detected else self.DEFAULT_CONTEXT_WINDOW),
             max_output_tokens=max_tokens or (detected.max_output_tokens if detected else self.DEFAULT_MAX_OUTPUT),
             supports_tools=(detected.supports_tools if detected else True),
+            supports_vision=vision or (detected.supports_vision if detected else False),
         )
 
         self._calibrated = False
@@ -300,6 +304,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
     def _ensure_async_client(self):
         if self._async_client is None:
+            if not self.api_key:
+                logger.warning("[LLM] API key 为空，跳过 async client 创建，将在首次调用时重试")
+                return
             from openai import AsyncOpenAI
             self._async_client = AsyncOpenAI(
                 api_key=self.api_key,
@@ -328,9 +335,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             truncate: 是否在输入超限时自动截断早期消息
         """
         self._ensure_async_client()
-
-        if self._verify_deferred and not self._verify_done:
-            self._trigger_deferred_verify()
+        if self._async_client is None:
+            raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
 
         effective_messages = messages
         if truncate and messages:
@@ -762,9 +768,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     ):
         """流式生成（SSE/WebSocket 实时推送用）"""
         self._ensure_async_client()
-
-        if self._verify_deferred and not self._verify_done:
-            self._trigger_deferred_verify()
+        if self._async_client is None:
+            raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
 
         effective_messages = messages
         if messages:
@@ -1024,18 +1029,28 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
                 raise ValueError(f"未找到当前模型配置: {current_model_name}，且 models 列表为空")
 
         api_key = model_config.get("api_key", "")
+        base_url = model_config.get("base_url", "https://api.openai.com/v1")
+        model_name = model_config.get("model", "gpt-4o")
+        if not model_name:
+            logger.warning("[LLMFactory] 模型名称为空，自动回退到 gpt-4o")
+            model_name = "gpt-4o"
+        if not base_url:
+            logger.warning("[LLMFactory] API 地址为空，自动回退到 https://api.openai.com/v1")
+            base_url = "https://api.openai.com/v1"
         api_key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
         logger.info("[LLMFactory] 使用模型配置 | name=%s | api_key=%s | base_url=%s",
-                    current_model_name, api_key_preview, model_config.get("base_url", ""))
+                    current_model_name, api_key_preview, base_url)
 
         thinking_config = config_dict.get("thinking", {})
         thinking_enabled = thinking_config.get("enabled", False)
         thinking_budget = thinking_config.get("budget_tokens")
 
+        model_vision = bool(model_config.get("vision", False))
+
         engine = OpenAICompatibleEngine(
             api_key=api_key,
-            base_url=model_config.get("base_url", "https://api.openai.com/v1"),
-            model=model_config.get("model", "gpt-4o"),
+            base_url=base_url,
+            model=model_name,
             temperature=float(model_config.get("temperature", 0.7)),
             max_tokens=int(model_config.get("max_tokens", 0)) or None,
             timeout=int(model_config.get("timeout", 60)),
@@ -1044,18 +1059,24 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             omit_max_tokens=bool(model_config.get("omit_max_tokens", False)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
+            vision=model_vision,
         )
 
         info = engine.model_info
         logger.info(
-            "[LLMFactory] 已创建引擎 | model=%s | current_model=%s | ctx=%d out=%d tools=%s",
+            "[LLMFactory] 已创建引擎 | model=%s | current_model=%s | ctx=%d out=%d tools=%s vision=%s",
             engine.model, current_model_name, info.context_window, info.max_output_tokens,
-            info.supports_tools,
+            info.supports_tools, info.supports_vision,
         )
 
-        engine._verify_deferred = True
-        logger.info("[LLMFactory] 引擎已创建（模型验证已延迟到首次使用）")
-
+        engine._verify_deferred = False
+        # 预热：提前创建 async client + 加载模型注册表（避免首次调用时卡顿）
+        _get_model_registry()
+        try:
+            engine._ensure_async_client()
+        except Exception as e:
+            logger.warning("[LLMFactory] async client 预热失败，首次调用时会延迟创建: %s", e)
+        logger.info("[LLMFactory] 引擎已创建（async client 已预热）")
         return engine
 
     elif provider == "ollama":
@@ -1075,14 +1096,17 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             omit_max_tokens=bool(oc.get("omit_max_tokens", False)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
+            vision=bool(oc.get("vision", False)),
         )
         info = engine.model_info
         logger.info(
-            "[LLMFactory] 已创建 Ollama 引擎 | model=%s | ctx=%d out=%d",
-            engine.model, info.context_window, info.max_output_tokens,
+            "[LLMFactory] 已创建 Ollama 引擎 | model=%s | ctx=%d out=%d vision=%s",
+            engine.model, info.context_window, info.max_output_tokens, info.supports_vision,
         )
-        engine._verify_deferred = True
-        logger.info("[LLMFactory] Ollama 引擎已创建（模型验证已延迟到首次使用）")
+        engine._verify_deferred = False
+        engine._ensure_async_client()
+        _get_model_registry()
+        logger.info("[LLMFactory] Ollama 引擎已创建（async client 已预热）")
         return engine
 
     else:

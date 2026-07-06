@@ -45,14 +45,16 @@ class PolicyStats:
 
 
 class PolicyBanditMemory:
-    
-    DEFAULT_PATH = "data/learning/policy_bandit_stats.json"
-    DECAY_INTERVAL = 50  # 每 50 个会话衰减一次
-    DECAY_FACTOR = 0.99
 
-    def __init__(self, path: str = None, policies: list = None):
-        self.path = path or self.DEFAULT_PATH
+    def __init__(self, path: str = None, policies: list = None,
+                 decay_interval: int = 50, decay_factor: float = 0.99,
+                 prior_alpha: float = 2.0, prior_beta: float = 2.0):
+        self.path = path or "data/learning/policy_bandit_stats.json"
         self.policies = policies or ["default", "efficient", "aggressive"]
+        self.decay_interval = decay_interval
+        self.decay_factor = decay_factor
+        self.prior_alpha = prior_alpha
+        self.prior_beta = prior_beta
         self._stats: Dict[str, PolicyStats] = {}
         self._session_count = 0
         self._dirty = False
@@ -70,7 +72,7 @@ class PolicyBanditMemory:
                     if name in stats_data:
                         self._stats[name] = PolicyStats.from_dict(stats_data[name])
                     else:
-                        self._stats[name] = PolicyStats()
+                        self._stats[name] = PolicyStats(alpha=self.prior_alpha, beta=self.prior_beta)
                 logger.info("[PolicyBanditMemory] 加载成功 | path=%s | sessions=%d",
                            self.path, self._session_count)
             except Exception as e:
@@ -81,7 +83,7 @@ class PolicyBanditMemory:
 
     def _init_default(self):
         for name in self.policies:
-            self._stats[name] = PolicyStats()
+            self._stats[name] = PolicyStats(alpha=self.prior_alpha, beta=self.prior_beta)
         self._dirty = True
 
     def _save(self):
@@ -107,7 +109,7 @@ class PolicyBanditMemory:
 
     def get_stats(self, policy_name: str) -> PolicyStats:
         if policy_name not in self._stats:
-            self._stats[policy_name] = PolicyStats()
+            self._stats[policy_name] = PolicyStats(alpha=self.prior_alpha, beta=self.prior_beta)
         return self._stats[policy_name]
 
     def get_all_stats(self) -> Dict[str, PolicyStats]:
@@ -144,7 +146,7 @@ class PolicyBanditMemory:
             )
 
     def decay(self, factor: float = None):
-        factor = factor or self.DECAY_FACTOR
+        factor = factor or self.decay_factor
 
         for name, stat in self._stats.items():
             stat.alpha *= factor
@@ -159,7 +161,7 @@ class PolicyBanditMemory:
         self._session_count += 1
         self._dirty = True
         self._save()
-        return self._session_count % self.DECAY_INTERVAL == 0
+        return self._session_count % self.decay_interval == 0
 
     def reset(self):
         self._init_default()

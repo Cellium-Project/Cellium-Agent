@@ -364,6 +364,9 @@ export function useChat() {
           toolTraces: ctx.traces,
           timeline: [...ctx.timeline],
         });
+        finalizeMessage(ctx, connectionId);
+        setIsStreaming(false);
+        setHasRunningTask(false);
         break;
       }
 

@@ -1,60 +1,26 @@
-# Learning 模块配置
-#
-# Policy 配置源说明：
-#   此文件是 Policy 参数的唯一配置源。
-#   app/agent/learning/policy.py 中的 _DEFAULT_TEMPLATES 仅作为后备默认值，
-#   当此配置缺失时才会使用。
-#
-#   支持热重载：修改此文件后，调用 reload_templates() 即可生效。
-
 learning:
-  # 是否启用学习
+  section: learning
   enabled: true
-
-  # 强制指定策略（覆盖自动学习）
-  # - null 或空字符串：自动学习（Bandit 根据历史选择）
-  # - "default" / "efficient" / "aggressive"：强制使用指定策略
   override_policy: null
-
-  # 统计文件路径
-  memory_path: "data/learning/policy_bandit_stats.json"
-
-  # 衰减配置
+  memory_path: data/learning/policy_bandit_stats.json
   decay:
-    interval: 50      # 每 N 个会话衰减一次
-    factor: 0.99      # 衰减因子
-
-  # 冷启动参数
+    interval: 51
+    factor: 0.93
   prior:
-    alpha: 2.0        # Beta 分布先验 alpha
-    beta: 2.0         # Beta 分布先验 beta
-
-  # ============================================================
-  # Policy 定义（此为唯一配置源）
-  # ============================================================
-  # 参数说明：
-  #   stuck_iterations       - 无进展迭代阈值，超过则考虑终止
-  #   repetition_threshold   - 重复工具调用阈值
-  #   progress_trend_threshold - 进展趋势恶化阈值（负值）
-  #   confirm_stop_threshold - 终止确认置信度阈值
-  # ------------------------------------------------------------
+    alpha: 2
+    beta: 2
   policies:
     default:
-      # 默认策略：平衡效率与宽容度
       stuck_iterations: 3
       repetition_threshold: 3
       progress_trend_threshold: -0.3
       confirm_stop_threshold: 0.9
-
     efficient:
-      # 高效策略：更宽容，适合复杂任务
       stuck_iterations: 5
       repetition_threshold: 5
       progress_trend_threshold: -0.5
       confirm_stop_threshold: 0.95
-
     aggressive:
-      # 激进策略：更宽容，适合复杂任务
       stuck_iterations: 5
       repetition_threshold: 5
       progress_trend_threshold: -0.4

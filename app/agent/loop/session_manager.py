@@ -22,17 +22,11 @@ class SessionInfo:
         self,
         session_id: str,
         max_history: int = 200,
-        max_tool_results: int = 10,
-        max_tool_result_length: int = 2000,
-        auto_compact_threshold: int = 10000,
         flash_mode: bool = False,
     ):
         self.session_id = session_id
         self.memory = MemoryManager(
             max_history=max_history,
-            max_tool_results=max_tool_results,
-            max_tool_result_length=max_tool_result_length,
-            auto_compact_threshold=auto_compact_threshold,
         )
         self.created_at = time.time()
         self.last_active = time.time()
@@ -110,9 +104,6 @@ class SessionManager:
                 info = SessionInfo(
                     session_id,
                     max_history=short_term.get("max_history", 200),
-                    max_tool_results=short_term.get("max_tool_results", 10),
-                    max_tool_result_length=short_term.get("max_tool_result_length", 500),
-                    auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
                     flash_mode=flash_mode,
                 )
 
@@ -377,9 +368,6 @@ class SessionManager:
             for info in self._sessions.values():
                 info.memory.update_config(
                     max_history=short_term_cfg.get("max_history"),
-                    max_tool_results=short_term_cfg.get("max_tool_results"),
-                    max_tool_result_length=short_term_cfg.get("max_tool_result_length"),
-                    auto_compact_threshold=short_term_cfg.get("auto_compact_threshold"),
                 )
                 updated_count += 1
         logger.info("[SessionManager] Memory 配置热重载 | 已更新 %d 个会话", updated_count)

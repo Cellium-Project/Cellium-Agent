@@ -74,23 +74,25 @@ class LearningIntegration:
         heuristic_engine: "HeuristicEngine",
         memory_path: Optional[str] = None,
         enabled: bool = True,
+        decay_interval: int = 50,
+        decay_factor: float = 0.99,
+        prior_alpha: float = 2.0,
+        prior_beta: float = 2.0,
     ):
-        """
-        初始化
-
-        Args:
-            heuristic_engine: HeuristicEngine 实例
-            memory_path: 统计文件路径（可选）
-            enabled: 是否启用学习
-        """
         self.heuristic_engine = heuristic_engine
         self.enabled = enabled
-        self.memory = PolicyBanditMemory(path=memory_path)
+        self.memory = PolicyBanditMemory(
+            path=memory_path,
+            decay_interval=decay_interval,
+            decay_factor=decay_factor,
+            prior_alpha=prior_alpha,
+            prior_beta=prior_beta,
+        )
         self.bandit = BayesianBandit(self.memory)
         self._current_policy: str = "default"
         self._session_active = False
         self._override_policy: Optional[str] = None
-        self._round_updates: int = 0  # 累计轮次更新次数
+        self._round_updates: int = 0
         self._control_loop = None
 
     def set_override_policy(self, policy_name: Optional[str]):

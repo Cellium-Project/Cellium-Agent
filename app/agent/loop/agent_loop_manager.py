@@ -164,8 +164,7 @@ class AgentLoopManager:
         self._locks.clear()
         logger.info("[AgentLoopManager] All sessions cleaned up")
 
-    def update_all_loops(self, flash_mode: bool = None, max_iterations: int = None):
-        """热更新所有活跃的 loop 配置"""
+    def update_all_loops(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None):
         if not self._loops:
             return
         updated = 0
@@ -173,7 +172,7 @@ class AgentLoopManager:
             loop = meta.agent_loop
             try:
                 if hasattr(loop, 'update_config'):
-                    loop.update_config(flash_mode=flash_mode, max_iterations=max_iterations)
+                    loop.update_config(flash_mode=flash_mode, max_iterations=max_iterations, enable_learning=enable_learning)
                     updated += 1
             except Exception as e:
                 logger.warning(f"[AgentLoopManager] Update error for {session_id}: {e}")

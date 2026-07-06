@@ -142,18 +142,6 @@ const ModelSettings: React.FC = () => {
     if (!saveConfig.current_model && saveConfig.models?.length > 0) {
       saveConfig.current_model = saveConfig.models[0].name;
     }
-    const currentModel = saveConfig.models?.find((m: any) => m.name === saveConfig.current_model);
-    if (currentModel) {
-      saveConfig.openai = {
-        api_key: currentModel.api_key,
-        base_url: currentModel.base_url,
-        model: currentModel.model,
-        temperature: currentModel.temperature,
-        timeout: currentModel.timeout,
-      };
-    } else {
-      delete saveConfig.openai;
-    }
     await putJSON(API.configUpdate('llm'), { value: saveConfig, persist: true });
     await postJSON(API.modelReloadEngine, {});
   });
@@ -286,6 +274,16 @@ const ModelSettings: React.FC = () => {
                           <FieldLabel label={t('settings.model.timeout')} />
                           <input type="number" value={Number(model.timeout) || 120} min={10} max={600}
                             onChange={e => updateModelField(index, 'timeout', parseInt(e.target.value))} />
+                        </div>
+                      </div>
+                      <div className="form-row">
+                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                          <FieldLabel label={t('settings.model.vision')} desc={t('settings.model.visionDesc')} />
+                          <label className="toggle-switch">
+                            <input type="checkbox" checked={!!model.vision} onChange={e => updateModelField(index, 'vision', e.target.checked)} />
+                            <span className="toggle-slider"></span>
+                            <span className="toggle-label">{model.vision ? t('settings.model.visionEnabled') : t('settings.model.visionDisabled')}</span>
+                          </label>
                         </div>
                       </div>
                     </div>
@@ -1574,21 +1572,6 @@ const MemorySettings: React.FC = () => {
             <FieldLabel label={t('settings.memory.maxMessages')} desc={t('settings.memory.maxMessagesDesc')} />
             <input type="number" value={Number(shortTerm.max_history) || 50} min={10} max={200}
               onChange={e => updateField('short_term.max_history', parseInt(e.target.value))} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label={t('settings.memory.autoCompactThreshold')} desc={t('settings.memory.autoCompactThresholdDesc')} />
-            <input type="number" value={Number(shortTerm.auto_compact_threshold) || 10000} min={1000} max={100000}
-              onChange={e => updateField('short_term.auto_compact_threshold', parseInt(e.target.value))} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label={t('settings.memory.maxToolResults')} desc={t('settings.memory.maxToolResultsDesc')} />
-            <input type="number" value={Number(shortTerm.max_tool_results) || 10} min={1} max={50}
-              onChange={e => updateField('short_term.max_tool_results', parseInt(e.target.value))} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label={t('settings.memory.resultTruncateLength')} desc={t('settings.memory.resultTruncateLengthDesc')} />
-            <input type="number" value={Number(shortTerm.max_tool_result_length) || 500} min={100} max={5000}
-              onChange={e => updateField('short_term.max_tool_result_length', parseInt(e.target.value))} />
           </div>
         </div>
       </div>

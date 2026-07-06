@@ -97,7 +97,7 @@ def reload_templates():
     """强制重新加载配置（配置热更新时调用）"""
     global _cached_templates
     _cached_templates = None
-    logger.info("[Policy] 已清除缓存，下次调用将重新加载配置")
+    logger.debug("[Policy] 已清除缓存，下次调用将重新加载配置")
 
 
 # 兼容旧代码：POLICY_TEMPLATES 作为属性访问

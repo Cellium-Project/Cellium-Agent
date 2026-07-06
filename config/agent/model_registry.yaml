@@ -9,11 +9,15 @@ models:
   o3-mini:          [200000, 10000, true]
   gpt-5.4:          [1000000, 12800, true]  
   gpt-5.4-mini:     [400000, 12800, true]
-  gpt-4.1:          [1048576, 32768, true]  
+  gpt-4.1:          [1048576, 32768, true]
+  gpt-5.5:          [1000000, 128000, true]
+  gpt-5.5-pro:      [1000000, 128000, true]
 
   # ---- 阶跃星辰 (StepFun) ----
   step-3.5-flash-260307: [256000, 18192, true]
-  step-3.5-flash:   [256000, 18192, true]
+  step-3.5-flash:        [256000, 18192, true]
+  step-3.7-flash:        [256000, 18192, true]
+
 
   # ---- DeepSeek ----
   deepseek-chat:     [128000, 8192, true]
@@ -31,6 +35,8 @@ models:
   qwen3.6-plus:     [1000000, 65536, true]
   qwen3.5-plus:     [1000000, 65536, true]
   qwen3.5-omni-plus: [262144, 65536, true]
+  qwen3.7-max:   [1000000, 65536, true]
+  qwen3.7-plus:  [1000000, 32768, true]
 
   # ---- Ollama 本地模型 ----
   llama3.1:latest:  [128000, 4096, true]
@@ -62,6 +68,7 @@ models:
   glm-5:            [200000, 128000, true]
   glm-5-turbo:      [200000, 128000, true]
   glm-5.1:          [200000, 128000, true]
+  glm-5.2:          [1000000, 131072, true]
 
   # ---- MiniMax ----
   minimax-m2:              [204800, 16384, true]
@@ -71,10 +78,12 @@ models:
   minimax-m2.5-highspeed:  [204800, 16384, true]
   minimax-m2.7:            [204800, 131072, true]
   minimax-m2.7-highspeed:  [204800, 16384, true]
+  minimax-m3:              [1049000, 131072, true]
 
   # ---- Moonshot (Kimi) ----
   kimi-k2.5:               [262144, 8192, true]
   kimi-k2.6:               [262144, 8192, true]
+  kimi-k2.7-code:          [262144, 65536, true]
 
   # ---- 字节跳动 (豆包/Doubao) ----
 
@@ -82,6 +91,8 @@ models:
   doubao-seed-2.0-lite:    [252144, 131072, true]
   doubao-seed-2.0-mini:    [252144, 32768, true]
   doubao-seed-2.0-code:    [252144, 131072, true]
+  doubao-2.1-pro:          [256000, 8192, true]
+  doubao-2.1-turbo:        [256000, 8192, true]
 
   doubao-pro:              [252144, 8192, true]
   doubao-lite:             [131072, 8192, true]

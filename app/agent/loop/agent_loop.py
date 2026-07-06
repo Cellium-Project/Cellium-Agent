@@ -90,9 +90,6 @@ class AgentLoop:
         short_term_config = self._mem_config.get("short_term", {})
         self.memory = memory or MemoryManager(
             max_history=short_term_config.get("max_history", 50),
-            max_tool_results=short_term_config.get("max_tool_results", 10),
-            max_tool_result_length=short_term_config.get("max_tool_result_length", 500),
-            auto_compact_threshold=short_term_config.get("auto_compact_threshold", 10000),
         )
 
         # 启发式模块
@@ -101,11 +98,18 @@ class AgentLoop:
         # Learning 模块（依赖 heuristics）
         self.learning = None
         if enable_learning and self.heuristics:
+            learning_cfg = self._get_learning_config()
+            decay = learning_cfg.get("decay", {})
+            prior = learning_cfg.get("prior", {})
             self.learning = LearningIntegration(
                 heuristic_engine=self.heuristics.engine,
+                memory_path=learning_cfg.get("memory_path"),
+                enabled=learning_cfg.get("enabled", True),
+                decay_interval=decay.get("interval", 50),
+                decay_factor=decay.get("factor", 0.99),
+                prior_alpha=prior.get("alpha", 2.0),
+                prior_beta=prior.get("beta", 2.0),
             )
-            # 读取 override_policy 配置
-            learning_cfg = self._get_learning_config()
             override = learning_cfg.get("override_policy")
             if override:
                 self.learning.set_override_policy(override)
@@ -201,9 +205,6 @@ class AgentLoop:
         self._mem_config = {
             "short_term": {
                 "max_history": 50,
-                "max_tool_results": 10,
-                "max_tool_result_length": 500,
-                "auto_compact_threshold": 10000,
             },
             "session_compact": {
                 "token_threshold": 100000,
@@ -271,8 +272,7 @@ class AgentLoop:
         """请求停止当前推理"""
         self._loop_controller.request_stop()
 
-    def update_config(self, flash_mode: bool = None, max_iterations: int = None):
-        """动态更新配置"""
+    def update_config(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None):
         if flash_mode is not None and flash_mode != self.flash_mode:
             self.flash_mode = flash_mode
             if flash_mode and self.control_loop:
@@ -292,10 +292,32 @@ class AgentLoop:
                 logger.info("[AgentLoop] flash_mode 已热更新为 False，控制环已启用")
             else:
                 logger.info(f"[AgentLoop] flash_mode 已热更新为 {flash_mode}")
-            # 新版：flash_mode 通过 context dict 传至 builder.build()
         if max_iterations is not None:
             self.max_iterations = max_iterations
             logger.info(f"[AgentLoop] max_iterations 已热更新为 {max_iterations}")
+        if enable_learning is not None:
+            if enable_learning and not self.learning and self.heuristics:
+                learning_cfg = self._get_learning_config()
+                decay = learning_cfg.get("decay", {})
+                prior = learning_cfg.get("prior", {})
+                self.learning = LearningIntegration(
+                    heuristic_engine=self.heuristics.engine,
+                    memory_path=learning_cfg.get("memory_path"),
+                    enabled=learning_cfg.get("enabled", True),
+                    decay_interval=decay.get("interval", 50),
+                    decay_factor=decay.get("factor", 0.99),
+                    prior_alpha=prior.get("alpha", 2.0),
+                    prior_beta=prior.get("beta", 2.0),
+                )
+                override = learning_cfg.get("override_policy")
+                if override:
+                    self.learning.set_override_policy(override)
+                if self.control_loop:
+                    self.learning.set_control_loop(self.control_loop)
+                logger.info("[AgentLoop] Learning 模块已热启用")
+            elif not enable_learning and self.learning:
+                self.learning = None
+                logger.info("[AgentLoop] Learning 模块已热禁用")
 
     def _should_update_goal(self, new_input: str, current_goal: str) -> bool:
         """

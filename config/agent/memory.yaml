@@ -3,9 +3,6 @@ memory:
   memory_dir: memory
   short_term:
     max_history: 50
-    max_tool_results: 10
-    max_tool_result_length: 2000
-    auto_compact_threshold: 5000
   session_compact:
     enabled: true
     token_threshold: 100000

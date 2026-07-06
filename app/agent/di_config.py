@@ -131,7 +131,7 @@ def setup_agent_di(
         "max_iterations": max_iterations,
         "flash_mode": flash_mode,
         "enable_heuristics": True,
-        "enable_learning": True,
+        "enable_learning": _cfg.get("learning.enabled", True),
     }
 
     def _update_all_loops():
@@ -196,33 +196,43 @@ def setup_agent_di(
     _cfg.on_change("heuristics", _on_heuristics_config_change)
 
     def _on_learning_config_change(section, old_val, new_val):
-        """learning 配置变更时重新加载 Policy 模板"""
         if section != "learning":
             return
         try:
             from app.agent.learning.policy import reload_templates
             reload_templates()
-            logger.info("[AgentDI] Learning 配置已热更新")
+            if new_val:
+                new_enabled = new_val.get("enabled", True)
+                _agent_config_holder["enable_learning"] = new_enabled
+                try:
+                    from app.agent.loop import AgentLoopManager
+                    mgr = AgentLoopManager.get_instance()
+                    mgr.update_all_loops(
+                        enable_learning=new_enabled,
+                    )
+                except Exception:
+                    pass
+                logger.info("[AgentDI] Learning 配置已热更新 | enabled=%s", new_enabled)
         except Exception as e:
             logger.error("[AgentDI] Learning 配置热更新失败: %s", e, exc_info=True)
 
     _cfg.on_change("learning", _on_learning_config_change)
 
     def _on_security_config_change(section, old_val, new_val):
-        """security 配置变更时重新加载 SecurityPolicy"""
         if section != "security":
             return
         try:
-            # 获取 SecurityPolicy 实例并重载配置
             if container.has(SecurityPolicy):
                 security = container.resolve(SecurityPolicy)
                 security.reload_blacklist()
-                # 更新其他安全配置
                 if new_val:
+                    new_perm = new_val.get("permission_level")
+                    if new_perm:
+                        security.permission_level = new_perm
                     forbidden_dirs = new_val.get("forbidden_dirs", [])
                     if forbidden_dirs:
                         security.set_forbidden_dirs(forbidden_dirs)
-                logger.info("[AgentDI] Security 配置已热更新")
+                logger.info("[AgentDI] Security 配置已热更新 | permission_level=%s", security.permission_level)
         except Exception as e:
             logger.error("[AgentDI] Security 配置热更新失败: %s", e, exc_info=True)
 
@@ -345,18 +355,19 @@ def setup_agent_di(
             llm_engine = create_llm_engine()
             logger.info("[AgentDI] LLM 引擎已从配置创建 (model=%s)", getattr(llm_engine, 'model', '?'))
         except Exception as e:
-            logger.warning("[AgentDI] LLM 引擎创建失败，AgentLoop 将不可用: %s", e)
+            logger.error("[AgentDI] LLM 引擎创建失败，启动降级模式（可在 WebUI 配置后重载）: %s", e)
             llm_engine = None
 
-    if llm_engine is not None and not hasattr(BaseLLMEngine, '_di_registered'):
+    if llm_engine is not None and not container.has(BaseLLMEngine):
         container.register(BaseLLMEngine, llm_engine, singleton=True)
-        BaseLLMEngine._di_registered = True
 
     # --- 2. 注册安全策略（先于Shell，因为Shell依赖它）---
-    _security = SecurityPolicy()
-    if not hasattr(SecurityPolicy, '_di_registered'):
+    _security_cfg = _cfg.get_section("security") or {}
+    _security = SecurityPolicy(
+        permission_level=_security_cfg.get("permission_level", "standard"),
+    )
+    if not container.has(SecurityPolicy):
         container.register(SecurityPolicy, _security, singleton=True)
-        SecurityPolicy._di_registered = True
 
     # --- 3. 注册 Shell（注入 SecurityPolicy）---
     agent_cfg = _cfg.get_section("agent") or {}
@@ -364,28 +375,22 @@ def setup_agent_di(
     if shell_cwd and not os.path.isabs(shell_cwd):
         shell_cwd = os.path.join(get_config().config_root, shell_cwd)
     _shell = shell or CelliumShell(security_policy=_security, initial_cwd=shell_cwd)
-    if not hasattr(CelliumShell, '_di_registered'):
+    if not container.has(CelliumShell):
         container.register(CelliumShell, _shell, singleton=True)
-        CelliumShell._di_registered = True
 
     # --- 4. 注册三层记忆 ---
     _memory = ThreeLayerMemory(memory_dir, allow_sensitive_store=allow_sensitive_store)
-    if not hasattr(ThreeLayerMemory, '_di_registered'):
+    if not container.has(ThreeLayerMemory):
         container.register(ThreeLayerMemory, _memory, singleton=True)
-        ThreeLayerMemory._di_registered = True
 
     # --- 5. 注册对话上下文 MemoryManager ---
     memory_cfg = _cfg.get_section("memory") or {}
     short_term = memory_cfg.get("short_term", {})
     _mem_mgr = MemoryManager(
         max_history=short_term.get("max_history", 50),
-        max_tool_results=short_term.get("max_tool_results", 10),
-        max_tool_result_length=short_term.get("max_tool_result_length", 2000),
-        auto_compact_threshold=short_term.get("auto_compact_threshold", 10000),
     )
-    if not hasattr(MemoryManager, '_di_registered'):
-        container.register(MemoryManager, _mem_mgr, singleton=False) 
-        MemoryManager._di_registered = True
+    if not container.has(MemoryManager):
+        container.register(MemoryManager, _mem_mgr, singleton=False)
 
     def _on_memory_config_change(section, old_val, new_val):
         """memory 配置变更时更新所有活跃的 MemoryManager"""
@@ -410,21 +415,18 @@ def setup_agent_di(
         shell=_shell,
         mp_manager=_mp_manager,
     )
-    if not hasattr(ShellTool, '_di_registered'):
+    if not container.has(ShellTool):
         container.register(ShellTool, _tool, singleton=True)
-        ShellTool._di_registered = True
 
     # --- 8b. 注册 MemoryTool（注入 ThreeLayerMemory，让 LLM 可主动读写长期记忆）---
     _mem_tool = MemoryTool(three_layer_memory=_memory)
-    if not hasattr(MemoryTool, '_di_registered'):
+    if not container.has(MemoryTool):
         container.register(MemoryTool, _mem_tool, singleton=True)
-        MemoryTool._di_registered = True
 
     # --- 8c. 注册 FileTool（专用文件读写工具，替代不可靠的 shell 文件命令）---
     _file_tool = FileTool()
-    if not hasattr(FileTool, '_di_registered'):
+    if not container.has(FileTool):
         container.register(FileTool, _file_tool, singleton=True)
-        FileTool._di_registered = True
 
     # --- 9. 注册 AgentLoop---
     def _create_agent_loop():
@@ -446,9 +448,8 @@ def setup_agent_di(
         )
         return loop
 
-    if not hasattr(AgentLoop, '_di_registered'):
+    if not container.has(AgentLoop):
         container.register_factory(AgentLoop, _create_agent_loop)
-        AgentLoop._di_registered = True
 
     logger.info("[AgentDI] 依赖注入容器初始化完成 (LLM=%s)", "OK" if llm_engine else "None")
 

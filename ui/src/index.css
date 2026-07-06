@@ -2500,23 +2500,7 @@ input:focus, select:focus, textarea:focus {
     border-radius: 6px;
     font-size: 13px;
 }
-/* Model Management Styles */
-.model-manager { display: flex; gap: 32px; margin-bottom: 20px; }
-.saved-models { flex: 1; max-width: 300px; border-right: 1px solid var(--border-primary); padding-right: 24px; }
-.saved-models h4, .model-form h4, .quick-presets h4 { margin-bottom: 16px; font-size: 16px; font-weight: 600; color: var(--text-primary); }
-.model-list { display: flex; flex-direction: column; gap: 8px; }
-.model-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-primary); background: var(--bg-secondary); cursor: pointer; transition: all 0.2s ease; -webkit-tap-highlight-color: transparent; }
-.model-item:hover { border-color: var(--accent-primary); box-shadow: var(--shadow-sm); }
-.model-item.active { border-color: var(--accent-primary); background: var(--accent-primary-light); }
-.model-item-name { font-weight: 500; font-size: 14px; color: var(--text-primary); flex: 1; }
-.model-item-actions { display: flex; gap: 8px; opacity: 0; transition: opacity 0.2s; }
-.model-item:hover .model-item-actions { opacity: 1; }
-.model-item-btn { background: transparent; border: none; font-size: 14px; cursor: pointer; opacity: 0.6; -webkit-tap-highlight-color: transparent; }
-.model-item-btn:hover { opacity: 1; }
-.model-list-empty { font-size: 14px; color: var(--text-tertiary); padding: 20px; text-align: center; background: var(--bg-tertiary); border-radius: 8px; border: 1px dashed var(--border-primary); }
-.model-form { flex: 2; }
-.model-form label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text-primary); }
-
+/* Memory Settings Styles */
 .memory-settings-panel {
     max-width: 1180px;
 }
@@ -5086,33 +5070,6 @@ input:focus, select:focus, textarea:focus {
         font-size: 10px;
     }
 
-    /* Model Manager Mobile Styles */
-    .model-manager {
-        flex-direction: column;
-        gap: 20px;
-    }
-
-    .saved-models {
-        max-width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--border-primary);
-        padding-right: 0;
-        padding-bottom: 20px;
-    }
-
-    .model-form {
-        flex: 1;
-        width: 100%;
-    }
-
-    .model-item {
-        padding: 12px;
-    }
-
-    .model-item-actions {
-        opacity: 1;
-    }
-
     /* Models Grid Mobile Styles */
     .models-grid {
         grid-template-columns: 1fr;
@@ -5373,23 +5330,6 @@ input:focus, select:focus, textarea:focus {
     .btn-save {
         padding: 10px 16px;
         font-size: 13px;
-    }
-
-    /* Model Manager Extra Small Screen Styles */
-    .model-item {
-        padding: 10px;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-
-    .model-item-name {
-        font-size: 13px;
-        width: 100%;
-    }
-
-    .model-item-actions {
-        width: 100%;
-        justify-content: flex-end;
     }
 }
 

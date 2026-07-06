@@ -12,46 +12,28 @@ class MemoryManager:
     def __init__(
         self,
         max_history: int = 50,
-        max_tool_results: int = 10,
-        max_tool_result_length: int = 2000,
-        auto_compact_threshold: int = 10000,
     ):
         self.messages: List[Dict] = []
         self._ephemeral_messages: List[Dict] = []
         self.max_history = max_history
-        self.max_tool_results = max_tool_results
-        self.max_tool_result_length = max_tool_result_length
-        self.auto_compact_threshold = auto_compact_threshold
         self.tool_call_counter = 0
 
     def update_config(
         self,
         max_history: int = None,
-        max_tool_results: int = None,
-        max_tool_result_length: int = None,
-        auto_compact_threshold: int = None,
     ):
         """
         动态更新配置参数（热重载支持）
 
         Args:
             max_history: 最大消息数
-            max_tool_results: 保留工具结果数
-            max_tool_result_length: 结果截断长度
-            auto_compact_threshold: 自动压缩阈值
         """
         if max_history is not None:
             self.max_history = max_history
-        if max_tool_results is not None:
-            self.max_tool_results = max_tool_results
-        if max_tool_result_length is not None:
-            self.max_tool_result_length = max_tool_result_length
-        if auto_compact_threshold is not None:
-            self.auto_compact_threshold = auto_compact_threshold
 
         logger.info(
-            "[MemoryManager] 配置已更新 | max_history=%d | max_tool_results=%d",
-            self.max_history, self.max_tool_results
+            "[MemoryManager] 配置已更新 | max_history=%d",
+            self.max_history,
         )
 
     def add_user_message(self, content: str):

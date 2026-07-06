@@ -13,7 +13,6 @@ from uvicorn.logging import AccessFormatter
 
 multiprocessing.freeze_support()
 
-
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
@@ -136,7 +135,7 @@ class MainApplication(LogMixin):
             "enable_learning": True,
         }
         agent_loop_mgr.initialize(
-            llm_engine=self.container.resolve(BaseLLMEngine),
+            llm_engine=self.container.resolve(BaseLLMEngine) if self.container.has(BaseLLMEngine) else None,
             shell=_shell,
             three_layer_memory=_mem,
             tools={

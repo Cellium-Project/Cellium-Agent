@@ -195,19 +195,21 @@ class SecurityPolicy:
     ]
 
     def __init__(self, max_timeout: int = 30, max_iterations: int = 10,
-                 forbidden_dirs: list = None, command_blacklist: list = None):
+                 forbidden_dirs: list = None, command_blacklist: list = None,
+                 permission_level: str = None):
         self.max_timeout = max_timeout
         self.max_iterations = max_iterations
         self.forbidden_dirs: List[str] = forbidden_dirs or []
-        # 用户自定义黑名单（从配置文件读取）
         self._user_blacklist: List[str] = command_blacklist or []
+        self.permission_level = permission_level
         self._load_user_blacklist_from_config()
 
     def _load_user_blacklist_from_config(self):
-        """从配置文件加载用户自定义黑名单"""
         try:
             from app.core.util.agent_config import get_config
             config = get_config()
+            if self.permission_level is None:
+                self.permission_level = config.get("security.permission_level", "standard")
             blacklist = config.get("security.command_blacklist", [])
             if isinstance(blacklist, list):
                 self._user_blacklist = [str(item).lower() for item in blacklist if item]
@@ -215,11 +217,14 @@ class SecurityPolicy:
             pass
 
     def reload_blacklist(self):
-        """热重载用户自定义黑名单"""
         self._load_user_blacklist_from_config()
 
     def check_command(self, cmd: str) -> Dict:
-        """检查命令安全性"""
+        perm = (self.permission_level or "standard").lower()
+
+        if perm == "unrestricted":
+            return {"allowed": True, "risk_level": RiskLevel.SAFE.value, "message": "无限制模式，全部放行"}
+
         if self.forbidden_dirs:
             path_result = self._check_forbidden_path(cmd)
             if path_result:
@@ -229,12 +234,20 @@ class SecurityPolicy:
         if self_protection_result:
             return self_protection_result
 
-        # 优先检查硬编码危险模式（确保 CRITICAL 级别被正确识别）
-        for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
-            if re.search(pattern, cmd, re.IGNORECASE):
-                return {"allowed": False, "risk_level": risk_level.value, "message": message}
+        if perm == "read_only":
+            if self._is_safe_command(cmd):
+                return {"allowed": True, "risk_level": RiskLevel.SAFE.value, "message": "安全命令"}
+            return {"allowed": False, "risk_level": RiskLevel.HIGH.value, "message": "只读模式，禁止执行写入/高风险命令"}
 
-        # 再检查用户自定义黑名单（兜底检测）
+        if perm == "admin":
+            for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
+                if risk_level == RiskLevel.CRITICAL and re.search(pattern, cmd, re.IGNORECASE):
+                    return {"allowed": False, "risk_level": risk_level.value, "message": message}
+        else:
+            for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
+                if re.search(pattern, cmd, re.IGNORECASE):
+                    return {"allowed": False, "risk_level": risk_level.value, "message": message}
+
         cmd_lower = cmd.lower()
         for pattern in self._user_blacklist:
             if pattern and pattern in cmd_lower:
@@ -244,7 +257,6 @@ class SecurityPolicy:
                     "message": f"用户自定义黑名单拦截: {pattern}"
                 }
 
-        # 最后检查白名单
         if self._is_safe_command(cmd):
             return {"allowed": True, "risk_level": RiskLevel.SAFE.value, "message": "安全命令"}
 
