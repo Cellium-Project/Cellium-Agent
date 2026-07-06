@@ -609,7 +609,7 @@ components/
 
 ### Scheduled Tasks (scheduler)
 
-![Scheduled Tasks](tests/img/scheduler.png)
+![Scheduled Tasks](tests/img/5.png)
 
 Three task types are supported:
 
