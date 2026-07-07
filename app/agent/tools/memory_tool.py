@@ -645,11 +645,11 @@ class MemoryTool(BaseTool):
                 status["hint"] = "已启用但缺少模型名称或 API 密钥"
             else:
                 status["status"] = "未启用"
-                status["hint"] = "将使用本地 TF-IDF 伪向量"
+                status["hint"] = "向量检索未启用，仅使用 FTS5 全文搜索"
             
             if hasattr(self.memory, '_embedding_config'):
                 repo_config = self.memory._embedding_config
-                status["dimensions"] = repo_config.get("dimensions", 96)
+                status["dimensions"] = repo_config.get("dimensions", 0)
             
             return {
                 "success": True,
