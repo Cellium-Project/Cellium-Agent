@@ -63,7 +63,7 @@ Cellium Agent is a versatile AI assistant that helps you with various tasks:
 | Runtime Self-Awareness | Real-time perception of running state (progress, stagnation, loops, saturation), dynamically adjusting decisions |
 | Control Loop Architecture | Closed-loop control of decision - execution - feedback - learning in each iteration |
 | Self-Learning System | Action selection based on Bayesian Bandit, continuously optimizing decision strategies |
-| Three-Layer Memory | Personality memory + Session memory + Long-term memory (FTS5 full-text retrieval + 96-dim hash vector hybrid recall) |
+| Three-Layer Memory | Personality memory + Session memory + Long-term memory (FTS5 full-text retrieval + vector retrieval hybrid recall) |
 | Heuristic Decision Engine | Rule-based feature extraction + Bandit for tie-breaking, balancing interpretability and learning ability |
 | Tool Usage Control | Dynamic prohibition/recommendation of tool switching, avoiding loops from repeated tool calls |
 | Sensitive Info Control | Auto-detect and redact sensitive info like private keys, tokens, passwords; supports write blocking |
@@ -376,7 +376,7 @@ Uses **segmented design**, first distinguishing success/failure, then optimizing
 |-----------|-------------|
 | AgentLoop | Event-driven core main loop, coordinating LLM, tools, memory |
 | LLM Engine | Unified LLM interface, built-in 40+ model registry, auto-detecting context window, tool support, max output |
-| ThreeLayerMemory | Three-layer memory: Personality + Session + FTS5 long-term retrieval |
+| ThreeLayerMemory | Three-layer memory: Personality + Session + FTS5 + optional vector retrieval |
 | HeuristicEngine | Heuristic rule engine, serves as feature extractor for Bandit |
 | ControlLoop | Control loop core, decision - execution - feedback - learning each round |
 | ActionBandit | Action selector, Thompson Sampling + Heuristic Bias |
@@ -436,21 +436,16 @@ Agent perceives running state in real-time through FeatureExtractor, dynamically
 | Session | MemoryManager | Short-term context, automatically maintains bounded history |
 | Long-term | FTS5 + Repository | Vector retrieval + hybrid recall, supports knowledge extraction and archiving |
 
-**Lightweight Vector Model (96-dim)**:
+**Vector Retrieval**:
 
-Long-term memory uses a lightweight hybrid memory retrieval system without external dependencies, achieving locally efficient semantic approximate recall through feature hash vector and full-text retrieval fusion:
+Long-term memory supports optional API-based vector embedding for semantic search:
 
-- **Dimensions**: 96 dim
-- **Generation**: Vector encoding based on SHA1 hashing
-  - English: character 3-gram
-  - Chinese: word-level bigram + full pinyin hash + pinyin bigram
-  - Tokenization (Jieba) + keyword extraction
-  - Each token mapped to 96-dim vector bucket through SHA1 hash
-  - Position weighting (first 8 tokens get extra +0.25 weight)
+- **Dimensions**: Configurable (default 1536 for text-embedding-3-small)
+- **Provider**: Any OpenAI-compatible embedding API
 - **Similarity**: Cosine similarity
 - **Hybrid Recall**: FTS5 full-text retrieval + vector similarity fusion sorting
-- **Chinese Enhancement**: Pinyin hash for Chinese homophone, pinyin initial matching
-- **Dependencies**: jieba (Chinese tokenization), optional pypinyin (pinyin enhancement)
+- **Configuration**: `config/agent/embedding.yaml` — enable/disable, set API key, model, base URL
+- **On-Demand**: Disabled by default, no external dependencies required when off
 
 **Structured Schema & Category System**:
 

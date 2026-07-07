@@ -10,19 +10,12 @@
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import sqlite3
 import struct
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-
-try:
-    from pypinyin import pinyin, Style
-    HAS_PINYIN = True
-except ImportError:
-    HAS_PINYIN = False
 
 try:
     import numpy as np
@@ -39,7 +32,6 @@ class MemoryRepository:
     """长期记忆统一仓库。"""
 
     CATALOG_FILE = "memory_catalog.json"
-    EMBEDDING_DIMENSIONS = 96
     CATEGORY_SCHEMA_MAP = {
         "preference": "profile",
         "user_info": "profile",
@@ -73,15 +65,14 @@ class MemoryRepository:
         self.tokenizer = get_tokenizer()
         self.catalog_path = os.path.join(memory_dir, self.CATALOG_FILE)
         self.vector_db_path = os.path.join(memory_dir, "memory_vectors_api.db")
-        self.tfidf_db_path = os.path.join(memory_dir, "memory_vectors_tfidf.db")
         os.makedirs(memory_dir, exist_ok=True)
         self._catalog: Dict[str, Any] = {"version": 1, "records": {}}
         self._load_catalog()
+        self._embedding_config = self._load_embedding_config()
+        self._embedding_dimensions = self._embedding_config.get("dimensions", 0)
         self._init_vector_db()
         self._query_embedding_cache: Dict[str, List[float]] = {}
         self._query_cache_max_size = 100
-        self._embedding_config = self._load_embedding_config()
-        self._embedding_dimensions = self._embedding_config.get("dimensions", self.EMBEDDING_DIMENSIONS)
         self._api_embedding_cache: Dict[str, List[float]] = {}
         self._api_cache_max_size = 1000
         self._register_config_callback()
@@ -109,18 +100,18 @@ class MemoryRepository:
             cfg = get_config()
             embedding_cfg = cfg.get("memory.long_term.embedding", {})
             if embedding_cfg.get("enabled", False):
-                if not embedding_cfg.get("api_key"):
-                    embedding_cfg["api_key"] = cfg.get("llm.openai.api_key", "")
+                api_key = embedding_cfg.get("api_key", "")
+                if not api_key:
+                    logger.info("[MemoryRepository] embedding.enabled=true 但未配置 api_key，跳过向量功能")
+                    return {"enabled": False, "dimensions": 0}
                 if not embedding_cfg.get("base_url"):
                     embedding_cfg["base_url"] = cfg.get("llm.openai.base_url", "https://api.openai.com/v1")
-                if not embedding_cfg.get("model"):
-                    embedding_cfg["model"] = "text-embedding-3-small"
-                embedding_cfg.setdefault("dimensions", None)
-                embedding_cfg.setdefault("fallback_to_tfidf", True)
+                embedding_cfg.setdefault("model", "")
+                embedding_cfg.setdefault("dimensions", 0)
                 return embedding_cfg
         except Exception:
             pass
-        return {"enabled": False, "dimensions": self.EMBEDDING_DIMENSIONS}
+        return {"enabled": False, "dimensions": 0}
 
     def _register_config_callback(self):
         try:
@@ -140,10 +131,11 @@ class MemoryRepository:
                     logger.info("[MemoryRepository] 模型切换: %s -> %s，清空缓存", old_model, new_model)
                     self._api_embedding_cache.clear()
                     self._query_embedding_cache.clear()
-                    self._embedding_dimensions = self._embedding_config.get("dimensions", self.EMBEDDING_DIMENSIONS)
+                    self._embedding_dimensions = self._embedding_config.get("dimensions", 0)
                 
                 if new_enabled and not old_enabled:
-                    logger.info("[MemoryRepository] 向量 API 已启用，启动后台向量迁移")
+                    logger.info("[MemoryRepository] 向量 API 已启用，补建 API DB 并启动后台向量迁移")
+                    self._ensure_api_db()
                     self._start_background_embedding_migration()
 
             cfg.on_change("memory", on_memory_config_change)
@@ -155,6 +147,8 @@ class MemoryRepository:
     # ============================================================
 
     def _init_vector_db(self):
+        if not self._embedding_config.get("enabled", False):
+            return
         conn = sqlite3.connect(self.vector_db_path)
         cursor = conn.cursor()
         cursor.execute("""
@@ -168,7 +162,8 @@ class MemoryRepository:
         conn.commit()
         conn.close()
 
-        conn = sqlite3.connect(self.tfidf_db_path)
+    def _ensure_api_db(self):
+        conn = sqlite3.connect(self.vector_db_path)
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS memory_vectors (
@@ -190,9 +185,9 @@ class MemoryRepository:
     def _save_vector(self, record_id: str, vector: List[float]):
         if not vector:
             return
-        is_tfidf = len(vector) == self.EMBEDDING_DIMENSIONS
-        db_path = self.tfidf_db_path if is_tfidf else self.vector_db_path
-        conn = sqlite3.connect(db_path)
+        if not self._embedding_config.get("enabled", False):
+            return
+        conn = sqlite3.connect(self.vector_db_path)
         cursor = conn.cursor()
         blob = self._vector_to_blob(vector)
         cursor.execute(
@@ -202,22 +197,24 @@ class MemoryRepository:
         conn.commit()
         conn.close()
 
-    def _load_vector(self, record_id: str, prefer_api: bool = True) -> Optional[List[float]]:
-        for db_path in ([self.vector_db_path, self.tfidf_db_path] if prefer_api else [self.tfidf_db_path, self.vector_db_path]):
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT embedding, dimensions FROM memory_vectors WHERE record_id = ?", (record_id,))
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                return self._blob_to_vector(row[0], row[1])
+    def _load_vector(self, record_id: str) -> Optional[List[float]]:
+        if not self._embedding_config.get("enabled", False):
+            return None
+        conn = sqlite3.connect(self.vector_db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT embedding, dimensions FROM memory_vectors WHERE record_id = ?", (record_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return self._blob_to_vector(row[0], row[1])
         return None
 
-    def _load_vectors_batch(self, record_ids: List[str], prefer_api: bool = True) -> Dict[str, List[float]]:
+    def _load_vectors_batch(self, record_ids: List[str]) -> Dict[str, List[float]]:
         if not record_ids:
             return {}
-        db_path = self.vector_db_path if prefer_api else self.tfidf_db_path
-        conn = sqlite3.connect(db_path)
+        if not self._embedding_config.get("enabled", False):
+            return {}
+        conn = sqlite3.connect(self.vector_db_path)
         cursor = conn.cursor()
         placeholders = ",".join(["?"] * len(record_ids))
         cursor.execute(f"SELECT record_id, embedding, dimensions FROM memory_vectors WHERE record_id IN ({placeholders})", record_ids)
@@ -228,6 +225,8 @@ class MemoryRepository:
         return results
 
     def _get_record_ids_with_vectors(self, dimensions: int) -> List[str]:
+        if not self._embedding_config.get("enabled", False):
+            return []
         conn = sqlite3.connect(self.vector_db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT record_id FROM memory_vectors WHERE dimensions = ?", (dimensions,))
@@ -236,12 +235,13 @@ class MemoryRepository:
         return record_ids
 
     def _delete_vector(self, record_id: str):
-        for db_path in [self.vector_db_path, self.tfidf_db_path]:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM memory_vectors WHERE record_id = ?", (record_id,))
-            conn.commit()
-            conn.close()
+        if not self._embedding_config.get("enabled", False):
+            return
+        conn = sqlite3.connect(self.vector_db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM memory_vectors WHERE record_id = ?", (record_id,))
+        conn.commit()
+        conn.close()
 
     def _migrate_embeddings_to_db(self):
         records = self._catalog.get("records", {})
@@ -262,8 +262,11 @@ class MemoryRepository:
         import threading
         
         if getattr(self, '_migration_running', False):
-            logger.info("[MemoryRepository] 迁移任务已在运行中")
-            return
+            if hasattr(self, '_migration_thread') and self._migration_thread.is_alive():
+                logger.info("[MemoryRepository] 迁移任务已在运行中")
+                return
+            logger.warning("[MemoryRepository] 检测到迁移线程已终止，重置状态")
+            self._migration_running = False
         
         def migration_task():
             try:
@@ -287,8 +290,10 @@ class MemoryRepository:
                     if record.get("status") != "active":
                         continue
                     
-                    existing_vector = self._load_vector(record_id, prefer_api=True)
+                    existing_vector = self._load_vector(record_id)
                     if existing_vector and len(existing_vector) == self._embedding_dimensions:
+                        migrated += 1
+                        self._migration_status["migrated"] = migrated
                         continue
                     
                     content = record.get("content", "")
@@ -338,6 +343,7 @@ class MemoryRepository:
                 self._migration_running = False
         
         thread = threading.Thread(target=migration_task, daemon=True)
+        self._migration_thread = thread
         thread.start()
         logger.info("[MemoryRepository] 后台向量迁移线程已启动")
 
@@ -416,7 +422,7 @@ class MemoryRepository:
                 stored_model or "未配置", current_model
             )
             self._embedding_config["dimensions"] = None
-            self._embedding_dimensions = self.EMBEDDING_DIMENSIONS
+            self._embedding_dimensions = 1536
             self._api_embedding_cache.clear()
             self._query_embedding_cache.clear()
             return
@@ -1245,14 +1251,13 @@ class MemoryRepository:
             return []
 
         query_dim = len(query_vector)
-        use_api = query_dim != self.EMBEDDING_DIMENSIONS
 
         valid_record_ids = []
         for record_id, record in self._catalog.get("records", {}).items():
             if self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
                 valid_record_ids.append(record_id)
 
-        existing_vectors = self._load_vectors_batch(valid_record_ids, prefer_api=use_api)
+        existing_vectors = self._load_vectors_batch(valid_record_ids)
 
         def search_vectors(vectors: Dict[str, List[float]], dim: int, query_vec: List[float]):
             vecs = []
@@ -1288,21 +1293,6 @@ class MemoryRepository:
                 return scored[:top_k]
 
         results = search_vectors(existing_vectors, query_dim, query_vector)
-
-        if use_api:
-            tfidf_vector = self._embed_text_tfidf(query)
-            if tfidf_vector:
-                tfidf_vectors = self._load_vectors_batch(valid_record_ids, prefer_api=False)
-                tfidf_results = search_vectors(tfidf_vectors, self.EMBEDDING_DIMENSIONS, tfidf_vector)
-                
-                api_ids = {r["rowid"] for r in results}
-                for r in tfidf_results:
-                    if r["rowid"] not in api_ids:
-                        r["embedding_score"] *= 0.7
-                        results.append(r)
-                
-                results.sort(key=lambda x: x["embedding_score"], reverse=True)
-                results = results[:top_k]
 
         return results if results else []
 
@@ -1492,10 +1482,10 @@ class MemoryRepository:
         if not text:
             return []
 
-        if self._embedding_config.get("enabled", False):
-            return self._call_embedding_api(text)
+        if not self._embedding_config.get("enabled", False):
+            return []
 
-        return self._embed_text_tfidf(text)
+        return self._call_embedding_api(text)
 
     def _call_embedding_api(self, text: str) -> List[float]:
         cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()
@@ -1506,7 +1496,7 @@ class MemoryRepository:
             import httpx
             base_url = self._embedding_config.get("base_url", "https://api.openai.com/v1")
             api_key = self._embedding_config.get("api_key", "")
-            model = self._embedding_config.get("model", "text-embedding-3-small")
+            model = self._embedding_config.get("model", "") or "text-embedding-3-small"
 
             base_url = base_url.rstrip("/")
             resp = httpx.post(
@@ -1531,63 +1521,8 @@ class MemoryRepository:
                 self._api_embedding_cache[cache_key] = embedding
             return embedding
         except Exception as e:
-            logger.debug("[MemoryRepository] Embedding API 调用失败: %s，回退到 TF-IDF", e)
-            if self._embedding_config.get("fallback_to_tfidf", True):
-                return self._embed_text_tfidf(text)
+            logger.debug("[MemoryRepository] Embedding API 调用失败: %s", e)
             return []
-
-    def _embed_text_tfidf(self, text: str) -> List[float]:
-        text = (text or "").strip().lower()
-        if not text:
-            return []
-
-        vector = [0.0] * self.EMBEDDING_DIMENSIONS
-        tokens = []
-
-        try:
-            word_tokens = self.tokenizer.tokenize(text)
-            tokens.extend(word_tokens)
-            tokens.extend(self.tokenizer.extract_keywords(text, top_k=5))
-        except Exception:
-            tokens.extend([item for item in re.split(r"\W+", text) if item])
-
-        is_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
-
-        if is_chinese:
-            if len(word_tokens) >= 2:
-                for i in range(len(word_tokens) - 1):
-                    tokens.append(word_tokens[i] + word_tokens[i + 1])
-
-            if HAS_PINYIN:
-                try:
-                    py_tokens = [p[0] for p in pinyin(text, style=Style.NORMAL) if p and p[0]]
-                    tokens.extend(py_tokens)
-                    for i in range(len(py_tokens) - 1):
-                        tokens.append(py_tokens[i] + py_tokens[i + 1])
-                except Exception:
-                    pass
-        else:
-            compact = re.sub(r"\s+", "", text)
-            if len(compact) >= 3:
-                tokens.extend(compact[i:i + 3] for i in range(len(compact) - 2))
-            elif compact:
-                tokens.append(compact)
-
-        for index, token in enumerate(tokens):
-            if not token:
-                continue
-            digest = hashlib.sha1(token.encode("utf-8")).hexdigest()
-            bucket = int(digest[:8], 16) % self.EMBEDDING_DIMENSIONS
-            sign = -1.0 if int(digest[8:10], 16) % 2 else 1.0
-            weight = 1.0 + min(len(token), 8) / 8.0
-            if index < 8:
-                weight += 0.25
-            vector[bucket] += sign * weight
-
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0:
-            return []
-        return [round(value / norm, 8) for value in vector]
 
     @staticmethod
     def _cosine_similarity(left: List[float], right: List[float]) -> float:
