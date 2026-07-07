@@ -25,7 +25,6 @@ updates:
           - "minor"
           - "patch"
         exclude-patterns:
-          - "cryptography"
           - "requests"
           - "urllib3"
           - "pyjwt"
