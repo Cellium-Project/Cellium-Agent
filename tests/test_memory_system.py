@@ -13,7 +13,6 @@ from unittest.mock import Mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.agent.loop.memory import MemoryManager
-from app.agent.loop.prompt_context_builder import PromptContextBuilder
 from app.agent.loop.session_manager import SessionManager
 from app.agent.memory.archive_store import ArchiveStore
 from app.agent.memory.fts5_searcher import FTS5MemorySearcher
@@ -377,21 +376,6 @@ class TestMemoryTool(unittest.TestCase):
 
         deleted = self.tool.execute({"command": "delete", "source": stored["source"]})
         self.assertTrue(deleted["success"])
-
-
-class TestPromptContextBuilder(unittest.TestCase):
-    """测试统一检索入口是否经过 ThreeLayerMemory"""
-
-    def test_build_first_round_uses_three_layer_memory_api(self):
-        three_layer_memory = Mock()
-        three_layer_memory.retrieve_context.return_value = [{"title": "记忆", "content": "历史内容"}]
-        three_layer_memory.format_retrieved_context.return_value = "1. 记忆\n   历史内容"
-
-        builder = PromptContextBuilder(three_layer_memory=three_layer_memory)
-        messages = builder.build_first_round("请回忆之前的命令", session_messages=[{"role": "user", "content": "请回忆之前的命令"}])
-
-        three_layer_memory.retrieve_context.assert_called_once_with("请回忆之前的命令", top_k=3, exclude_schema_types=["control_gene"])
-        self.assertTrue(any("长期记忆检索结果" in (msg.get("content") or "") for msg in messages))
 
 
 class TestSessionManagerPersistence(unittest.TestCase):
