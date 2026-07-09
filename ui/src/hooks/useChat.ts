@@ -5,7 +5,7 @@ import type { SSEEvent, Message, ToolTrace, TimelineSegment, Attachment } from '
 import type { HybridPhase } from '../stores/appStore';
 
 /**
- * 从内容中提取 JSON thinking 数据
+ * 从内容中提取 JSON thinking 数据（仅匹配代码块或纯 JSON，保持兼容）
  */
 function extractJsonThinking(content: string): { reasoning?: string; plan?: unknown[]; action?: string; confidence?: number; estimated_steps?: number } | null {
   if (!content) return null;
@@ -28,51 +28,152 @@ function extractJsonThinking(content: string): { reasoning?: string; plan?: unkn
 }
 
 /**
- * 从包含 JSON thinking 的内容中提取实际回复文本
+ * 从文本中提取内联 JSON 思考块（无代码块），返回前后的文本和 JSON 内容
  */
-function extractFinalText(content: string): string {
-  if (!content) return '';
-  
-  // 移除 JSON 代码块
-  let text = content.replace(/```json\s*[\s\S]*?\s*```/gi, '');
-  
-  // 移除开头的 --- 分隔符
-  text = text.replace(/^\s*---\s*/, '');
-  
-  // 清理多余空行
-  text = text.replace(/\n{3,}/g, '\n\n');
-  
-  return text.trim();
+function extractRawThoughtJson(text: string): { before: string; json: string; after: string } | null {
+  const firstBrace = text.indexOf('{');
+  if (firstBrace === -1) return null;
+
+  for (let startIdx = firstBrace; startIdx < text.length; startIdx++) {
+    if (text[startIdx] !== '{') continue;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = startIdx; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+
+      if (depth === 0) {
+        const jsonCandidate = text.slice(startIdx, i + 1);
+        try {
+          const parsed = JSON.parse(jsonCandidate);
+          if (typeof parsed === 'object' && parsed !== null && typeof parsed.reasoning === 'string') {
+            return {
+              before: text.slice(0, startIdx),
+              json: jsonCandidate,
+              after: text.slice(i + 1),
+            };
+          }
+        } catch {
+          // 继续搜索
+        }
+        break;
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
  * 处理 timeline，提取 JSON thinking 并分离文本内容
+ * 支持代码块和内联 JSON 两种格式，保持原始顺序
  */
 function processTimeline(timeline: TimelineSegment[]): TimelineSegment[] {
   const result: TimelineSegment[] = [];
 
   for (const segment of timeline) {
     if (segment.kind === 'text' && segment.content) {
-      const thinkingData = extractJsonThinking(segment.content);
-      if (thinkingData) {
-        // 添加 thinking 卡片 - 只存储 reasoning 字段
-        result.push({
-          kind: 'thinking',
-          content: thinkingData.reasoning || '',
-        });
-        // 添加实际文本内容
-        const finalText = extractFinalText(segment.content);
-        if (finalText) {
-          result.push({
-            kind: 'text',
-            content: finalText,
-          });
-        }
-      } else {
-        result.push(segment);
+      const parts = splitTextWithJson(segment.content);
+      for (const part of parts) {
+        result.push(part);
       }
     } else {
       result.push(segment);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 将文本按 JSON 思考块分割为 timeline 段，保持顺序
+ */
+function splitTextWithJson(content: string): TimelineSegment[] {
+  const segments: TimelineSegment[] = [];
+
+  // Phase 1: 分割 ```json ... ``` 代码块
+  const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = jsonBlockRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      const textPart = content.slice(lastIndex, match.index);
+      // Phase 2: 对代码块外的文本检测内联 JSON
+      const subParts = splitInlineJson(textPart);
+      segments.push(...subParts);
+    }
+    try {
+      const data = JSON.parse(match[1].trim());
+      if (typeof data === 'object' && data !== null && typeof data.reasoning === 'string') {
+        segments.push({ kind: 'thinking', content: data.reasoning || '' });
+      } else {
+        segments.push({ kind: 'text', content: match[0] });
+      }
+    } catch {
+      segments.push({ kind: 'text', content: match[0] });
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  // 剩余文本
+  if (lastIndex < content.length) {
+    const textPart = content.slice(lastIndex);
+    const subParts = splitInlineJson(textPart);
+    segments.push(...subParts);
+  }
+
+  if (segments.length === 0) {
+    segments.push({ kind: 'text', content });
+  }
+
+  return segments;
+}
+
+/**
+ * 对文本段检测内联 JSON 思考块，分割为 text/thinking 段
+ */
+function splitInlineJson(text: string): TimelineSegment[] {
+  const result: TimelineSegment[] = [];
+  let remaining = text;
+
+  while (remaining) {
+    const jsonResult = extractRawThoughtJson(remaining);
+    if (jsonResult) {
+      if (jsonResult.before.trim()) {
+        result.push({ kind: 'text', content: jsonResult.before });
+      }
+      try {
+        const data = JSON.parse(jsonResult.json);
+        result.push({ kind: 'thinking', content: data.reasoning || '' });
+      } catch {
+        result.push({ kind: 'text', content: jsonResult.json });
+      }
+      remaining = jsonResult.after;
+    } else {
+      if (remaining.trim()) {
+        result.push({ kind: 'text', content: remaining });
+      }
+      break;
     }
   }
 
@@ -238,6 +339,8 @@ export function useChat() {
         break;
 
       case 'tool_start': {
+        flushChunkBuffer(ctx, sessionId, connectionId);
+        
         if (event.tool && event.arguments) {
           const toolSeg: TimelineSegment = {
             kind: 'tool',
@@ -356,6 +459,8 @@ export function useChat() {
         break;
 
       case 'error': {
+        // 先刷新缓冲区
+        flushChunkBuffer(ctx, sessionId, connectionId);
         const errChunk = `错误: ${event.error || '未知错误'}`;
         ctx.timeline.push({ kind: 'text', content: errChunk });
         updateStreamingMessage({
@@ -371,6 +476,8 @@ export function useChat() {
       }
 
       case 'stopped': {
+        // 先刷新缓冲区
+        flushChunkBuffer(ctx, sessionId, connectionId);
         if (ctx.sawDone) {
           break;
         }

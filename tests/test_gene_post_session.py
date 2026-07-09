@@ -196,11 +196,10 @@ class TestBuildAgentGenePrompt:
         )
 
         assert prompt is not None
-        assert "[系统提示 - Gene 创建评估]" in prompt
-        assert "异常评分:" in prompt
-        assert "[HARD CONSTRAINTS]" in prompt
-        assert "【Gene 标准格式" in prompt
-        assert "[任务类型]" in prompt
+        assert '"type": "gene_evaluation"' in prompt
+        assert '"score"' in prompt
+        assert '"required_prefix": "[HARD CONSTRAINTS]"' in prompt
+        assert '"task_type"' in prompt
 
     def test_prompt_generation_low_score(self):
         analyzer = GenePostSessionAnalyzer()
@@ -241,7 +240,7 @@ class TestGenePostSessionIntegration:
         )
 
         assert prompt is not None
-        assert "Gene 创建评估" in prompt
+        assert '"type": "gene_evaluation"' in prompt
 
     def test_end_to_end_low_complexity(self):
         """端到端测试：低复杂度场景"""

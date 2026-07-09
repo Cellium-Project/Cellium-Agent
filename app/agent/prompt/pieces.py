@@ -65,18 +65,17 @@ DEFAULT_IDENTITY = """# Cellium Agent
 # ============================================================
 
 def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
-    from app.agent.control.thought_parser import THOUGHT_SCHEMA
-
     personality = _read_personality(memory_dir)
-    content = f"{personality}\n\n{THOUGHT_SCHEMA}"
 
     return PromptPiece(
         name="identity",
-        content=content,
+        content=personality,
         stability="static",
         priority=0,
         role="system",
     )
+
+
 
 
 # ============================================================
@@ -155,6 +154,19 @@ def get_runtime_status_piece() -> PromptPiece:
     )
 
 
+def get_plan_summary_piece() -> PromptPiece:
+    """
+    当前计划执行进度摘要（来自 HybridController）。
+    """
+    return PromptPiece(
+        name="plan_summary",
+        template="[当前计划]\n{{ plan_summary }}",
+        condition=lambda ctx: bool(ctx.get('plan_summary')),
+        stability="dynamic",
+        priority=550,
+    )
+
+
 def get_guidance_message_piece() -> PromptPiece:
     """
     系统引导消息（来自启发式模块 / 控制环）。
@@ -203,6 +215,7 @@ def create_default_builder(memory_dir: str = "memory") -> "PromptBuilder":
     builder.register(get_user_input_piece())
     builder.register(get_system_injection_piece())
     builder.register(get_runtime_status_piece())
+    builder.register(get_plan_summary_piece())
     builder.register(get_guidance_message_piece())
     builder.register(get_auto_hints_piece())
 

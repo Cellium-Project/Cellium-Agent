@@ -104,20 +104,7 @@ class ControlLoop:
     def end_round(self, state: LoopState) -> float:
         task_type = ""
         user_input = getattr(state, 'user_input', '')
-        if user_input:
-            from .hard_constraints import TaskSignalMatcher
-            matched = TaskSignalMatcher.match(user_input)
-            if matched:
-                task_type = matched.get("task_type", "")
-                if not state.matched_gene_type:
-                    state.matched_gene_type = task_type
-
-                    gene_template = matched.get("gene_template", "")
-                    if gene_template:
-                        state.matched_gene_content = gene_template
-                        logger.info("[ControlLoop] Gene 已匹配并缓存 | task_type=%s | 将在每轮迭代注入", task_type)
-
-        if not task_type and state.tool_traces:
+        if not state.matched_gene_type and state.tool_traces:
             last_tool = state.tool_traces[-1].get('tool', '')
             if last_tool:
                 task_type = last_tool

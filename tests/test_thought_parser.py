@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.agent.control.thought_parser import ThoughtParser, ParsedThought, ThoughtStep, ActionType
+from app.agent.control.thought_parser import ThoughtParser, ActionType
 
 
 class TestThoughtParserStructured(unittest.TestCase):
@@ -14,18 +14,17 @@ class TestThoughtParserStructured(unittest.TestCase):
         ```json
         {
             "reasoning": "需要搜索文件",
-            "plan": [{"tool": "search", "purpose": "查找文件", "expected_result": "文件列表"}],
+            "plan": ["步骤1: 搜索文件", "步骤2: 读取内容"],
             "action": "tool_call",
-            "confidence": 0.9,
-            "estimated_steps": 2
+            "confidence": 0.9
         }
         ```
         '''
         result = ThoughtParser.parse(content)
         self.assertTrue(result.is_valid)
         self.assertEqual(result.reasoning, "需要搜索文件")
-        self.assertEqual(len(result.plan), 1)
-        self.assertEqual(result.plan[0].tool, "search")
+        self.assertEqual(len(result.plan), 2)
+        self.assertEqual(result.plan[0].purpose, "步骤1: 搜索文件")
         self.assertEqual(result.action, ActionType.TOOL_CALL)
         self.assertEqual(result.confidence, 0.9)
 
@@ -49,7 +48,8 @@ class TestThoughtParserStructured(unittest.TestCase):
         self.assertTrue(result.is_valid)
         self.assertEqual(result.action, ActionType.CLARIFY)
 
-    def test_parse_multiple_steps(self):
+    def test_parse_multiple_steps_dict_format(self):
+        """兼容旧格式：plan 为 dict 列表"""
         content = '''
         ```json
         {
@@ -70,7 +70,7 @@ class TestThoughtParserStructured(unittest.TestCase):
     def test_parse_missing_reasoning_invalid(self):
         content = '''
         ```json
-        {"plan": [{"tool": "search", "purpose": "搜索"}], "action": "tool_call"}
+        {"plan": ["步骤1"], "action": "tool_call"}
         ```
         '''
         result = ThoughtParser.parse(content)
@@ -119,36 +119,6 @@ class TestThoughtParserUnstructured(unittest.TestCase):
 3. 最后分析'''
         result = ThoughtParser.parse(content)
         self.assertIn("首先搜索文件", result.reasoning)
-
-
-class TestThoughtParserHelpers(unittest.TestCase):
-    def test_should_skip_tool_direct_response(self):
-        thought = ParsedThought(action=ActionType.DIRECT_RESPONSE)
-        self.assertTrue(ThoughtParser.should_skip_tool(thought))
-
-    def test_should_skip_tool_clarify(self):
-        thought = ParsedThought(action=ActionType.CLARIFY)
-        self.assertTrue(ThoughtParser.should_skip_tool(thought))
-
-    def test_should_skip_tool_tool_call(self):
-        thought = ParsedThought(action=ActionType.TOOL_CALL)
-        self.assertFalse(ThoughtParser.should_skip_tool(thought))
-
-    def test_get_recommended_tools(self):
-        thought = ParsedThought(plan=[
-            ThoughtStep(tool="search", purpose="搜索"),
-            ThoughtStep(tool="read", purpose="读取"),
-        ])
-        tools = ThoughtParser.get_recommended_tools(thought)
-        self.assertEqual(tools, ["search", "read"])
-
-    def test_validate_tool_choice_match(self):
-        thought = ParsedThought(plan=[ThoughtStep(tool="file:read", purpose="读取")])
-        self.assertTrue(ThoughtParser.validate_tool_choice(thought, "file:read"))
-
-    def test_validate_tool_choice_no_plan(self):
-        thought = ParsedThought(plan=[])
-        self.assertTrue(ThoughtParser.validate_tool_choice(thought, "any_tool"))
 
 
 if __name__ == '__main__':

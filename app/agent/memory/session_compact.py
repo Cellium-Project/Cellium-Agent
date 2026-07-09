@@ -57,7 +57,7 @@ class SessionCompactor:
         self,
         llm_engine: "BaseLLMEngine" = None,
         token_threshold: int = 100000,  # 默认 100k tokens 触发压缩
-        tool_call_threshold: int = 10,  # 默认 10 次工具调用触发压缩
+        tool_call_threshold: int = 21, 
         keep_recent_messages: int = 10,
         max_notes_length: int = 2000,
         repository: "MemoryRepository" = None,
@@ -70,7 +70,7 @@ class SessionCompactor:
         self._pending_compact = False  # 标记是否有待执行的压缩
         self._tool_call_count = 0  # 累计工具调用次数
         self._last_compact_tokens = 0  # 上次压缩后的 token 数量
-        self._compact_cooldown_ratio = 0.3  # 冷却比例：token 增长 30% 后才再次触发
+        self._compact_cooldown_ratio = 0.5  # 冷却比例：token 增长 50% 后才再次触发
         self._repository = repository  # 长期记忆仓库引用
 
     def track_tool_call(self):

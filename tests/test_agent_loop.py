@@ -338,7 +338,10 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
         self.assertFalse(result["completed"])
 
     def test_compress_constraint_passes_real_max_tokens(self):
-        llm = MockLLMEngine(responses=[MockResponse(content="final answer")])
+        llm = MockLLMEngine(responses=[
+            MockResponse(content="none"),
+            MockResponse(content="final answer"),
+        ])
         loop = AgentLoop(
             llm_engine=llm,
             shell=self.shell,
@@ -359,10 +362,11 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
         result = asyncio.run(loop.run("compress this", memory=self.memory))
 
         self.assertEqual(result["type"], "done")
-        self.assertEqual(llm.chat_calls[0]["max_tokens"], 42)
+        self.assertEqual(llm.chat_calls[1]["max_tokens"], 42)
 
     def test_forbidden_tool_is_blocked_before_execution(self):
         llm = MockLLMEngine(responses=[
+            MockResponse(content="none"),
             MockResponse(tool_calls=[MockToolCall("forbidden_tool", {"a": 1})]),
             MockResponse(content="fallback answer"),
         ])
@@ -683,6 +687,7 @@ class TestToolExecution(unittest.TestCase):
         self.loop._tool_executor.refresh_tools(self.loop.tools)
 
         self.llm.responses = [
+            MockResponse(content="none"),
             MockResponse(tool_calls=[MockToolCall("forbidden_tool", {"a": 1})]),
             MockResponse(content="最终回复"),
         ]
@@ -1192,7 +1197,7 @@ class TestPromptContextBuilder(unittest.TestCase):
         self.assertTrue(any("系统引导" in m.get("content", "") for m in messages))
 
     def test_build_subsequent_round_different_structure(self):
-        """后续轮次 system 不变，且无动态注入残留"""
+        """后续轮次 system 消息与第一轮一致（思考格式在 identity 中）"""
         first_round = self.builder.build({
             "session_messages": [{"role": "assistant", "content": "回复1"}],
             "user_input": "第一轮",
@@ -1242,7 +1247,7 @@ class TestPromptContextBuilder(unittest.TestCase):
         self.assertIn("桌面助手", system_msg["content"])
 
     def test_system_message_unchanged_across_rounds(self):
-        """system 消息在多轮/多请求中应保持不变"""
+        """system 消息每轮一致（identity 内含思考格式）"""
         first = self.builder.build({
             "session_messages": [],
             "user_input": "第一轮",
@@ -1263,6 +1268,7 @@ class TestPromptContextBuilder(unittest.TestCase):
 
         self.assertEqual(first[0]["content"], second[0]["content"])
         self.assertEqual(first[0]["content"], subsequent[0]["content"])
+        self.assertIn("expected_result", first[0]["content"])
 
     def test_system_message_not_modified_by_injection(self):
         """system_injection 不会修改 system 消息"""

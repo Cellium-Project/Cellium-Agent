@@ -374,8 +374,19 @@ class HybridController:
             loop_state.hybrid_last_observation = None
         
         if self._state.current_plan:
-            tools = [s.tool.split(":")[-1] for s in self._state.current_plan]
-            loop_state.hybrid_plan_summary = f"{len(tools)}步: " + " -> ".join(tools)
+            executed_count = len(self._state.executed_steps)
+            parts = []
+            for i, step in enumerate(self._state.current_plan):
+                tool_name = step.tool.split(":")[-1]
+                purpose = step.purpose or ""
+                label = f"{tool_name}" + (f"({purpose[:20]})" if purpose else "")
+                if i < executed_count and i < len(self._state.executed_steps):
+                    obs = self._state.executed_steps[i]
+                    mark = "✅" if obs.success else "❌"
+                    parts.append(f"{mark}{label}")
+                else:
+                    parts.append(f"⏳{label}")
+            loop_state.hybrid_plan_summary = f"{len(parts)}步: " + " → ".join(parts)
         else:
             loop_state.hybrid_plan_summary = ""
     

@@ -31,11 +31,9 @@ from app.agent.llm.engine import BaseLLMEngine
 from app.channels import ChannelManager
 from app.core.util.agent_config import get_config
 
-
 class FailureOnlyAccessFormatter(AccessFormatter):
     def formatMessage(self, record: logging.LogRecord) -> str:
         return "" if record.status_code < 400 else super().formatMessage(record)
-
 
 def setup_uvicorn_logging():
     from uvicorn.config import LOGGING_CONFIG
@@ -44,7 +42,6 @@ def setup_uvicorn_logging():
     log_config["formatters"]["access"] = {"()": FailureOnlyAccessFormatter, "fmt": '%(h)s - "%(r)s" %(status_code)s %(client)s %(took)sms'}
     log_config["handlers"]["access"]["level"] = "WARNING"
     return log_config
-
 
 class MainApplication(LogMixin):
     def __init__(self):

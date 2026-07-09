@@ -120,60 +120,29 @@ class GenePostSessionAnalyzer:
             if last_tool:
                 inferred_task_type = last_tool
 
-        prompt_parts = [
-            "[系统提示 - Gene 创建评估]",
-            "",
-            f"本次对话异常评分: {score:.2f}/1.0 (等级: {level})",
-        ]
+        import json
 
-        if inferred_task_type:
-            prompt_parts.extend([
-                f"推断的任务类型: {inferred_task_type}",
-                "",
-                "【重要】创建 Gene 时，任务类型字段必须使用上述推断的类型，或基于对话内容自行确定一个具体的任务类型。",
-            ])
+        prompt_data = {
+            "type": "gene_evaluation",
+            "score": round(score, 2),
+            "level": level,
+            "task_type": inferred_task_type or "unknown",
+            "steps": [
+                "memory.list_genes -> 检查已有Gene",
+                "无相关Gene -> memory.store(schema_type=control_gene, memory_key=gene:<task_type>)",
+                "有但不完善 -> memory.update(schema_type=control_gene)",
+                "已完善 -> reply 无需创建Gene"
+            ],
+            "gene_content_format": {
+                "required_prefix": "[HARD CONSTRAINTS]",
+                "required_sections": ["[任务类型]: <具体任务类型>", "[CONTROL ACTION]\nMUST: ...\nMUST NOT: ...", "[AVOID]\n- ..."],
+                "max_tool_calls": 5,
+                "max_content_tokens": 300
+            },
+            "constraint": "仅处理Gene相关操作, 禁止输出无关内容"
+        }
 
-        prompt_parts.extend([
-            "",
-            "请按以下步骤评估是否需要创建或进化 Gene：",
-            "1. 使用 memory list_genes 查看是否已存在相关 Gene",
-            "2. 根据本次对话的经验教训判断：",
-            "   - 没有相关 Gene → 使用 memory store 创建新的",
-            "   - 有相关 Gene 但不完善 → 使用 memory update 进化",
-            "   - 已有 Gene 足够完善 → 无需操作",
-            "",
-            "【Gene 标准格式 - 必须严格遵循】",
-            "content字段格式：",
-            "  [HARD CONSTRAINTS]",
-            "  [任务类型]: <必须填写具体的任务类型>",
-            "  ",
-            "  [CONTROL ACTION]",
-            "  MUST: 必须执行的操作",
-            "  MUST NOT: 禁止执行的操作",
-            "  ",
-            "  [AVOID]",
-            "  - 避免事项1",
-            "  - 避免事项2",
-            "",
-            "存储命令（必须包含所有字段）：",
-            "  memory.store(title=..., content=..., schema_type=control_gene, memory_key=gene:<任务类型>)",
-            "",
-            "【关键要求】",
-            "- content必须以[HARD CONSTRAINTS]开头",
-            "- [任务类型]字段必须填写，不能为空",
-            "- 必须包含[任务类型]、[CONTROL ACTION]、[AVOID]三个段落",
-            "- memory_key格式必须为 gene:<任务类型>",
-            "- ≤5工具调用 | content≤300token",
-            "",
-            "【输出约束 - 必须遵守】",
-            "- 本次任务仅处理 Gene 的创建/进化/查询，不执行任何其他操作",
-            "- 已创建或进化 Gene → 只输出 Gene 内容，禁止输出其他",
-            "- 判断无需操作 → 只回复'无需创建Gene'，禁止输出其他",
-            "- 禁止输出与 Gene 无关的任何内容（如对用户问题的回答、额外建议、闲聊等）",
-            "- 禁止矛盾：创建/进化后不得再输出'无需创建Gene'",
-        ])
-
-        return "\n".join(prompt_parts)
+        return json.dumps(prompt_data, ensure_ascii=False, indent=2)
 
 
 def generate_gene_prompt_for_agent(

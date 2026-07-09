@@ -10,7 +10,7 @@ from typing import Optional, Literal, Callable
 Stability = Literal["static", "daily", "session", "dynamic"]
 
 # 稳定性说明:
-#   static  — 永远不变（personality, thought_schema），对应 role: system
+#   static  — 永远不变（personality），对应 role: system
 #   daily   — 每天变一次（日期, 环境信息），对应 role: user
 #   session — 会话内稳定（长期记忆检索结果），对应 role: user
 #   dynamic — 每次请求都变（runtime_status, 系统指令等），对应 role: user

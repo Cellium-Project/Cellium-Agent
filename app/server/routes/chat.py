@@ -485,7 +485,7 @@ async def health():
 
 
 def _extract_json_thinking(content: str) -> dict:
-    """从内容中提取 JSON thinking 数据，支持 Markdown 代码块和纯 JSON"""
+
     if not content:
         return {}
     
@@ -494,9 +494,32 @@ def _extract_json_thinking(content: str) -> dict:
     match = json_block_pattern.search(content)
     if match:
         json_str = match.group(1).strip()
-    else:
-        json_str = content.strip()
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                return data
+        except:
+            pass
     
+    brace_start = content.find('{')
+    if brace_start != -1:
+        depth = 0
+        for i in range(brace_start, len(content)):
+            if content[i] == '{':
+                depth += 1
+            elif content[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    json_str = content[brace_start:i + 1]
+                    try:
+                        data = json.loads(json_str)
+                        if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                            return data
+                    except:
+                        pass
+                    break
+    
+    json_str = content.strip()
     if json_str.startswith("{") and json_str.endswith("}"):
         try:
             data = json.loads(json_str)
@@ -504,7 +527,87 @@ def _extract_json_thinking(content: str) -> dict:
                 return data
         except:
             pass
+    
     return {}
+
+
+def _split_content_with_thinking(content: str) -> list:
+    """
+    将内容按 JSON thinking 分割为片段列表，保持顺序
+    返回: [{"type": "text/thinking", "content": "..."}]
+    """
+    if not content:
+        return []
+    
+    import re
+    result = []
+    json_block_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
+    last_end = 0
+    
+    for match in json_block_pattern.finditer(content):
+        if match.start() > last_end:
+            text_part = content[last_end:match.start()].strip()
+            if text_part:
+                result.extend(_split_inline_json(text_part))
+        
+        json_str = match.group(1).strip()
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                result.append({"type": "thinking", "content": json.dumps(data, ensure_ascii=False, indent=2)})
+            else:
+                result.append({"type": "text", "content": match.group(0)})
+        except:
+            result.append({"type": "text", "content": match.group(0)})
+        
+        last_end = match.end()
+    
+    if last_end < len(content):
+        text_part = content[last_end:].strip()
+        if text_part:
+            result.extend(_split_inline_json(text_part))
+    
+    return result
+
+
+def _split_inline_json(content: str) -> list:
+    """检测并分割内联 JSON thinking，保持顺序"""
+    result = []
+    
+    brace_start = content.find('{')
+    if brace_start == -1:
+        if content.strip():
+            result.append({"type": "text", "content": content})
+        return result
+    
+    depth = 0
+    json_end = -1
+    for i in range(brace_start, len(content)):
+        if content[i] == '{':
+            depth += 1
+        elif content[i] == '}':
+            depth -= 1
+            if depth == 0:
+                json_str = content[brace_start:i + 1]
+                try:
+                    data = json.loads(json_str)
+                    if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                        if brace_start > 0:
+                            before = content[:brace_start].strip()
+                            if before:
+                                result.append({"type": "text", "content": before})
+                        result.append({"type": "thinking", "content": json.dumps(data, ensure_ascii=False, indent=2)})
+                        after = content[i + 1:].strip()
+                        if after:
+                            result.extend(_split_inline_json(after))
+                        return result
+                except:
+                    pass
+                break
+    
+    if content.strip():
+        result.append({"type": "text", "content": content})
+    return result
 
 
 def _is_json_thinking(content: str) -> bool:
@@ -548,9 +651,13 @@ def _messages_to_renderable(raw_messages: list) -> list:
                 tc_map = {}
 
                 if content:
-                    initial_thinking = _extract_json_thinking(content)
-                    if initial_thinking:
-                        timeline.append({"kind": "thinking", "content": json.dumps(initial_thinking, ensure_ascii=False, indent=2)})
+                    # 使用分割函数处理初始内容，保持顺序
+                    segments = _split_content_with_thinking(content)
+                    for seg in segments:
+                        if seg["type"] == "thinking":
+                            timeline.append({"kind": "thinking", "content": seg["content"]})
+                        elif seg["type"] == "text":
+                            timeline.append({"kind": "text", "content": seg["content"]})
 
                 for tc in tool_calls:
                     tc_id = tc.get("id", "")
@@ -625,18 +732,16 @@ def _messages_to_renderable(raw_messages: list) -> list:
                     })
 
                 if final_text and final_text != content:
-                    reasoning_data = _extract_json_thinking(final_text)
-                    if reasoning_data:
-                        timeline.append({"kind": "thinking", "content": json.dumps(reasoning_data, ensure_ascii=False, indent=2)})
-                        text_content = _extract_final_text(final_text)
-                        if text_content:
-                            timeline.append({"kind": "text", "content": text_content})
-                    else:
-                        timeline.append({"kind": "text", "content": final_text})
+                    # 使用分割函数处理最终文本，保持顺序
+                    segments = _split_content_with_thinking(final_text)
+                    for seg in segments:
+                        if seg["type"] == "thinking":
+                            timeline.append({"kind": "thinking", "content": seg["content"]})
+                        elif seg["type"] == "text":
+                            timeline.append({"kind": "text", "content": seg["content"]})
                 elif final_text and final_text == content:
-                    text_content = _extract_final_text(final_text)
-                    if text_content:
-                        timeline.append({"kind": "text", "content": text_content})
+                    # 已经在前面处理过，跳过
+                    pass
 
                 renderable.append({
                     "role": "assistant",
@@ -649,14 +754,13 @@ def _messages_to_renderable(raw_messages: list) -> list:
             else:
                 timeline = []
                 if content:
-                    reasoning_data = _extract_json_thinking(content)
-                    if reasoning_data:
-                        timeline.append({"kind": "thinking", "content": json.dumps(reasoning_data, ensure_ascii=False, indent=2)})
-                        final_text = _extract_final_text(content)
-                        if final_text:
-                            timeline.append({"kind": "text", "content": final_text})
-                    else:
-                        timeline.append({"kind": "text", "content": content})
+                    # 使用新的分割函数，保持文本和 thinking 的顺序
+                    segments = _split_content_with_thinking(content)
+                    for seg in segments:
+                        if seg["type"] == "thinking":
+                            timeline.append({"kind": "thinking", "content": seg["content"]})
+                        else:
+                            timeline.append({"kind": "text", "content": seg["content"]})
                 
                 renderable.append({
                     "role": "assistant",

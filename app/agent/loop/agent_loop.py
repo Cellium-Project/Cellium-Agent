@@ -176,6 +176,8 @@ class AgentLoop:
 
         self._tool_call_count_in_round = 0
 
+        self._pending_gene_prompt = None
+
     def _on_tools_changed(self, new_tools: Dict[str, Any]):
         """工具列表变化时的回调（由 ToolExecutor 调用）"""
         self.tools = new_tools
@@ -368,13 +370,10 @@ class AgentLoop:
         return False
 
     def _is_similar_goal(self, new_input: str, current_goal: str) -> bool:
-        """
-        判断新输入是否与当前目标相似（可能是延续同一任务）
-        """
+
         new_words = set(new_input.lower().split())
         goal_words = set(current_goal.lower().split())
         
-        # 移除常见停用词（中英文）
         stop_words = {
             # 中文
             "的", "了", "是", "在", "有", "和", "与", "或", "我", "你", "他", "她", "它",
@@ -472,9 +471,61 @@ class AgentLoop:
     def _on_gene_task_done(self, task):
         """Gene 后台任务完成回调，处理未捕获的异常"""
         try:
-            task.result()  # 获取结果，如果有异常会抛出
+            task.result()
         except Exception as e:
             logger.error("[AgentLoop] Gene 后台任务异常: %s", e)
+
+    async def _llm_match_gene(self, user_input: str) -> Optional[Dict[str, Any]]:
+        """用 LLM 判断用户输入是否匹配已有 Gene"""
+        from app.agent.control.constraint_gene import TaskSignalMatcher
+
+        TaskSignalMatcher._load_from_repository()
+        if not TaskSignalMatcher._cache and not TaskSignalMatcher.TASK_PATTERNS:
+            return None
+
+        gene_list = []
+        for task_type, config in TaskSignalMatcher.TASK_PATTERNS.items():
+            signals = ", ".join(config["signals"][:5])
+            gene_list.append(f"- {task_type}: 触发词={signals}")
+
+        for task_type, config in TaskSignalMatcher._cache.items():
+            signals = ", ".join(config.get("signals", [])[:5])
+            gene_list.append(f"- {task_type}: 触发词={signals}")
+
+        prompt = f"""判断用户意图是否匹配已有任务策略，只返回匹配的策略名或 none。
+
+可用策略：
+{chr(10).join(gene_list)}
+
+用户输入：{user_input[:200]}
+
+匹配的策略名（或 none）："""
+
+        try:
+            resp = await self.llm.chat(messages=[
+                {"role": "system", "content": "你是一个意图分类器。只输出策略名或 none。"},
+                {"role": "user", "content": prompt},
+            ], max_tokens=10)
+            result = (resp.content or "").strip().lower()
+        except Exception as e:
+            logger.warning("[AgentLoop] LLM Gene 匹配失败: %s", e)
+            return None
+
+        if result and result != "none":
+            for task_type, config in {**TaskSignalMatcher.TASK_PATTERNS, **TaskSignalMatcher._cache}.items():
+                if task_type.lower() == result:
+                    logger.info("[AgentLoop] LLM Gene 匹配成功 | task_type=%s", task_type)
+                    if TaskSignalMatcher._repository:
+                        TaskSignalMatcher._repository.increment_usage(f"gene:{task_type}")
+                    return {
+                        "task_type": task_type,
+                        "gene_template": config.get("gene_template", ""),
+                        "forbidden_tools": config.get("forbidden_tools", []),
+                        "preferred_tools": config.get("preferred_tools", []),
+                    }
+
+        logger.debug("[AgentLoop] LLM Gene 未匹配 | input=%s", user_input[:50])
+        return None
 
     def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
         for msg in reversed(memory.get_messages()):
@@ -511,22 +562,6 @@ class AgentLoop:
         
         return False
 
-    def _is_json_thinking_content(self, content: str) -> bool:
-        if not content:
-            return False
-        json_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
-        if json_pattern.search(content):
-            return True
-        content = content.strip()
-        if content.startswith("{") and content.endswith("}"):
-            try:
-                data = json.loads(content)
-                if isinstance(data, dict) and "reasoning" in data and "action" in data:
-                    return True
-            except json.JSONDecodeError:
-                pass
-        return False
-
     def _extract_text_from_thinking(self, content: str) -> tuple:
         """
         从包含 JSON 思考块的内容中提取纯文本回复
@@ -538,7 +573,7 @@ class AgentLoop:
             (is_json_thinking, reasoning_text, after_json_text)
             - is_json_thinking: 是否为 JSON thinking 格式
             - reasoning_text: reasoning 内容
-            - after_json_text: JSON 后的普通文本
+            - after_json_text: JSON 后的普通文本（含 JSON 前的文本）
         """
         if not content:
             return False, "", ""
@@ -552,10 +587,33 @@ class AgentLoop:
                 data = json.loads(json_str)
                 if isinstance(data, dict) and "reasoning" in data and "action" in data:
                     reasoning = data.get("reasoning", "")
+                    before_json = content[:match.start()].strip()
                     after_json = content[match.end():].strip()
-                    return True, reasoning, after_json
+                    combined = f"{before_json}\n{after_json}" if before_json and after_json else (before_json or after_json)
+                    return True, reasoning, combined
             except json.JSONDecodeError:
                 pass
+
+        brace_start = content.find('{')
+        if brace_start != -1:
+            depth = 0
+            for i in range(brace_start, len(content)):
+                if content[i] == '{':
+                    depth += 1
+                elif content[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = content[brace_start:i + 1]
+                        try:
+                            data = json.loads(json_str)
+                            if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                                before = content[:brace_start].strip()
+                                after = content[i + 1:].strip()
+                                combined = f"{before}\n{after}" if before and after else (before or after)
+                                return True, data.get("reasoning", ""), combined
+                        except json.JSONDecodeError:
+                            pass
+                        break
 
         content = content.strip()
         if content.startswith("{") and content.endswith("}"):
@@ -902,6 +960,14 @@ class AgentLoop:
 
             yield {"type": "thinking", "content": "正在思考..."}
 
+            # LLM 意图匹配 Gene（取代关键词匹配，减少误判）
+            if self.control_loop and self._loop_state and not self._loop_state.matched_gene_type:
+                gene_match = await self._llm_match_gene(user_input)
+                if gene_match:
+                    self._loop_state.matched_gene_type = gene_match["task_type"]
+                    self._loop_state.matched_gene_content = gene_match["gene_template"]
+                    logger.info("[AgentLoop] Gene 已通过 LLM 匹配 | task_type=%s", gene_match["task_type"])
+
             self._tool_call_count_in_round = 0
 
             while True:
@@ -1104,14 +1170,15 @@ class AgentLoop:
                 rs = get_runtime_status()
                 if rs:
                     runtime_status_str = rs.to_summary()
-                
-                # 注入计划摘要到上下文
-                if self._loop_state and self._loop_state.hybrid_plan_summary:
-                    plan_context = f"[当前计划: {self._loop_state.hybrid_plan_summary}]"
+
+                plan_summary = self._loop_state.hybrid_plan_summary if self._loop_state else None
+
+                if self._pending_gene_prompt:
+                    gene_context = f"[Gene 创建任务]\n{self._pending_gene_prompt}"
                     if runtime_status_str:
-                        runtime_status_str = f"{runtime_status_str}\n{plan_context}"
+                        runtime_status_str = f"{runtime_status_str}\n{gene_context}"
                     else:
-                        runtime_status_str = plan_context
+                        runtime_status_str = gene_context
                 
                 # 准备 REPLAN 上下文
                 replan_message = None
@@ -1148,8 +1215,7 @@ class AgentLoop:
                     
                     replan_message = "\n".join(replan_info)
 
-                # ---- 新版 PromptBuilder + PromptDiffTracker ----
-                # 构建通用 context（所有轮次共用）
+                # 构建通用 context
                 context = {
                     "_is_first_round": iteration == 1,
                     "_flash_mode": self.flash_mode,
@@ -1157,6 +1223,7 @@ class AgentLoop:
                     "user_input": user_input,
                     "system_injection": _pending_system_injection,
                     "runtime_status": runtime_status_str,
+                    "plan_summary": plan_summary,
                     "guidance_message": _pending_guidance_msg,
                 }
 
@@ -1193,10 +1260,7 @@ class AgentLoop:
                     })
                     logger.debug("[AgentLoop] 已追加 REPLAN 上下文消息")
 
-                if iteration > 1:
-                    yield {"type": "thinking", "content": "分析结果中..."}
-
-                # 获取工具定义（只调用一次，避免重复刷新）
+                # 获取工具定义
                 tool_defs = self._get_tools_definition()
                 logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
                            iteration, len(llm_messages), len(tool_defs))
@@ -1608,12 +1672,12 @@ class AgentLoop:
                 is_looping, repeated_output = self._loop_controller.check_output_loop(content)
                 if is_looping:
                     logger.warning("[AgentLoop] 检测到循环重复输出")
+                    is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
                     if not self.flash_mode:
                         effective_memory.add_assistant_message(
                             content,
                             reasoning_content=response.reasoning_content
                         )
-                    is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
                     if is_json_thinking and reasoning_text:
                         yield {"type": "thinking", "content": reasoning_text}
                     if after_json_text:
@@ -1672,11 +1736,7 @@ class AgentLoop:
                     gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
                     if gene_prompt and not getattr(self._loop_state, 'gene_processing_done', False):
                         logger.info("[AgentLoop] Mechanism B: 触发 Gene 评估轮次")
-                        effective_memory.add_ephemeral_message("user", gene_prompt)
-                        effective_memory.add_assistant_message(
-                            content,
-                            reasoning_content=response.reasoning_content
-                        )
+                        self._pending_gene_prompt = gene_prompt
                         self._loop_state.gene_processing_done = True
                         yield {"type": "thinking", "content": "正在评估是否需要创建或进化 Gene..."}
                         continue
@@ -1686,11 +1746,7 @@ class AgentLoop:
                         self._loop_state.gene_creation_prompt = None
                         self._loop_state.gene_processing_done = False
                         self._loop_state.gene_tool_call_count = 0
-                        if effective_memory:
-                            effective_memory.clear_ephemeral_messages()
-                            removed = effective_memory.remove_gene_system_messages()
-                            if removed > 0:
-                                logger.info(f"[AgentLoop] 已清理 {removed} 条 Gene 相关系统消息")
+                        self._pending_gene_prompt = None
 
                 # 统一收尾
                 done_event = self._finalize_session(
