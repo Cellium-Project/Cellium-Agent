@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""
-Agent 工具模块 — 统一导出所有内置工具
-"""
 
 from .base_tool import BaseTool
 from .file_tool import FileTool
 from .memory_tool import MemoryTool
 from .shell_tool import ShellTool
+from .read_tool import ReadTool
+from .edit_tool import EditTool
+from .grep_tool import GrepTool
 
-__all__ = ["BaseTool", "FileTool", "MemoryTool", "ShellTool"]
+__all__ = ["BaseTool", "FileTool", "MemoryTool", "ShellTool", "ReadTool", "EditTool", "GrepTool"]

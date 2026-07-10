@@ -29,6 +29,9 @@ from app.agent.security.policy import SecurityPolicy
 from app.agent.tools.shell_tool import ShellTool
 from app.agent.tools.memory_tool import MemoryTool
 from app.agent.tools.file_tool import FileTool
+from app.agent.tools.read_tool import ReadTool
+from app.agent.tools.edit_tool import EditTool
+from app.agent.tools.grep_tool import GrepTool
 from app.agent.llm.engine import BaseLLMEngine, create_llm_engine
 from app.core.util.agent_config import get_config
 
@@ -428,6 +431,21 @@ def setup_agent_di(
     if not container.has(FileTool):
         container.register(FileTool, _file_tool, singleton=True)
 
+    # --- 8d. 注册 ReadTool（文件读取工具）---
+    _read_tool = ReadTool()
+    if not container.has(ReadTool):
+        container.register(ReadTool, _read_tool, singleton=True)
+
+    # --- 8e. 注册 EditTool（文件编辑工具）---
+    _edit_tool = EditTool()
+    if not container.has(EditTool):
+        container.register(EditTool, _edit_tool, singleton=True)
+
+    # --- 8f. 注册 GrepTool（内容搜索工具）---
+    _grep_tool = GrepTool()
+    if not container.has(GrepTool):
+        container.register(GrepTool, _grep_tool, singleton=True)
+
     # --- 9. 注册 AgentLoop---
     def _create_agent_loop():
         # 从 DI 容器获取当前的 LLM 引擎（支持热重载）
@@ -437,8 +455,11 @@ def setup_agent_di(
             shell=_shell,
             tools={
                 "shell": _tool,
-                "memory": _mem_tool,   # 记忆工具
-                "file": _file_tool,     # 文件工具
+                "memory": _mem_tool,
+                "file": _file_tool,
+                "read": _read_tool,
+                "edit": _edit_tool,
+                "grep": _grep_tool,
             },
             max_iterations=_agent_config_holder["max_iterations"],
             three_layer_memory=_memory,   # 注入三层记忆
@@ -473,6 +494,9 @@ def resolve_agent_services(container: DIContainer = None):
         "shell_tool": container.resolve(ShellTool),
         "memory_tool": container.resolve(MemoryTool) if container.has(MemoryTool) else None,
         "file_tool": container.resolve(FileTool) if container.has(FileTool) else None,
+        "read_tool": container.resolve(ReadTool) if container.has(ReadTool) else None,
+        "edit_tool": container.resolve(EditTool) if container.has(EditTool) else None,
+        "grep_tool": container.resolve(GrepTool) if container.has(GrepTool) else None,
         "security": container.resolve(SecurityPolicy),
         "llm_engine": container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None,
     }

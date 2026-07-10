@@ -8,9 +8,9 @@ llm:
     budget_tokens: 1000
   models:
   - name: model-1
-    api_key: ${LLM_MODELS_API_KEY}
-    base_url: ${LLM_MODELS_BASE_URL}
-    model: ${LLM_MODELS_MODEL}
+    api_key: ${LLM_MODELS_API_KEY1}
+    base_url: ${LLM_MODELS_BASE_URL1}
+    model: ${LLM_MODELS_MODEL1}
     temperature: 0.7
     timeout: 120
     vision: true

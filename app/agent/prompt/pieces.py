@@ -87,7 +87,7 @@ def get_context_piece() -> PromptPiece:
         f"**当前日期**: {_get_current_date()}",
         f"**系统环境**: {_get_system_info()}",
     ]
-    content = "[系统信息]\n" + "\n".join(context_lines)
+    content = "<system-reminder>\n[上下文信息]\n" + "\n".join(context_lines) + "\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>"
 
     return PromptPiece(
         name="context",
@@ -104,7 +104,7 @@ def get_context_piece() -> PromptPiece:
 def get_long_term_memory_piece() -> PromptPiece:
     return PromptPiece(
         name="long_term_memory",
-        template="[长期记忆检索结果]\n{{ long_term_results }}",
+        template="<system-reminder>\n[长期记忆检索结果]\n{{ long_term_results }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
         condition=lambda ctx: not ctx.get('_flash_mode', False) and bool(ctx.get('long_term_results')),
         stability="dynamic",
         priority=800,
@@ -116,9 +116,6 @@ def get_long_term_memory_piece() -> PromptPiece:
 # ============================================================
 
 def get_user_input_piece() -> PromptPiece:
-    """
-    极速模式下将用户输入作为独立消息（flash_mode 且无历史时启用）。
-    """
     return PromptPiece(
         name="user_input",
         template="{{ user_input }}",
@@ -128,13 +125,14 @@ def get_user_input_piece() -> PromptPiece:
     )
 
 
+
 def get_system_injection_piece() -> PromptPiece:
     """
     系统指令注入（来自控制环 Gene）。
     """
     return PromptPiece(
         name="system_injection",
-        template="[系统指令]\n{{ system_injection }}",
+        template="<system-reminder>\n[系统指令]\n{{ system_injection }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
         condition=lambda ctx: bool(ctx.get('system_injection')),
         stability="dynamic",
         priority=400,
@@ -147,7 +145,7 @@ def get_runtime_status_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="runtime_status",
-        template="[运行时状态]\n{{ runtime_status }}",
+        template="<system-reminder>\n[运行时状态]\n{{ runtime_status }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
         condition=lambda ctx: bool(ctx.get('runtime_status')),
         stability="dynamic",
         priority=500,
@@ -160,7 +158,7 @@ def get_plan_summary_piece() -> PromptPiece:
     """
     return PromptPiece(
         name="plan_summary",
-        template="[当前计划]\n{{ plan_summary }}",
+        template="<system-reminder>\n[当前计划]\n{{ plan_summary }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
         condition=lambda ctx: bool(ctx.get('plan_summary')),
         stability="dynamic",
         priority=550,
@@ -170,10 +168,11 @@ def get_plan_summary_piece() -> PromptPiece:
 def get_guidance_message_piece() -> PromptPiece:
     """
     系统引导消息（来自启发式模块 / 控制环）。
+    使用 <system-reminder> 标签包装，避免 LLM 自言自语。
     """
     return PromptPiece(
         name="guidance_message",
-        template="[系统引导]\n{{ guidance_message }}",
+        template="<system-reminder>\n{{ guidance_message }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
         condition=lambda ctx: bool(ctx.get('guidance_message')),
         stability="dynamic",
         priority=600,
@@ -182,11 +181,11 @@ def get_guidance_message_piece() -> PromptPiece:
 
 def get_auto_hints_piece() -> PromptPiece:
     """
-    工具使用提示。
+    工具使用提示。使用 <system-reminder> 标签包装。
     """
     return PromptPiece(
         name="auto_hints",
-        template="[工具使用提示]\n{{ auto_hints }}",
+        template="<system-reminder>\n{{ auto_hints }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
         condition=lambda ctx: bool(ctx.get('auto_hints')),
         stability="dynamic",
         priority=350,

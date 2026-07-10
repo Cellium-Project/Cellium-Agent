@@ -75,7 +75,7 @@ class MainApplication(LogMixin):
         import socket
 
         port = preferred_port
-        max_attempts = 10
+        max_attempts = 20
 
         for attempt in range(max_attempts):
             try:
@@ -115,10 +115,16 @@ class MainApplication(LogMixin):
         from app.agent.tools.shell_tool import ShellTool
         from app.agent.tools.memory_tool import MemoryTool
         from app.agent.tools.file_tool import FileTool
+        from app.agent.tools.read_tool import ReadTool
+        from app.agent.tools.edit_tool import EditTool
+        from app.agent.tools.grep_tool import GrepTool
         _mem = self.container.resolve(ThreeLayerMemory)
         _shell = self.container.resolve(CelliumShell)
         _mem_tool = MemoryTool(three_layer_memory=_mem)
         _file_tool = FileTool()
+        _read_tool = ReadTool()
+        _edit_tool = EditTool()
+        _grep_tool = GrepTool()
         _tool = ShellTool(shell=_shell)
 
         enforce_limit = cfg.get("agent.enforce_iteration_limit", False)
@@ -139,6 +145,9 @@ class MainApplication(LogMixin):
                 "shell": _tool,
                 "memory": _mem_tool,
                 "file": _file_tool,
+                "read": _read_tool,
+                "edit": _edit_tool,
+                "grep": _grep_tool,
             },
             global_config=agent_cfg,
         )

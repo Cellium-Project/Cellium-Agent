@@ -45,16 +45,31 @@ class PatchApplier:
         if not old_text:
             return content, {"count": 0, "error": "old_text 为空"}
 
+        content = content.replace('\r\n', '\n')
+        old_text = old_text.replace('\r\n', '\n')
+        new_text = new_text.replace('\r\n', '\n')
+
         if old_text not in content:
-            preview = old_text[:50] + "..." if len(old_text) > 50 else old_text
-            
-            first_line = old_text.split('\n')[0] if '\n' in old_text else old_text
-            if first_line and first_line in content:
-                error_msg = f"未找到完整匹配，但找到首行: '{first_line[:30]}...'。请确保 old_text 与文件内容完全一致。"
+            normalized_old = cls._normalize_quotes(old_text)
+            normalized_content = cls._normalize_quotes(content)
+            if normalized_old in normalized_content:
+                idx = normalized_content.index(normalized_old)
+                actual_old = content[idx:idx + len(old_text)]
+                if replace_all:
+                    count = content.count(actual_old)
+                    new_content = content.replace(actual_old, new_text)
+                else:
+                    count = 1
+                    new_content = content.replace(actual_old, new_text, 1)
+                return new_content, {"count": count}
             else:
-                error_msg = f"未找到匹配文本: {preview}"
-            
-            return content, {"count": 0, "error": error_msg}
+                preview = old_text[:50] + "..." if len(old_text) > 50 else old_text
+                first_line = old_text.split('\n')[0] if '\n' in old_text else old_text
+                if first_line and first_line in content:
+                    error_msg = f"未找到完整匹配，但找到首行: '{first_line[:30]}...'。请确保 old_text 与文件内容完全一致。"
+                else:
+                    error_msg = f"未找到匹配文本: {preview}"
+                return content, {"count": 0, "error": error_msg}
 
         if replace_all:
             count = content.count(old_text)
@@ -64,6 +79,21 @@ class PatchApplier:
             new_content = content.replace(old_text, new_text, 1)
 
         return new_content, {"count": count}
+
+    @staticmethod
+    def _normalize_quotes(text: str) -> str:
+        replacements = [
+            ('\u2018', "'"),
+            ('\u2019', "'"),
+            ('\u201c', '"'),
+            ('\u201d', '"'),
+            ('\u2013', '-'),
+            ('\u2014', '--'),
+            ('\u2026', '...'),
+        ]
+        for old, new in replacements:
+            text = text.replace(old, new)
+        return text
 
     @classmethod
     def _apply_insert(cls, content: str, patch: Dict) -> Tuple[str, Dict]:

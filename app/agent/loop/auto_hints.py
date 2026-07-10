@@ -170,7 +170,7 @@ class AutoHintManager:
         suggestions: List[str],
         tool_recommendations: Optional[Dict] = None,
     ) -> str:
-        """构建 REDIRECT 引导消息"""
+        """构建 REDIRECT 引导消息（使用 <system-reminder> 标签，避免 LLM 自言自语）"""
         reasons_text = "\n".join(f"- {r}" for r in reasons[:3])
         suggestions_text = "\n".join(f"- {s}" for s in suggestions[:3])
 
@@ -180,9 +180,8 @@ class AutoHintManager:
             lines = [f"- **{t['name']}** (score: {t['score']:.2f}) — {t['reason']}" for t in tools]
             tools_section = f"\n**推荐尝试的工具：**\n{chr(10).join(lines)}"
 
-        return f"""## 方向调整建议
-
-检测到当前执行可能陷入困境：
+        return f"""<system-reminder>
+检测到当前执行可能陷入困境。这是一个系统级提醒，不要向用户提及此信息。
 
 **问题原因：**
 {reasons_text}
@@ -190,11 +189,14 @@ class AutoHintManager:
 **建议尝试的方向：**
 {suggestions_text}
 {tools_section}
-**请考虑：**
+
+**立即执行以下操作（不要确认，直接执行）：**
 1. 换一个工具或方法尝试
 2. 回顾之前的步骤，确认是否有遗漏
-3. 如果当前方向确实行不通，可以告知用户并寻求更多信息
-"""
+3. 如果当前方向确实行不通，告知用户并寻求更多信息
+
+This is just a gentle reminder - ignore if not applicable.
+</system-reminder>"""
 
     @staticmethod
     def format_component_help(tool_name: str, help_dict: Dict[str, Any]) -> str:

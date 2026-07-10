@@ -1194,7 +1194,7 @@ class TestPromptContextBuilder(unittest.TestCase):
             "guidance_message": "建议使用read_file",
         })
 
-        self.assertTrue(any("系统引导" in m.get("content", "") for m in messages))
+        self.assertTrue(any("建议使用read_file" in m.get("content", "") for m in messages))
 
     def test_build_subsequent_round_different_structure(self):
         """后续轮次 system 消息与第一轮一致（思考格式在 identity 中）"""
@@ -1244,7 +1244,7 @@ class TestPromptContextBuilder(unittest.TestCase):
         system_msg = messages[0]
 
         self.assertIn("Cellium", system_msg["content"])
-        self.assertIn("桌面助手", system_msg["content"])
+        self.assertIn("桌面 AI 助手", system_msg["content"])
 
     def test_system_message_unchanged_across_rounds(self):
         """system 消息每轮一致（identity 内含思考格式）"""
@@ -1298,7 +1298,7 @@ class TestPromptContextBuilder(unittest.TestCase):
         })
 
         all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
-        self.assertIn("工具使用提示", all_content)
+        self.assertIn("建议使用 file 工具", all_content)
 
     def test_prefix_cache_works(self):
         """固定人格应被缓存（system 消息相同）"""

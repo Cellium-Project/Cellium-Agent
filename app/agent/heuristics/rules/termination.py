@@ -167,8 +167,8 @@ class EmptyResultChainRule(BaseRule):
     priority = RulePriority.HIGH
     decision_point = DecisionPoint.ITERATION_TERMINATION
 
-    threshold: int = 3
-    stop_threshold: int = 6
+    threshold: int = 6
+    stop_threshold: int = 12
 
     def evaluate(
         self,
@@ -295,9 +295,9 @@ class NoProgressRule(BaseRule):
     priority = RulePriority.HIGH
     decision_point = DecisionPoint.ITERATION_TERMINATION
 
-    stuck_threshold: int = 3
-    trend_threshold: float = -0.1
-    redirect_threshold: int = 5   
+    stuck_threshold: int = 8
+    trend_threshold: float = -0.2
+    redirect_threshold: int = 12   
 
     def evaluate(
         self,

@@ -64,7 +64,7 @@ class BaseTool:
         """
         if isinstance(command, dict):
             all_args = command
-            cmd_name = (all_args.pop("command") or "").strip()
+            cmd_name = (all_args.pop("command", "") or "").strip()
 
             if not cmd_name:
                 cmd_name = self._infer_command(all_args)
