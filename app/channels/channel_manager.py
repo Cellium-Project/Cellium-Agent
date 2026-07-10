@@ -364,17 +364,24 @@ class ChannelManager:
         self._ensure_channel_task_consumer(message, session_id, queue)
         logger.info(f"[ChannelManager] 已为{trigger_label}启动队列消费者 | session={session_id} | platform={message.platform}")
 
-    async def _start_channel_task(self, message: UnifiedMessage, session_id: str, content_to_agent: str, session_memory, system_injection: Optional[str]):
+    async def _start_channel_task(self, message: UnifiedMessage, session_id: str, content_to_agent: str, session_memory):
         from app.server.task_manager import get_task_manager
 
         task_mgr = get_task_manager()
         loop = await self._agent_loop_manager.get_loop(session_id)
+
+        adapter = self._adapters.get(message.platform)
+        if adapter:
+            platform_inject = adapter.build_inject_content(message, "")
+            if platform_inject:
+                loop._prompt_builder.inject(platform_inject, name="platform_context", stability="static", priority=1)
+
         started = await task_mgr.start_task(
             session_id=session_id,
             agent_loop=loop,
             user_input=content_to_agent,
             memory=session_memory,
-            system_injection=system_injection,
+            system_injection=None,
         )
         if not started:
             raise RuntimeError(f"无法启动任务，session={session_id}")
@@ -516,8 +523,6 @@ class ChannelManager:
                     )
                     return
 
-            adapter = self._adapters.get(message.platform)
-            system_injection = adapter.build_inject_content(message, message.content) if adapter else None
             content_to_agent = message.content
             self._cancel_pending_file_notice(session_info)
             
@@ -555,7 +560,6 @@ class ChannelManager:
                     session_id=session_id,
                     content_to_agent=content_to_agent,
                     session_memory=session_memory,
-                    system_injection=system_injection,
                 )
             except Exception as e:
                 logger.error(f"[ChannelManager] Agent task start error for session {session_id}: {e}")

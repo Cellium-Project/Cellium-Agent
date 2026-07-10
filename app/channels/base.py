@@ -91,7 +91,7 @@ class ChannelAdapter(ABC):
         if platform_tips:
             inject += f"{platform_tips}\n"
         inject += "---\n"
-        return inject + content
+        return inject
 
     def _get_source_label(self, message: UnifiedMessage) -> str:
         """获取来源标签，子类可重写"""
