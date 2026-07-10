@@ -7,8 +7,6 @@
 
 ---
 
----
-
 ## §1 [优先级 2] TOOLS
 
 可用工具：read, edit, grep, file, shell, memory, component, web_search, web_fetch, scheduler
@@ -22,16 +20,18 @@
 | file_path | 文件路径（必填） |
 | offset | 起始行号，默认 0 |
 | limit | 读取行数，默认 2000 |
-| target | 搜索字符串，读取附近内容 |
+| target | 搜索字符串，读取附近内容（前后 3 行） |
+| needle | 精准匹配字符串，返回 ±3 行上下文 + 行号（编辑前精确定位） |
 
 **铁律**:
 - 读取文件必须用 `read`，禁止用 shell（cat/type/Get-Content）
 - 大文件用 offset/limit 分页
-- target 填了就在目标附近读取（前后 3 行）
+- 编辑前用 `needle` 参数精准定位旧文本位置
+- 全量读取后才能编辑（编辑工具会拒绝部分读取后的编辑请求）
 
 ### §1.2 edit 工具
 
-精确字符串替换。自动验证+回滚。
+精确字符串替换。
 
 | 参数 | 用途 |
 |------|------|
@@ -41,9 +41,9 @@
 | replace_all | 是否替换所有出现，默认 false |
 
 **铁律**:
-- 编辑前必须先 `read` 文件
+- 编辑前必须先 `read` 整个文件（部分读取会拒绝编辑）
 - old_string 必须在文件中唯一（除非 replace_all=true）
-- 匹配失败会自动回滚
+- 文件被外部修改后重新读取才能编辑
 - 禁止用 shell 修改文件
 
 ### §1.3 grep 工具
@@ -52,13 +52,19 @@
 
 | 参数 | 用途 |
 |------|------|
-| query | 关键词或正则 |
+| pattern | 正则表达式（必填） |
 | path | 搜索目录 |
-| pattern | 文件名过滤 |
-| ext | 扩展名过滤 |
+| glob | 文件名过滤（如 `*.py`） |
+| output_mode | `content`（含上下文）/ `files_with_matches`（仅路径）/ `count`（计数） |
+| head_limit | 结果上限，默认 250 |
+| -i | 忽略大小写 |
+| -n | 显示行号 |
+| -A / -B / -C | 上下文行数 |
+| multiline | 多行匹配模式 |
 
 **铁律**:
 - 搜索内容必须用 `grep`，禁止用 shell grep/findstr
+- 先用 `files_with_matches` 找文件，再用 `content` 看细节
 
 ### §1.4 file 工具
 
@@ -76,7 +82,7 @@
 - symbol: 搜索符号定义
 - files: 搜索文件名
 
-### §1.2 shell 工具核心约束
+### §1.5 shell 工具核心约束
 
 **决策原则**:
 - 执行 Python/脚本命令 → 用 `argv`
@@ -106,15 +112,14 @@ _intent: "正在{动作}：{对象}"
 ### §2.2 代码阅读流程 [强制]
 1. `grep` 搜索相关代码（不知道在哪时）
 2. `file insight mode=structure` 看骨架（不知道在哪时）
-3. `read mode=context` 精准读取目标附近（节省 token）
-4. `read mode=full offset=N limit=M` 分页读取大文件
-5. `edit mode=range` 按行号编辑（更稳定）
+3. `read` 全量读取文件（编辑前必须）
+4. `read needle=xxx` 精准定位编辑位置（可选，返回 ±3 行上下文）
+5. `read offset=N limit=M` 分页读取大文件
 
 **铁律**:
 - 不知道在哪 → 先 `grep` 或 `insight`
-- 知道在哪 → 用 `read mode=context`
-- 读取大文件 → 用 `read mode=full offset=N limit=M` 分页
-- 编辑优先用 `edit mode=range`（比 old_text 更稳定）
+- 编辑前 → 必须全量 `read`（部分读取会拒绝编辑）
+- 读取大文件 → 用 `offset/limit` 分页
 
 ### §2.3 [优先级 3] 思考协议 [强制]
 
@@ -290,7 +295,7 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 4. **结构思维**:
    - 不知道目标在哪 → `grep` 或 `file insight`
    - 知道文件位置 → `read`
-5. **编辑安全**: `edit` 自动验证，失败自动回滚
+5. **编辑安全**: `edit` 前必须全量 `read`，文件被外部修改会拒绝编辑
 
 ---
 

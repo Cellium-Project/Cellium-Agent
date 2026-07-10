@@ -22,17 +22,19 @@ logger = logging.getLogger(__name__)
 class ToolDescriptionGenerator:
     """工具描述生成器 — 根据工具名和参数自动生成用户友好的中文操作描述"""
 
-    # 模板定义：{变量} 从 arguments 中动态提取
     DESC_TEMPLATES = {
+        "read": {
+            "_default": "{read_desc}",
+        },
+        "edit": {
+            "_default": "{edit_desc}",
+        },
+        "grep": {
+            "_default": "正在搜索：{grep_pattern}",
+        },
         "file": {
-            # read 命令（根据 mode 细分）
-            "read":     "{read_desc}",
-            # insight 命令（根据 mode 细分）
-            "insight":  "{insight_desc}",
-            # edit 命令（根据 mode 细分）
-            "edit":     "{edit_desc}",
-            # fs 命令（根据 action 细分）
             "fs":       "{fs_desc}",
+            "insight":  "{insight_desc}",
             "_default": "正在操作文件：{basename}",
         },
         "memory": {
@@ -76,7 +78,6 @@ class ToolDescriptionGenerator:
 
     @staticmethod
     def render_template(template: str, context: dict) -> str:
-        """安全渲染描述模板，缺失变量用空字符串替代（不会抛 KeyError）"""
         class _SafeDict(dict):
             def __missing__(self, key):
                 return ""
@@ -87,7 +88,6 @@ class ToolDescriptionGenerator:
 
     @staticmethod
     def extract_context(tool_name: str, arguments: dict) -> dict:
-        """从 arguments 中提取模板变量"""
         ctx = {"tool_name": tool_name}
 
         if not isinstance(arguments, dict):
@@ -95,6 +95,7 @@ class ToolDescriptionGenerator:
 
         path = (
             arguments.get("path")
+            or arguments.get("file_path")
             or arguments.get("dir_path")
             or arguments.get("base_dir")
             or arguments.get("filePath")
@@ -106,57 +107,48 @@ class ToolDescriptionGenerator:
 
         ctx["command"] = (arguments.get("command") or "").strip()
 
-        # file 工具的细分描述
-        if tool_name == "file":
+        if tool_name == "read":
+            needle = arguments.get("needle") or ""
+            target = arguments.get("target") or ""
+            offset = arguments.get("offset")
+            limit = arguments.get("limit")
+            if needle:
+                ctx["read_desc"] = f"正在定位 {ctx['basename']} 中的匹配位置"
+            elif target:
+                ctx["read_desc"] = f"正在查找 {ctx['basename']} 中的：{target[:30]}"
+            elif offset is not None and limit is not None:
+                ctx["read_desc"] = f"正在读取 {ctx['basename']} 第{offset}-{offset + limit}行"
+            elif offset is not None:
+                ctx["read_desc"] = f"正在读取 {ctx['basename']} 第{offset}行起"
+            else:
+                ctx["read_desc"] = f"正在读取文件：{ctx['basename']}"
+
+        elif tool_name == "edit":
+            replace_all = arguments.get("replace_all")
+            old_str = (arguments.get("old_string") or "")[:40]
+            if replace_all:
+                ctx["edit_desc"] = f"正在批量替换 {ctx['basename']} 中的文本"
+            elif old_str:
+                ctx["edit_desc"] = f"正在编辑 {ctx['basename']} 中的文本"
+            else:
+                ctx["edit_desc"] = f"正在编辑文件：{ctx['basename']}"
+
+        elif tool_name == "grep":
+            pattern = (arguments.get("pattern") or arguments.get("query") or "")
+            path_arg = arguments.get("path") or ""
+            glob_arg = arguments.get("glob") or ""
+            head_limit = arguments.get("head_limit", "")
+            if pattern:
+                ctx["grep_pattern"] = pattern[:40]
+            if glob_arg:
+                ctx["grep_desc"] = f"正在搜索 {glob_arg} 匹配的内容：{pattern[:40]}" if pattern else f"正在搜索 {glob_arg} 匹配的内容"
+            else:
+                ctx["grep_desc"] = f"正在搜索：{pattern[:40]}" if pattern else f"正在搜索代码"
+
+        elif tool_name == "file":
             cmd = ctx["command"]
-            mode = arguments.get("mode", "full") or "full"
 
-            # read 命令的细分
-            if cmd == "read":
-                if mode == "context":
-                    target = (arguments.get("target") or "")[:30]
-                    ctx["read_desc"] = f"正在读取 {ctx['basename']} 中的：{target}"
-                elif mode == "summary":
-                    ctx["read_desc"] = f"正在提取 {ctx['basename']} 的符号签名"
-                elif mode == "compact":
-                    ctx["read_desc"] = f"正在压缩读取 {ctx['basename']}"
-                else:
-                    ctx["read_desc"] = f"正在读取文件：{ctx['basename']}"
-
-            # insight 命令的细分
-            elif cmd == "insight":
-                insight_mode = arguments.get("mode", "grep")
-                query = (arguments.get("query") or "")[:30]
-                if insight_mode == "grep":
-                    ctx["insight_desc"] = f"正在搜索：{query}"
-                elif insight_mode == "structure":
-                    ctx["insight_desc"] = f"正在分析 {ctx['basename']} 的结构"
-                elif insight_mode == "symbol":
-                    ctx["insight_desc"] = f"正在搜索符号：{query}"
-                elif insight_mode == "files":
-                    pattern = (arguments.get("pattern") or arguments.get("query") or "*")[:30]
-                    ctx["insight_desc"] = f"正在查找文件：{pattern}"
-                else:
-                    ctx["insight_desc"] = f"正在探索工程"
-
-            # edit 命令的细分
-            elif cmd == "edit":
-                edit_mode = arguments.get("mode", "replace")
-                if edit_mode == "range":
-                    start = arguments.get("start_line", "?")
-                    end = arguments.get("end_line", "?")
-                    ctx["edit_desc"] = f"正在编辑 {ctx['basename']} 第{start}-{end}行"
-                elif edit_mode == "delete":
-                    start = arguments.get("start_line", "?")
-                    end = arguments.get("end_line", "?")
-                    ctx["edit_desc"] = f"正在删除 {ctx['basename']} 第{start}-{end}行"
-                elif edit_mode == "append":
-                    ctx["edit_desc"] = f"正在追加内容到 {ctx['basename']}"
-                else:
-                    ctx["edit_desc"] = f"正在编辑文件：{ctx['basename']}"
-
-            # fs 命令的细分
-            elif cmd == "fs":
+            if cmd == "fs":
                 action = arguments.get("action", "list")
                 if action == "list":
                     ctx["fs_desc"] = f"正在查看目录：{ctx['dir_path'] or ctx['basename']}"
@@ -181,19 +173,32 @@ class ToolDescriptionGenerator:
                     base = arguments.get("path") or ""
                     ctx["fs_desc"] = f"正在创建项目：{os.path.basename(base)}（{count} 个文件）"
                 else:
-                    ctx["fs_desc"] = f"正在操作文件系统"
+                    ctx["fs_desc"] = "正在操作文件系统"
+
+            elif cmd == "insight":
+                insight_mode = arguments.get("mode", "grep")
+                query = (arguments.get("query") or "")[:30]
+                if insight_mode == "grep":
+                    ctx["insight_desc"] = f"正在搜索：{query}"
+                elif insight_mode == "structure":
+                    ctx["insight_desc"] = f"正在分析 {ctx['basename']} 的结构"
+                elif insight_mode == "symbol":
+                    ctx["insight_desc"] = f"正在搜索符号：{query}"
+                elif insight_mode == "files":
+                    pattern = (arguments.get("pattern") or arguments.get("query") or "*")[:30]
+                    ctx["insight_desc"] = f"正在查找文件：{pattern}"
+                else:
+                    ctx["insight_desc"] = "正在探索工程"
 
             else:
-                ctx["read_desc"] = f"正在操作文件：{ctx['basename']}"
+                ctx["fs_desc"] = "正在操作文件系统"
                 ctx["insight_desc"] = ""
-                ctx["edit_desc"] = f"正在操作文件：{ctx['basename']}"
-                ctx["fs_desc"] = f"正在操作文件系统"
 
-        # Memory / Web Search 特有
+        # Memory / Web Search
         ctx["query"] = (arguments.get("query") or arguments.get("q") or arguments.get("keywords") or "")[:30]
         ctx["title"] = (arguments.get("title") or "")[:30]
 
-        # Web 特有
+        # Web
         url = arguments.get("url") or ""
         ctx["url"] = url
         ctx["url_short"] = url[:50] if url else ""
@@ -210,20 +215,20 @@ class ToolDescriptionGenerator:
         else:
             ctx["url_count"] = "?"
 
-        # QQ Files 特有
+        # QQ/WeChat Files
         ctx["filename"] = os.path.basename(arguments.get("url") or arguments.get("file_path") or arguments.get("image_path") or "")
         ctx["target_id"] = arguments.get("target_id") or ""
 
-        # Web 操作特有
+        # Web ops
         ctx["action"] = arguments.get("action") or ""
         ctx["selector"] = arguments.get("selector") or "页面"
         ctx["headless"] = "后台" if arguments.get("headless", True) else "可视化"
 
-        # Shell 特有
+        # Shell
         ctx["cmd"] = (arguments.get("command") or "").strip()
         ctx["cmd_first"] = ctx["cmd"].split()[0] if ctx["cmd"].split() else ""
 
-        # 组件工具通用参数提取
+        # Component tools fallback
         if not any([ctx["basename"], ctx["query"], ctx["title"], ctx["cmd"]]):
             for v in arguments.values():
                 if isinstance(v, str) and len(v.strip()) > 2 and len(v.strip()) < 100:
@@ -249,20 +254,16 @@ class ToolDescriptionGenerator:
         if not isinstance(arguments, dict):
             arguments = {}
 
-        # 0) 优先使用 LLM 提供的 _intent
         intent = arguments.get("_intent")
         if intent and isinstance(intent, str) and len(intent.strip()) > 0:
             return intent.strip()
 
-        # Shell 走独立解析器
         if tool_name == "shell":
-            # 取实际的命令内容（cmd 或 argv），而不是子命令名（run/list/output/kill）
             cmd = (arguments.get("cmd") or "").strip()
             argv = arguments.get("argv")
             if argv and isinstance(argv, list) and len(argv) > 0:
                 cmd = " ".join(argv)
             sub_cmd = (arguments.get("command") or "").strip()
-            # 只有 run 子命令才需要解析实际命令
             if sub_cmd == "run" and cmd:
                 return cls.describe_shell_command(cmd)
             elif sub_cmd == "run":
@@ -283,26 +284,12 @@ class ToolDescriptionGenerator:
         sub_cmd = context.get("command", "").lower()
         templates = cls.DESC_TEMPLATES
 
-        # 1) 精确匹配：tool_name + sub_command
-        if tool_name in templates and sub_cmd in templates[tool_name]:
-            tpl = templates[tool_name][sub_cmd]
-            return cls.render_template(tpl, context)
+        if tool_name in templates and sub_cmd and sub_cmd in templates[tool_name]:
+            return cls.render_template(templates[tool_name][sub_cmd], context)
 
-        # 2) 兼容旧版命名 (read_file / write_to_file / file_read / file_write)
-        if tool_name in ("read_file", "file_read"):
-            return cls.render_template(templates["file"]["read"], context)
-        if tool_name in ("write_to_file", "file_write"):
-            return cls.render_template(templates["file"]["write"], context)
-
-        # 3) 工具级默认模板
         if tool_name in templates and "_default" in templates[tool_name]:
             return cls.render_template(templates[tool_name]["_default"], context)
 
-        # 4) 直接以 tool_name 为 key 的顶级模板（必须是字符串模板）
-        if tool_name in templates and isinstance(templates[tool_name], str):
-            return cls.render_template(templates[tool_name], context)
-
-        # 5) 全局兜底
         return cls.render_template(templates["_default"], context)
 
     @staticmethod
@@ -497,10 +484,8 @@ class ToolExecutor:
             registry = get_component_tool_registry()
             component_tools = registry.get_component_tools()
             new_tools = {**component_tools, **self._builtin_tools}
-            # 只在工具列表发生变化时才更新
             if set(new_tools.keys()) != set(self.tools.keys()):
                 self.tools = new_tools
-                # 通知外部工具列表已变化
                 if self._on_tools_changed:
                     self._on_tools_changed(self.tools)
                 logger.info("[ToolExecutor] 工具列表已更新: %d 个工具", len(self.tools))

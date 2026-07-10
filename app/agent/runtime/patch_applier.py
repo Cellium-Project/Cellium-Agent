@@ -36,6 +36,55 @@ class PatchApplier:
             "error": info.get("error"),
         }
 
+    @staticmethod
+    def _strip_trailing_whitespace(text: str) -> str:
+        return '\n'.join(line.rstrip() for line in text.split('\n'))
+
+    @staticmethod
+    def _trim_blank_lines(text: str) -> str:
+        lines = text.split('\n')
+        start = 0
+        end = len(lines)
+        while start < end and lines[start].strip() == '':
+            start += 1
+        while end > start and lines[end - 1].strip() == '':
+            end -= 1
+        return '\n'.join(lines[start:end])
+
+    @staticmethod
+    def _strip_leading_ws_lines(text: str) -> str:
+        return '\n'.join(line.lstrip() for line in text.split('\n'))
+
+    @classmethod
+    def _find_actual_string(cls, content: str, old_text: str):
+
+        for candidate in [old_text, cls._trim_blank_lines(old_text)]:
+            if candidate and candidate in content:
+                return candidate
+
+        norm_content = cls._normalize_quotes(content)
+        for candidate in [old_text, cls._trim_blank_lines(old_text)]:
+            nc = cls._normalize_quotes(candidate)
+            if nc and nc in norm_content:
+                idx = norm_content.index(nc)
+                return content[idx:idx + len(candidate)]
+
+        stripped_old = cls._strip_leading_ws_lines(old_text)
+        stripped_content = cls._strip_leading_ws_lines(content)
+        if stripped_old and stripped_old in stripped_content:
+            idx = stripped_content.index(stripped_old)
+            return content[idx:idx + len(old_text)]
+
+        first_line = old_text.split('\n')[0].strip()
+        if first_line and first_line in content:
+            for i, line in enumerate(content.split('\n')):
+                if line.strip() == first_line:
+                    candidate = '\n'.join(content.split('\n')[i:i + len(old_text.split('\n'))])
+                    if candidate == old_text:
+                        return old_text
+
+        return None
+
     @classmethod
     def _apply_replace(cls, content: str, patch: Dict) -> Tuple[str, Dict]:
         old_text = patch.get("old_text", "")
@@ -49,34 +98,25 @@ class PatchApplier:
         old_text = old_text.replace('\r\n', '\n')
         new_text = new_text.replace('\r\n', '\n')
 
-        if old_text not in content:
-            normalized_old = cls._normalize_quotes(old_text)
-            normalized_content = cls._normalize_quotes(content)
-            if normalized_old in normalized_content:
-                idx = normalized_content.index(normalized_old)
-                actual_old = content[idx:idx + len(old_text)]
-                if replace_all:
-                    count = content.count(actual_old)
-                    new_content = content.replace(actual_old, new_text)
-                else:
-                    count = 1
-                    new_content = content.replace(actual_old, new_text, 1)
-                return new_content, {"count": count}
+        old_text = cls._strip_trailing_whitespace(old_text) if old_text else old_text
+        new_text = cls._strip_trailing_whitespace(new_text) if new_text else new_text
+
+        actual_old = cls._find_actual_string(content, old_text)
+        if actual_old is None:
+            preview = old_text[:50] + "..." if len(old_text) > 50 else old_text
+            first_line = old_text.split('\n')[0] if '\n' in old_text else old_text
+            if first_line and first_line in content:
+                error_msg = f"未找到完整匹配，但找到首行: '{first_line[:30]}...'。请确保 old_text 与文件内容完全一致。"
             else:
-                preview = old_text[:50] + "..." if len(old_text) > 50 else old_text
-                first_line = old_text.split('\n')[0] if '\n' in old_text else old_text
-                if first_line and first_line in content:
-                    error_msg = f"未找到完整匹配，但找到首行: '{first_line[:30]}...'。请确保 old_text 与文件内容完全一致。"
-                else:
-                    error_msg = f"未找到匹配文本: {preview}"
-                return content, {"count": 0, "error": error_msg}
+                error_msg = f"未找到匹配文本: {preview}"
+            return content, {"count": 0, "error": error_msg}
 
         if replace_all:
-            count = content.count(old_text)
-            new_content = content.replace(old_text, new_text)
+            count = content.count(actual_old)
+            new_content = content.replace(actual_old, new_text)
         else:
             count = 1
-            new_content = content.replace(old_text, new_text, 1)
+            new_content = content.replace(actual_old, new_text, 1)
 
         return new_content, {"count": count}
 

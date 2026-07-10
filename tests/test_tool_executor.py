@@ -17,16 +17,17 @@ class TestToolDescriptionGenerator(unittest.TestCase):
         result = ToolDescriptionGenerator.render_template("Hello {name}", {})
         self.assertEqual(result, "Hello ")
 
-    def test_generate_file_read(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "read", "path": "/test/file.txt"})
+    def test_generate_read_full(self):
+        result = ToolDescriptionGenerator.generate("read", {"file_path": "/test/file.txt"})
+        self.assertIn("file.txt", result)
+        self.assertIn("读取", result)
+
+    def test_generate_read_with_target(self):
+        result = ToolDescriptionGenerator.generate("read", {"file_path": "/test/file.txt", "target": "def hello"})
         self.assertIn("file.txt", result)
 
-    def test_generate_file_read_context(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "read", "path": "/test/file.txt", "mode": "context", "target": "def hello"})
-        self.assertIn("file.txt", result)
-
-    def test_generate_file_read_summary(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "read", "path": "/test/file.txt", "mode": "summary"})
+    def test_generate_read_with_needle(self):
+        result = ToolDescriptionGenerator.generate("read", {"file_path": "/test/file.txt", "needle": "def foo():"})
         self.assertIn("file.txt", result)
 
     def test_generate_file_insight_grep(self):
@@ -41,22 +42,14 @@ class TestToolDescriptionGenerator(unittest.TestCase):
         result = ToolDescriptionGenerator.generate("file", {"command": "insight", "mode": "files", "pattern": "*.py"})
         self.assertIn(".py", result)
 
-    def test_generate_file_edit_replace(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "edit", "path": "/test/file.txt", "mode": "replace"})
+    def test_generate_edit_replace(self):
+        result = ToolDescriptionGenerator.generate("edit", {"file_path": "/test/file.txt", "old_string": "foo", "new_string": "bar"})
         self.assertIn("file.txt", result)
 
-    def test_generate_file_edit_range(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "edit", "path": "/test/file.txt", "mode": "range", "start_line": 10, "end_line": 20})
+    def test_generate_edit_replace_all(self):
+        result = ToolDescriptionGenerator.generate("edit", {"file_path": "/test/file.txt", "old_string": "foo", "new_string": "bar", "replace_all": True})
         self.assertIn("file.txt", result)
-        self.assertIn("10", result)
-
-    def test_generate_file_edit_delete(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "edit", "path": "/test/file.txt", "mode": "delete", "start_line": 5, "end_line": 10})
-        self.assertIn("file.txt", result)
-
-    def test_generate_file_edit_append(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "edit", "path": "/test/file.txt", "mode": "append"})
-        self.assertIn("file.txt", result)
+        self.assertIn("批量", result)
 
     def test_generate_file_fs_list(self):
         result = ToolDescriptionGenerator.generate("file", {"command": "fs", "action": "list", "path": "/test"})
@@ -128,7 +121,7 @@ class TestExtractContext(unittest.TestCase):
         self.assertLessEqual(len(ctx["url_short"]), 50)
 
     def test_extract_read_desc_context_mode(self):
-        ctx = ToolDescriptionGenerator.extract_context("file", {"command": "read", "path": "/test.py", "mode": "context", "target": "def hello"})
+        ctx = ToolDescriptionGenerator.extract_context("read", {"file_path": "/test.py", "target": "def hello"})
         self.assertIn("read_desc", ctx)
         self.assertIn("test.py", ctx["read_desc"])
 
@@ -137,10 +130,10 @@ class TestExtractContext(unittest.TestCase):
         self.assertIn("insight_desc", ctx)
         self.assertIn("hello", ctx["insight_desc"])
 
-    def test_extract_edit_desc_range_mode(self):
-        ctx = ToolDescriptionGenerator.extract_context("file", {"command": "edit", "path": "/test.py", "mode": "range", "start_line": 10, "end_line": 20})
+    def test_extract_edit_desc_basic(self):
+        ctx = ToolDescriptionGenerator.extract_context("edit", {"file_path": "/test.py", "old_string": "foo", "new_string": "bar"})
         self.assertIn("edit_desc", ctx)
-        self.assertIn("10", ctx["edit_desc"])
+        self.assertIn("test.py", ctx["edit_desc"])
 
     def test_extract_fs_desc_create_action(self):
         ctx = ToolDescriptionGenerator.extract_context("file", {"command": "fs", "action": "create", "path": "/project", "files": {"a.py": "", "b.py": ""}})

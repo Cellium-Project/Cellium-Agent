@@ -2,26 +2,147 @@
 
 import os
 import re
+import subprocess
+import shutil
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from .base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
+
+_RG_EXECUTABLE = shutil.which("rg")
+
+VCS_DIRS = ('.git', '.svn', '.hg', '.bzr', '.jj', '.sl')
+DEFAULT_MAX_RESULTS = 250
+LINE_WIDTH_CAP = 500
+SEARCH_TIMEOUT_SEC = 20
+
+
+def _find_rg() -> Optional[str]:
+    return _RG_EXECUTABLE
+
+
+def _run_rg(args: List[str], search_path: str) -> List[str]:
+    full_cmd = ['rg', *args, '--path-separator', '/', search_path]
+    try:
+        proc = subprocess.run(
+            full_cmd,
+            capture_output=True,
+            text=True,
+            timeout=SEARCH_TIMEOUT_SEC,
+            encoding='utf-8',
+            errors='replace',
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
+    if proc.returncode == 1:
+        return []
+    if proc.returncode != 0:
+        return []
+
+    lines = proc.stdout.strip().split('\n')
+    return [l.rstrip('\r') for l in lines if l.strip()]
+
+
+def _make_rel(filepath: str) -> str:
+    cwd = os.getcwd()
+    try:
+        return os.path.relpath(filepath, cwd)
+    except ValueError:
+        return filepath
+
+
+def _get_mtime_sort_key(filepath: str) -> float:
+    try:
+        return -os.path.getmtime(filepath)
+    except OSError:
+        return 0.0
+
+
+def _apply_limit(items: list, head_limit: Optional[int], offset: int = 0):
+    limit = head_limit if head_limit and head_limit > 0 else DEFAULT_MAX_RESULTS
+    sliced = items[offset:offset + limit]
+    truncated = len(items) - offset > limit
+    return sliced, limit if truncated else None
+
+
+def _fallback_search(
+    query: str,
+    path: str,
+    ext: Optional[str],
+    pattern: Optional[str],
+    offset: int,
+    head_limit: Optional[int],
+) -> Dict[str, Any]:
+    hits = []
+    use_regex = any(c in query for c in '*+?^$[]|(){}')
+
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        for fname in filenames:
+            if ext and not fname.endswith(ext):
+                continue
+            if pattern:
+                import fnmatch
+                if not fnmatch.fnmatch(fname, pattern):
+                    continue
+            filepath = os.path.join(dirpath, fname)
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                    for i, line in enumerate(f):
+                        if use_regex:
+                            m = re.search(query, line, re.IGNORECASE)
+                            if m:
+                                hits.append({
+                                    "file": _make_rel(filepath),
+                                    "line": i + 1,
+                                    "content": line.strip()[:100],
+                                    "match": m.group(),
+                                })
+                        else:
+                            if query.lower() in line.lower():
+                                hits.append({
+                                    "file": _make_rel(filepath),
+                                    "line": i + 1,
+                                    "content": line.strip()[:100],
+                                })
+            except Exception:
+                continue
+            if len(hits) >= 5000:
+                break
+        if len(hits) >= 5000:
+            break
+
+    page, applied_limit = _apply_limit(hits, head_limit, offset)
+    return {
+        "success": True,
+        "query": query,
+        "hits": page,
+        "total": len(hits),
+        "offset": offset,
+        "has_more": offset + len(page) < len(hits),
+        "applied_limit": applied_limit,
+        "engine": "fallback",
+    }
 
 
 class GrepTool(BaseTool):
 
     name = "grep"
     description = (
-        "Search file contents with keywords or regex patterns.\n\n"
+        "A powerful search tool built on ripgrep\n\n"
         "Usage:\n"
-        "- ALWAYS use Grep for content search. NEVER use shell grep/rg/findstr.\n"
-        "- path defaults to current directory\n"
-        "- Use pattern to filter file names (glob, e.g. \"*.py\")\n"
-        "- Use ext to filter by extension (e.g. \".py\")\n"
-        "- The query supports basic regex\n\n"
-        "Typical flow: Grep (find files) -> Read (read them) -> Edit (modify them)"
+        "- ALWAYS use Grep for search tasks. NEVER invoke `grep` or `rg` as a Bash command.\n"
+        "- Supports full regex syntax (e.g. \"log.*Error\", \"function\\s+\\w+\")\n"
+        "- Filter files with glob parameter (e.g. \"*.js\", \"**/*.tsx\") or type parameter (e.g. \"js\", \"py\", \"rust\")\n"
+        "- Output modes: \"content\" shows matching lines (supports -A/-B/-C context, -n line numbers, head_limit), \"files_with_matches\" shows file paths (supports head_limit), \"count\" shows match counts (supports head_limit)\n"
+        "- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\{[\\s\\S]*?field`, use `multiline: true`"
     )
 
     def __init__(self, allowed_roots=None):
@@ -34,71 +155,161 @@ class GrepTool(BaseTool):
 
     def _cmd_grep(
         self,
-        query: str,
+        query: str = "",
         path: str = ".",
-        pattern: str = None,
+        glob: str = None,
+        output_mode: str = "files_with_matches",
         ext: str = None,
+        pattern: str = "",
+        type: str = None,
         offset: int = 0,
+        head_limit: int = None,
+        **kwargs,
     ) -> Dict[str, Any]:
-        if not query:
-            return {"success": False, "error": "query is required"}
+        keyword = pattern or query
+        if not keyword:
+            return {"success": False, "error": "pattern is required"}
 
         abs_path = self._resolve_path(path)
-        hits = []
-        use_regex = any(c in query for c in '*+?^$[]|(){}')
 
-        for dirpath, dirnames, filenames in os.walk(abs_path):
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        rg = _find_rg()
+        if not rg:
+            return _fallback_search(keyword, abs_path, ext, glob, offset, head_limit)
 
-            for filename in filenames:
-                if ext and not filename.endswith(ext):
-                    continue
-                if pattern and not self._match_pattern(filename, pattern):
-                    continue
+        result = self._rg_search(
+            query=keyword,
+            search_path=abs_path,
+            glob=glob,
+            output_mode=output_mode,
+            type=type,
+            context_before=kwargs.get('-B'),
+            context_after=kwargs.get('-A'),
+            context_around=kwargs.get('-C'),
+            show_line_numbers=kwargs.get('-n', True),
+            ignore_case=kwargs.get('-i', False),
+            head_limit=head_limit,
+            offset=offset,
+            multiline=kwargs.get('multiline', False),
+        )
+        result["engine"] = "ripgrep"
+        return result
 
-                filepath = os.path.join(dirpath, filename)
-                try:
-                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                        for i, line in enumerate(f):
-                            if use_regex:
-                                match = re.search(query, line, re.IGNORECASE)
-                                if match:
-                                    hits.append({
-                                        "file": filepath,
-                                        "line": i + 1,
-                                        "content": line.strip()[:100],
-                                        "match": match.group(),
-                                    })
-                            else:
-                                if query.lower() in line.lower():
-                                    hits.append({
-                                        "file": filepath,
-                                        "line": i + 1,
-                                        "content": line.strip()[:100],
-                                    })
-                except Exception:
-                    continue
+    def _rg_search(
+        self,
+        query: str,
+        search_path: str,
+        glob: Optional[str],
+        output_mode: str,
+        type: Optional[str],
+        context_before: Optional[int],
+        context_after: Optional[int],
+        context_around: Optional[int],
+        show_line_numbers: bool,
+        ignore_case: bool,
+        head_limit: Optional[int],
+        offset: int,
+        multiline: bool,
+    ) -> Dict[str, Any]:
+        args = ['--hidden']
 
-                if len(hits) >= 100:
-                    break
-            if len(hits) >= 100:
-                break
+        for d in VCS_DIRS:
+            args.extend(['--glob', f'!{d}'])
 
-        total = len(hits)
-        page = hits[offset:offset + 20]
+        args.extend(['--max-columns', str(LINE_WIDTH_CAP)])
 
+        if multiline:
+            args.extend(['-U', '--multiline-dotall'])
+
+        if ignore_case:
+            args.append('-i')
+
+        if output_mode == 'files_with_matches':
+            args.append('-l')
+        elif output_mode == 'count':
+            args.append('-c')
+
+        if show_line_numbers and output_mode == 'content':
+            args.append('-n')
+
+        if output_mode == 'content':
+            if context_around is not None:
+                args.extend(['-C', str(context_around)])
+            else:
+                if context_before is not None:
+                    args.extend(['-B', str(context_before)])
+                if context_after is not None:
+                    args.extend(['-A', str(context_after)])
+
+        if query.startswith('-'):
+            args.extend(['-e', query])
+        else:
+            args.append(query)
+
+        if type:
+            args.extend(['--type', type])
+
+        if glob:
+            for g in glob.replace(',', ' ').split():
+                g = g.strip()
+                if g:
+                    args.extend(['--glob', g])
+
+        lines = _run_rg(args, search_path)
+
+        if output_mode == 'content':
+            return self._format_content(lines, head_limit, offset)
+
+        if output_mode == 'count':
+            return self._format_count(lines, head_limit, offset)
+
+        return self._format_files(lines, head_limit, offset)
+
+    def _format_content(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:
+        page, applied_limit = _apply_limit(lines, head_limit, offset)
+        final = [_make_rel_line(l) for l in page]
         return {
             "success": True,
-            "query": query,
-            "hits": page,
-            "total": total,
+            "mode": "content",
+            "num_lines": len(final),
+            "content": '\n'.join(final),
             "offset": offset,
-            "has_more": offset + 20 < total,
+            "applied_limit": applied_limit,
         }
 
-    def _match_pattern(self, filename: str, pattern: str) -> bool:
-        import fnmatch
-        return fnmatch.fnmatch(filename, pattern)
+    def _format_count(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:
+        page, applied_limit = _apply_limit(lines, head_limit, offset)
+        final = [_make_rel_line(l) for l in page]
+        total = 0
+        files = 0
+        for l in page:
+            try:
+                _, count_str = l.rsplit(':', 1)
+                total += int(count_str)
+                files += 1
+            except ValueError:
+                pass
+        return {
+            "success": True,
+            "mode": "count",
+            "content": '\n'.join(final),
+            "num_files": files,
+            "num_matches": total,
+            "offset": offset,
+            "applied_limit": applied_limit,
+        }
+
+    def _format_files(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:
+        rel_files = [_make_rel(p) for p in lines]
+        sorted_files = sorted(rel_files, key=_get_mtime_sort_key)
+        page, applied_limit = _apply_limit(sorted_files, head_limit, offset)
+        return {
+            "success": True,
+            "mode": "files_with_matches",
+            "filenames": page,
+            "num_files": len(page),
+            "offset": offset,
+            "applied_limit": applied_limit,
+        }
 
     def _resolve_path(self, path: str) -> str:
         if not path:
@@ -106,3 +317,12 @@ class GrepTool(BaseTool):
         if os.path.isabs(path):
             return path
         return os.path.abspath(path)
+
+
+def _make_rel_line(line: str) -> str:
+    idx = line.find(':')
+    if idx <= 0:
+        return line
+    abs_path = line[:idx]
+    rest = line[idx:]
+    return _make_rel(abs_path) + rest
