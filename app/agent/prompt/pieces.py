@@ -92,7 +92,7 @@ def get_context_piece() -> PromptPiece:
     return PromptPiece(
         name="context",
         content=content,
-        stability="dynamic",
+        stability="daily",
         priority=550,
     )
 
