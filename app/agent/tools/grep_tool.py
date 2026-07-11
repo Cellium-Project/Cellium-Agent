@@ -67,8 +67,11 @@ def _get_mtime_sort_key(filepath: str) -> float:
 
 def _apply_limit(items: list, head_limit: Optional[int], offset: int = 0):
     limit = head_limit if head_limit and head_limit > 0 else DEFAULT_MAX_RESULTS
-    sliced = items[offset:offset + limit]
-    truncated = len(items) - offset > limit
+    if offset >= len(items):
+        return [], None
+    end = min(offset + limit, len(items))
+    sliced = items[offset:end]
+    truncated = end < len(items)
     return sliced, limit if truncated else None
 
 
@@ -271,9 +274,11 @@ class GrepTool(BaseTool):
             "success": True,
             "mode": "content",
             "num_lines": len(final),
+            "total": len(lines),
             "content": '\n'.join(final),
             "offset": offset,
             "applied_limit": applied_limit,
+            "has_more": applied_limit is not None,
         }
 
     def _format_count(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:

@@ -90,7 +90,7 @@ class FileTool(BaseTool):
             if os.path.isfile(abs_path):
                 return self._extract_structure(abs_path)
             elif os.path.isdir(abs_path):
-                return self._fs_list(abs_path, pattern or "*", True)
+                return self._dir_structure(abs_path, offset)
             else:
                 return {"success": False, "error": f"Path not found: {abs_path}"}
 
@@ -140,8 +140,13 @@ class FileTool(BaseTool):
     def _fs_mkdir(self, path: str, parents: bool) -> Dict[str, Any]:
         abs_path = self._resolve_path(path)
         try:
-            os.makedirs(abs_path, exist_ok=parents)
+            if parents:
+                os.makedirs(abs_path, exist_ok=True)
+            else:
+                os.mkdir(abs_path)
             return {"success": True, "path": abs_path}
+        except FileExistsError:
+            return {"success": False, "error": f"Directory already exists: {abs_path}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -225,6 +230,45 @@ class FileTool(BaseTool):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _dir_structure(self, path: str, offset: int = 0, max_depth: int = 3) -> Dict[str, Any]:
+        abs_path = self._resolve_path(path)
+        lines = []
+        total_count = 0
+
+        def walk(curr, depth, listed):
+            nonlocal total_count
+            if depth > max_depth:
+                return
+            try:
+                entries = sorted(os.listdir(curr))
+            except PermissionError:
+                return
+            for name in entries:
+                if name.startswith('.'):
+                    continue
+                full = os.path.join(curr, name)
+                is_dir = os.path.isdir(full)
+                prefix = "  " * depth + ("+ " if is_dir else "  ")
+                line = prefix + name
+                if not listed:
+                    lines.append((line, is_dir, full))
+                    total_count += 1
+                if is_dir and depth < max_depth:
+                    walk(full, depth + 1, listed)
+
+        walk(abs_path, 0, False)
+
+        limit = 200
+        page = [l for l, _, _ in lines[offset:offset + limit]]
+        return {
+            "success": True,
+            "path": abs_path,
+            "data": '\n'.join(page),
+            "total": total_count,
+            "returned": len(page),
+            "offset": offset,
+        }
+
     def _symbol_search(self, root: str, query: str, pattern: str, ext_filter: str, offset: int) -> Dict[str, Any]:
         from ..runtime.context import SymbolSummary
         hits = []
@@ -260,12 +304,12 @@ class FileTool(BaseTool):
         }
 
     def _file_search(self, root: str, pattern: str, offset: int) -> Dict[str, Any]:
+        import fnmatch
         hits = []
-        pattern_lower = pattern.lower().replace('*', '')
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if not d.startswith('.')]
             for filename in filenames:
-                if pattern_lower in filename.lower():
+                if pattern and fnmatch.fnmatch(filename, pattern):
                     filepath = os.path.join(dirpath, filename)
                     hits.append({"file": filepath, "name": filename})
                 if len(hits) >= 100:
@@ -276,7 +320,7 @@ class FileTool(BaseTool):
         page = hits[offset:offset + 20]
         return {
             "success": True,
-            "pattern": pattern,
+            "pattern": pattern or "*",
             "hits": page,
             "total": total,
         }

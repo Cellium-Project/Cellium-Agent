@@ -7,7 +7,7 @@ _MAX_ENTRIES = 100
 _read_file_cache = OrderedDict()
 
 
-def cache_read(path: str, content: str, offset: int = None, limit: int = None):
+def cache_read(path: str, content: str, offset: int = None, limit: int = None, encoding: str = None):
     norm_path = os.path.normpath(path)
     _read_file_cache[norm_path] = {
         "path": norm_path,
@@ -15,6 +15,7 @@ def cache_read(path: str, content: str, offset: int = None, limit: int = None):
         "timestamp": _safe_mtime(norm_path),
         "offset": offset,
         "limit": limit,
+        "encoding": encoding,
     }
     _read_file_cache.move_to_end(norm_path)
     _evict_if_needed()
@@ -48,7 +49,7 @@ def is_partial_view(path: str) -> bool:
     return bool(state.get("offset") is not None or state.get("limit") is not None)
 
 
-def touch_read_state(path: str, new_content: str):
+def touch_read_state(path: str, new_content: str, encoding: str = None):
     norm_path = os.path.normpath(path)
     entry = {
         "path": norm_path,
@@ -56,6 +57,7 @@ def touch_read_state(path: str, new_content: str):
         "timestamp": _safe_mtime(norm_path),
         "offset": None,
         "limit": None,
+        "encoding": encoding,
     }
     _read_file_cache[norm_path] = entry
     _read_file_cache.move_to_end(norm_path)

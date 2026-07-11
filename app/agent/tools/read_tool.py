@@ -124,7 +124,7 @@ def _extract_context_around(file_path: str, needle: str, context_lines: int) -> 
     }
 
 
-def _read_file_streaming(file_path: str, offset: int, limit: int) -> Dict[str, Any]:
+def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str = "utf-8") -> Dict[str, Any]:
     with open(file_path, 'rb') as f:
         f.seek(0, os.SEEK_END)
         total_bytes = f.tell()
@@ -140,36 +140,44 @@ def _read_file_streaming(file_path: str, offset: int, limit: int) -> Dict[str, A
                 break
             buf += chunk
             pos += len(chunk)
-        text = buf.decode('utf-8', errors='replace')
+        text = buf.decode(encoding, errors='replace')
         if '\r' in text:
             text = text.replace('\r\n', '\n')
 
         f.seek(0)
-        full_text = f.read(_MAX_SCAN * 2).decode('utf-8', errors='replace')
+        full_text = f.read(_MAX_SCAN * 2).decode(encoding, errors='replace')
         if '\r' in full_text:
             full_text = full_text.replace('\r\n', '\n')
 
     lines = text.split('\n')
+    full_text_lines = full_text.split('\n')
 
     if offset < 0:
         offset = 0
     if offset >= len(lines):
         return {"success": False, "error": f"offset {offset} exceeds total lines {len(lines)}"}
 
-    end = min(offset + limit, len(lines))
-    selected = lines[offset:end]
+    total_lines = len(full_text_lines)
+    end = min(offset + limit, total_lines)
+    selected = full_text_lines[offset:end]
     result_content = '\n'.join(f"{offset + j + 1}\t{selected[j]}" for j in range(len(selected)))
 
-    cache_read(file_path, full_text, offset=offset, limit=limit)
+    read_all_bytes = pos >= total_bytes
+    is_partial = (offset > 0) or not read_all_bytes
+
+    cache_read(file_path, full_text,
+               offset=None if not is_partial else offset,
+               limit=None if not is_partial else limit,
+               encoding=encoding)
 
     return {
         "success": True,
         "path": file_path,
         "data": result_content,
         "lines": len(selected),
-        "total_lines": len(lines),
+        "total_lines": total_lines,
         "offset": offset,
-        "truncated": end < len(lines),
+        "truncated": end < total_lines,
     }
 
 
@@ -287,7 +295,8 @@ class ReadTool(BaseTool):
         target: str,
     ) -> Dict[str, Any]:
         if file_size > _CHUNK * 4:
-            return _read_file_streaming(abs_path, offset, limit)
+            encoding = self._detect_encoding(abs_path)
+            return _read_file_streaming(abs_path, offset, limit, encoding=encoding)
 
         encoding = self._detect_encoding(abs_path)
         with open(abs_path, "r", encoding=encoding, errors="replace") as f:
@@ -297,7 +306,7 @@ class ReadTool(BaseTool):
         total_lines = len(lines)
 
         is_partial = (offset is not None and offset > 0) or (limit is not None and limit < total_lines)
-        cache_read(abs_path, content, offset=None if not is_partial else offset, limit=None if not is_partial else limit)
+        cache_read(abs_path, content, offset=None if not is_partial else offset, limit=None if not is_partial else limit, encoding=encoding)
 
         if target:
             target_lower = target.lower()

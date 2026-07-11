@@ -205,12 +205,24 @@ class EditTool(BaseTool):
             return {"success": False, "error": f"File not found: {abs_path}"}
 
         if not is_file_read(abs_path):
+            cached_state = get_read_state(abs_path)
+            if cached_state is not None:
+                return {"success": False, "error": "File has been modified since read. Read it again before editing."}
             return {"success": False, "error": "File has not been read yet. Use the Read tool first before editing."}
 
         if is_partial_view(abs_path):
             return {"success": False, "error": "File was only partially read. Read the full file first before editing."}
 
         read_state = get_read_state(abs_path)
+        cached_encoding = read_state.get("encoding") if read_state else None
+        if cached_encoding:
+            file_encoding = cached_encoding
+        else:
+            try:
+                file_encoding = self._detect_encoding(abs_path)
+            except Exception:
+                file_encoding = "utf-8"
+
         if read_state:
             try:
                 current_mtime = os.path.getmtime(abs_path)
@@ -221,7 +233,7 @@ class EditTool(BaseTool):
                 is_full = read_state.get("offset") is None and read_state.get("limit") is None
                 if is_full:
                     try:
-                        with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                        with open(abs_path, 'r', encoding=file_encoding, errors='replace') as f:
                             file_content = f.read()
                         if read_state["content"] != file_content.replace('\r\n', '\n'):
                             return {"success": False, "error": "File has been modified since read. Read it again before editing."}
@@ -231,7 +243,7 @@ class EditTool(BaseTool):
                     return {"success": False, "error": "File timestamp changed since partial read. Read the full file first."}
 
         try:
-            with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(abs_path, 'r', encoding=file_encoding, errors='replace') as f:
                 file_content = f.read()
         except Exception as e:
             return {"success": False, "error": f"Cannot read file: {e}"}
@@ -256,7 +268,7 @@ class EditTool(BaseTool):
         if matches > 1 and not replace_all:
             return {"success": False, "error": f"Found {matches} matches of old_string but replace_all is false. Add more surrounding context to make it unique, or set replace_all=true to replace all."}
 
-        current_content = self._re_read_file(abs_path)
+        current_content = self._re_read_file(abs_path, file_encoding)
         if current_content is None:
             return {"success": False, "error": "File disappeared before edit could be applied."}
 
@@ -268,10 +280,10 @@ class EditTool(BaseTool):
         from ..runtime.transaction import EditTransaction
 
         patch = {"mode": "replace", "old_text": reconciled, "new_text": new_string, "replace_all": replace_all}
-        result = EditTransaction.apply_edit(abs_path, current_content, patch)
+        result = EditTransaction.apply_edit(abs_path, current_content, patch, encoding=file_encoding)
 
         if result["success"]:
-            touch_read_state(abs_path, current_content.replace('\r\n', '\n'))
+            touch_read_state(abs_path, current_content.replace('\r\n', '\n'), encoding=file_encoding)
             return {
                 "success": True,
                 "path": abs_path,
@@ -285,12 +297,37 @@ class EditTool(BaseTool):
                 "rolled_back": result.get("rolled_back", False),
             }
 
-    def _re_read_file(self, abs_path: str):
+    def _re_read_file(self, abs_path: str, encoding: str = "utf-8"):
         try:
-            with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(abs_path, 'r', encoding=encoding, errors='replace') as f:
                 return f.read()
         except Exception:
             return None
+
+    def _detect_encoding(self, path: str) -> str:
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read(4)
+            if raw[:3] == b'\xef\xbb\xbf':
+                return 'utf-8-sig'
+            if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+                return 'utf-16'
+            with open(path, 'rb') as f:
+                content = f.read(65536)
+            try:
+                content.decode('utf-8')
+                return 'utf-8'
+            except UnicodeDecodeError:
+                pass
+            for enc in ('gbk', 'gb2312', 'big5'):
+                try:
+                    content.decode(enc)
+                    return enc
+                except UnicodeDecodeError:
+                    continue
+        except Exception:
+            pass
+        return 'utf-8'
 
     def _resolve_path(self, path: str) -> str:
         if not path:
