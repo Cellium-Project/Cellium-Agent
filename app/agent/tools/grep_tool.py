@@ -125,6 +125,7 @@ def _fallback_search(
     page, applied_limit = _apply_limit(hits, head_limit, offset)
     return {
         "success": True,
+        "mode": "content",
         "query": query,
         "hits": page,
         "total": len(hits),
