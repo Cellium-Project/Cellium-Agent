@@ -22,7 +22,8 @@ class FileTool(BaseTool):
         "- command=fs, action=mkdir: create directory\n"
         "- command=fs, action=delete: delete file or directory\n"
         "- command=fs, action=exists: check if path exists\n"
-        "- command=fs, action=create: create files from a dict of path->content\n"
+        "- command=fs, action=create: create files from a dict of path->content. "
+        "REQUIRED: files must be a dict[str, str] mapping relative file paths to content\n"
         "- command=insight, mode=structure: view file or directory structure outline\n"
         "- command=insight, mode=symbol: search for symbol definitions\n"
         "- command=insight, mode=files: search for file names\n\n"
@@ -69,7 +70,7 @@ class FileTool(BaseTool):
 
         elif action == "create":
             if not path or not files:
-                return {"success": False, "error": "path and files are required"}
+                return {"success": False, "error": "path and files are required. Example: file(command='fs', action='create', path='/target/dir', files={'relative/path.py': 'content'})"}
             return self._fs_create(path, files)
 
         else:
@@ -280,7 +281,8 @@ class FileTool(BaseTool):
                     continue
                 filepath = os.path.join(dirpath, filename)
                 try:
-                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                    encoding = self._detect_encoding(filepath)
+                    with open(filepath, 'r', encoding=encoding, errors='replace') as f:
                         content = f.read()
                     result = SymbolSummary.extract(content, ext)
                     for sym in result["symbols"]:

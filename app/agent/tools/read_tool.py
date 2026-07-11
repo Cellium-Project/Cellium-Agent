@@ -64,17 +64,17 @@ def _scan_file_for_needle(file_path: str, needle: str) -> Tuple[int, int, int]:
         return -1, 0, 0
 
 
-def _read_byte_range(file_path: str, byte_start: int, byte_end: int) -> str:
+def _read_byte_range(file_path: str, byte_start: int, byte_end: int, encoding: str = "utf-8") -> str:
     with open(file_path, 'rb') as f:
         f.seek(byte_start)
         data = f.read(byte_end - byte_start)
-    text = data.decode('utf-8', errors='replace')
+    text = data.decode(encoding, errors='replace')
     if '\r' in text:
         text = text.replace('\r\n', '\n')
     return text
 
 
-def _extract_context_around(file_path: str, needle: str, context_lines: int) -> Dict[str, Any]:
+def _extract_context_around(file_path: str, needle: str, context_lines: int, encoding: str = "utf-8") -> Dict[str, Any]:
     match_start, match_len, lines_before = _scan_file_for_needle(file_path, needle)
     if match_start == -1:
         return {"found": False, "error": f"needle not found in file (scanned first {_MAX_SCAN // 1024 // 1024}MB)"}
@@ -112,7 +112,7 @@ def _extract_context_around(file_path: str, needle: str, context_lines: int) -> 
     nl_in_walked = back_data[start_in_back:].count(ord('\n'))
     line_offset = lines_before - nl_in_walked + 1
 
-    content = _read_byte_range(file_path, ctx_start, ctx_end)
+    content = _read_byte_range(file_path, ctx_start, ctx_end, encoding)
     match_line = lines_before + 1
 
     return {
@@ -265,15 +265,14 @@ class ReadTool(BaseTool):
         if not needle:
             return {"success": False, "error": "needle is required"}
 
-        result = _extract_context_around(file_path, needle, context_lines)
+        encoding = self._detect_encoding(file_path)
+        result = _extract_context_around(file_path, needle, context_lines, encoding)
         if not result["found"]:
             return {"success": False, "error": result["error"]}
 
         context = result["context"]
         lines = context.split('\n')
         numbered = '\n'.join(f"{result['line_offset'] + j}\t{lines[j]}" for j in range(len(lines)))
-
-        cache_read(file_path, context, offset=0, limit=0)
 
         return {
             "success": True,

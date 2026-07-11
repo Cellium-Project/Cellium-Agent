@@ -250,10 +250,100 @@ def _fallback_search(
     pattern: Optional[str],
     offset: int,
     head_limit: Optional[int],
+    output_mode: str = "content",
 ) -> Dict[str, Any]:
-    hits = []
     use_regex = any(c in query for c in '*+?^$[]|(){}')
 
+    if output_mode == "files_with_matches":
+        matched_files = []
+        for dirpath, dirnames, filenames in os.walk(path):
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            for fname in filenames:
+                if ext and not fname.endswith(ext):
+                    continue
+                if pattern:
+                    import fnmatch
+                    if not fnmatch.fnmatch(fname, pattern):
+                        continue
+                filepath = os.path.join(dirpath, fname)
+                try:
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        for line in f:
+                            if use_regex:
+                                if re.search(query, line, re.IGNORECASE):
+                                    matched_files.append(filepath)
+                                    break
+                            else:
+                                if query.lower() in line.lower():
+                                    matched_files.append(filepath)
+                                    break
+                except Exception:
+                    continue
+                if len(matched_files) >= 5000:
+                    break
+            if len(matched_files) >= 5000:
+                break
+        rel_files = [_make_rel(p) for p in matched_files]
+        sorted_files = sorted(rel_files, key=_get_mtime_sort_key)
+        page, applied_limit = _apply_limit(sorted_files, head_limit, offset)
+        return {
+            "success": True,
+            "mode": "files_with_matches",
+            "query": query,
+            "filenames": page,
+            "num_files": len(page),
+            "offset": offset,
+            "applied_limit": applied_limit,
+            "engine": "fallback",
+        }
+
+    if output_mode == "count":
+        file_counts = []
+        for dirpath, dirnames, filenames in os.walk(path):
+            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+            for fname in filenames:
+                if ext and not fname.endswith(ext):
+                    continue
+                if pattern:
+                    import fnmatch
+                    if not fnmatch.fnmatch(fname, pattern):
+                        continue
+                filepath = os.path.join(dirpath, fname)
+                try:
+                    count = 0
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        for line in f:
+                            if use_regex:
+                                if re.search(query, line, re.IGNORECASE):
+                                    count += 1
+                            else:
+                                if query.lower() in line.lower():
+                                    count += 1
+                    if count > 0:
+                        file_counts.append(f"{_make_rel(filepath)}:{count}")
+                except Exception:
+                    continue
+        page, applied_limit = _apply_limit(file_counts, head_limit, offset)
+        total_matches = 0
+        for entry in page:
+            try:
+                _, count_str = entry.rsplit(':', 1)
+                total_matches += int(count_str)
+            except ValueError:
+                pass
+        return {
+            "success": True,
+            "mode": "count",
+            "query": query,
+            "content": '\n'.join(page),
+            "num_files": len(page),
+            "num_matches": total_matches,
+            "offset": offset,
+            "applied_limit": applied_limit,
+            "engine": "fallback",
+        }
+
+    hits = []
     for dirpath, dirnames, filenames in os.walk(path):
         dirnames[:] = [d for d in dirnames if not d.startswith('.')]
         for fname in filenames:
@@ -295,7 +385,10 @@ def _fallback_search(
         "success": True,
         "mode": "content",
         "query": query,
-        "hits": page,
+        "num_lines": len(page),
+        "content": '\n'.join(
+            f"{h['file']}:{h['line']}:{h['content']}" for h in page
+        ),
         "total": len(hits),
         "offset": offset,
         "has_more": offset + len(page) < len(hits),
@@ -346,7 +439,7 @@ class GrepTool(BaseTool):
 
         rg = _find_rg()
         if not rg:
-            return _fallback_search(keyword, abs_path, ext, glob, offset, head_limit)
+            return _fallback_search(keyword, abs_path, ext, glob, offset, head_limit, output_mode)
 
         result = self._rg_search(
             query=keyword,
