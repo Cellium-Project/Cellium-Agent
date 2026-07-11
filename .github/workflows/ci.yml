@@ -197,13 +197,14 @@ jobs:
           version="15.1.0"
           URL="https://github.com/BurntSushi/ripgrep/releases/download/${version}/ripgrep-${version}-${triple}.tar.gz"
           outDir="release/vendor/ripgrep/${triple}"
-          mkdir -p "$outDir"
+          mkdir -p "$outDir" "rg_tmp"
           echo "Downloading ripgrep from $URL"
           curl -fsSL "$URL" -o rg.tar.gz
           echo "Extracting..."
-          tar -xzf rg.tar.gz -C "$outDir" --strip-components=2 "ripgrep-${version}-${triple}/rg"
+          tar -xzf rg.tar.gz -C rg_tmp
+          find rg_tmp -name 'rg' -type f -exec cp {} "$outDir/rg" \;
           chmod +x "$outDir/rg"
-          rm rg.tar.gz
+          rm -rf rg.tar.gz rg_tmp
           echo "ripgrep ready at $outDir/rg"
 
       - name: Build EXE Launcher (Windows)
