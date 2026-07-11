@@ -169,11 +169,20 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $triple = "x86_64-pc-windows-msvc"
-          $url = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-$triple.tar.gz"
-          mkdir -p release/vendor/ripgrep/$triple
-          curl -L $url -o rg.tar.gz
-          tar -xzf rg.tar.gz -C release/vendor/ripgrep/$triple --strip-components=2 "ripgrep-14.1.1-$triple/rg.exe"
-          rm rg.tar.gz
+          $version = "15.1.0"
+          $url = "https://github.com/BurntSushi/ripgrep/releases/download/${version}/ripgrep-${version}-${triple}.zip"
+          $outDir = "release/vendor/ripgrep/${triple}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          Write-Host "Downloading ripgrep from $url"
+          Invoke-WebRequest -Uri $url -OutFile "rg.zip" -UseBasicParsing -MaximumRedirection 5
+          Write-Host "Extracting..."
+          Expand-Archive -Path "rg.zip" -DestinationPath "rg_extract" -Force
+          $exe = Get-ChildItem -Path "rg_extract" -Recurse -Filter "rg.exe" | Select-Object -First 1
+          if (-not $exe) { throw "rg.exe not found in extracted archive" }
+          Copy-Item $exe.FullName -Destination "$outDir/rg.exe" -Force
+          Remove-Item "rg.zip" -Force
+          Remove-Item "rg_extract" -Recurse -Force
+          Write-Host "ripgrep ready at $outDir/rg.exe"
         shell: pwsh
 
       - name: Download ripgrep (Unix)
@@ -181,14 +190,21 @@ jobs:
         run: |
           case "${{ matrix.os }}-${{ matrix.arch }}" in
             Linux-x64) triple="x86_64-unknown-linux-musl" ;;
-            Linux-arm64) triple="aarch64-unknown-linux-musl" ;;
+            Linux-arm64) triple="aarch64-unknown-linux-gnu" ;;
             macOS-arm64) triple="aarch64-apple-darwin" ;;
             *) echo "Unknown platform"; exit 0 ;;
           esac
-          URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-${triple}.tar.gz"
-          mkdir -p release/vendor/ripgrep/$triple
-          curl -L "$URL" | tar -xz -C release/vendor/ripgrep/$triple --strip-components=2 "ripgrep-14.1.1-${triple}/rg"
-          chmod +x release/vendor/ripgrep/$triple/rg
+          version="15.1.0"
+          URL="https://github.com/BurntSushi/ripgrep/releases/download/${version}/ripgrep-${version}-${triple}.tar.gz"
+          outDir="release/vendor/ripgrep/${triple}"
+          mkdir -p "$outDir"
+          echo "Downloading ripgrep from $URL"
+          curl -fsSL "$URL" -o rg.tar.gz
+          echo "Extracting..."
+          tar -xzf rg.tar.gz -C "$outDir" --strip-components=2 "ripgrep-${version}-${triple}/rg"
+          chmod +x "$outDir/rg"
+          rm rg.tar.gz
+          echo "ripgrep ready at $outDir/rg"
 
       - name: Build EXE Launcher (Windows)
         if: runner.os == 'Windows'

@@ -18,7 +18,16 @@ _VENDOR_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..
 _RG_DOWNLOAD_LOCK = threading.Lock()
 
 # pinned version — update with `pip install ripgrep-update` or manually
-RG_VERSION = "14.1.1"
+RG_VERSION = "15.1.0"
+
+
+def _rg_download_url(triple: str) -> str:
+    """Return the download URL for the given target triple."""
+    is_win = triple.endswith('-windows-msvc')
+    ext = 'zip' if is_win else 'tar.gz'
+    return f"https://github.com/BurntSushi/ripgrep/releases/download/{RG_VERSION}/ripgrep-{RG_VERSION}-{triple}.{ext}"
+
+
 _RG_URL_TEMPLATE = (
     "https://github.com/BurntSushi/ripgrep/releases/download/"
     "ripgrep-{version}-{triple}.tar.gz"
@@ -86,9 +95,14 @@ def _download_rg() -> Optional[str]:
         logger.warning("Cannot detect platform for ripgrep download")
         return None
 
-    url = _RG_URL_TEMPLATE.format(version=RG_VERSION, triple=triple)
+    # Use correct triple for Linux ARM64; CI distributes GNU variant.
+    corrected = triple
+    if corrected == 'aarch64-unknown-linux-musl':
+        corrected = 'aarch64-unknown-linux-gnu'
+
+    url = _rg_download_url(corrected)
     binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
-    target_dir = os.path.join(_VENDOR_DIR, triple)
+    target_dir = os.path.join(_VENDOR_DIR, corrected)
 
     with _RG_DOWNLOAD_LOCK:
         # double-check after acquiring lock
@@ -106,11 +120,11 @@ def _download_rg() -> Optional[str]:
 
         import urllib.request
         import tarfile
+        import zipfile
         import io
 
         tmp_path = target_path + '.download'
         try:
-            # download
             req = urllib.request.Request(url, headers={
                 'Accept': 'application/octet-stream',
                 'User-Agent': 'Cellium-Agent/1.0',
@@ -118,23 +132,33 @@ def _download_rg() -> Optional[str]:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = resp.read()
 
-            # extract
-            with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
-                for member in tar.getmembers():
-                    if member.name.endswith(f'/{binary}') or member.name == binary:
-                        extracted = tar.extractfile(member)
-                        if extracted:
-                            with open(tmp_path, 'wb') as f:
-                                f.write(extracted.read())
+            # extract based on archive type
+            if url.endswith('.zip'):
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    for name in zf.namelist():
+                        if name.endswith(f'/{binary}') or name == binary:
+                            with zf.open(name) as src, open(tmp_path, 'wb') as dst:
+                                shutil.copyfileobj(src, dst)
                             break
-                else:
-                    logger.error("Binary not found in ripgrep archive")
-                    return None
+                    else:
+                        logger.error("Binary not found in ripgrep zip")
+                        return None
+            else:
+                with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+                    for member in tar.getmembers():
+                        if member.name.endswith(f'/{binary}') or member.name == binary:
+                            extracted = tar.extractfile(member)
+                            if extracted:
+                                with open(tmp_path, 'wb') as f:
+                                    f.write(extracted.read())
+                                break
+                    else:
+                        logger.error("Binary not found in ripgrep archive")
+                        return None
 
             os.replace(tmp_path, target_path)
             os.chmod(target_path, 0o755)
 
-            # write version marker
             with open(os.path.join(_VENDOR_DIR, RG_VERSION_FILE), 'w') as f:
                 f.write(RG_VERSION)
 
