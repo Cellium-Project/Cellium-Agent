@@ -75,6 +75,10 @@ memory/*.json
 # Cookie 数据
 dll/cookies.dat
 
+# 自动下载的 ripgrep 二进制（保留目录结构）
+vendor/ripgrep/*
+!vendor/ripgrep/.gitkeep
+
 # 其他
 *.tmp
 

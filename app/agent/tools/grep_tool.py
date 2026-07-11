@@ -2,16 +2,151 @@
 
 import os
 import re
+import sys
 import subprocess
 import shutil
 import logging
+import threading
 from typing import Dict, Any, Optional, List
 
 from .base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
 
-_RG_EXECUTABLE = shutil.which("rg")
+# --- vendor ripgrep ---
+_VENDOR_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'vendor', 'ripgrep'))
+_RG_DOWNLOAD_LOCK = threading.Lock()
+
+# pinned version — update with `pip install ripgrep-update` or manually
+RG_VERSION = "14.1.1"
+_RG_URL_TEMPLATE = (
+    "https://github.com/BurntSushi/ripgrep/releases/download/"
+    "ripgrep-{version}-{triple}.tar.gz"
+)
+
+RG_VERSION_FILE = "VERSION"
+
+
+def _detect_platform_triple() -> Optional[str]:
+    """Return the rust target triple for the current platform, or None."""
+    import platform
+    machine = platform.machine().lower()
+    arch_map = {
+        'amd64': 'x86_64',
+        'x86_64': 'x86_64',
+        'arm64': 'aarch64',
+        'aarch64': 'aarch64',
+        'i386': 'i686',
+        'i686': 'i686',
+    }
+    arch = arch_map.get(machine)
+    if not arch and sys.platform == 'win32':
+        proc_arch = os.environ.get('PROCESSOR_ARCHITECTURE', '').lower()
+        arch = arch_map.get(proc_arch)
+    if not arch:
+        return None
+
+    os_map = {
+        'win32': 'pc-windows-msvc',
+        'cygwin': 'pc-windows-msvc',
+        'darwin': 'apple-darwin',
+        'linux': 'unknown-linux-musl',
+    }
+    plat = os_map.get(sys.platform)
+    if not plat:
+        return None
+
+    return f"{arch}-{plat}"
+
+
+def _vendor_rg_path() -> Optional[str]:
+    """Return path to vendored ripgrep binary, or None."""
+    triple = _detect_platform_triple()
+    if not triple:
+        return None
+    binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
+    candidate = os.path.join(_VENDOR_DIR, triple, binary)
+    if os.path.isfile(candidate):
+        return candidate
+    # flat layout: vendor/ripgrep/rg
+    flat = os.path.join(_VENDOR_DIR, binary)
+    if os.path.isfile(flat):
+        return flat
+    # vendor/ripgrep/{arch}-{os}/rg
+    for root, dirs, files in os.walk(_VENDOR_DIR):
+        if binary in files and 'VERSION' not in files:
+            return os.path.join(root, binary)
+    return None
+
+
+def _download_rg() -> Optional[str]:
+    """Download ripgrep to vendor/ripgrep/. Returns path to binary or None."""
+    triple = _detect_platform_triple()
+    if not triple:
+        logger.warning("Cannot detect platform for ripgrep download")
+        return None
+
+    url = _RG_URL_TEMPLATE.format(version=RG_VERSION, triple=triple)
+    binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
+    target_dir = os.path.join(_VENDOR_DIR, triple)
+
+    with _RG_DOWNLOAD_LOCK:
+        # double-check after acquiring lock
+        existing = _vendor_rg_path()
+        if existing:
+            return existing
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            target_path = os.path.join(target_dir, binary)
+        except OSError:
+            return None
+
+        logger.info("Downloading ripgrep %s from %s", RG_VERSION, url)
+
+        import urllib.request
+        import tarfile
+        import io
+
+        tmp_path = target_path + '.download'
+        try:
+            # download
+            req = urllib.request.Request(url, headers={
+                'Accept': 'application/octet-stream',
+                'User-Agent': 'Cellium-Agent/1.0',
+            })
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+
+            # extract
+            with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+                for member in tar.getmembers():
+                    if member.name.endswith(f'/{binary}') or member.name == binary:
+                        extracted = tar.extractfile(member)
+                        if extracted:
+                            with open(tmp_path, 'wb') as f:
+                                f.write(extracted.read())
+                            break
+                else:
+                    logger.error("Binary not found in ripgrep archive")
+                    return None
+
+            os.replace(tmp_path, target_path)
+            os.chmod(target_path, 0o755)
+
+            # write version marker
+            with open(os.path.join(_VENDOR_DIR, RG_VERSION_FILE), 'w') as f:
+                f.write(RG_VERSION)
+
+            logger.info("ripgrep %s installed at %s", RG_VERSION, target_path)
+            return target_path
+
+        except Exception as exc:
+            logger.error("Failed to download ripgrep: %s", exc)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return None
+
 
 VCS_DIRS = ('.git', '.svn', '.hg', '.bzr', '.jj', '.sl')
 DEFAULT_MAX_RESULTS = 250
@@ -20,7 +155,16 @@ SEARCH_TIMEOUT_SEC = 20
 
 
 def _find_rg() -> Optional[str]:
-    return _RG_EXECUTABLE
+    rg = _vendor_rg_path()
+    if rg:
+        return rg
+    rg = shutil.which("rg")
+    if rg:
+        return rg
+    rg = _download_rg()
+    if rg:
+        return rg
+    return None
 
 
 def _run_rg(args: List[str], search_path: str) -> List[str]:

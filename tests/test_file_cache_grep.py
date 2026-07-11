@@ -8,6 +8,10 @@ import shutil
 from app.agent.tools import file_cache as fc
 from app.agent.tools.grep_tool import GrepTool, _fallback_search, _make_rel, _make_rel_line, _apply_limit, _find_rg
 
+import pytest
+
+skip_no_rg = pytest.mark.skipif(_find_rg() is None, reason="ripgrep not installed")
+
 
 class TestFileCache:
 
@@ -250,6 +254,7 @@ class TestGrepToolRipgrep:
     def setup_method(self):
         self.gt = GrepTool()
 
+    @skip_no_rg
     def test_content_mode(self):
         r = self.gt._cmd_grep(query="def", path=".", glob="*.py", output_mode="content", head_limit=5)
         assert r["success"] and r["mode"] == "content"
@@ -265,11 +270,13 @@ class TestGrepToolRipgrep:
         r = self.gt._cmd_grep(query="def ", path=".", glob="*.py", output_mode="content", head_limit=5, **{"-C": 2})
         assert r["success"]
 
+    @skip_no_rg
     def test_files_with_matches(self):
         r = self.gt._cmd_grep(query="def", path=".", glob="*.py", output_mode="files_with_matches", head_limit=10)
         assert r["success"] and r["mode"] == "files_with_matches"
         assert isinstance(r["filenames"], list)
 
+    @skip_no_rg
     def test_count_mode(self):
         r = self.gt._cmd_grep(query="def", path=".", glob="*.py", output_mode="count", head_limit=10)
         assert r["success"] and r["mode"] == "count"
@@ -280,11 +287,13 @@ class TestGrepToolRipgrep:
         r = self.gt._cmd_grep(query="def.*\\n.*return", path=".", glob="*.py", output_mode="content", multiline=True, head_limit=3)
         assert r["success"]
 
+    @skip_no_rg
     def test_ignore_case(self):
         r1 = self.gt._cmd_grep(query="DEF", path=".", glob="*.py", output_mode="files_with_matches", head_limit=5)
         r2 = self.gt._cmd_grep(query="DEF", path=".", glob="*.py", output_mode="files_with_matches", **{"-i": True}, head_limit=5)
         assert r2["num_files"] >= r1["num_files"]
 
+    @skip_no_rg
     def test_type_filter(self):
         r = self.gt._cmd_grep(query="import", path=".", type="py", output_mode="files_with_matches", head_limit=5)
         assert r["success"]
@@ -298,6 +307,7 @@ class TestGrepToolRipgrep:
         r = self.gt._cmd_grep(query="-v", path=".", glob="*.py", output_mode="files_with_matches", head_limit=5)
         assert r["success"]
 
+    @skip_no_rg
     def test_head_limit_default(self):
         r = self.gt._cmd_grep(query="def", path=".", glob="*.py", output_mode="files_with_matches", head_limit=0)
         assert r["success"] and r["num_files"] <= 250
@@ -323,6 +333,7 @@ class TestGrepToolRipgrep:
         r = self.gt._cmd_grep(query="def", path="C:\\Windows", output_mode="files_with_matches", head_limit=1)
         assert r["success"]
 
+    @skip_no_rg
     def test_nonexistent_path(self):
         r = self.gt._cmd_grep(query="test", path="C:\\__nonexistent_xyz__", output_mode="files_with_matches")
         assert r["success"] and r["num_files"] == 0
@@ -361,6 +372,7 @@ class TestGrepToolRipgrep:
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    @skip_no_rg
     def test_mtime_sorted(self):
         d = tempfile.mkdtemp()
         try:
@@ -377,6 +389,7 @@ class TestGrepToolRipgrep:
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    @skip_no_rg
     def test_special_chars_in_query(self):
         d = tempfile.mkdtemp()
         try:

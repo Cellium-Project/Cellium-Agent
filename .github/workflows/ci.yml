@@ -165,6 +165,31 @@ jobs:
           python -m pip install exceptiongroup --target release/libs
         shell: bash
 
+      - name: Download ripgrep (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $triple = "x86_64-pc-windows-msvc"
+          $url = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-$triple.tar.gz"
+          mkdir -p release/vendor/ripgrep/$triple
+          curl -L $url -o rg.tar.gz
+          tar -xzf rg.tar.gz -C release/vendor/ripgrep/$triple --strip-components=2 "ripgrep-14.1.1-$triple/rg.exe"
+          rm rg.tar.gz
+        shell: pwsh
+
+      - name: Download ripgrep (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          case "${{ matrix.os }}-${{ matrix.arch }}" in
+            Linux-x64) triple="x86_64-unknown-linux-musl" ;;
+            Linux-arm64) triple="aarch64-unknown-linux-musl" ;;
+            macOS-arm64) triple="aarch64-apple-darwin" ;;
+            *) echo "Unknown platform"; exit 0 ;;
+          esac
+          URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-${triple}.tar.gz"
+          mkdir -p release/vendor/ripgrep/$triple
+          curl -L "$URL" | tar -xz -C release/vendor/ripgrep/$triple --strip-components=2 "ripgrep-14.1.1-${triple}/rg"
+          chmod +x release/vendor/ripgrep/$triple/rg
+
       - name: Build EXE Launcher (Windows)
         if: runner.os == 'Windows'
         run: |
