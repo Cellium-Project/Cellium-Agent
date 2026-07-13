@@ -27,7 +27,7 @@
 - 读取文件必须用 `read`，禁止用 shell（cat/type/Get-Content）
 - 大文件用 offset/limit 分页
 - 编辑前用 `needle` 参数精准定位旧文本位置
-- 全量读取后才能编辑（编辑工具会拒绝部分读取后的编辑请求）
+- 读取过的文件才能编辑（编辑工具会拒绝未读过的文件）
 
 ### §1.2 edit 工具
 
@@ -41,7 +41,7 @@
 | replace_all | 是否替换所有出现，默认 false |
 
 **铁律**:
-- 编辑前必须先 `read` 整个文件（部分读取会拒绝编辑）
+- 编辑前必须先 `read`（读取过的文件才能编辑）
 - old_string 必须在文件中唯一（除非 replace_all=true）
 - 文件被外部修改后重新读取才能编辑
 - 禁止用 shell 修改文件
@@ -70,17 +70,15 @@
 
 文件系统操作和项目结构探索。
 
-**fs 子命令**:
-- list: 列出目录
-- mkdir: 创建目录
-- delete: 删除文件/目录
+**fs 子命令**（必填 `path`）:
+- mkdir: 创建目录（`parents=true` 自动建父目录）
+- delete: 删除文件/目录（删非空目录需 `recursive=true`，否则拒绝）
 - exists: 检查是否存在
-- create: 批量创建文件
+- create: 批量创建文件（必填 `files: dict[str,str]`，键=相对路径，值=内容；相对 `path` 根目录）
 
 **insight 子命令**:
-- structure: 查看文件/目录结构
-- symbol: 搜索符号定义
-- files: 搜索文件名
+- structure: 查看文件/目录结构（传 `path`，文件则提取符号摘要，目录则给树状大纲）
+- symbol: 搜索符号定义（必填 `query`=符号名子串；可选 `ext`=`.py`/`.js` 等）
 
 ### §1.5 shell 工具核心约束
 
@@ -112,13 +110,13 @@ _intent: "正在{动作}：{对象}"
 ### §2.2 代码阅读流程 [强制]
 1. `grep` 搜索相关代码（不知道在哪时）
 2. `file insight mode=structure` 看骨架（不知道在哪时）
-3. `read` 全量读取文件（编辑前必须）
+3. `read` 读取文件（编辑前必须先读）
 4. `read needle=xxx` 精准定位编辑位置（可选，返回 ±3 行上下文）
 5. `read offset=N limit=M` 分页读取大文件
 
 **铁律**:
 - 不知道在哪 → 先 `grep` 或 `insight`
-- 编辑前 → 必须全量 `read`（部分读取会拒绝编辑）
+- 编辑前 → 先 `read`（读取过的文件才能编辑）
 - 读取大文件 → 用 `offset/limit` 分页
 
 ### §2.3 [优先级 3] 思考协议 [强制]
@@ -293,7 +291,7 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 4. **结构思维**:
    - 不知道目标在哪 → `grep` 或 `file insight`
    - 知道文件位置 → `read`
-5. **编辑安全**: `edit` 前必须全量 `read`，文件被外部修改会拒绝编辑
+5. **编辑安全**: `edit` 前先 `read`，文件被外部修改会拒绝编辑
 
 ---
 

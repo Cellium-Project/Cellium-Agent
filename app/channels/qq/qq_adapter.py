@@ -157,11 +157,11 @@ def _clear_session(app_id: str):
         path.unlink()
 
 
-    def _read_file_part(self, file_path: str, offset: int, length: int) -> bytes:
-        """同步读取文件指定部分（用于 asyncio.to_thread）"""
-        with open(file_path, "rb") as f:
-            f.seek(offset)
-            return f.read(length)
+def _read_file_part(file_path: str, offset: int, length: int) -> bytes:
+    """同步读取文件指定部分（用于 asyncio.to_thread）"""
+    with open(file_path, "rb") as f:
+        f.seek(offset)
+        return f.read(length)
 
 
 async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str, str]:
@@ -234,12 +234,6 @@ async def _upload_with_retry(
             else:
                 return {"error": f"上传异常: {e}"}
     return {"error": "上传失败"}
-
-
-def _clear_session(app_id: str):
-    path = _get_session_path(app_id)
-    if path.exists():
-        path.unlink()
 
 
 class QQAdapter(ChannelAdapter):
@@ -932,7 +926,7 @@ class QQAdapter(ChannelAdapter):
                     offset = part_index * PART_SIZE
                     length = min(PART_SIZE, file_size - offset)
 
-                    part_data = await asyncio.to_thread(self._read_file_part, file_path, offset, length)
+                    part_data = await asyncio.to_thread(_read_file_part, file_path, offset, length)
 
                     form_data = {
                         "file": (f"{file_name}.part{part_index}", part_data, "application/octet-stream"),

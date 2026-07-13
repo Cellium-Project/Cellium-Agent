@@ -75,21 +75,21 @@ class TestReadEditWorkflow:
         r = self.et._cmd_edit(file_path="C:\\__nonexistent_xyz__.txt", old_string="a", new_string="b")
         assert not r["success"]
 
-    def test_edit_after_partial_read_fails(self):
+    def test_edit_after_partial_read_works(self):
         f = make_temp_file("\n".join(f"line{i}" for i in range(100)))
         try:
             self.rt._cmd_read(file_path=f, offset=10, limit=10)
             r = self.et._cmd_edit(file_path=f, old_string="line50", new_string="LINE50")
-            assert not r["success"]
+            assert r["success"]
         finally:
             os.remove(f)
 
-    def test_edit_after_limit_read_fails(self):
-        f = make_temp_file("\n".join(f"line{i}" for i in range(100)))
+    def test_edit_after_limit_read_works(self):
+        f = make_temp_file("\n".join(f"line{i:03d}" for i in range(100)))
         try:
             self.rt._cmd_read(file_path=f, limit=10)
-            r = self.et._cmd_edit(file_path=f, old_string="line5", new_string="LINE5")
-            assert not r["success"]
+            r = self.et._cmd_edit(file_path=f, old_string="line005", new_string="LINE005")
+            assert r["success"]
         finally:
             os.remove(f)
 
@@ -102,12 +102,12 @@ class TestReadEditWorkflow:
         finally:
             os.remove(f)
 
-    def test_edit_after_needle_read_fails(self):
+    def test_edit_after_needle_read_works(self):
         f = make_temp_file("def hello():\n    return 1\n")
         try:
             self.rt._cmd_read(file_path=f, needle="def hello")
             r = self.et._cmd_edit(file_path=f, old_string="def hello():", new_string="def hi():")
-            assert not r["success"]
+            assert r["success"]
         finally:
             os.remove(f)
 

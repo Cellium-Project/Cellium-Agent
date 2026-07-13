@@ -65,7 +65,7 @@ class HybridController:
     
     def __init__(
         self,
-        max_plan_steps: int = 3,
+        max_plan_steps: int = 10,
         max_replans: int = 3,
         observe_after_each_step: bool = True,
         auto_continue_on_success: bool = True,

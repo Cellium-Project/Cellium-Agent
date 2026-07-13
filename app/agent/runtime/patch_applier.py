@@ -69,11 +69,13 @@ class PatchApplier:
                 idx = norm_content.index(nc)
                 return content[idx:idx + len(candidate)]
 
-        stripped_old = cls._strip_leading_ws_lines(old_text)
-        stripped_content = cls._strip_leading_ws_lines(content)
-        if stripped_old and stripped_old in stripped_content:
-            idx = stripped_content.index(stripped_old)
-            return content[idx:idx + len(old_text)]
+        stripped_old_lines = [l.lstrip() for l in old_text.split('\n')]
+        stripped_content_lines = [l.lstrip() for l in content.split('\n')]
+        n_old = len(stripped_old_lines)
+        if n_old and stripped_old_lines[0]:
+            for i in range(len(stripped_content_lines) - n_old + 1):
+                if stripped_content_lines[i:i + n_old] == stripped_old_lines:
+                    return '\n'.join(content.split('\n')[i:i + n_old])
 
         first_line = old_text.split('\n')[0].strip()
         if first_line and first_line in content:

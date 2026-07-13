@@ -9,25 +9,21 @@ from .base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
 
-_MAX_LIST_ENTRIES = 200
-
-
 class FileTool(BaseTool):
 
     name = "file"
     description = (
-        "File system operations and project structure exploration.\n\n"
+        "File system write operations and project structure exploration.\n\n"
         "Usage:\n"
-        "- command=fs, action=list: list directory contents\n"
         "- command=fs, action=mkdir: create directory\n"
         "- command=fs, action=delete: delete file or directory\n"
         "- command=fs, action=exists: check if path exists\n"
         "- command=fs, action=create: create files from a dict of path->content. "
         "REQUIRED: files must be a dict[str, str] mapping relative file paths to content\n"
         "- command=insight, mode=structure: view file or directory structure outline\n"
-        "- command=insight, mode=symbol: search for symbol definitions\n"
-        "- command=insight, mode=files: search for file names\n\n"
-        "Use fs for directory/file system operations. Use insight to explore project structure when you don't know where things are."
+        "- command=insight, mode=symbol: search for symbol definitions\n\n"
+        "Use `ls` to list directory contents. Use `glob` to find files by name pattern. "
+        "Use `fs` for create/delete/mkdir/exists operations."
     )
 
     def __init__(self, allowed_roots=None):
@@ -49,11 +45,7 @@ class FileTool(BaseTool):
         files: Dict[str, str] = None,
         detail: bool = False,
     ) -> Dict[str, Any]:
-        if action == "list":
-            target = dir_path or path or "."
-            return self._fs_list(target, pattern, detail)
-
-        elif action == "mkdir":
+        if action == "mkdir":
             if not path:
                 return {"success": False, "error": "path is required"}
             return self._fs_mkdir(path, parents)
@@ -100,43 +92,8 @@ class FileTool(BaseTool):
                 return {"success": False, "error": "mode=symbol requires query"}
             return self._symbol_search(abs_path, query, pattern, ext, offset)
 
-        elif mode == "files":
-            return self._file_search(abs_path, query or pattern or "*", offset)
-
         else:
             return {"success": False, "error": f"Unknown mode: {mode}"}
-
-    def _fs_list(self, path: str, pattern: str, detail: bool) -> Dict[str, Any]:
-        abs_path = self._resolve_path(path)
-        if not os.path.isdir(abs_path):
-            return {"success": False, "error": f"Directory not found: {abs_path}"}
-
-        entries = []
-        try:
-            for name in sorted(os.listdir(abs_path)):
-                if name.startswith('.'):
-                    continue
-                if pattern and not self._match_pattern(name, pattern):
-                    continue
-                full_path = os.path.join(abs_path, name)
-                is_dir = os.path.isdir(full_path)
-                entry = {"name": name, "type": "dir" if is_dir else "file"}
-                if detail:
-                    stat_info = os.stat(full_path)
-                    import datetime
-                    entry["size"] = stat_info.st_size if not is_dir else None
-                    entry["modified"] = datetime.datetime.fromtimestamp(stat_info.st_mtime).isoformat(timespec="seconds")
-                entries.append(entry)
-                if len(entries) >= _MAX_LIST_ENTRIES:
-                    break
-            return {
-                "success": True,
-                "data": entries,
-                "path": abs_path,
-                "count": len(entries),
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
 
     def _fs_mkdir(self, path: str, parents: bool) -> Dict[str, Any]:
         abs_path = self._resolve_path(path)
@@ -304,32 +261,6 @@ class FileTool(BaseTool):
             "total": total,
             "offset": offset,
         }
-
-    def _file_search(self, root: str, pattern: str, offset: int) -> Dict[str, Any]:
-        import fnmatch
-        hits = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-            for filename in filenames:
-                if pattern and fnmatch.fnmatch(filename, pattern):
-                    filepath = os.path.join(dirpath, filename)
-                    hits.append({"file": filepath, "name": filename})
-                if len(hits) >= 100:
-                    break
-            if len(hits) >= 100:
-                break
-        total = len(hits)
-        page = hits[offset:offset + 20]
-        return {
-            "success": True,
-            "pattern": pattern or "*",
-            "hits": page,
-            "total": total,
-        }
-
-    def _match_pattern(self, filename: str, pattern: str) -> bool:
-        import fnmatch
-        return fnmatch.fnmatch(filename, pattern)
 
     def _resolve_path(self, path: str) -> str:
         if not path:

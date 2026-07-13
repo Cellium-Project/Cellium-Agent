@@ -138,6 +138,8 @@ class PromptDiffTracker:
         return (
             a.get("role") == b.get("role")
             and a.get("content") == b.get("content")
+            and a.get("tool_call_id") == b.get("tool_call_id")
+            and a.get("tool_calls") == b.get("tool_calls")
         )
 
     def _format_stats(self) -> str:

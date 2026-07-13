@@ -76,6 +76,16 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
     )
 
 
+def get_system_info_piece() -> PromptPiece:
+    return PromptPiece(
+        name="system_info",
+        content=f"**系统环境**: {_get_system_info()}",
+        stability="static",
+        priority=1,
+        role="system",
+    )
+
+
 
 
 # ============================================================
@@ -83,11 +93,7 @@ def get_identity_piece(memory_dir: str = "memory") -> PromptPiece:
 # ============================================================
 
 def get_context_piece() -> PromptPiece:
-    context_lines = [
-        f"**当前日期**: {_get_current_date()}",
-        f"**系统环境**: {_get_system_info()}",
-    ]
-    content = "<system-reminder>\n[上下文信息]\n" + "\n".join(context_lines) + "\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>"
+    content = "<system-reminder>\n[上下文信息]\n" + f"**当前日期**: {_get_current_date()}" + "\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>"
 
     return PromptPiece(
         name="context",
@@ -127,9 +133,6 @@ def get_user_input_piece() -> PromptPiece:
 
 
 def get_system_injection_piece() -> PromptPiece:
-    """
-    系统指令注入（来自控制环 Gene）。
-    """
     return PromptPiece(
         name="system_injection",
         template="<system-reminder>\n[系统指令]\n{{ system_injection }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
@@ -140,9 +143,6 @@ def get_system_injection_piece() -> PromptPiece:
 
 
 def get_runtime_status_piece() -> PromptPiece:
-    """
-    运行时状态摘要（来自 LoopState）。
-    """
     return PromptPiece(
         name="runtime_status",
         template="<system-reminder>\n[运行时状态]\n{{ runtime_status }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
@@ -153,9 +153,6 @@ def get_runtime_status_piece() -> PromptPiece:
 
 
 def get_plan_summary_piece() -> PromptPiece:
-    """
-    当前计划执行进度摘要（来自 HybridController）。
-    """
     return PromptPiece(
         name="plan_summary",
         template="<system-reminder>\n[当前计划]\n{{ plan_summary }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
@@ -166,10 +163,6 @@ def get_plan_summary_piece() -> PromptPiece:
 
 
 def get_guidance_message_piece() -> PromptPiece:
-    """
-    系统引导消息（来自启发式模块 / 控制环）。
-    使用 <system-reminder> 标签包装，避免 LLM 自言自语。
-    """
     return PromptPiece(
         name="guidance_message",
         template="<system-reminder>\n{{ guidance_message }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
@@ -180,9 +173,6 @@ def get_guidance_message_piece() -> PromptPiece:
 
 
 def get_auto_hints_piece() -> PromptPiece:
-    """
-    工具使用提示。使用 <system-reminder> 标签包装。
-    """
     return PromptPiece(
         name="auto_hints",
         template="<system-reminder>\n{{ auto_hints }}\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>",
@@ -203,6 +193,7 @@ def create_default_builder(memory_dir: str = "memory") -> "PromptBuilder":
 
     # static
     builder.register(get_identity_piece(memory_dir))
+    builder.register(get_system_info_piece())
 
     # daily
     builder.register(get_context_piece())

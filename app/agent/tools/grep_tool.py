@@ -191,8 +191,8 @@ def _find_rg() -> Optional[str]:
     return None
 
 
-def _run_rg(args: List[str], search_path: str) -> List[str]:
-    full_cmd = ['rg', *args, '--path-separator', '/', search_path]
+def _run_rg(args: List[str], search_path: str, rg_path: str = "rg") -> List[str]:
+    full_cmd = [rg_path, *args, '--path-separator', '/', search_path]
     try:
         proc = subprocess.run(
             full_cmd,
@@ -455,6 +455,7 @@ class GrepTool(BaseTool):
             head_limit=head_limit,
             offset=offset,
             multiline=kwargs.get('multiline', False),
+            rg_path=rg,
         )
         result["engine"] = "ripgrep"
         return result
@@ -474,6 +475,7 @@ class GrepTool(BaseTool):
         head_limit: Optional[int],
         offset: int,
         multiline: bool,
+        rg_path: str = "rg",
     ) -> Dict[str, Any]:
         args = ['--hidden']
 
@@ -483,7 +485,7 @@ class GrepTool(BaseTool):
         args.extend(['--max-columns', str(LINE_WIDTH_CAP)])
 
         if multiline:
-            args.extend(['-U', '--multiline-dotall'])
+            args.extend(['-U', '--multiline-dotall', '--crlf'])
 
         if ignore_case:
             args.append('-i')
@@ -519,7 +521,7 @@ class GrepTool(BaseTool):
                 if g:
                     args.extend(['--glob', g])
 
-        lines = _run_rg(args, search_path)
+        lines = _run_rg(args, search_path, rg_path=rg_path)
 
         if output_mode == 'content':
             return self._format_content(lines, head_limit, offset)

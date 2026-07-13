@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 
 from .base_tool import BaseTool
-from .file_cache import cache_read, get_read_state
+from .file_cache import cache_read, get_read_state, is_file_read
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,25 @@ def _extract_context_around(file_path: str, needle: str, context_lines: int, enc
     }
 
 
+def _count_lines_in_file(file_path: str) -> int:
+    # 流式数 \n，避免把大文件全量载入内存
+    count = 0
+    with open(file_path, 'rb') as f:
+        while True:
+            chunk = f.read(_CHUNK * 16)
+            if not chunk:
+                break
+            count += chunk.count(b'\n')
+    # 末行没有 \n 结尾时仍算一行
+    with open(file_path, 'rb') as f:
+        last = f.seek(0, os.SEEK_END)
+        if last > 0:
+            f.seek(last - 1)
+            if f.read(1) != b'\n':
+                count += 1
+    return max(count, 1)
+
+
 def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str = "utf-8") -> Dict[str, Any]:
     with open(file_path, 'rb') as f:
         f.seek(0, os.SEEK_END)
@@ -151,15 +170,32 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
 
     lines = text.split('\n')
     full_text_lines = full_text.split('\n')
+    scanned_lines = len(lines)
+
+    # 真实行数（流式数 \n），用于 offset 校验和返回值
+    if total_bytes > _MAX_SCAN * 2:
+        total_lines = _count_lines_in_file(file_path)
+    else:
+        total_lines = scanned_lines
 
     if offset < 0:
         offset = 0
-    if offset >= len(lines):
-        return {"success": False, "error": f"offset {offset} exceeds total lines {len(lines)}"}
+    if offset >= total_lines:
+        return {"success": False, "error": f"offset {offset} exceeds total lines {total_lines}"}
+    if offset >= scanned_lines:
+        # 文件大于扫描上限，offset 落在被截断扫描的位置
+        return {
+            "success": False,
+            "error": f"offset {offset} 超出当前可流式扫描范围（前 {_MAX_SCAN * 2 // 1024 // 1024}MB 共 {scanned_lines} 行），文件实际共 {total_lines} 行。请用 needle 或缩小读取范围。",
+            "scanned_lines": scanned_lines,
+            "total_lines": total_lines,
+            "truncated_at_bytes": _MAX_SCAN * 2,
+        }
 
-    total_lines = len(full_text_lines)
     end = min(offset + limit, total_lines)
-    selected = full_text_lines[offset:end]
+    # 仅可返回已扫描范围内的内容
+    end_in_scan = min(end, scanned_lines)
+    selected = full_text_lines[offset:end_in_scan]
     result_content = '\n'.join(f"{offset + j + 1}\t{selected[j]}" for j in range(len(selected)))
 
     read_all_bytes = pos >= total_bytes
@@ -170,7 +206,7 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
                limit=None if not is_partial else limit,
                encoding=encoding)
 
-    return {
+    result = {
         "success": True,
         "path": file_path,
         "data": result_content,
@@ -179,6 +215,10 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
         "offset": offset,
         "truncated": end < total_lines,
     }
+    if total_bytes > _MAX_SCAN * 2:
+        result["truncated_at_bytes"] = _MAX_SCAN * 2
+        result["scanned_lines"] = scanned_lines
+    return result
 
 
 class ReadTool(BaseTool):
@@ -209,6 +249,10 @@ class ReadTool(BaseTool):
     def _check_dedup(self, abs_path: str, offset: int, limit: int) -> Optional[Dict[str, Any]]:
         cached = get_read_state(abs_path)
         if not cached:
+            return None
+        # 文件被外部修改后，dedup 必须失效，否则 LLM 拿到陈旧行数
+        if not is_file_read(abs_path):
+            self._dedup_entries.pop((abs_path, offset, limit), None)
             return None
         key = (abs_path, offset, limit)
         prev = self._dedup_entries.get(key)
@@ -273,6 +317,11 @@ class ReadTool(BaseTool):
         context = result["context"]
         lines = context.split('\n')
         numbered = '\n'.join(f"{result['line_offset'] + j}\t{lines[j]}" for j in range(len(lines)))
+
+        cache_read(file_path, context,
+                   offset=result["line_offset"],
+                   limit=len(context.split('\n')),
+                   encoding=encoding)
 
         return {
             "success": True,

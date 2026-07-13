@@ -32,6 +32,8 @@ from app.agent.tools.file_tool import FileTool
 from app.agent.tools.read_tool import ReadTool
 from app.agent.tools.edit_tool import EditTool
 from app.agent.tools.grep_tool import GrepTool
+from app.agent.tools.glob_tool import GlobTool
+from app.agent.tools.ls_tool import LSTool
 from app.agent.llm.engine import BaseLLMEngine, create_llm_engine
 from app.core.util.agent_config import get_config
 
@@ -446,6 +448,16 @@ def setup_agent_di(
     if not container.has(GrepTool):
         container.register(GrepTool, _grep_tool, singleton=True)
 
+    # --- 8g. 注册 GlobTool（文件名模式匹配工具）---
+    _glob_tool = GlobTool()
+    if not container.has(GlobTool):
+        container.register(GlobTool, _glob_tool, singleton=True)
+
+    # --- 8h. 注册 LSTool（目录列表工具）---
+    _ls_tool = LSTool()
+    if not container.has(LSTool):
+        container.register(LSTool, _ls_tool, singleton=True)
+
     # --- 9. 注册 AgentLoop---
     def _create_agent_loop():
         # 从 DI 容器获取当前的 LLM 引擎（支持热重载）
@@ -497,6 +509,8 @@ def resolve_agent_services(container: DIContainer = None):
         "read_tool": container.resolve(ReadTool) if container.has(ReadTool) else None,
         "edit_tool": container.resolve(EditTool) if container.has(EditTool) else None,
         "grep_tool": container.resolve(GrepTool) if container.has(GrepTool) else None,
+        "glob_tool": container.resolve(GlobTool) if container.has(GlobTool) else None,
+        "ls_tool": container.resolve(LSTool) if container.has(LSTool) else None,
         "security": container.resolve(SecurityPolicy),
         "llm_engine": container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None,
     }

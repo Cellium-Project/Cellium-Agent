@@ -4,7 +4,7 @@ import os
 import logging
 
 from .base_tool import BaseTool
-from .file_cache import is_file_read, is_partial_view, get_read_state, touch_read_state
+from .file_cache import get_read_state, touch_read_state
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +100,15 @@ def _find_match_with_tolerance(file_content: str, old_string: str):
             actual = file_content[idx:idx + len(candidate)]
             return actual, file_content.count(actual), True
 
-    stripped_lines = _strip_leading_ws_lines(old_string)
-    stripped_content = _strip_leading_ws_lines(file_content)
-    if stripped_lines and stripped_lines in stripped_content:
-        idx = stripped_content.index(stripped_lines)
-        actual = file_content[idx:idx + len(old_string)]
-        return actual, file_content.count(actual), False
+    stripped_old_lines = [l.lstrip() for l in old_string.split('\n')]
+    stripped_file_lines = [l.lstrip() for l in file_content.split('\n')]
+    n_old = len(stripped_old_lines)
+    if n_old and stripped_old_lines[0]:
+        file_lines = file_content.split('\n')
+        for i in range(len(stripped_file_lines) - n_old + 1):
+            if stripped_file_lines[i:i + n_old] == stripped_old_lines:
+                actual = '\n'.join(file_lines[i:i + n_old])
+                return actual, file_content.count(actual), False
 
     first_line = old_string.split('\n')[0].strip()
     if first_line and first_line in file_content:
@@ -116,47 +119,6 @@ def _find_match_with_tolerance(file_content: str, old_string: str):
                     return old_string, file_content.count(old_string), False
 
     return None, 0, False
-
-
-def _preserve_quote_style(old_string: str, actual_old_string: str, new_string: str) -> str:
-    if old_string == actual_old_string:
-        return new_string
-
-    has_double = any(c in actual_old_string for c in ('\u201c', '\u201d'))
-    has_single = any(c in actual_old_string for c in ('\u2018', '\u2019'))
-
-    if not has_double and not has_single:
-        return new_string
-
-    result = new_string
-
-    if has_double:
-        chars = list(result)
-        for i, ch in enumerate(chars):
-            if ch == '"':
-                if i == 0 or chars[i - 1] in (' ', '\t', '\n', '(', '[', '{'):
-                    chars[i] = '\u201c'
-                else:
-                    chars[i] = '\u201d'
-        result = ''.join(chars)
-
-    if has_single:
-        chars = list(result)
-        for i, ch in enumerate(chars):
-            if ch == "'":
-                prev = chars[i - 1] if i > 0 else None
-                nxt = chars[i + 1] if i < len(chars) - 1 else None
-                prev_letter = prev is not None and prev.isalpha()
-                nxt_letter = nxt is not None and nxt.isalpha()
-                if prev_letter and nxt_letter:
-                    chars[i] = '\u2019'
-                elif i == 0 or (prev is not None and prev in (' ', '\t', '\n', '(', '[', '{')):
-                    chars[i] = '\u2018'
-                else:
-                    chars[i] = '\u2019'
-        result = ''.join(chars)
-
-    return result
 
 
 class EditTool(BaseTool):
@@ -204,16 +166,9 @@ class EditTool(BaseTool):
         if not os.path.exists(abs_path):
             return {"success": False, "error": f"File not found: {abs_path}"}
 
-        if not is_file_read(abs_path):
-            cached_state = get_read_state(abs_path)
-            if cached_state is not None:
-                return {"success": False, "error": "File has been modified since read. Read it again before editing."}
-            return {"success": False, "error": "File has not been read yet. Use the Read tool first before editing."}
-
-        if is_partial_view(abs_path):
-            return {"success": False, "error": "File was only partially read. Read the full file first before editing."}
-
         read_state = get_read_state(abs_path)
+        if read_state is None:
+            return {"success": False, "error": "File has not been read yet. Use the Read tool first before editing."}
         cached_encoding = read_state.get("encoding") if read_state else None
         if cached_encoding:
             file_encoding = cached_encoding
@@ -253,7 +208,6 @@ class EditTool(BaseTool):
         new_string = new_string.replace('\r\n', '\n')
 
         old_string = _strip_trailing_whitespace(old_string) if old_string else old_string
-        new_string = _strip_trailing_whitespace(new_string) if new_string else new_string
 
         if old_string == new_string:
             return {"success": False, "error": "old_string and new_string are identical"}
@@ -263,10 +217,18 @@ class EditTool(BaseTool):
             return {"success": False, "error": "old_string not found in file. Make sure it matches exactly, including whitespace and indentation."}
 
         old_string = matched
-        new_string = _preserve_quote_style(old_string, old_string if not used_normalize else matched, new_string)
 
         if matches > 1 and not replace_all:
-            return {"success": False, "error": f"Found {matches} matches of old_string but replace_all is false. Add more surrounding context to make it unique, or set replace_all=true to replace all."}
+            locations = []
+            first_line = old_string.split('\n')[0].rstrip()
+            if first_line:
+                for idx, line in enumerate(file_content.split('\n'), 1):
+                    if line.startswith(first_line) or first_line in line:
+                        locations.append(str(idx))
+                        if len(locations) >= 5:
+                            break
+            loc_hint = f" (lines: {', '.join(locations)})" if locations else ""
+            return {"success": False, "error": f"Found {matches} matches of old_string but replace_all is false{loc_hint}. Add more surrounding context to make it unique, or set replace_all=true to replace all."}
 
         current_content = self._re_read_file(abs_path, file_encoding)
         if current_content is None:

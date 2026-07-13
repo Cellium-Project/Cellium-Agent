@@ -38,10 +38,6 @@ class TestToolDescriptionGenerator(unittest.TestCase):
         result = ToolDescriptionGenerator.generate("file", {"command": "insight", "path": "/test/file.txt", "mode": "structure"})
         self.assertIn("file.txt", result)
 
-    def test_generate_file_insight_files(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "insight", "mode": "files", "pattern": "*.py"})
-        self.assertIn(".py", result)
-
     def test_generate_edit_replace(self):
         result = ToolDescriptionGenerator.generate("edit", {"file_path": "/test/file.txt", "old_string": "foo", "new_string": "bar"})
         self.assertIn("file.txt", result)
@@ -50,10 +46,6 @@ class TestToolDescriptionGenerator(unittest.TestCase):
         result = ToolDescriptionGenerator.generate("edit", {"file_path": "/test/file.txt", "old_string": "foo", "new_string": "bar", "replace_all": True})
         self.assertIn("file.txt", result)
         self.assertIn("批量", result)
-
-    def test_generate_file_fs_list(self):
-        result = ToolDescriptionGenerator.generate("file", {"command": "fs", "action": "list", "path": "/test"})
-        self.assertIn("test", result)
 
     def test_generate_file_fs_mkdir(self):
         result = ToolDescriptionGenerator.generate("file", {"command": "fs", "action": "mkdir", "path": "/test/newdir"})

@@ -149,10 +149,8 @@ class ToolDescriptionGenerator:
             cmd = ctx["command"]
 
             if cmd == "fs":
-                action = arguments.get("action", "list")
-                if action == "list":
-                    ctx["fs_desc"] = f"正在查看目录：{ctx['dir_path'] or ctx['basename']}"
-                elif action == "mkdir":
+                action = arguments.get("action", "")
+                if action == "mkdir":
                     ctx["fs_desc"] = f"正在创建目录：{ctx['target']}"
                 elif action == "delete":
                     ctx["fs_desc"] = f"正在删除：{ctx['target']}"
@@ -184,9 +182,6 @@ class ToolDescriptionGenerator:
                     ctx["insight_desc"] = f"正在分析 {ctx['basename']} 的结构"
                 elif insight_mode == "symbol":
                     ctx["insight_desc"] = f"正在搜索符号：{query}"
-                elif insight_mode == "files":
-                    pattern = (arguments.get("pattern") or arguments.get("query") or "*")[:30]
-                    ctx["insight_desc"] = f"正在查找文件：{pattern}"
                 else:
                     ctx["insight_desc"] = "正在探索工程"
 

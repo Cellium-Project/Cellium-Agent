@@ -64,8 +64,10 @@ class EditTransaction:
         if new_content == content:
             return {"success": False, "error": "内容无变化"}
 
-        _atomic_write(file_path, new_content, encoding=encoding)
+        # 先算 diff 再落盘：避免 diff 抛异常时文件已变但调用方收到错误
         diff = PatchApplier._generate_diff(content, new_content)
+
+        _atomic_write(file_path, new_content, encoding=encoding)
 
         return {
             "success": True,

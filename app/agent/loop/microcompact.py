@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 TRIMMABLE_TOOLS = {
     "shell", "file", "memory", "web_search", "web_fetch",
-    "read_file", "file_read", "grep", "glob", "ls", "cat",
+    "read", "read_file", "file_read", "grep", "glob", "ls", "cat",
 }
 
 

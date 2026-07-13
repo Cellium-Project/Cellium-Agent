@@ -1168,7 +1168,7 @@ class AgentLoop:
                 # === 构建提示词 ===
                 session_messages = effective_memory.get_messages()
 
-                session_messages = trim_old_rounds(session_messages, keep_rounds=3)
+                session_messages = trim_old_rounds(session_messages, keep_rounds=50)
 
                 runtime_status_str = None
                 rs = get_runtime_status()
@@ -1256,7 +1256,8 @@ class AgentLoop:
                 # 通过 PromptBuilder 构建结构化消息列表
                 llm_messages = self._prompt_builder.build(context)
 
-                llm_messages = trim_old_tool_results(llm_messages, keep_count=10)
+                if len(llm_messages) > 40:
+                    llm_messages = trim_old_tool_results(llm_messages, keep_count=10)
 
                 # REPLAN 阶段：追加动态上下文（老代码保留不变）
                 if replan_message:
