@@ -19,7 +19,7 @@ pypinyin>=0.55.0
 DrissionPage>=4.1.1.4
 
 # OpenAI 兼容客户端（LLM 引擎依赖）
-openai>=2.44.0
+openai>=2.45.0
 
 # QQ Bot WebSocket 客户端
 websockets>=11.0,<16.0
