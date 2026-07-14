@@ -38,7 +38,6 @@ class FileTool(BaseTool):
         self,
         action: str,
         path: str = None,
-        dir_path: str = None,
         pattern: str = None,
         recursive: bool = False,
         parents: bool = True,

@@ -1170,20 +1170,13 @@ class AgentLoop:
 
                 session_messages = trim_old_rounds(session_messages, keep_rounds=50)
 
-                runtime_status_str = None
-                rs = get_runtime_status()
-                if rs:
-                    runtime_status_str = rs.to_summary()
-
-                plan_summary = self._loop_state.hybrid_plan_summary if self._loop_state else None
-
+                # Gene 创建任务注入
                 if self._pending_gene_prompt:
                     gene_context = f"[Gene 创建任务]\n{self._pending_gene_prompt}"
-                    if runtime_status_str:
-                        runtime_status_str = f"{runtime_status_str}\n{gene_context}"
+                    if _pending_system_injection:
+                        _pending_system_injection = f"{_pending_system_injection}\n\n{gene_context}"
                     else:
-                        runtime_status_str = gene_context
-                
+                        _pending_system_injection = gene_context
                 # 准备 REPLAN 上下文
                 replan_message = None
                 if (self._hybrid_controller and 
@@ -1219,15 +1212,13 @@ class AgentLoop:
                     
                     replan_message = "\n".join(replan_info)
 
-                # 构建通用 context
+                # 构建通用 context（不注入运行时状态和计划摘要，避免干扰 LLM 判断）
                 context = {
                     "_is_first_round": iteration == 1,
                     "_flash_mode": self.flash_mode,
                     "session_messages": session_messages,
                     "user_input": user_input,
                     "system_injection": _pending_system_injection,
-                    "runtime_status": runtime_status_str,
-                    "plan_summary": plan_summary,
                     "guidance_message": _pending_guidance_msg,
                 }
 

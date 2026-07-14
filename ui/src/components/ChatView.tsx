@@ -10,7 +10,7 @@ const MessageList = memo(({
   messages, streamingMessage,
   messagesEndRef, messagesContainerRef,
   isLoadingMessages, hasMoreHistory, currentSessionId,
-  fetchMessages,
+  fetchMessages, isStreaming,
 }: {
   messages: Message[];
   streamingMessage: Message | null;
@@ -20,6 +20,7 @@ const MessageList = memo(({
   hasMoreHistory: boolean;
   currentSessionId: string | null;
   fetchMessages: (sessionId: string, offset?: number) => Promise<void>;
+  isStreaming: boolean;
 }) => {
   const { t } = useTranslation();
   const prevSessionIdRef = useRef<string | null>(null);
@@ -27,15 +28,15 @@ const MessageList = memo(({
   const isLoadingHistoryRef = useRef<boolean>(false);
   const needsScrollToBottomRef = useRef<boolean>(false); // 切换对话后需要滚动到底部
 
-  const allMessages = streamingMessage 
-    ? [...messages, streamingMessage] 
+  const allMessages = streamingMessage
+    ? [...messages, streamingMessage]
     : messages;
 
   useEffect(() => {
     const prevSession = prevSessionIdRef.current;
     const wasLoadingHistory = isLoadingHistoryRef.current;
     const needsScrollToBottom = needsScrollToBottomRef.current;
-    
+
     prevSessionIdRef.current = currentSessionId;
 
     // 切换对话时重置状态，标记需要滚动到底部
@@ -71,9 +72,8 @@ const MessageList = memo(({
   }, [currentSessionId, isLoadingMessages, allMessages.length, messagesContainerRef, messagesEndRef]);
 
   const handleScroll = useCallback(() => {
-    if (!messagesContainerRef.current || isLoadingMessages || !hasMoreHistory || !currentSessionId) return;
-    
-    // 触发加载前保存当前 scrollTop 和 scrollHeight（用于加载后恢复位置）
+    if (!messagesContainerRef.current || isLoadingMessages || isStreaming || !hasMoreHistory || !currentSessionId) return;
+
     if (messagesContainerRef.current.scrollTop < 100) {
       const container = messagesContainerRef.current;
       historyLoadSnapshotRef.current = {
@@ -83,7 +83,7 @@ const MessageList = memo(({
       isLoadingHistoryRef.current = true;
       fetchMessages(currentSessionId, messages.length);
     }
-  }, [isLoadingMessages, hasMoreHistory, currentSessionId, fetchMessages, messages.length]);
+  }, [isLoadingMessages, isStreaming, hasMoreHistory, currentSessionId, fetchMessages, messages.length]);
 
   if (isLoadingMessages && messages.length === 0) {
     return (
@@ -129,7 +129,7 @@ export const ChatView: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming } = useChat();
-  const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages, hybridPhase, hybridMessage, hybridDescription, toggleMobileSidebar } = useAppStore();
+  const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages, toggleMobileSidebar } = useAppStore();
 
   const handleFileSelect = () => {
     fileInputRef.current?.click();
@@ -207,14 +207,6 @@ export const ChatView: React.FC = () => {
         </div>
       </div>
 
-      {/* Hybrid 状态指示器 */}
-      {isStreaming && hybridPhase && (
-        <div className="hybrid-status-bar">
-          <span className="hybrid-phase">{hybridMessage}</span>
-          {hybridDescription && <span className="hybrid-desc">{hybridDescription}</span>}
-        </div>
-      )}
-
       {/* Messages — 独立组件，流式更新不影响输入框 */}
       <MessageList
         messages={messages}
@@ -225,6 +217,7 @@ export const ChatView: React.FC = () => {
         hasMoreHistory={hasMoreHistory}
         currentSessionId={currentSessionId}
         fetchMessages={fetchMessages}
+        isStreaming={isStreaming}
       />
 
       <div className="chat-input-container">

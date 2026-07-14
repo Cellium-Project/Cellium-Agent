@@ -5,7 +5,6 @@ import i18n from '../i18n';
 
 export type Theme = 'light' | 'dark' | 'auto';
 export type Language = 'zh-CN' | 'zh-TW' | 'en';
-export type HybridPhase = 'observe' | 'plan' | 'execute' | 'evaluate' | 'replan' | 'done';
 
 interface AppState {
   // Sessions
@@ -22,12 +21,7 @@ interface AppState {
   // Streaming
   isStreaming: boolean;
   streamingMessage: Message | null;
-  hasRunningTask: boolean;  // ★ 新增：后台任务运行状态
-
-  // Hybrid 状态
-  hybridPhase: HybridPhase;
-  hybridMessage: string;
-  hybridDescription: string;
+  hasRunningTask: boolean;
 
   // Models
   savedModels: ModelConfig[];
@@ -60,9 +54,7 @@ interface AppState {
 
   setIsStreaming: (streaming: boolean) => void;
   setIsLoadingMessages: (loading: boolean) => void;
-  setHasRunningTask: (running: boolean) => void;  // ★ 新增
-
-  setHybridPhase: (phase: HybridPhase, message: string, description: string) => void;
+  setHasRunningTask: (running: boolean) => void;
 
   setSavedModels: (models: ModelConfig[]) => void;
   setCurrentModelId: (id: string | null) => void;
@@ -83,8 +75,8 @@ interface AppState {
   createSession: () => Promise<string>;
   switchSession: (sessionId: string) => Promise<void>;
   fetchMessages: (sessionId: string, offset?: number, force?: boolean) => Promise<void>;
-  checkTaskStatus: (sessionId: string) => Promise<boolean>;  // ★ 新增
-  stopTask: (sessionId: string) => Promise<void>;  // ★ 新增
+  checkTaskStatus: (sessionId: string) => Promise<boolean>; 
+  stopTask: (sessionId: string) => Promise<void>;  
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -94,14 +86,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingSession: false,
   messages: [],
   isLoadingMessages: false,
-  hasMoreHistory: true,
+  hasMoreHistory: false,  // 初始化为 false，防止初始加载时触发滚动加载
   historyOffset: 0,
   isStreaming: false,
   streamingMessage: null,
-  hasRunningTask: false,  // ★ 新增
-  hybridPhase: 'observe',
-  hybridMessage: '',
-  hybridDescription: '',
+  hasRunningTask: false, 
   savedModels: [],
   currentModelId: null,
   sidebarCollapsed: false,
@@ -143,12 +132,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setIsLoadingMessages: (loading) => set({ isLoadingMessages: loading }),
   setHasRunningTask: (running) => set({ hasRunningTask: running }),
-
-  setHybridPhase: (phase, message, description) => set({
-    hybridPhase: phase,
-    hybridMessage: message,
-    hybridDescription: description,
-  }),
 
   setSavedModels: (models) => set({ savedModels: models }),
   setCurrentModelId: (id) => set({ currentModelId: id }),
@@ -266,7 +249,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentSessionId: sessionId,
       messages: [],
       historyOffset: 0,
-      hasMoreHistory: true,
+      hasMoreHistory: false,  // 切换会话时先设为 false，等 fetchMessages 返回后再更新
       streamingMessage: null,
     });
 
@@ -275,12 +258,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   fetchMessages: async (sessionId: string, offset = 0, force = false) => {
     const state = get();
-    
-    // ★ 防重：如果当前没有更多历史或者已经在加载，直接返回
+
+    // 防重：如果当前已经在加载，直接返回
     if (!force && offset === 0 && state.messages.length > 0 && state.currentSessionId === sessionId) {
       return;
     }
-    
+
+    // 如果没有更多历史，跳过
+    if (!force && offset > 0 && !state.hasMoreHistory) {
+      return;
+    }
+
     set({ isLoadingMessages: true });
     try {
       const limit = 150;
@@ -293,39 +281,43 @@ export const useAppStore = create<AppState>((set, get) => ({
         has_more: boolean;
       }>(url);
 
-      // ★ 检查 session 是否已切换（如果在请求期间用户切换了 session）
       if (get().currentSessionId !== sessionId) {
         return;
       }
 
       if (offset === 0) {
-        // Initial load - 合并消息而不是直接替换，避免丢失未保存的本地消息
         set((state) => {
-          // 如果 force=true，需要合并后端消息和本地消息
-          // 使用 message.id 或 content+role 作为唯一标识去重
-          const existingKeys = new Set(
-            data.messages.map((m: Message) => 
-              m.id || `${m.role}-${m.content?.slice(0, 50)}`
-            )
-          );
-          // 找出本地有但后端没有的消息（未保存的本地消息）
-          const localOnlyMessages = state.messages.filter((m: Message) => {
-            const key = m.id || `${m.role}-${m.content?.slice(0, 50)}`;
-            return !existingKeys.has(key);
-          });
+          if (state.isStreaming || state.streamingMessage) {
+            return {
+              historyOffset: data.count,
+              hasMoreHistory: data.has_more,
+            };
+          }
+
+          if (data.messages.length > 0) {
+            return {
+              messages: data.messages,
+              historyOffset: data.count,
+              hasMoreHistory: data.has_more,
+            };
+          }
           return {
-            messages: [...data.messages, ...localOnlyMessages],
+            messages: state.messages,
             historyOffset: data.count,
             hasMoreHistory: data.has_more,
           };
         });
       } else {
-        // Prepend older messages
-        set((state) => ({
-          messages: [...data.messages, ...state.messages],
-          historyOffset: state.historyOffset + data.count,
-          hasMoreHistory: data.has_more,
-        }));
+        set((state) => {
+          const getMsgKey = (m: Message) => `${m.role}:${(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 30)}`;
+          const existingKeys = new Set(state.messages.map(getMsgKey));
+          const newMessages = data.messages.filter(m => !existingKeys.has(getMsgKey(m)));
+          return {
+            messages: [...newMessages, ...state.messages],
+            historyOffset: state.historyOffset + data.count,
+            hasMoreHistory: data.has_more,
+          };
+        });
       }
     } catch (error) {
       console.error('Failed to fetch messages:', error);
@@ -334,7 +326,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  // ★ 新增：检查后台任务状态
   checkTaskStatus: async (sessionId: string) => {
     try {
       const data = await fetchJSON<{

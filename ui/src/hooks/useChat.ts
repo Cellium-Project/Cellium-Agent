@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
 import { API, postJSON } from '../utils/api';
 import type { SSEEvent, Message, ToolTrace, TimelineSegment, Attachment } from '../types';
-import type { HybridPhase } from '../stores/appStore';
 
 /**
  * 从内容中提取 JSON thinking 数据（仅匹配代码块或纯 JSON，保持兼容）
@@ -208,7 +207,6 @@ export function useChat() {
     fetchSessions,
     checkTaskStatus,
     stopTask,
-    setHybridPhase,
   } = useAppStore();
 
   function buildStreamingContext() {
@@ -532,17 +530,8 @@ export function useChat() {
         });
         break;
       }
-
-      case 'hybrid_phase': {
-        setHybridPhase(
-          (event.phase || 'observe') as HybridPhase,
-          event.message || '',
-          event.description || ''
-        );
-        break;
-      }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, setHybridPhase]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((
@@ -580,8 +569,6 @@ export function useChat() {
         if (msg.type === 'pong') return;
         if (msg.type === 'subscribed') return;
         if (msg.type === 'connected') return;
-
-        console.log('[WS] 收到消息:', msg.type, msg.data?.type);
 
         if (msg.type === 'chat_event' && msg.data) {
           handleChatEvent(msg.data as SSEEvent, ctx, sessionId, connectionId);
@@ -729,7 +716,6 @@ export function useChat() {
     if (!content.trim() && (!attachments || attachments.length === 0)) return;
 
     const sessionId = currentSessionId || 'default';
-
     if (isStreaming) {
       addMessage({ role: 'user', content: content.trim(), attachments });
       try {

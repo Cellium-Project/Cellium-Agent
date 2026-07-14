@@ -288,12 +288,12 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
 
     async def _do_publish():
         manager = WSConnectionManager.get_instance_sync()
-        
+
         if session_id:
             if session_id in manager._session_clients and manager._session_clients[session_id]:
                 await manager.send_to_session(session_id, message)
-            else:
-                await manager.broadcast(message)
+            # else: 没有订阅者时不广播，静默丢弃
+            # 避免发送给不应该收到此消息的客户端（如 Sidebar 的 WebSocket）
         else:
             await manager.broadcast(message)
 

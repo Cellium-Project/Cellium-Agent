@@ -472,6 +472,8 @@ def setup_agent_di(
                 "read": _read_tool,
                 "edit": _edit_tool,
                 "grep": _grep_tool,
+                "glob": _glob_tool,
+                "ls": _ls_tool,
             },
             max_iterations=_agent_config_holder["max_iterations"],
             three_layer_memory=_memory,   # 注入三层记忆
