@@ -682,7 +682,7 @@ class MemoryTool(BaseTool):
             need_migration = 0
             for record in active_records:
                 record_id = record.get("id")
-                existing_vector = repo._load_vector(record_id, prefer_api=True)
+                existing_vector = repo._load_vector(record_id)
                 if not existing_vector or len(existing_vector) != repo._embedding_dimensions:
                     need_migration += 1
             
