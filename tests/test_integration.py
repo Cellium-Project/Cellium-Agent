@@ -38,6 +38,8 @@ class TestShellMemoryIntegration(unittest.TestCase):
 
     def test_shell_command_with_memory_save(self):
         """测试 Shell 命令执行后保存到记忆"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         self.memory_manager.add_user_message("如何查看进程？")
 
         result = self.shell.run("Get-Process | Select-Object -First 1")
@@ -59,6 +61,8 @@ class TestShellMemoryIntegration(unittest.TestCase):
         result = self.shell.run("Remove-Item -Recurse C:\\Windows\\Temp")
         self.assertIn("error", result)
 
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.run("Get-Process")
         self.assertEqual(result.get("status"), "success")
 

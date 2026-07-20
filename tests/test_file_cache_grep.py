@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import time
 import threading
 import tempfile
@@ -195,6 +196,8 @@ class TestFileCache:
 class TestGrepToolFunctions:
 
     def test_make_rel_same_drive(self):
+        if sys.platform != "win32":
+            pytest.skip("Windows drive paths only work on Windows")
         old = os.getcwd()
         try:
             os.chdir("C:\\Windows")
@@ -204,6 +207,8 @@ class TestGrepToolFunctions:
             os.chdir(old)
 
     def test_make_rel_different_drive(self):
+        if sys.platform != "win32":
+            pytest.skip("Windows drive paths only work on Windows")
         old = os.getcwd()
         try:
             os.chdir("C:\\Windows")

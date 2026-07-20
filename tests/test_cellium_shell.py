@@ -33,6 +33,8 @@ class TestCelliumShellBasic(unittest.TestCase):
 
     def test_basic_command_success(self):
         """测试基本命令执行成功"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.run("Get-Process | Select-Object -First 1")
         self.assertIn("status", result)
         self.assertEqual(result["status"], "success")
@@ -40,16 +42,22 @@ class TestCelliumShellBasic(unittest.TestCase):
 
     def test_command_with_error(self):
         """测试命令执行返回错误"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.run("Get-NonExistentCommand")
         self.assertTrue(isinstance(result, dict))
 
     def test_json_output_parsing(self):
         """测试 JSON 输出解析"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.run('@{"name"="test"; "value"=123} | ConvertTo-Json')
         self.assertTrue(isinstance(result, dict))
 
     def test_timeout_handling(self):
         """测试超时处理"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.run("Start-Sleep -Seconds 60", timeout=1)
         self.assertTrue(isinstance(result, dict))
 
@@ -209,16 +217,22 @@ class TestSafeShellExecution(unittest.TestCase):
 
     def test_safe_read_command(self):
         """测试安全只读命令"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.run("Get-Process | Select-Object Name")
         self.assertEqual(result.get("status"), "success")
 
     def test_execute_dict_mode(self):
         """测试字典模式调用"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.execute({"command": "Get-Process", "timeout": 30})
         self.assertTrue(isinstance(result, dict))
 
     def test_execute_string_mode(self):
         """测试字符串模式调用"""
+        if sys.platform != "win32":
+            self.skipTest("PowerShell commands only work on Windows")
         result = self.shell.execute("Get-Process | Select-Object -First 1")
         self.assertTrue(isinstance(result, dict))
 
