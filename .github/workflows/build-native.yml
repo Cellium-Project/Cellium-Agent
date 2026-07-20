@@ -1,0 +1,73 @@
+name: Build Native Vector Engine
+
+on:
+  push:
+    paths:
+      - 'native/**'
+      - '.github/workflows/build-native.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x86_64
+            output: vector_engine.dll
+            flags: '-O2 -mavx2 -mfma -shared'
+          - os: ubuntu-latest
+            target: linux-x86_64
+            output: libvector_engine.so
+            flags: '-O2 -mavx2 -mfma -shared'
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+            output: libvector_engine.so
+            flags: '-O2 -shared'
+          - os: macos-latest
+            target: darwin-arm64
+            output: libvector_engine.dylib
+            flags: '-O2 -dynamiclib'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cd native
+          gcc ${{ matrix.flags }} -o ${{ matrix.output }} vector_engine.c
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vector-engine-${{ matrix.target }}
+          path: native/${{ matrix.output }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize dll directory
+        run: |
+          mkdir -p dll/windows-x86_64 dll/linux-x86_64 dll/linux-aarch64 dll/darwin-arm64
+          cp artifacts/vector-engine-windows-x86_64/vector_engine.dll dll/windows-x86_64/
+          cp artifacts/vector-engine-linux-x86_64/libvector_engine.so dll/linux-x86_64/
+          cp artifacts/vector-engine-linux-aarch64/libvector_engine.so dll/linux-aarch64/
+          cp artifacts/vector-engine-darwin-arm64/libvector_engine.dylib dll/darwin-arm64/
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dll/
+          git diff --cached --quiet || git commit -m "chore: update native vector engine binaries"
+          git push

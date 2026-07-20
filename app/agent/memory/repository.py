@@ -17,12 +17,7 @@ import struct
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    import numpy as np
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
-
+from .vector_native import get_engine
 from .chinese_tokenizer import get_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -767,20 +762,13 @@ class MemoryRepository:
         k = self.RRF_K
         merged: Dict[str, Dict[str, Any]] = {}
 
-        max_bm25 = 0.0
-        for r in fts_results:
-            s = r.get("bm25_score", 0.0) or 0.0
-            if s > max_bm25:
-                max_bm25 = s
-
         for rank, result in enumerate(fts_results, 1):
             record_id = str(result["rowid"])
             entry = merged.setdefault(record_id, self._public_record(record_id))
             if not entry:
                 continue
             rrf_score = 1.0 / (k + rank)
-            bm25_norm = (result.get("bm25_score", 0.0) or 0.0) / max_bm25 if max_bm25 > 0 else 0.0
-            entry["score"] += rrf_score + 0.3 * bm25_norm
+            entry["score"] += rrf_score
             entry.setdefault("search_signals", {})["fts_rank"] = rank
             entry["fts_score"] = result.get("score", 0.0)
 
@@ -791,7 +779,7 @@ class MemoryRepository:
                 continue
             rrf_score = 1.0 / (k + rank)
             emb_score = result.get("embedding_score", 0.0)
-            entry["score"] += 0.9 * rrf_score + 0.2 * emb_score
+            entry["score"] += rrf_score
             entry.setdefault("search_signals", {})["embedding_rank"] = rank
             entry["embedding_score"] = emb_score
 
@@ -1250,8 +1238,6 @@ class MemoryRepository:
         if not query_vector:
             return []
 
-        query_dim = len(query_vector)
-
         valid_record_ids = []
         for record_id, record in self._catalog.get("records", {}).items():
             if self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
@@ -1259,42 +1245,9 @@ class MemoryRepository:
 
         existing_vectors = self._load_vectors_batch(valid_record_ids)
 
-        def search_vectors(vectors: Dict[str, List[float]], dim: int, query_vec: List[float]):
-            vecs = []
-            ids = []
-            for rid in valid_record_ids:
-                v = vectors.get(rid)
-                if v and len(v) == dim:
-                    vecs.append(v)
-                    ids.append(rid)
-            if not vecs:
-                return []
-            if HAS_NUMPY:
-                emb = np.array(vecs, dtype=np.float32)
-                qv = np.array(query_vec, dtype=np.float32)
-                scores = emb @ qv
-                top_i = np.argpartition(-scores, min(top_k, len(scores)) - 1)[:top_k]
-                top_i = top_i[np.argsort(-scores[top_i])]
-                res = []
-                for idx in top_i:
-                    sc = float(scores[idx])
-                    if sc <= 0.08:
-                        continue
-                    res.append({"rowid": int(ids[idx]), "embedding_score": sc})
-                return res
-            else:
-                scored = []
-                for rid, vec in zip(ids, vecs):
-                    score = self._cosine_similarity(query_vec, vec)
-                    if score <= 0.08:
-                        continue
-                    scored.append({"rowid": int(rid), "embedding_score": score})
-                scored.sort(key=lambda x: x["embedding_score"], reverse=True)
-                return scored[:top_k]
-
-        results = search_vectors(existing_vectors, query_dim, query_vector)
-
-        return results if results else []
+        engine = get_engine()
+        results = engine.batch_topk(query_vector, existing_vectors, top_k=top_k, threshold=0.3)
+        return [{"rowid": int(rid), "embedding_score": score} for rid, score in results]
 
     def _public_record(self, record_id: str) -> Optional[Dict[str, Any]]:
         record = self._get_catalog_record(record_id)
@@ -1528,7 +1481,7 @@ class MemoryRepository:
     def _cosine_similarity(left: List[float], right: List[float]) -> float:
         if not left or not right or len(left) != len(right):
             return 0.0
-        return sum(a * b for a, b in zip(left, right))
+        return get_engine().dot(left, right)
 
     @staticmethod
     def _gen_source_id(prefix: str = "manual") -> str:
