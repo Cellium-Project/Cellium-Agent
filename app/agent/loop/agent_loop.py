@@ -127,7 +127,8 @@ class AgentLoop:
             from app.agent.control.gene_post_session import GenePostSessionAnalyzer
             bandit_memory_path = "data/control/bandit_stats.json"
             self.control_loop = create_control_loop(memory_path=bandit_memory_path)
-            self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100)
+            heuristic_thresholds = self.heuristics.config.thresholds if self.heuristics else {}
+            self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100, thresholds=heuristic_thresholds)
             self._gene_post_session_analyzer = GenePostSessionAnalyzer()
             logger.info("[AgentLoop] 控制环已启用（强约束模式）")
         elif flash_mode:
@@ -289,7 +290,8 @@ class AgentLoop:
                 from app.agent.control import create_control_loop
                 from app.agent.control.gene_post_session import GenePostSessionAnalyzer
                 self.control_loop = create_control_loop(memory_path="data/control/bandit_stats.json")
-                self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100)
+                heuristic_thresholds = self.heuristics.config.thresholds if self.heuristics else {}
+                self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100, thresholds=heuristic_thresholds)
                 self._gene_post_session_analyzer = GenePostSessionAnalyzer()
                 if self.learning:
                     self.learning.set_control_loop(self.control_loop)
@@ -883,6 +885,7 @@ class AgentLoop:
             removed = effective_memory.remove_gene_system_messages()
             if removed > 0:
                 logger.info(f"[AgentLoop] 已清理上次残留的 {removed} 条 Gene 相关消息")
+                self._pending_gene_prompt = None
 
         try:
             # === 1. 消息接收事件 ===

@@ -16,7 +16,7 @@ class TestControlLoopIntegration(unittest.TestCase):
     def setUp(self):
         self.heuristics = Mock()
         self.heuristics.config = Mock()
-        self.heuristics.config.get_threshold = Mock(return_value=3)
+        self.heuristics.config.get_threshold = Mock(side_effect=lambda name, default=None: default)
         self.heuristics.feature_extractor = Mock()
         self.heuristics.evaluate_fused = Mock()
         self.heuristics.reset = Mock()
@@ -173,7 +173,7 @@ class TestControlLoopIntegration(unittest.TestCase):
         self.loop.start_session(self.state)
         self._bypass_hybrid()
 
-        features = self._create_features(repetition_score=0.6)
+        features = self._create_features(repetition_score=0.75)
         self._setup_step(features)
 
         decision = self.loop.step(self.state)
@@ -196,7 +196,7 @@ class TestControlLoopIntegration(unittest.TestCase):
         features = self._create_features(
             stuck_iterations=2,
             is_making_progress=False,
-            repetition_score=0.6
+            repetition_score=0.8
         )
         self._setup_step(features)
 
@@ -316,7 +316,7 @@ class TestDecisionObservability(unittest.TestCase):
     def setUp(self):
         self.heuristics = Mock()
         self.heuristics.config = Mock()
-        self.heuristics.config.get_threshold = Mock(return_value=3)
+        self.heuristics.config.get_threshold = Mock(side_effect=lambda name, default=None: default)
         self.heuristics.feature_extractor = Mock()
         self.heuristics.evaluate_fused = Mock()
         self.heuristics.reset = Mock()

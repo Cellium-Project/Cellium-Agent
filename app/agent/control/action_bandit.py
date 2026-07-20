@@ -173,11 +173,12 @@ class ActionBandit:
         """
         bias = 0.0
 
-        stuck_threshold = self._policy_thresholds.get("stuck_iterations", 3)
-        repetition_threshold = self._policy_thresholds.get("repetition_threshold", 3)
+        stuck_threshold = self._policy_thresholds.get("stuck_iterations", 5)
+        repetition_threshold = self._policy_thresholds.get("repetition_threshold", 4)
+        repetition_score_threshold = self._policy_thresholds.get("repetition_score", 0.7)
 
         if action == "redirect":
-            if hasattr(features, 'repetition_score') and features.repetition_score > 0.5:
+            if hasattr(features, 'repetition_score') and features.repetition_score > repetition_score_threshold:
                 bias = max(bias, 0.2 * features.repetition_score)
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations >= stuck_threshold:
                 bias = max(bias, 0.25)

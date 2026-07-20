@@ -150,7 +150,6 @@ class EditTool(BaseTool):
         replace_all: bool = False,
     ):
         old_string = _unescape_string(old_string)
-        new_string = _unescape_string(new_string)
 
         if not file_path:
             return {"success": False, "error": "file_path is required"}

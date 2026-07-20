@@ -46,7 +46,7 @@ class TestFailureConditionBuilder(unittest.TestCase):
 
     def test_build_with_repetition(self):
         features = Mock()
-        features.repetition_score = 0.6
+        features.repetition_score = 0.75
         features.stuck_iterations = 0
         features.is_output_loop = False
         features.context_saturation = 0.0
@@ -56,7 +56,7 @@ class TestFailureConditionBuilder(unittest.TestCase):
     def test_build_with_stuck(self):
         features = Mock()
         features.repetition_score = 0.0
-        features.stuck_iterations = 3
+        features.stuck_iterations = 5
         features.is_output_loop = False
         features.context_saturation = 0.0
         result = FailureConditionBuilder.build(features)
@@ -138,8 +138,8 @@ class TestHardConstraintRenderer(unittest.TestCase):
     def test_render_with_features(self):
         decision = ControlDecision(action_type="compress")
         features = Mock()
-        features.repetition_score = 0.6
-        features.stuck_iterations = 2
+        features.repetition_score = 0.75
+        features.stuck_iterations = 5
         features.is_output_loop = True
         features.context_saturation = 0.8
         result = self.renderer.render(decision, features)

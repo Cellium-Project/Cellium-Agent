@@ -7,6 +7,7 @@ heuristics:
     token_budget_ratio: 0.9
     stuck_iterations: 5
     repetition_threshold: 4
+    repetition_score: 0.7
     ema_alpha: 0.3
     plateau_stuck_limit: 8
   rules:

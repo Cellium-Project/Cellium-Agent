@@ -44,7 +44,7 @@ class FailureConditionBuilder:
     """Failure Conditions 构建器"""
 
     @staticmethod
-    def build(features: Optional[Any] = None) -> str:
+    def build(features: Optional[Any] = None, thresholds: Optional[Dict[str, float]] = None) -> str:
         """
         构建 failure condition 文本
 
@@ -55,14 +55,17 @@ class FailureConditionBuilder:
             - condition 2
         """
         conditions = []
+        thresholds = thresholds or {}
+        repetition_score_threshold = thresholds.get("repetition_score", 0.7)
+        stuck_iterations_threshold = thresholds.get("stuck_iterations", 5)
 
         if features:
             # 工具重复
-            if hasattr(features, 'repetition_score') and features.repetition_score > 0.5:
+            if hasattr(features, 'repetition_score') and features.repetition_score > repetition_score_threshold:
                 conditions.append("You repeat the same tool call")
 
             # 停滞
-            if hasattr(features, 'stuck_iterations') and features.stuck_iterations > 2:
+            if hasattr(features, 'stuck_iterations') and features.stuck_iterations > stuck_iterations_threshold - 1:
                 conditions.append(f"You make no progress after {features.stuck_iterations} attempts")
 
             # 输出循环
@@ -239,8 +242,9 @@ class HardConstraintRenderer:
       - token ≤ 80
     """
 
-    def __init__(self, max_output_tokens: int = 100):
+    def __init__(self, max_output_tokens: int = 100, thresholds: Optional[Dict[str, float]] = None):
         self.max_output_tokens = max_output_tokens
+        self.thresholds = thresholds or {}
 
     def render(
         self,
@@ -248,21 +252,10 @@ class HardConstraintRenderer:
         features: Optional[Any] = None,
         state: Optional["LoopState"] = None,
     ) -> HardConstraint:
-        """
-        渲染强约束
-
-        Args:
-            decision: 控制决策
-            features: 派生特征
-            state: 状态
-
-        Returns:
-            HardConstraint（三段结构）
-        """
         action = decision.action_type
 
         # 构建 failure condition
-        failure_conditions = FailureConditionBuilder.build(features)
+        failure_conditions = FailureConditionBuilder.build(features, self.thresholds)
 
         # 构建禁止/推荐项
         forbidden, preferred = self._build_constraints(state, features)

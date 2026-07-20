@@ -8,26 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_call_signature(call: Dict) -> str:
-    """
-    生成工具调用的唯一签名（工具+命令+关键参数）
-
-    用于区分同一工具的不同操作，例如：
-      - memory:store ≠ memory:search ≠ memory:update
-      - component:generate ≠ component:list
-      - file:read:/a.txt ≠ file:write:/a.txt:hash(abc)
-      - shell:ls ≠ shell:pwd
-
-    签名策略：
-      - 读操作：路径/查询参数（读同一内容=重复）
-      - 写操作：路径 + 内容摘要（写不同内容≠重复）
-      - 编辑操作：路径 + 目标内容摘要
-
-    Args:
-        call: 工具调用记录，包含 tool/tool_name 和 arguments/args
-
-    Returns:
-        签名字符串
-    """
     import hashlib
 
     if not call or not isinstance(call, dict):
@@ -44,62 +24,72 @@ def get_call_signature(call: Dict) -> str:
             return ""
         return hashlib.md5(content.encode('utf-8', errors='replace')).hexdigest()[:length]
 
-    if "command" in args:
-        command = args.get("command", "default")
+    if tool_name == "read":
+        file_path = args.get("file_path", args.get("path", ""))
+        offset = args.get("offset", 0)
+        limit = args.get("limit", 2000)
+        target = args.get("target", "")
+        if target:
+            return f"read:{file_path}:target:{target[:30]}"
+        return f"read:{file_path}:{offset}-{offset+limit}"
 
-        if tool_name == "file":
-            path = args.get("path", args.get("file", ""))
+    if tool_name == "edit":
+        file_path = args.get("file_path", args.get("path", ""))
+        old_str = args.get("old_string", "")
+        h = _content_hash(old_str)
+        return f"edit:{file_path}:{h}"
 
-            if command == "read":
-                mode = args.get("mode", "full")
-                if mode == "context":
-                    target = args.get("target", "")[:30]
-                    return f"{tool_name}:read:{path}:context:{target}"
-                elif mode == "summary":
-                    return f"{tool_name}:read:{path}:summary"
-                elif mode == "compact":
-                    return f"{tool_name}:read:{path}:compact"
-                else:
-                    offset = args.get("offset", 0)
-                    limit = args.get("limit", 500)
-                    return f"{tool_name}:read:{path}:full:{offset}-{offset+limit}"
-            elif command == "write":
-                content = args.get("content", "")
-                h = _content_hash(content)
-                return f"{tool_name}:write:{path}:{h}"
-            elif command == "edit":
-                old_str = args.get("old_string", "")
-                h = _content_hash(old_str)
-                return f"{tool_name}:edit:{path}:{h}"
-            elif command == "list":
-                dir_path = args.get("dir_path", ".")
-                return f"{tool_name}:list:{dir_path}"
-            elif command == "delete":
-                return f"{tool_name}:delete:{path}"
-            elif command == "truncate":
-                start = args.get("start", 0)
-                end = args.get("end", "")
-                return f"{tool_name}:truncate:{path}:{start}-{end}"
-            elif command == "insight":
-                mode = args.get("mode", "structure")
-                query = args.get("query", "")[:30]
-                return f"{tool_name}:insight:{path}:{mode}:{query}"
-            else:
-                return f"{tool_name}:{command}:{path}"
+    if tool_name == "ls":
+        path = args.get("path", args.get("dir_path", "."))
+        return f"ls:{path}"
 
-        return f"{tool_name}:{command}"
+    if tool_name == "grep":
+        query = args.get("query", args.get("pattern", ""))[:40]
+        path = args.get("path", ".")
+        return f"grep:{query}:{path}"
 
-    if tool_name == "file":
-        path = args.get("path", args.get("file", ""))
-        return f"{tool_name}:{path}"
+    if tool_name == "glob":
+        pattern = args.get("pattern", "")[:40]
+        path = args.get("path", ".")
+        return f"glob:{pattern}:{path}"
 
     if tool_name == "shell":
-        cmd = args.get("command", args.get("cmd", ""))[:80]
-        return f"{tool_name}:{cmd}"
+        command = args.get("command", "")
+        if command == "run":
+            # argv 优先
+            argv = args.get("argv")
+            if argv and isinstance(argv, list):
+                cmd_str = " ".join(str(a) for a in argv[:3])[:60]
+                return f"shell:run:argv:{cmd_str}"
+            cmd = args.get("cmd", "")[:60]
+            return f"shell:run:{cmd}"
+        return f"shell:{command}"
+
+    if tool_name == "memory":
+        command = args.get("command", "default")
+        if command in ("search", "forget"):
+            query = args.get("query", "")[:30]
+            return f"memory:{command}:{query}"
+        if command in ("store", "update"):
+            title = args.get("title", "")[:30]
+            return f"memory:{command}:{title}"
+        if command == "get_gene":
+            task_type = args.get("task_type", "")[:30]
+            return f"memory:get_gene:{task_type}"
+        return f"memory:{command}"
 
     if tool_name == "web_fetch":
-        action = args.get("action", "open")
-        return f"{tool_name}:{action}"
+        command = args.get("command", "read")
+        url = args.get("url", "")[:50]
+        if command in ("read", "fetch"):
+            return f"web_fetch:{command}:{url}"
+        if command == "fetch_many":
+            urls = args.get("urls", [])
+            return f"web_fetch:fetch_many:{len(urls)}urls"
+        if command == "find_in_page":
+            keyword = args.get("keyword", "")[:30]
+            return f"web_fetch:find_in_page:{keyword}"
+        return f"web_fetch:{command}"
 
     return tool_name
 

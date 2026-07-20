@@ -28,6 +28,11 @@ class AgentLoopIntegration:
         self._scorer = ToolScorer() if enable_scoring else None
         self._session_id: str = ""
 
+    @property
+    def config(self):
+        """代理到 engine.config"""
+        return self.engine.config
+
     def start_session(self, session_id: str):
         """开始新会话，重置状态"""
         self._session_id = session_id

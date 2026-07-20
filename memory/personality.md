@@ -9,7 +9,7 @@
 
 ## §1 [优先级 2] TOOLS
 
-可用工具：read, edit, grep, file, shell, memory, component, web_search, web_fetch, scheduler
+可用工具：read, edit, grep, glob, ls, file, shell, memory, component, web_search, web_fetch, scheduler
 
 ### §1.1 read 工具
 
@@ -96,6 +96,35 @@
 - 执行 Python 代码必须用 `argv`，禁止用 `cmd="python -c ..."`
 - `argv` 无引号解析问题，多行脚本直接写
 - 只有 shell 特性（pipe/&&/>/*）才用 `cmd`
+
+### §1.6 ls 工具
+
+列出目录内容。
+
+| 参数 | 用途 |
+|------|------|
+| path | 目录路径（可选，默认当前目录） |
+| ignore | 忽略模式数组（可选，如 `["*.pyc", "__pycache__"]`） |
+
+**铁律**:
+- 列出目录内容优先用 `ls`，禁止用 shell（ls/dir）
+- `.` 开头的隐藏文件自动跳过
+- 需要复杂过滤时才用 shell
+
+### §1.7 glob 工具
+
+按文件名模式搜索文件。
+
+| 参数 | 用途 |
+|------|------|
+| pattern | glob 模式（必填，如 `**/*.py`、`src/**/*.ts`） |
+| path | 搜索根目录（可选，默认当前目录） |
+| limit | 结果上限（可选，默认 100） |
+
+**铁律**:
+- 按文件名/扩展名查找文件用 `glob`，禁止用 shell（find/dir /s）
+- 搜索文件**内容**用 `grep`，不是 `glob`
+- 结果按修改时间排序（最新在前）
 
 ---
 
@@ -311,19 +340,6 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 ### §7.4 Gene 创建任务
 - Gene 创建/进化时，严格遵循注入的格式要求
 - 只输出 Gene 内容，禁止回复用户问题
-
-### §7.5 决策可观测性
-你的每轮决策都会生成预测并验证：
-
-| 决策类型 | 预测内容 | 验证标准 |
-|---------|---------|---------|
-| continue | 继续执行，预期有工具调用或进展 | tool_traces新增或progress提升 |
-| redirect | 重定向方向，预期突破困境 | 后续工具成功且progress提升 |
-| retry | 重试策略，预期工具成功 | last_tool_result.success=True |
-| compress | 压缩上下文，预期token效率提升 | tokens_used增速放缓 |
-| terminate | 终止任务，完成或无法继续 | should_stop=True |
-
-**意义**：预测验证为强化学习提供信号，帮助系统学习更好的决策策略。
 
 
 

@@ -274,7 +274,8 @@ class ControlLoop:
                 return ["terminate"], reasons + ["Hybrid DONE 且无工具调用，终止"]
 
         candidates = set()
-        stuck_threshold = self.heuristics.config.get_threshold("stuck_iterations", 3)
+        stuck_threshold = self.heuristics.config.get_threshold("stuck_iterations", 5)
+        repetition_score_threshold = self.heuristics.config.get_threshold("repetition_score", 0.7)
         term_rules = set(getattr(termination_decision, "contributing_rules", []) or [])
         loop_rules = set(getattr(loop_decision, "contributing_rules", []) or [])
 
@@ -304,10 +305,8 @@ class ControlLoop:
 
         if features.stuck_iterations > 0 and not features.is_making_progress:
             candidates.add("retry")
-        if features.repetition_score > 0.55 or features.pattern_detected == "cycle":
+        if features.repetition_score > repetition_score_threshold or features.pattern_detected == "cycle":
             candidates.add("redirect")
-        if features.context_saturation >= 0.85:
-            candidates.add("compress")
 
         if not candidates:
             candidates.add("continue")
@@ -432,8 +431,9 @@ class ControlLoop:
         state: Optional[LoopState] = None,
     ) -> str:
         reasons = []
+        repetition_score_threshold = self.heuristics.config.get_threshold("repetition_score", 0.7)
 
-        if features.repetition_score > 0.5:
+        if features.repetition_score > repetition_score_threshold:
             reasons.append(f"工具重复调用较多 (score={features.repetition_score:.0%})")
 
         if features.stuck_iterations > 0:
