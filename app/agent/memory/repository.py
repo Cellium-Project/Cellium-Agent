@@ -224,7 +224,7 @@ class MemoryRepository:
             ids.append(record_id)
             dim = dimensions
             arr = array.array('f')
-            arr.from_bytes(blob)
+            arr.frombytes(blob)
             flat.extend(arr)
         conn.close()
         return ids, flat, dim
