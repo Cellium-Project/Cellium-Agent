@@ -63,7 +63,7 @@ class TestThreeLayerMemory(unittest.TestCase):
             session_id="session-b",
         )
 
-        results = self.memory.retrieve_with_context("重置网卡")
+        results = self.memory.retrieve_context("重置网卡", include_raw=True)
         self.assertTrue(results)
         self.assertEqual(results[0]["raw"]["id"], source_id)
 

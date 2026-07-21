@@ -7,6 +7,7 @@
 - 敏感信息控制
 """
 
+import array
 import hashlib
 import json
 import logging
@@ -204,20 +205,29 @@ class MemoryRepository:
             return self._blob_to_vector(row[0], row[1])
         return None
 
-    def _load_vectors_batch(self, record_ids: List[str]) -> Dict[str, List[float]]:
+    def _load_vectors_batch(self, record_ids: List[str], expected_dim: int = 0) -> Tuple[List[str], 'array.array', int]:
         if not record_ids:
-            return {}
+            return [], array.array('f'), 0
         if not self._embedding_config.get("enabled", False):
-            return {}
+            return [], array.array('f'), 0
         conn = sqlite3.connect(self.vector_db_path)
         cursor = conn.cursor()
         placeholders = ",".join(["?"] * len(record_ids))
-        cursor.execute(f"SELECT record_id, embedding, dimensions FROM memory_vectors WHERE record_id IN ({placeholders})", record_ids)
-        results = {}
+        if expected_dim > 0:
+            cursor.execute(f"SELECT record_id, embedding, dimensions FROM memory_vectors WHERE record_id IN ({placeholders}) AND dimensions = ?", [*record_ids, expected_dim])
+        else:
+            cursor.execute(f"SELECT record_id, embedding, dimensions FROM memory_vectors WHERE record_id IN ({placeholders})", record_ids)
+        ids = []
+        dim = 0
+        flat = array.array('f')
         for record_id, blob, dimensions in cursor.fetchall():
-            results[record_id] = self._blob_to_vector(blob, dimensions)
+            ids.append(record_id)
+            dim = dimensions
+            arr = array.array('f')
+            arr.from_bytes(blob)
+            flat.extend(arr)
         conn.close()
-        return results
+        return ids, flat, dim
 
     def _get_record_ids_with_vectors(self, dimensions: int) -> List[str]:
         if not self._embedding_config.get("enabled", False):
@@ -281,7 +291,7 @@ class MemoryRepository:
                 
                 self._migration_status["total"] = total
                 
-                for record_id, record in records.items():
+                for record_id, record in list(records.items()):
                     if record.get("status") != "active":
                         continue
                     
@@ -417,7 +427,7 @@ class MemoryRepository:
                 stored_model or "未配置", current_model
             )
             self._embedding_config["dimensions"] = None
-            self._embedding_dimensions = 1536
+            self._embedding_dimensions = 0
             self._api_embedding_cache.clear()
             self._query_embedding_cache.clear()
             return
@@ -712,8 +722,6 @@ class MemoryRepository:
         tags: Optional[List[str]] = None,
         source: Optional[str] = None,
     ) -> List[Dict]:
-        import logging
-        logger = logging.getLogger(__name__)
         filtered = []
         for item in results:
             record = self._get_catalog_record(item.get("rowid"))
@@ -764,7 +772,9 @@ class MemoryRepository:
 
         for rank, result in enumerate(fts_results, 1):
             record_id = str(result["rowid"])
-            entry = merged.setdefault(record_id, self._public_record(record_id))
+            if record_id not in merged:
+                merged[record_id] = self._public_record(record_id)
+            entry = merged[record_id]
             if not entry:
                 continue
             rrf_score = 1.0 / (k + rank)
@@ -774,7 +784,9 @@ class MemoryRepository:
 
         for rank, result in enumerate(embedding_results, 1):
             record_id = str(result["rowid"])
-            entry = merged.setdefault(record_id, self._public_record(record_id))
+            if record_id not in merged:
+                merged[record_id] = self._public_record(record_id)
+            entry = merged[record_id]
             if not entry:
                 continue
             rrf_score = 1.0 / (k + rank)
@@ -813,9 +825,6 @@ class MemoryRepository:
 
     def _expand_date_query(self, query: str) -> str:
         """扩展日期查询：英文日期自动加上中文格式"""
-        import re
-        from datetime import datetime
-
         month_map = {
             "january": "01", "february": "02", "march": "03", "april": "04",
             "may": "05", "june": "06", "july": "07", "august": "08",
@@ -917,7 +926,6 @@ class MemoryRepository:
             new_metadata["evolution_history"] = evolution_history
 
             if new_title and not new_title.endswith(f"(v{new_version})"):
-                import re
                 new_title = re.sub(r'\s*\(v\d+\)\s*$', '', new_title)
                 new_title = f"{new_title} (v{new_version})"
 
@@ -1243,10 +1251,10 @@ class MemoryRepository:
             if self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
                 valid_record_ids.append(record_id)
 
-        existing_vectors = self._load_vectors_batch(valid_record_ids)
+        existing_ids, existing_flat, dim = self._load_vectors_batch(valid_record_ids, expected_dim=len(query_vector))
 
         engine = get_engine()
-        results = engine.batch_topk(query_vector, existing_vectors, top_k=top_k, threshold=0.3)
+        results = engine.batch_topk(query_vector, existing_ids, existing_flat, dim, top_k=top_k, threshold=0.3)
         return [{"rowid": int(rid), "embedding_score": score} for rid, score in results]
 
     def _public_record(self, record_id: str) -> Optional[Dict[str, Any]]:

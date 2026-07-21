@@ -115,21 +115,6 @@ class ThreeLayerMemory:
 
         return source_id
 
-    def save_conversation(
-        self,
-        user_input: str,
-        response: str,
-        session_id: str = "default",
-        messages: list = None,
-    ) -> str:
-        """兼容旧接口，内部统一转发到 persist_session。"""
-        return self.persist_session(
-            user_input,
-            response,
-            session_id=session_id,
-            messages=messages,
-        )
-
     def retrieve_context(
         self,
         query: str,
@@ -178,20 +163,6 @@ class ThreeLayerMemory:
                 "raw": raw_conversation,
             })
         return enriched
-
-    def retrieve_with_context(self, query: str, top_k: int = 3) -> List[Dict]:
-        """兼容旧接口：两阶段检索（摘要 + 原始对话回溯）。"""
-        results = self.retrieve_context(query, top_k=top_k, include_raw=True)
-        return [
-            {
-                "summary": item.get("content", ""),
-                "raw": item.get("raw"),
-                "score": item.get("score", 0.0),
-                "tags": item.get("tags", ""),
-                "schema_type": item.get("schema_type", "general"),
-            }
-            for item in results
-        ]
 
     # ============================================================
     # 仓库治理封装

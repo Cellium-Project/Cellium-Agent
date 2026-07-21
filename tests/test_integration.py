@@ -48,7 +48,7 @@ class TestShellMemoryIntegration(unittest.TestCase):
 
         self.assertIn("status", result)
 
-        source_id = self.tlm.save_conversation(
+        source_id = self.tlm.persist_session(
             "如何查看进程？",
             "使用 Get-Process 查看进程",
             messages=self.memory_manager.get_messages()
@@ -177,7 +177,7 @@ class TestMemorySystemIntegration(unittest.TestCase):
         self.sm.add_user_message("如何查看系统信息？")
         self.sm.add_assistant_message("使用 Get-SystemInfo 或 Get-ComputerInfo")
 
-        source_id = self.tlm.save_conversation(
+        source_id = self.tlm.persist_session(
             "如何查看系统信息？",
             "使用 Get-SystemInfo 或 Get-ComputerInfo",
             messages=self.sm.get_messages()
@@ -198,7 +198,7 @@ class TestMemorySystemIntegration(unittest.TestCase):
         for user, assistant in conversations:
             self.sm.add_user_message(user)
             self.sm.add_assistant_message(assistant)
-            self.tlm.save_conversation(user, assistant, messages=self.sm.get_messages())
+            self.tlm.persist_session(user, assistant, messages=self.sm.get_messages())
             self.sm.clear()
 
 

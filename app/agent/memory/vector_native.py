@@ -1,3 +1,4 @@
+import array
 import ctypes
 import heapq
 import os
@@ -81,30 +82,34 @@ class _NativeImpl:
     def __init__(self, lib):
         self._lib = lib
 
-    def batch_dot(self, query: List[float], vecs: List[List[float]]) -> List[float]:
-        dim = len(query)
-        n = len(vecs)
-        query_arr = (ctypes.c_float * dim)(*query)
-        docs_arr = (ctypes.c_float * (n * dim))()
-        for i, vec in enumerate(vecs):
-            offset = i * dim
-            for j in range(dim):
-                docs_arr[offset + j] = vec[j]
+    def batch_dot(self, query: List[float], flat: array.array, n: int, dim: int) -> List[float]:
+        qarr = array.array('f', query)
         out = (ctypes.c_float * n)()
-        self._lib.vector_batch_dot(query_arr, docs_arr, ctypes.c_int(n), ctypes.c_int(dim), out)
+        self._lib.vector_batch_dot(
+            (ctypes.c_float * dim).from_buffer(qarr),
+            (ctypes.c_float * (n * dim)).from_buffer(flat),
+            ctypes.c_int(n), ctypes.c_int(dim), out,
+        )
         return list(out)
 
     def dot(self, a: List[float], b: List[float]) -> float:
-        dim = len(a)
-        arr_a = (ctypes.c_float * dim)(*a)
-        arr_b = (ctypes.c_float * dim)(*b)
-        return self._lib.vector_dot(arr_a, arr_b, ctypes.c_int(dim))
+        arr_a = array.array('f', a)
+        arr_b = array.array('f', b)
+        return self._lib.vector_dot(
+            (ctypes.c_float * len(a)).from_buffer(arr_a),
+            (ctypes.c_float * len(b)).from_buffer(arr_b),
+            ctypes.c_int(len(a)),
+        )
 
 
 class _PythonImpl:
-    def batch_dot(self, query: List[float], vecs: List[List[float]]) -> List[float]:
+    def batch_dot(self, query: List[float], flat: array.array, n: int, dim: int) -> List[float]:
         from operator import mul
-        return [sum(map(mul, query, vec)) for vec in vecs]
+        scores = []
+        for i in range(n):
+            base = i * dim
+            scores.append(sum(map(mul, query, flat[base:base + dim])))
+        return scores
 
     def dot(self, a: List[float], b: List[float]) -> float:
         from operator import mul
@@ -129,22 +134,17 @@ class VectorEngine:
     def batch_topk(
         self,
         query: List[float],
-        vectors: Dict[str, List[float]],
+        ids: List[str],
+        flat: array.array,
+        dim: int,
         top_k: int = 10,
         threshold: float = 0.3,
     ) -> List[Tuple[str, float]]:
-        ids = []
-        vecs = []
-        dim = len(query)
-        for rid, vec in vectors.items():
-            if vec and len(vec) == dim:
-                ids.append(rid)
-                vecs.append(vec)
-
-        if not vecs:
+        n = len(ids)
+        if n == 0:
             return []
 
-        scores = self._impl.batch_dot(query, vecs)
+        scores = self._impl.batch_dot(query, flat, n, dim)
 
         candidates = []
         for i, score in enumerate(scores):

@@ -201,10 +201,6 @@ class FTS5MemorySearcher:
         logger.debug("[FTS5] 新增记忆 | rowid=%s | title=%s", fts_rowid, normalized_title[:30])
         return fts_rowid
 
-    def add_memory(self, title: str, content: str, category: str = "general", tags: str = "", source_file: str = "") -> bool:
-        """插入记忆（兼容旧接口）"""
-        return self.insert_memory(title, content, category=category, tags=tags, source_file=source_file) is not None
-
     def update_memory(
         self,
         source_file: str,
