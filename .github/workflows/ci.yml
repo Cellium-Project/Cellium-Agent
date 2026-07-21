@@ -222,6 +222,8 @@ jobs:
           cp -r components/* release/components/
           cp -r components/skills/* release/components/skills/ || true
           cp -r config release/ || true
+          mkdir -p release/dll/windows-x86_64
+          cp dll/windows-x86_64/vector_engine.dll release/dll/windows-x86_64/
           cp -r html release/ || true
           cp -r memory release/ || true
           cp builder/CelliumAgent.exe release/
@@ -234,6 +236,11 @@ jobs:
           cp -r components/* release/components/
           cp -r components/skills/* release/components/skills/ || true
           cp -r config release/ || true
+          case "${{ matrix.os }}-${{ matrix.arch }}" in
+            Linux-x64) mkdir -p release/dll/linux-x86_64 && cp dll/linux-x86_64/libvector_engine.so release/dll/linux-x86_64/ ;;
+            Linux-arm64) mkdir -p release/dll/linux-aarch64 && cp dll/linux-aarch64/libvector_engine.so release/dll/linux-aarch64/ ;;
+            macOS-arm64) mkdir -p release/dll/darwin-arm64 && cp dll/darwin-arm64/libvector_engine.dylib release/dll/darwin-arm64/ ;;
+          esac
           cp -r html release/ || true
           cp -r memory release/ || true
           cp app_icon.ico release/ || true
