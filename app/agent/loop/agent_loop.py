@@ -180,6 +180,7 @@ class AgentLoop:
         self._tool_call_count_in_round = 0
 
         self._pending_gene_prompt = None
+        self._redirect_guidance_given = False
 
     def _on_tools_changed(self, new_tools: Dict[str, Any]):
         """工具列表变化时的回调（由 ToolExecutor 调用）"""
@@ -887,6 +888,8 @@ class AgentLoop:
                 logger.info(f"[AgentLoop] 已清理上次残留的 {removed} 条 Gene 相关消息")
                 self._pending_gene_prompt = None
 
+        self._redirect_guidance_given = False
+
         try:
             # === 1. 消息接收事件 ===
             self._event_publisher.publish_message_received(
@@ -1143,9 +1146,7 @@ class AgentLoop:
                                 yield event
                             return
 
-
-                    # 只有在 ControlLoop 未产生 guidance 时才用 Heuristics 的
-                    if not _pending_guidance_msg:
+                    if not _pending_guidance_msg and not self._redirect_guidance_given:
                         redirect_guidance = self.heuristics.get_redirect_guidance(context, features_from_control)
                         if redirect_guidance:
                             suggestions = redirect_guidance.get("suggestions", [])
@@ -1157,6 +1158,7 @@ class AgentLoop:
                             _pending_guidance_msg = AutoHintManager.build_redirect_message(
                                 reasons, suggestions, tool_recommendations
                             )
+                            self._redirect_guidance_given = True
                             yield {
                                 "type": "heuristic_redirect",
                                 "reasons": reasons,
