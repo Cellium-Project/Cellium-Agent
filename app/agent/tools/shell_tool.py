@@ -1,31 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Shell 工具 — 通用的命令执行工具（支持后台任务管理）
-
-设计原则：
-  - 对 LLM 暴露子命令接口：run / list / output / kill
-  - 后台任务可异步执行、查询输出、主动关闭
-  - 安全层由 CelliumShell (SecurityPolicy) 兜底
-
-子命令：
-  - run: 执行命令（同步或后台）
-  - list: 列出所有后台任务
-  - output: 获取后台任务的输出
-  - kill: 终止后台任务
-
-用法:
-    tool = ShellTool(shell=my_shell)
-    # 执行快速命令
-    result = tool.execute({"command": "run", "cmd": "ls -la"})
-    # 启动后台服务
-    result = tool.execute({"command": "run", "cmd": "python server.py", "background": true})
-    # 查看后台任务
-    result = tool.execute({"command": "list"})
-    # 获取任务输出
-    result = tool.execute({"command": "output", "task_id": "bg_xxx"})
-    # 终止任务
-    result = tool.execute({"command": "kill", "task_id": "bg_xxx"})
-"""
 
 import logging
 import os
@@ -40,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def _detect_embedded_python() -> Dict[str, str]:
     """
-    检测嵌入式 Python 环境（打包版）
+    检测嵌入式 Python 环境
 
     Returns:
         {
@@ -50,15 +23,12 @@ def _detect_embedded_python() -> Dict[str, str]:
             "pip_cmd": "安装依赖的完整命令",
         }
     """
-    # 检测是否有 runtime/python.exe 或 runtime/python（打包版结构）
     exe_dir = pathlib.Path(sys.executable).resolve().parent
 
-    # 打包版结构：exe 在 runtime/ 目录
     if exe_dir.name == "runtime":
         project_root = exe_dir.parent
         libs_dir = project_root / "libs"
         
-        # 跨平台 Python 可执行文件名
         if sys.platform == "win32":
             python_exe = exe_dir / "python.exe"
         else:
@@ -85,7 +55,7 @@ def _detect_embedded_python() -> Dict[str, str]:
 
 class ShellTool(BaseTool):
     """
-    通用 Shell 命令执行工具（支持后台任务管理）
+    通用 Shell 命令执行工具
 
     子命令：
       - run: 执行命令
@@ -195,8 +165,6 @@ class ShellTool(BaseTool):
 
         if argv and isinstance(argv, list):
             cmd_str = " ".join(argv)
-            if not self._check_permission(cmd_str):
-                return {"success": False, "error": f"Permission denied: {cmd_str[:100]}"}
 
             try:
                 logger.info("[ShellTool] run(argv) | argv=%s | background=%s", argv[:5], background)
@@ -221,9 +189,6 @@ class ShellTool(BaseTool):
 
         if not cmd or not cmd.strip():
             return {"success": False, "error": "缺少 cmd 或 argv 参数"}
-
-        if not self._check_permission(cmd):
-            return {"success": False, "error": f"Permission denied: {cmd[:100]}"}
 
         try:
             logger.info("[ShellTool] run | cmd=%s | background=%s", cmd[:100], background)
@@ -338,17 +303,6 @@ class ShellTool(BaseTool):
             return {"success": False, "error": f"终止失败: {str(e)}"}
 
     # ================================================================
-    #  权限检查
-    # ================================================================
-
-    def _check_permission(self, cmd: str) -> bool:
-        """权限检查"""
-        if hasattr(self, 'permissions') and self.permissions is not None:
-            if self.permissions.check_permission(cmd):
-                return True
-        return True
-
-    # ================================================================
     #  兼容旧接口
     # ================================================================
 
@@ -369,14 +323,15 @@ class ShellTool(BaseTool):
         if isinstance(command, dict):
             sub_cmd = command.get("command", "")
 
-            # 兼容旧格式：{"command": "ls -la"} 视为 run
+            if not sub_cmd and (command.get("cmd") or command.get("argv")):
+                sub_cmd = "run"
+
             if sub_cmd and sub_cmd not in ("run", "list", "output", "kill"):
                 return self._cmd_run({
                     "cmd": command.get("command", ""),
                     "background": command.get("run_in_background", False),
                 })
 
-            # 新格式：子命令分发
             if sub_cmd == "run":
                 return self._cmd_run(command)
             elif sub_cmd == "list":

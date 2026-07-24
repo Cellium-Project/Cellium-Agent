@@ -616,6 +616,7 @@ class CelliumShell:
         task_id = f"bg_{uuid.uuid4().hex[:8]}"
         output_file = os.path.join(tempfile.gettempdir(), f"{task_id}.output")
 
+        process_ref = {}
         def run_in_thread():
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
             env = os.environ.copy()
@@ -630,6 +631,7 @@ class CelliumShell:
                     env=env,
                     shell=False,
                 )
+                process_ref['p'] = process
 
                 try:
                     stdout, stderr = process.communicate(timeout=timeout)
@@ -667,7 +669,7 @@ class CelliumShell:
                 }
 
         future = self._get_executor().submit(run_in_thread)
-        self._background_tasks[task_id] = future
+        self._background_tasks[task_id] = {"future": future, "process_ref": process_ref}
 
         return {
             "status": "background_started",
@@ -846,6 +848,7 @@ class CelliumShell:
                         result["truncated"] = True
                     if process.returncode != 0:
                         result["error"] = stderr_str or f"Exit code: {process.returncode}"
+                    self._update_cwd(cmd, process.returncode, stdout_str)
                     return result
 
                 except asyncio.TimeoutError:
@@ -913,6 +916,7 @@ class CelliumShell:
                 if process.returncode != 0:
                     result["error"] = stderr_str or f"Exit code: {process.returncode}"
 
+                self._update_cwd(cmd, process.returncode, stdout_str)
                 return result
 
             except asyncio.TimeoutError:
@@ -954,6 +958,7 @@ class CelliumShell:
         task_id = f"bg_{uuid.uuid4().hex[:8]}"
         output_file = os.path.join(tempfile.gettempdir(), f"{task_id}.output")
 
+        process_ref = {}
         def run_in_thread():
             shell_cmd, shell_args = self._resolve_shell(cmd)
 
@@ -981,6 +986,7 @@ class CelliumShell:
                     env=env,
                     shell=False,
                 )
+                process_ref['p'] = process
 
                 try:
                     if stdin_data:
@@ -1021,7 +1027,7 @@ class CelliumShell:
                 }
 
         future = self._get_executor().submit(run_in_thread)
-        self._background_tasks[task_id] = future
+        self._background_tasks[task_id] = {"future": future, "process_ref": process_ref}
 
         return {
             "status": "background_started",
@@ -1032,15 +1038,22 @@ class CelliumShell:
 
     def kill_background_task(self, task_id: str) -> bool:
         """终止后台任务"""
-        if task_id in self._background_tasks:
-            task = self._background_tasks[task_id]
-            if asyncio.iscoroutine(task):
-                task.cancel()
-            else:
-                task.cancel()
-            del self._background_tasks[task_id]
-            return True
-        return False
+        if task_id not in self._background_tasks:
+            return False
+        task = self._background_tasks[task_id]
+        proc = task["process_ref"].get("p")
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        try:
+            task["future"].cancel()
+        except Exception:
+            pass
+        del self._background_tasks[task_id]
+        return True
 
     def list_background_tasks(self) -> list:
         """列出所有后台任务"""
@@ -1052,19 +1065,20 @@ class CelliumShell:
             return None
 
         task = self._background_tasks[task_id]
+        future = task["future"]
 
-        if asyncio.iscoroutine(task):
+        if asyncio.iscoroutine(future):
             return None
 
         if timeout > 0:
             try:
-                return task.result(timeout=timeout)
+                return future.result(timeout=timeout)
             except Exception as e:
                 return {"success": False, "error": str(e)}
         else:
-            if task.done():
+            if future.done():
                 try:
-                    return task.result()
+                    return future.result()
                 except Exception as e:
                     return {"success": False, "error": str(e)}
         return None
@@ -1075,12 +1089,13 @@ class CelliumShell:
             return None
 
         task = self._background_tasks[task_id]
+        future = task["future"]
 
-        if not asyncio.iscoroutine(task):
+        if not asyncio.iscoroutine(future):
             return None
 
         try:
-            return await task
+            return await future
         except Exception as e:
             return {"success": False, "error": str(e)}
 

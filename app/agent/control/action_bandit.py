@@ -167,6 +167,7 @@ class ActionBandit:
           - bias > 0 表示"推荐"，但 Bandit 仍可选择其他
           - 不同 action 有不同的触发条件
           - 使用 Policy 阈值动态调整判断条件
+          - 冷启动保护：统计不足时自动放大 bias，让启发式兜底
 
         Returns:
             bias 值 [0, 1]
@@ -179,27 +180,31 @@ class ActionBandit:
 
         if action == "redirect":
             if hasattr(features, 'repetition_score') and features.repetition_score > repetition_score_threshold:
-                bias = max(bias, 0.2 * features.repetition_score)
+                bias = max(bias, 0.03 * features.repetition_score)
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations >= stuck_threshold:
-                bias = max(bias, 0.25)
+                bias = max(bias, 0.04)
 
         if action == "retry":
             if hasattr(features, 'stuck_iterations') and 1 <= features.stuck_iterations < stuck_threshold:
-                bias = max(bias, 0.15)
+                bias = max(bias, 0.02)
             if hasattr(features, 'progress_trend') and 0 < features.progress_trend < 0.3:
-                bias = max(bias, 0.1)
+                bias = max(bias, 0.01)
 
         if action == "compress":
             if hasattr(features, 'context_saturation') and features.context_saturation > 0.6:
-                bias = max(bias, 0.2)
+                bias = max(bias, 0.03)
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations >= stuck_threshold // 2:
-                bias = max(bias, 0.15)
+                bias = max(bias, 0.02)
 
         if action == "continue":
             if hasattr(features, 'progress_score') and features.progress_score > 0.5:
-                bias = max(bias, 0.15)
+                bias = max(bias, 0.02)
             if hasattr(features, 'stuck_iterations') and features.stuck_iterations == 0:
-                bias = max(bias, 0.2)
+                bias = max(bias, 0.03)
+
+        # 冷启动保护：该 action 统计不足时放大 bias，退回启发式主导
+        if action in self._stats and self._stats[action].count < 5:
+            bias *= 5
 
         return bias
 

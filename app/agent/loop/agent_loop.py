@@ -904,6 +904,7 @@ class AgentLoop:
             if self._should_update_goal(user_input, current_goal):
                 logger.info("[AgentLoop] 检测到新目标，更新 | session=%s | 旧目标: %s | 新目标: %s",
                            effective_session, current_goal[:50] if current_goal else "(无)", user_input[:50])
+                session_notes.load()
                 session_notes.set_goal(user_input, force=True)
                 session_notes.save()
 

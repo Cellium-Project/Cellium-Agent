@@ -4,23 +4,26 @@ learning:
   override_policy: null
   memory_path: data/learning/policy_bandit_stats.json
   decay:
-    interval: 51
-    factor: 0.93
+    interval: 100
+    factor: 0.98
   prior:
     alpha: 2
     beta: 2
   policies:
     default:
+      # 默认策略：平衡效率与宽容度
       stuck_iterations: 3
       repetition_threshold: 3
       progress_trend_threshold: -0.3
       confirm_stop_threshold: 0.9
     efficient:
-      stuck_iterations: 5
-      repetition_threshold: 5
-      progress_trend_threshold: -0.5
-      confirm_stop_threshold: 0.95
+      # 高效策略：更快切换方向，适合简单任务
+      stuck_iterations: 2
+      repetition_threshold: 2
+      progress_trend_threshold: -0.2
+      confirm_stop_threshold: 0.8
     aggressive:
+      # 激进策略：更执着，适合复杂任务
       stuck_iterations: 5
       repetition_threshold: 5
       progress_trend_threshold: -0.4

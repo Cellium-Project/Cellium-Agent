@@ -338,8 +338,14 @@ class SessionCompactor:
     def _format_messages(self, messages: List[Dict]) -> str:
         """将消息格式化为可读文本"""
         lines = []
+        call_id_to_name = {}
         for msg in messages:
-            # 跳过已压缩的笔记消息，避免重复压缩
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict) and "id" in tc:
+                    fn = tc.get("function", {})
+                    call_id_to_name[tc["id"]] = (fn.get("name", "") if isinstance(fn, dict) else "") or tc["id"]
+
+        for msg in messages:
             if msg.get("_is_compacted_notes"):
                 continue
 
@@ -351,7 +357,8 @@ class SessionCompactor:
             elif role == "assistant" and content:
                 lines.append(f"[助手]: {content[:500]}")
             elif role == "tool":
-                tool_name = msg.get("tool_call_id", "unknown")
+                call_id = msg.get("tool_call_id", "")
+                tool_name = call_id_to_name.get(call_id, call_id) or "unknown"
                 lines.append(f"[工具结果-{tool_name}]: {content[:300] if content else '(无内容)'}")
 
         return "\n".join(lines)[:8000]
