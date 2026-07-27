@@ -1,28 +1,16 @@
-from app.core.util.mp_manager import (
-    MultiprocessManager,
-    get_multiprocess_manager,
-    run_in_process,
-    run_in_process_async
-)
-from app.core.util.components_loader import load_components, load_component_config
-from app.core.util.agent_config import AgentConfig, get_config, reset_config
-from app.core.util.logger import (
-    setup_logger, get_logger, LogMixin,
-    query_logs, get_recent_logs, get_error_logs,
-    buffer_stats, clear_logs, install_buffer,
-)
+# -*- coding: utf-8 -*-
+"""
+工具子模块
 
-__all__ = [
-    # 多进程管理
-    "MultiprocessManager", "get_multiprocess_manager",
-    "run_in_process", "run_in_process_async",
-    # 组件加载
-    "load_components", "load_component_config",
-    # 配置管理
-    "AgentConfig", "get_config", "reset_config",
-    # 日志（写）
-    "setup_logger", "get_logger", "LogMixin",
-    # 日志（读 — Agent 查询用）
-    "query_logs", "get_recent_logs", "get_error_logs",
-    "buffer_stats", "clear_logs", "install_buffer",
-]
+包含以下子模块（直接从子模块导入，不要使用简写形式）：
+- mp_manager: 多进程管理（MultiprocessManager、ProcessPoolExecutor）
+- components_loader: 组件扫描/加载/热重载
+- component_sandbox: 沙箱子进程管理
+- component_tool_registry: 工具注册表
+- agent_config: Agent 配置（基于 yamlsettings）
+- logger: 可查询的统一日志系统
+- browser_utils / browser_runtime: 浏览器路径查找
+- cell_tool_adapter: Cell 到 Tool 适配器
+- component_watcher / component_auditor: 组件监控/审计
+
+"""

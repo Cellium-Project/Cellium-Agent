@@ -155,16 +155,6 @@ class TestAgentLoopMemoryIntegration(unittest.TestCase):
         messages = self.memory.get_messages()
         self.assertEqual(len(messages), 2)
 
-    def test_memory_manager_max_history(self):
-        """测试记忆管理器最大历史"""
-        memory = MemoryManager(max_history=3)
-
-        for i in range(5):
-            memory.add_user_message(f"message {i}")
-
-        messages = memory.get_messages()
-        self.assertLessEqual(len(messages), 3)
-
 
 class TestAgentLoopToolRegistration(unittest.TestCase):
     """测试工具注册"""

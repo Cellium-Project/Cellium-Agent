@@ -28,7 +28,6 @@ Agent 使用方式:
 """
 
 import logging
-import logging.handlers
 import os
 import sys
 import threading
@@ -135,11 +134,10 @@ class RuntimeStatus:
             if instruction:
                 lines.append(f"[阶段指令] {instruction}")
         
-        # Hybrid 观察结果（提示 LLM 检查结果是否符合预期）
         if self.last_observation_success is not None:
             success_str = "✓" if self.last_observation_success else "✗"
             if self.last_observation_matched is None:
-                matched_str = "?"  # 需要 LLM 自己判断
+                matched_str = "?"  
             else:
                 matched_str = "✓" if self.last_observation_matched else "✗"
             lines.append(f"[执行结果] 成功:{success_str} | 符合预期:{matched_str}")
@@ -228,7 +226,6 @@ def set_runtime_status(state) -> None:
     if features:
         rs.stuck_iterations = getattr(features, "stuck_iterations", 0)
 
-    # 决策可观测性：获取上一轮预测验证结果
     if len(state.decision_trace) >= 2:
         last_decision = state.decision_trace[-2]
         if last_decision.predicted_outcome:
@@ -238,7 +235,6 @@ def set_runtime_status(state) -> None:
     # PEOP 阶段信息
     rs.hybrid_phase = getattr(state, 'hybrid_phase', None)
     
-    # Hybrid 观察结果（用于提示 LLM 检查结果是否符合预期）
     rs.last_observation_success = getattr(state, 'last_observation_success', None)
     rs.last_observation_matched = getattr(state, 'last_observation_matched', None)
     rs.last_observation_needs_replan = getattr(state, 'last_observation_needs_replan', False)
@@ -305,12 +301,7 @@ class LogEntry:
 
 
 class _LogBufferHandler(logging.Handler):
-    """
-    内存环形缓冲 Handler（内部类）
-    
-    作为第二个 handler 安装到 logger 上，
-    在输出到控制台的同时将每条日志存入内存 Ring Buffer。
-    """
+    """内存环形缓冲 Handler（内部使用）"""
 
     _instance: Optional["_LogBufferHandler"] = None
 
@@ -350,7 +341,7 @@ class _LogBufferHandler(logging.Handler):
                 self._buffer.append(entry)
                 self._total_captured += 1
         except Exception:
-            pass  # 日志系统自身不能抛异常
+            pass 
 
     # ---- 安装/卸载 ----
 
@@ -360,6 +351,7 @@ class _LogBufferHandler(logging.Handler):
         target = target or logging.getLogger()
         if self not in target.handlers:
             target.addHandler(self)
+            target.setLevel(logging.DEBUG)
             self._installed = True
             logging.getLogger(__name__).info(
                 f"[LogBuffer] 已安装 (容量={self._max_size})")
@@ -540,7 +532,14 @@ def setup_logger(
     if not logger_obj.handlers:
         logger_obj.addHandler(handler)
 
-    logger_obj.propagate = False
+    try:
+        buf = _LogBufferHandler._instance
+        if buf and buf._installed and buf not in logger_obj.handlers:
+            logger_obj.addHandler(buf)
+    except Exception:
+        pass
+
+    logger_obj.propagate = True
     _loggers[name] = logger_obj
 
     return logger_obj

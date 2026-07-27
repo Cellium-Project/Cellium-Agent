@@ -2,11 +2,11 @@ memory:
   section: memory
   memory_dir: memory
   short_term:
-    max_history: 50
+    max_history: 200
   session_compact:
     enabled: true
-    token_threshold: 100000
-    tool_call_threshold: 50
+    token_threshold: 200000
+    tool_call_threshold: 80
     keep_recent_messages: 20
     max_notes_length: 2000
     notes_dir: memory/notes

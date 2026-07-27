@@ -39,7 +39,6 @@ from .loop_controller import LoopController
 from app.agent.prompt import PromptBuilder, PromptDiffTracker, create_default_builder
 from .loop_event_publisher import LoopEventPublisher
 from .round_trimmer import trim_old_rounds
-from .microcompact import trim_old_tool_results
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +209,7 @@ class AgentLoop:
         # 默认配置
         self._mem_config = {
             "short_term": {
-                "max_history": 50,
+                "max_history": 200,
             },
             "session_compact": {
                 "token_threshold": 100000,
@@ -1252,9 +1251,6 @@ class AgentLoop:
 
                 # 通过 PromptBuilder 构建结构化消息列表
                 llm_messages = self._prompt_builder.build(context)
-
-                if len(llm_messages) > 40:
-                    llm_messages = trim_old_tool_results(llm_messages, keep_count=10)
 
                 # REPLAN 阶段：追加动态上下文（老代码保留不变）
                 if replan_message:

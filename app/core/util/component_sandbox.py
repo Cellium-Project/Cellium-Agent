@@ -2,9 +2,6 @@
 """
 ComponentSandbox — 组件子进程沙箱
 
-在独立进程中执行用户创建的组件代码，实现真正的进程隔离。
-即使组件执行危险操作，也不会影响主进程。
-
 架构：
     主进程                    沙箱子进程
     ──────                    ─────────
@@ -30,280 +27,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.core.interface.icell import ICell
-
-
-def ensure_import(module_name: str, project_root: str = None) -> Any:
-    import importlib
-    
-    if project_root:
-        libs_dir = os.path.join(project_root, "libs")
-        if os.path.exists(libs_dir) and libs_dir not in sys.path:
-            sys.path.insert(0, libs_dir)
-    
-    try:
-        return importlib.import_module(module_name)
-    except ImportError:
-        import importlib.machinery
-        importlib.machinery.PathFinder.invalidate_caches()
-        return importlib.import_module(module_name)
+from .sandbox_entry import _sandbox_worker, SANDBOX_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
-# 沙箱超时（秒）
-SANDBOX_TIMEOUT = 120
-
-
-def _sandbox_worker(input_queue: multiprocessing.Queue, output_queue: multiprocessing.Queue,
-                    module_path: str, class_name: str, init_args: Dict, project_root: str):
-    """
-    沙箱工作进程
-    """
-    import time
-    import importlib
-    import builtins
-    import importlib.util
-
-    original_import = builtins.__import__
-
-    ALLOWED_APP_MODULES = {
-        'app.core.interface',
-        'app.core.util.logger',
-    }
-
-    def sandbox_import(name, globals=None, locals=None, fromlist=(), level=0):
-        root_name = name.split('.')[0]
-        
-        if root_name == 'app':
-            allowed = any(name.startswith(prefix) for prefix in ALLOWED_APP_MODULES)
-            if not allowed:
-                raise ImportError(
-                    f"[Sandbox] 禁止导入项目模块 '{name}'。"
-                    f"沙箱组件只能使用基础接口和第三方库。"
-                )
-        elif root_name == 'components':
-            raise ImportError(
-                f"[Sandbox] 禁止导入其他组件 '{name}'。"
-            )
-        
-        return original_import(name, globals, locals, fromlist, level)
-
-    builtins.__import__ = sandbox_import
-
-    try:
-        if os.path.isdir(module_path) and os.path.exists(os.path.join(module_path, "__init__.py")):
-            pkg_name = os.path.basename(module_path)
-            components_dir = os.path.dirname(module_path)
-            if components_dir not in sys.path:
-                sys.path.insert(0, components_dir)
-
-            for key in list(sys.modules.keys()):
-                if key == pkg_name or key.startswith(f"{pkg_name}."):
-                    try:
-                        del sys.modules[key]
-                    except Exception:
-                        pass
-
-            pycache_dir = os.path.join(module_path, "__pycache__")
-            if os.path.exists(pycache_dir):
-                for cached_file in Path(pycache_dir).glob("*.pyc"):
-                    try:
-                        cached_file.unlink()
-                    except Exception:
-                        pass
-
-            for sub_dir in Path(module_path).iterdir():
-                if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
-                    for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
-                        try:
-                            cached_file.unlink()
-                        except Exception:
-                            pass
-
-            component_class = None
-            for py_file in Path(module_path).rglob("*.py"):
-                if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                    continue
-
-                rel_path = py_file.relative_to(module_path)
-                module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
-                if module_parts[-1] == "__init__":
-                    module_parts = module_parts[:-1]
-                sub_module_name = f"{pkg_name}.{'.'.join(module_parts)}" if module_parts else pkg_name
-
-                try:
-                    sub_module = importlib.import_module(sub_module_name)
-                    if hasattr(sub_module, class_name):
-                        obj = getattr(sub_module, class_name)
-                        if inspect.isclass(obj):
-                            component_class = obj
-                            break
-                except Exception:
-                    continue
-
-            if component_class is None:
-                raise AttributeError(f"类不存在: {class_name} 在包 {pkg_name}")
-        else:
-            try:
-                cached = importlib.util.cache_from_source(module_path)
-                if cached and os.path.exists(cached):
-                    os.remove(cached)
-                    logger.debug("[Sandbox] 已删除缓存: %s", cached)
-            except Exception as e:
-                logger.debug("[Sandbox] 删除缓存失败: %s", e)
-
-            try:
-                pycache_dir = Path(module_path).parent / "__pycache__"
-                if pycache_dir.exists():
-                    stem = Path(module_path).stem
-                    for cached_file in pycache_dir.glob(f"{stem}*.pyc"):
-                        try:
-                            cached_file.unlink()
-                            logger.debug("[Sandbox] 已删除缓存(glob): %s", cached_file)
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.debug("[Sandbox] glob清理缓存失败: %s", e)
-
-            unique_module_name = f"sandbox_component_{class_name}_{os.path.getmtime(module_path)}"
-            spec = importlib.util.spec_from_file_location(unique_module_name, module_path)
-            module = importlib.util.module_from_spec(spec)
-
-            module.__dict__['__builtins__'] = builtins.__dict__
-            module.__dict__['__import__'] = sandbox_import
-
-            spec.loader.exec_module(module)
-            component_class = getattr(module, class_name)
-
-        component = component_class(**init_args)
-
-        output_queue.put({"status": "ok", "cell_name": getattr(component, "cell_name", "unknown")})
-
-        if hasattr(component, "on_load"):
-            is_background = hasattr(component, '_running')
-            
-            if is_background:
-                try:
-                    component.on_load()
-                    logger.debug("[Sandbox] on_load completed (background component)")
-                except Exception as e:
-                    logger.warning("[Sandbox] on_load failed: %s", e)
-            else:
-                def run_on_load():
-                    try:
-                        component.on_load()
-                    except Exception as e:
-                        logger.warning("[Sandbox] on_load failed: %s", e)
-                thread = threading.Thread(target=run_on_load, daemon=True)
-                thread.start()
-                logger.debug("[Sandbox] on_load started in background thread")
-
-        # 心跳管理
-        HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
-        BACKGROUND_TIMEOUT = 300  # 后台组件超时（秒）
-        last_heartbeat = time.time()
-        
-        from queue import Empty as QueueEmpty
-        
-        while True:
-            try:
-                has_background = False
-                if hasattr(component, '_running'):
-                    has_background = component._running
-                
-                if has_background:
-                    # 后台模式：使用更长的超时时间
-                    timeout = BACKGROUND_TIMEOUT
-                else:
-                    # 普通模式：使用默认超时
-                    timeout = SANDBOX_TIMEOUT
-                
-                request = input_queue.get(timeout=timeout)
-                if request is None:
-                    break
-
-                action = request.get("action")
-
-                if action == "execute":
-                    command = request.get("command", "")
-                    args = request.get("args", [])
-                    kwargs = request.get("kwargs", {})
-                    result = component.execute(command, *args, **kwargs)
-                    output_queue.put({"status": "ok", "result": result})
-
-                elif action == "get_commands":
-                    commands = component.get_commands()
-                    output_queue.put({"status": "ok", "commands": commands})
-
-                elif action == "get_command_params":
-                    params_map = component.get_command_params() if hasattr(component, 'get_command_params') else {}
-                    output_queue.put({"status": "ok", "params_map": params_map})
-
-                elif action == "get_commands_meta":
-                    commands_meta = {}
-                    commands = component.get_commands()
-                    for cmd_name in commands.keys():
-                        method_name = f"_cmd_{cmd_name}"
-                        method = getattr(component, method_name, None)
-                        if method:
-                            meta = {
-                                "doc": method.__doc__ or "",
-                                "name": cmd_name,
-                            }
-                            try:
-                                sig = inspect.signature(method)
-                                params = [p for p in sig.parameters.keys() if p != "self"]
-                                meta["params"] = params
-                            except Exception:
-                                meta["params"] = []
-                            commands_meta[cmd_name] = meta
-                    output_queue.put({"status": "ok", "commands_meta": commands_meta})
-
-                elif action == "has_method":
-                    method_name = request.get("method_name", "")
-                    has_it = hasattr(component, method_name) and callable(getattr(component, method_name))
-                    output_queue.put({"status": "ok", "has": has_it})
-
-                elif action == "ping":
-                    output_queue.put({"status": "pong"})
-
-                elif action == "heartbeat":
-                    last_heartbeat = time.time()
-                    has_bg = False
-                    if hasattr(component, '_running'):
-                        has_bg = component._running
-                    output_queue.put({"status": "ok", "has_background": has_bg})
-
-                else:
-                    output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
-
-            except QueueEmpty:
-                continue
-            except Exception as e:
-                error_str = str(e) or f"{type(e).__name__} (no error message)"
-                output_queue.put({
-                    "status": "error",
-                    "error": error_str,
-                    "error_type": type(e).__name__,
-                    "traceback": traceback.format_exc(),
-                })
-
-    except Exception as e:
-        error_str = str(e) or f"{type(e).__name__} (no error message)"
-        output_queue.put({
-            "status": "error",
-            "error": f"Failed to init component: {error_str}",
-            "error_type": type(e).__name__,
-            "traceback": traceback.format_exc(),
-        })
-
-
 class SandboxProcess:
-    """
-    沙箱子进程管理器
-
-    使用 multiprocessing 启动独立进程，用于执行组件代码。
-    支持 Nuitka 打包环境。
-    """
+    """ 沙箱子进程管理器"""
 
     def __init__(self, timeout: int = SANDBOX_TIMEOUT):
         """
@@ -317,7 +46,8 @@ class SandboxProcess:
         self._initialized = False
         self._module_path = None
         self._class_name = None
-        self._is_executing = False 
+        self._is_executing = False
+        self._ipc_lock = threading.Lock()
 
     def start(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None, retry: int = 2):
         """
@@ -373,6 +103,11 @@ class SandboxProcess:
             self.stop()
             raise RuntimeError(f"Sandbox init failed after {retry + 1} attempts: {last_error}")
 
+    def _send_and_recv(self, request: Dict, timeout: float = None) -> Dict:
+        """线程安全地发送请求并接收响应"""
+        self._input_queue.put(request)
+        return self._output_queue.get(timeout=timeout or self._timeout)
+
     def execute(self, command: str, *args, **kwargs) -> Any:
         """
         在沙箱中执行命令
@@ -394,17 +129,15 @@ class SandboxProcess:
             logger.error("[Sandbox] Process is dead | pid=%s | module=%s", self._process.pid if self._process else None, self._module_path)
             raise RuntimeError("Sandbox not initialized or process dead")
 
-        self._is_executing = True
-        try:
-            self._input_queue.put({
-                "action": "execute",
-                "command": command,
-                "args": args,
-                "kwargs": kwargs
-            })
-
+        with self._ipc_lock:
+            self._is_executing = True
             try:
-                result = self._output_queue.get(timeout=self._timeout)
+                result = self._send_and_recv({
+                    "action": "execute",
+                    "command": command,
+                    "args": args,
+                    "kwargs": kwargs
+                })
                 if result.get("status") == "ok":
                     return result.get("result")
                 else:
@@ -414,24 +147,24 @@ class SandboxProcess:
             except Exception as e:
                 logger.error("[Sandbox] Command execution failed: %s", e)
                 raise
-        finally:
-            self._is_executing = False
+            finally:
+                self._is_executing = False
 
     def get_commands(self) -> Dict[str, str]:
         """获取组件支持的命令列表"""
         if not self._initialized:
             return {}
 
-        self._input_queue.put({"action": "get_commands"})
-        try:
-            result = self._output_queue.get(timeout=5)
-            if result.get("status") == "ok":
-                commands = result.get("commands", {})
-                if isinstance(commands, dict):
-                    return commands
-                return {}
-        except:
-            pass
+        with self._ipc_lock:
+            try:
+                result = self._send_and_recv({"action": "get_commands"}, timeout=5)
+                if result.get("status") == "ok":
+                    commands = result.get("commands", {})
+                    if isinstance(commands, dict):
+                        return commands
+                    return {}
+            except:
+                pass
         return {}
 
     def get_command_params(self) -> Dict[str, list]:
@@ -439,13 +172,13 @@ class SandboxProcess:
         if not self._initialized:
             return {}
 
-        self._input_queue.put({"action": "get_command_params"})
-        try:
-            result = self._output_queue.get(timeout=5)
-            if result.get("status") == "ok":
-                return result.get("params_map", {})
-        except:
-            pass
+        with self._ipc_lock:
+            try:
+                result = self._send_and_recv({"action": "get_command_params"}, timeout=5)
+                if result.get("status") == "ok":
+                    return result.get("params_map", {})
+            except:
+                pass
         return {}
 
     def get_commands_meta(self) -> Dict[str, Dict[str, Any]]:
@@ -453,13 +186,13 @@ class SandboxProcess:
         if not self._initialized:
             return {}
 
-        self._input_queue.put({"action": "get_commands_meta"})
-        try:
-            result = self._output_queue.get(timeout=5)
-            if result.get("status") == "ok":
-                return result.get("commands_meta", {})
-        except:
-            pass
+        with self._ipc_lock:
+            try:
+                result = self._send_and_recv({"action": "get_commands_meta"}, timeout=5)
+                if result.get("status") == "ok":
+                    return result.get("commands_meta", {})
+            except:
+                pass
         return {}
 
     def has_method(self, method_name: str) -> bool:
@@ -467,43 +200,43 @@ class SandboxProcess:
         if not self._initialized:
             return False
 
-        self._input_queue.put({"action": "has_method", "method_name": method_name})
-        try:
-            result = self._output_queue.get(timeout=5)
-            if result.get("status") == "ok":
-                return result.get("has", False)
-        except:
-            pass
+        with self._ipc_lock:
+            try:
+                result = self._send_and_recv({"action": "has_method", "method_name": method_name}, timeout=5)
+                if result.get("status") == "ok":
+                    return result.get("has", False)
+            except:
+                pass
         return False
 
     def ping(self) -> bool:
         """检查沙箱进程是否存活"""
         if not self._process or not self._process.is_alive():
             return False
-        
-        try:
-            self._input_queue.put({"action": "ping"})
-            result = self._output_queue.get(timeout=5)
-            return result.get("status") == "pong"
-        except:
-            return False
+
+        with self._ipc_lock:
+            try:
+                result = self._send_and_recv({"action": "ping"}, timeout=5)
+                return result.get("status") == "pong"
+            except:
+                return False
 
     def is_busy(self) -> bool:
+        """检查沙箱是否正在执行命令"""
         if self._is_executing:
             return True
-        
+
         if not self._initialized or not self._process or not self._process.is_alive():
             return False
-        
-        try:
-            self._input_queue.put({"action": "ping"})
-            result = self._output_queue.get(timeout=2)
-            if result.get("status") == "pong":
-                return False
-        except:
-            pass
-        
-        return True
+
+        with self._ipc_lock:
+            if self._is_executing:
+                return True
+            try:
+                result = self._send_and_recv({"action": "ping"}, timeout=2)
+                return result.get("status") != "pong"
+            except:
+                return True
 
     def stop(self):
         """停止沙箱进程"""
@@ -701,13 +434,13 @@ class ComponentSandbox(ICell):
         if not self.is_alive():
             return {"status": "error", "error": "Sandbox not alive"}
         
-        try:
-            self._sandbox._input_queue.put({"action": "heartbeat"})
-            result = self._sandbox._output_queue.get(timeout=10)
-            return result
-        except Exception as e:
-            logger.warning("[ComponentSandbox] Heartbeat failed: %s", e)
-            return {"status": "error", "error": str(e)}
+        with self._sandbox._ipc_lock:
+            try:
+                result = self._sandbox._send_and_recv({"action": "heartbeat"}, timeout=10)
+                return result
+            except Exception as e:
+                logger.warning("[ComponentSandbox] Heartbeat failed: %s", e)
+                return {"status": "error", "error": str(e)}
 
     @classmethod
     def get_sandbox(cls, name: str) -> 'ComponentSandbox':

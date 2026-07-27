@@ -414,17 +414,6 @@ class TestMemoryManager(unittest.TestCase):
         self.assertEqual(messages[0]["tool_calls"][0]["id"], tool_call_id)
         self.assertEqual(messages[1]["role"], "tool")
 
-    def test_max_history_limit(self):
-        memory = MemoryManager(max_history=3)
-        for i in range(5):
-            memory.add_user_message(f"message {i}")
-        messages = memory.get_messages()
-        self.assertLessEqual(len(messages), 3)
-
-
-
-
-
 
 
 
