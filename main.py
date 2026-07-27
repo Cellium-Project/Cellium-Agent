@@ -27,13 +27,7 @@ libs_dir = os.path.join(project_root, "libs")
 if os.path.exists(libs_dir) and libs_dir not in sys.path:
     sys.path.insert(0, libs_dir)
 
-
 def main():
-    """Agent 主入口 — 所有重模块 imports 在此函数内部完成
-
-    spawn 子进程重建 __main__ 时，__name__ 不是 "__main__"，
-    所以不会进入 main() 函数体，自然不会拉入 Agent 栈。
-    """
     import asyncio
     import logging
     import uvicorn
