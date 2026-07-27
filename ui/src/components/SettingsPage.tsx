@@ -1554,28 +1554,11 @@ const MemorySettings: React.FC = () => {
     await putJSON(API.configUpdate('memory'), { value: config, persist: true });
   });
 
-  const shortTerm = config.short_term || {};
   const sessionCompact = config.session_compact || {};
   const longTerm = config.long_term || {};
 
   return (
     <div className="settings-panel memory-settings-panel">
-      <div className="settings-card">
-        <div className="settings-card-header">
-          <div className="settings-card-title">
-            <Icons.Brain size={16} /> {t('settings.memory.shortTermMemory')}
-
-          </div>
-        </div>
-        <div className="settings-card-grid">
-          <div className="form-group">
-            <FieldLabel label={t('settings.memory.maxMessages')} desc={t('settings.memory.maxMessagesDesc')} />
-            <input type="number" value={Number(shortTerm.max_history) || 50} min={10} max={200}
-              onChange={e => updateField('short_term.max_history', parseInt(e.target.value))} />
-          </div>
-        </div>
-      </div>
-
       <div className="settings-card">
         <div className="settings-card-header">
           <div className="settings-card-title">{t('settings.memory.sessionCompact')}</div>
@@ -1588,17 +1571,17 @@ const MemorySettings: React.FC = () => {
         <div className="settings-card-grid">
           <div className="form-group">
             <FieldLabel label={t('settings.memory.tokenThreshold')} desc={t('settings.memory.tokenThresholdDesc')} />
-            <input type="number" value={Number(sessionCompact.token_threshold) || 2000} min={500} max={10000}
+            <input type="number" value={Number(sessionCompact.token_threshold) || 200000} min={5000} max={500000} step={5000}
               onChange={e => updateField('session_compact.token_threshold', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.memory.toolCallThreshold')} desc={t('settings.memory.toolCallThresholdDesc')} />
-            <input type="number" value={Number(sessionCompact.tool_call_threshold) || 3} min={1} max={20}
+            <input type="number" value={Number(sessionCompact.tool_call_threshold) || 80} min={1} max={200}
               onChange={e => updateField('session_compact.tool_call_threshold', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.memory.keepRecentMessages')} desc={t('settings.memory.keepRecentMessagesDesc')} />
-            <input type="number" value={Number(sessionCompact.keep_recent_messages) || 10} min={3} max={50}
+            <input type="number" value={Number(sessionCompact.keep_recent_messages) || 20} min={3} max={100}
               onChange={e => updateField('session_compact.keep_recent_messages', parseInt(e.target.value))} />
           </div>
           <div className="form-group">

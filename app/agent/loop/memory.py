@@ -11,7 +11,7 @@ class MemoryManager:
 
     def __init__(
         self,
-        max_history: int = 50,
+        max_history: int = 200,
     ):
         self.messages: List[Dict] = []
         self._ephemeral_messages: List[Dict] = []
@@ -147,9 +147,17 @@ class MemoryManager:
 
     def get_messages(self) -> List[Dict]:
         """获取消息列表"""
-        messages = self._smart_truncate(self.messages, self.max_history)
+        messages = self.messages
+
+        if len(messages) > 1000:
+            logger.info(
+                "[MemoryManager] 安全上限截断 | %d→1000条",
+                len(messages),
+            )
+            messages = messages[-1000:]
+
         messages = self._fix_message_sequence(messages)
-        
+
         if self._ephemeral_messages:
             messages = messages + self._ephemeral_messages
         return messages

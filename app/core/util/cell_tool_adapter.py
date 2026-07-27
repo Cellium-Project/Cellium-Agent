@@ -176,21 +176,9 @@ class CellToolAdapter(BaseTool):
             return None
 
     def execute(self, command="", *args, **kwargs) -> Dict[str, Any]:
-        """
-        执行命令 — 委托给底层组件的 execute()
-
-        支持两种调用模式：
-        1. command=str:   execute("do_something", arg1="val")
-        2. command=dict:  execute({"command": "do_something", "arg1": "val"})  ← LLM 模式
-        """
-        load_error = self._check_load_error()
-        if load_error:
-            return load_error
-
-        if self._use_sandbox:
-            return self._execute_in_sandbox(command, *args, **kwargs)
-        else:
-            return self._execute_direct(command, *args, **kwargs)
+        """执行命令 — 转发到 execute_with_context()（BaseTool 接口兼容）"""
+        arguments = command if isinstance(command, dict) else {"command": command, **kwargs}
+        return self.execute_with_context(arguments)
 
     def _check_load_error(self) -> Optional[Dict[str, Any]]:
         """
@@ -230,72 +218,6 @@ class CellToolAdapter(BaseTool):
             logger.debug("[CellToolAdapter] 检查加载错误失败: %s", e)
         return None
 
-    def _execute_in_sandbox(self, command, *args, **kwargs) -> Dict[str, Any]:
-        """在沙箱中执行组件命令"""
-        try:
-            from app.core.util.component_sandbox import ComponentSandbox, SandboxProcess
-
-            sandbox = ComponentSandbox.get_sandbox(self.name)
-
-            # 初始化沙箱（检查内部 _sandbox 是否存在且已初始化）
-            needs_init = not sandbox._sandbox or not sandbox.is_alive()
-            if needs_init:
-                source_file = self._get_component_source()
-                class_name = type(self._cell).__name__
-
-                if source_file:
-                    try:
-                        sandbox.initialize(source_file, class_name)
-                    except Exception as e:
-                        logger.warning(
-                            "[CellToolAdapter] %s 沙箱初始化失败，回退到直接执行: %s",
-                            self.name, e,
-                        )
-                        return self._execute_direct(command, *args, **kwargs)
-                else:
-                    logger.warning(
-                        "[CellToolAdapter] %s 无法获取源文件，回退到直接执行",
-                        self.name,
-                    )
-                    return self._execute_direct(command, *args, **kwargs)
-
-            if isinstance(command, dict):
-                all_args = dict(command)
-                cmd_name = all_args.pop("command", None)
-                if cmd_name:
-                    cmd_name = cmd_name.strip()
-                if not cmd_name:
-                    cmd_name = self._infer_command(all_args)
-
-                target_method = getattr(self._cell, f"{self.COMMAND_PREFIX}{cmd_name}", None)
-                if target_method:
-                    sig = inspect.signature(target_method)
-                    valid_params = {p for p in sig.parameters if p != "self"}
-                    all_args = {k: v for k, v in all_args.items() if k in valid_params}
-
-                result = sandbox.execute(cmd_name, *[], **all_args)
-            else:
-                result = sandbox.execute(command, *args, **kwargs)
-
-            if not isinstance(result, dict):
-                result = {"result": result}
-            result.setdefault("_source", f"component:{self.name}")
-            result.setdefault("_sandboxed", True)
-
-            if self._use_sandbox and sandbox.is_alive() and (not self._heartbeat_thread or not self._heartbeat_thread.is_alive()):
-                self._start_heartbeat()
-
-            return result
-
-        except Exception as e:
-            import traceback
-            logger.error(
-                "[CellToolAdapter] %s 沙箱执行失败，回退到直接执行: %s\n%s",
-                self.name, e, traceback.format_exc()
-            )
-            # 沙箱失败时回退到直接执行
-            return self._execute_direct(command, *args, **kwargs)
-
     def _execute_direct(self, command, *args, **kwargs) -> Dict[str, Any]:
         """直接执行组件命令"""
         _ensure_libs_in_path()
@@ -326,7 +248,15 @@ class CellToolAdapter(BaseTool):
                 sig = inspect.signature(target_method)
                 valid_params = {p for p in sig.parameters if p != "self"}
 
-                cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
+                has_var_keyword = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p_name, p in sig.parameters.items()
+                    if p_name != "self"
+                )
+                if has_var_keyword:
+                    cleaned_args = dict(all_args)
+                else:
+                    cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
 
                 logger.info(
                     "[CellToolAdapter] 调用命令 | 命令=%s | 参数=%s",
@@ -465,8 +395,22 @@ class CellToolAdapter(BaseTool):
             target_method = getattr(self._cell, target_method_name)
             sig = inspect.signature(target_method)
             valid_params = {p for p in sig.parameters if p != "self"}
-        
-        cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
+        else:
+            target_method = getattr(self._cell, target_method_name)
+            sig = inspect.signature(target_method)
+
+        has_var_keyword = "kwargs" in valid_params
+        if not self._use_sandbox:
+            has_var_keyword = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p_name, p in sig.parameters.items()
+                if p_name != "self"
+            )
+
+        if has_var_keyword:
+            cleaned_args = dict(all_args)
+        else:
+            cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
 
         if session_id and "session_id" in valid_params:
             cleaned_args["session_id"] = session_id
