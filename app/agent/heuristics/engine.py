@@ -93,7 +93,10 @@ class HeuristicEngine:
         self.feature_extractor = FeatureExtractor(
             ema_alpha=self.config.get_threshold("ema_alpha", 0.3)
         )
-        logger.info("[HeuristicEngine] 配置已热重载 | enabled=%s", self.config.enabled)
+        self.registry = RuleRegistry()
+        self._register_builtin_rules()
+        logger.info("[HeuristicEngine] 配置已热重载 | enabled=%s | rules=%d",
+                     self.config.enabled, len(self.registry.all_rules()))
 
     def _register_builtin_rules(self):
         builtin_rules = [
@@ -153,6 +156,11 @@ class HeuristicEngine:
         context: EvaluationContext,
         features: Optional["DerivedFeatures"] = None,
     ) -> Tuple[List[Tuple[BaseRule, RuleEvaluationResult]], DerivedFeatures]:
+        if not self.config.enabled:
+            if features is None:
+                features = self.feature_extractor.extract(context)
+            return [], features
+
         if features is None:
             features = self.feature_extractor.extract(context)
 
