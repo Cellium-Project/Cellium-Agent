@@ -125,7 +125,6 @@ def _extract_context_around(file_path: str, needle: str, context_lines: int, enc
 
 
 def _count_lines_in_file(file_path: str) -> int:
-    # 流式数 \n，避免把大文件全量载入内存
     count = 0
     with open(file_path, 'rb') as f:
         while True:
@@ -133,7 +132,6 @@ def _count_lines_in_file(file_path: str) -> int:
             if not chunk:
                 break
             count += chunk.count(b'\n')
-    # 末行没有 \n 结尾时仍算一行
     with open(file_path, 'rb') as f:
         last = f.seek(0, os.SEEK_END)
         if last > 0:
@@ -172,7 +170,6 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
     full_text_lines = full_text.split('\n')
     scanned_lines = len(lines)
 
-    # 真实行数（流式数 \n），用于 offset 校验和返回值
     if total_bytes > _MAX_SCAN * 2:
         total_lines = _count_lines_in_file(file_path)
     else:
@@ -183,7 +180,6 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
     if offset >= total_lines:
         return {"success": False, "error": f"offset {offset} exceeds total lines {total_lines}"}
     if offset >= scanned_lines:
-        # 文件大于扫描上限，offset 落在被截断扫描的位置
         return {
             "success": False,
             "error": f"offset {offset} 超出当前可流式扫描范围（前 {_MAX_SCAN * 2 // 1024 // 1024}MB 共 {scanned_lines} 行），文件实际共 {total_lines} 行。请用 needle 或缩小读取范围。",
@@ -193,7 +189,6 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
         }
 
     end = min(offset + limit, total_lines)
-    # 仅可返回已扫描范围内的内容
     end_in_scan = min(end, scanned_lines)
     selected = full_text_lines[offset:end_in_scan]
     result_content = '\n'.join(f"{offset + j + 1}\t{selected[j]}" for j in range(len(selected)))
@@ -240,28 +235,46 @@ class ReadTool(BaseTool):
     def __init__(self, allowed_roots=None):
         super().__init__()
         self._allowed_roots = allowed_roots or []
-        self._dedup_entries = {}
-
-    @property
-    def tool_name(self) -> str:
-        return "read"
-
     def _check_dedup(self, abs_path: str, offset: int, limit: int) -> Optional[Dict[str, Any]]:
         cached = get_read_state(abs_path)
         if not cached:
             return None
-        # 文件被外部修改后，dedup 必须失效，否则 LLM 拿到陈旧行数
         if not is_file_read(abs_path):
-            self._dedup_entries.pop((abs_path, offset, limit), None)
             return None
-        key = (abs_path, offset, limit)
-        prev = self._dedup_entries.get(key)
-        if prev:
-            return {"success": True, "file_unchanged": True, "path": abs_path, "lines": prev["lines"], "_dedup": True}
-        return None
-
-    def _mark_dedup(self, abs_path: str, offset: int, limit: int, lines: int):
-        self._dedup_entries[(abs_path, offset, limit)] = {"lines": lines}
+        cached_offset = cached.get("offset")
+        cached_limit = cached.get("limit")
+        cached_content = cached.get("content", "")
+        lines = cached_content.split('\n')
+        total_lines = len(lines)
+        
+        if cached_offset is None and cached_limit is None:
+            pass
+        elif cached_offset is None and cached_limit is not None:
+            if offset != 0:
+                return None
+            if limit > cached_limit:
+                return None
+        elif cached_offset is not None and cached_limit is None:
+            if offset < cached_offset:
+                return None
+        else:
+            if cached_offset != offset or cached_limit != limit:
+                return None
+        
+        end = min(offset + limit, total_lines)
+        selected_lines = lines[offset:end]
+        result_content = '\n'.join(f"{offset + j + 1}\t{selected_lines[j]}" for j in range(len(selected_lines)))
+        return {
+            "success": True,
+            "file_unchanged": True,
+            "path": abs_path,
+            "data": result_content,
+            "lines": len(selected_lines),
+            "total_lines": total_lines,
+            "offset": offset,
+            "truncated": end < total_lines,
+            "_dedup": True,
+        }
 
     def _cmd_read(
         self,
@@ -388,8 +401,7 @@ class ReadTool(BaseTool):
         end = min(offset + limit, total_lines)
         selected_lines = lines[offset:end]
         result_content = '\n'.join(f"{offset + j + 1}\t{selected_lines[j]}" for j in range(len(selected_lines)))
-        self._mark_dedup(abs_path, offset, limit, len(selected_lines))
-        return {
+        result = {
             "success": True,
             "data": result_content,
             "path": abs_path,
@@ -399,6 +411,7 @@ class ReadTool(BaseTool):
             "truncated": end < total_lines,
             "encoding": encoding,
         }
+        return result
 
     def _resolve_path(self, path: str) -> str:
         if not path:
