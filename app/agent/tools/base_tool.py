@@ -23,10 +23,20 @@ Agent 工具基类 - 借鉴 BaseCell 的 _cmd_ 命令映射模式
 
 import logging
 import inspect
+import re
 from typing import Dict, Any
 
 
 logger = logging.getLogger(__name__)
+
+_TOOL_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+def sanitize_tool_name(name: str) -> str:
+    """确保工具名符合 OpenAI 要求：^[a-zA-Z0-9_-]+$"""
+    result = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+    if not result or result[0].isdigit() or result[0] == '-':
+        result = 'tool_' + result
+    return result
 
 
 class BaseTool:
@@ -45,8 +55,8 @@ class BaseTool:
 
     @property
     def tool_name(self) -> str:
-        """完整工具名（格式: category:name）"""
-        return f"{self.__class__.__module__.split('.')[-1]}:{self.name}"
+        """工具名（LLM function calling 用）"""
+        return sanitize_tool_name(self.name)
 
     def execute(self, command="", *args, **kwargs) -> Dict[str, Any]:
         """

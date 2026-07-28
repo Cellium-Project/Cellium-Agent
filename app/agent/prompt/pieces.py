@@ -86,6 +86,16 @@ def get_system_info_piece() -> PromptPiece:
     )
 
 
+def get_thought_schema_piece() -> PromptPiece:
+    from app.agent.control.thought_parser import THOUGHT_SCHEMA
+    return PromptPiece(
+        name="thought_schema",
+        content=THOUGHT_SCHEMA,
+        stability="static",
+        priority=5,
+        role="system",
+    )
+
 
 
 # ============================================================
@@ -194,6 +204,7 @@ def create_default_builder(memory_dir: str = "memory") -> "PromptBuilder":
     # static
     builder.register(get_identity_piece(memory_dir))
     builder.register(get_system_info_piece())
+    builder.register(get_thought_schema_piece())
 
     # daily
     builder.register(get_context_piece())

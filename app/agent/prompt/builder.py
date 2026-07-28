@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 class PromptBuilder:
 
+    _SYSTEM_CONTEXT_NAMES = {
+        "long_term_memory", "system_injection", "runtime_status",
+        "plan_summary", "guidance_message", "auto_hints",
+    }
+
     def __init__(self):
         self._pieces: Dict[str, PromptPiece] = {}
         self._dynamic_counter = 0
@@ -106,8 +111,9 @@ class PromptBuilder:
             try:
                 content = piece.render(context)
                 if content and content.strip():
+                    role = "system" if piece.name in self._SYSTEM_CONTEXT_NAMES else piece.effective_role
                     messages.append({
-                        "role": piece.effective_role,
+                        "role": role,
                         "content": content.strip(),
                     })
             except Exception as e:
@@ -117,8 +123,9 @@ class PromptBuilder:
             try:
                 content = piece.render(context)
                 if content and content.strip():
+                    role = "system" if piece.name in self._SYSTEM_CONTEXT_NAMES else piece.effective_role
                     messages.append({
-                        "role": piece.effective_role,
+                        "role": role,
                         "content": content.strip(),
                     })
             except Exception as e:

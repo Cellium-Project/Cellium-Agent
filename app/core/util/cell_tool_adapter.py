@@ -147,8 +147,9 @@ class CellToolAdapter(BaseTool):
 
     @property
     def tool_name(self) -> str:
-        """工具名 = cell_name"""
-        return self.name
+        """工具名 = cell_name（已清洗，符合 LLM 命名规范）"""
+        from app.agent.tools.base_tool import sanitize_tool_name
+        return sanitize_tool_name(self.name)
 
     @property
     def component_type(self) -> str:

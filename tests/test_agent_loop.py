@@ -1145,7 +1145,7 @@ class TestPromptContextBuilder(unittest.TestCase):
             "long_term_results": "用户之前问过Python问题",
         })
 
-        all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
+        all_content = " ".join(m["content"] for m in messages if m.get("role") in ("user", "system"))
         self.assertIn("长期记忆检索结果", all_content)
 
     def test_build_first_round_no_memory(self):
@@ -1170,7 +1170,7 @@ class TestPromptContextBuilder(unittest.TestCase):
             "system_injection": "优先使用文件工具",
         })
 
-        all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
+        all_content = " ".join(m["content"] for m in messages if m.get("role") in ("user", "system"))
         self.assertIn("系统指令", all_content)
         self.assertIn("优先使用文件工具", all_content)
 
@@ -1287,7 +1287,7 @@ class TestPromptContextBuilder(unittest.TestCase):
             "auto_hints": "建议使用 file 工具",
         })
 
-        all_content = " ".join(m["content"] for m in messages if m.get("role") == "user")
+        all_content = " ".join(m["content"] for m in messages if m.get("role") in ("user", "system"))
         self.assertIn("建议使用 file 工具", all_content)
 
     def test_prefix_cache_works(self):
