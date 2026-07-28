@@ -388,7 +388,7 @@ class TestReadEditWorkflow:
             rt1, rt2 = ReadTool(), ReadTool()
             rt1._cmd_read(file_path=f)
             r2 = rt2._cmd_read(file_path=f)
-            assert not r2.get("_dedup")
+            assert r2.get("_dedup") is True
         finally:
             os.remove(f)
 
