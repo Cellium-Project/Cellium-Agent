@@ -3,16 +3,7 @@
 Cellium Agent - 主入口
 
 注意：本文件的顶层 imports 必须保持极简（只允许 os/sys/multiprocessing 等
-stdlib 轻量模块）。
-
-原因：Windows multiprocessing spawn 模式启动子进程时，会调用
-multiprocessing.spawn.prepare() → fixup_main_from_path() 来"重建 __main__ 模块"，
-这会重新执行本文件顶层所有 import 语句。如果顶层 import 了 uvicorn /
-agent.di_config / BaseLLMEngine 等重模块，每个 spawn 子进程（包括沙箱）
-都会被整个 Agent 栈污染，单进程内存膨胀到 130MB+。
-
-修复方案：所有重模块 imports 必须放在 main() 函数体内部，
-或放在 `if __name__ == "__main__":` 块内部。
+stdlib 轻量模块）。所有重模块 imports 必须放在 main() 函数体内部，或放在 `if __name__ == "__main__":` 块内部。
 """
 import os
 import sys

@@ -129,7 +129,6 @@ class AgentLoopManager:
     def _create_loop(self, session_id: str) -> Any:
         from app.agent.loop.agent_loop import AgentLoop
         from app.agent.tools.shell_tool import ShellTool
-        from copy import deepcopy
 
         max_iterations = self._global_config.get("max_iterations", float('inf'))
         flash_mode = self._global_config.get("flash_mode", False)
@@ -137,7 +136,7 @@ class AgentLoopManager:
         enable_learning = self._global_config.get("enable_learning", True)
 
         session_shell = ShellTool()
-        session_tools = deepcopy(self._tools) if self._tools else {}
+        session_tools = dict(self._tools) if self._tools else {}
 
         return AgentLoop(
             llm_engine=self._llm_engine,
