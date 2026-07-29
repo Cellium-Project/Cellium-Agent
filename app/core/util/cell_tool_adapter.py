@@ -410,6 +410,9 @@ class CellToolAdapter(BaseTool):
 
         if has_var_keyword:
             cleaned_args = dict(all_args)
+            if isinstance(cleaned_args.get("kwargs"), dict):
+                extra = cleaned_args.pop("kwargs")
+                cleaned_args.update(extra)
         else:
             cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
 

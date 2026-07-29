@@ -132,7 +132,7 @@ class ComponentBuilder(BaseCell):
 
         Args:
             input_data: 输入数据
-            **kwargs: 额外参数
+            **kwargs: 保留参数（如需额外参数请直接添加为命名参数，不要通过 kwargs 字典传入）
 
         Returns:
             {{"result": 处理结果}}

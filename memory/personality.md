@@ -200,12 +200,12 @@ class XxxTool(BaseCell):
     def cell_name(self) -> str:
         return "xxx"  # 小写唯一
 
-    def _cmd_action(self, input_data: str = "", **kwargs) -> dict:
+    def _cmd_action(self, input_data: str = "", param1: str = "default", **kwargs) -> dict:
         """命令描述"""
         return {"result": "..."}
 ```
 
-**铁律**: 继承 `BaseCell`；定义 `cell_name`；命令以 `_cmd_` 前缀；参数用 `input_data="", **kwargs`；文件放 `components/`
+**铁律**: 继承 `BaseCell`；定义 `cell_name`；命令以 `_cmd_` 前缀；需要额外参数时直接在签名上添加命名参数（不要通过 kwargs 字典传入，系统会自动过滤 **kwargs 不出现在 LLM 的工具定义中）；文件放 `components/`
 
 ### §3.3 定时任务
 

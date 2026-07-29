@@ -777,7 +777,7 @@ class WebSearch(BaseCell):
                 pass
             return short_url
 
-    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", **kwargs) -> dict:
+    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", engine: str = "auto", **kwargs) -> dict:
         """
         用搜索引擎搜索关键词，返回链接列表
 
@@ -790,6 +790,9 @@ class WebSearch(BaseCell):
                         - day: 24小时内
                         - week: 7天内
                         - month: 1个月内
+            engine: 搜索引擎（默认 auto 自动选择）
+                        - auto: 自动选择最优引擎
+                        - bing, baidu, google, duckduckgo
 
         Returns:
             {"success": bool, "results": [...]}
@@ -808,7 +811,7 @@ class WebSearch(BaseCell):
 
         keywords = keywords.strip()
 
-        user_engine = kwargs.get('engine', 'auto')
+        user_engine = engine
         if user_engine and user_engine != 'auto' and user_engine in self.SEARCH_ENGINES:
             engines_to_try = [user_engine]
             cache_engine = user_engine

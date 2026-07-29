@@ -236,6 +236,8 @@ class BaseTool:
                 for param_name, param in sig.parameters.items():
                     if param_name == "self":
                         continue
+                    if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
+                        continue
                     param_info: Dict[str, Any] = {
                         "type": "string",
                         "description": f"[{cmd_name}] {param_name}",
