@@ -475,6 +475,30 @@ class ToolExecutor:
         tool_name = tool_call.name
         arguments = tool_call.arguments
 
+        tool_allowed = platform_context.get("tool_allowed") if platform_context else None
+        if tool_allowed is False:
+            _blocked_tools = {
+                "shell", "file", "memory", "web_search", "web_fetch",
+                "napcat.add_user", "napcat.remove_user", "napcat.add_group", "napcat.remove_group",
+                "napcat.subscribe", "napcat.unsubscribe",
+                "napcat.set_bot_qq", "napcat.set_port",
+                "napcat.enable_user_whitelist", "napcat.disable_user_whitelist",
+                "napcat.enable_group_whitelist", "napcat.disable_group_whitelist",
+                "napcat.enable_at", "napcat.disable_at",
+                "napcat.enable_proactive", "napcat.disable_proactive",
+                "napcat.set_proactive_threshold", "napcat.set_proactive_interval",
+                "napcat.add_wake_word", "napcat.remove_wake_word", "napcat.list_wake_words",
+                "component.reload", "component.load", "component.unload",
+                "component.discover", "component.scan",
+            }
+            if tool_name in _blocked_tools:
+                logger.warning("[ToolExecutor] 权限不足，禁止使用工具 | session=%s | tool=%s", session_id, tool_name)
+                return {
+                    "error": "权限不足，当前会话禁止使用工具",
+                    "_tool_blocked": True,
+                    "_source": "permission_check",
+                }
+
         try:
             registry = get_component_tool_registry()
             component_tools = registry.get_component_tools()

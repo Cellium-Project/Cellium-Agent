@@ -1055,7 +1055,7 @@ class BackgroundMonitor(BaseCell):
         if removed:
             summary.append(f"- \u79fb\u9664 {len(removed)} \u4e2a: {[r['name'] for r in removed]}")
         if not added and not removed:
-            summary.append("\u65e0\u53d8\u5316")
+            summary.append("\u5df2\u91cd\u8f7d")
 
         result = {
             "status": "ok",

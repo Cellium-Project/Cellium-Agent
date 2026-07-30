@@ -6,7 +6,7 @@
 import logging
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import json
 
 from app.core.bus.event_bus import event_bus
@@ -73,6 +73,8 @@ class ComponentEventRequest(BaseModel):
     message: str
     source: Optional[str] = "component"
     event_type: Optional[str] = "notification"
+    event_data: Optional[Dict[str, Any]] = None
+    platform_context: Optional[Dict[str, Any]] = None
 
 
 class SessionResponse(BaseModel):
@@ -330,9 +332,14 @@ async def component_event(request: ComponentEventRequest):
     if agent_loop is None:
         return {"status": "error", "error": "Agent 未初始化", "session_id": session_id}
     
-    # 提取 platform_context（复用定时任务的逻辑）
+    # 提取 platform_context（优先使用请求中的，否则从 session 恢复或解析）
     platform_context = None
-    if hasattr(session_info, "platform_context") and session_info.platform_context:
+
+    if request.platform_context:
+        platform_context = request.platform_context
+        session_info.platform_context = platform_context
+        logger.debug(f"[component_event] 使用请求中的 platform_context | session={session_id} | tool_allowed={platform_context.get('tool_allowed')}")
+    elif hasattr(session_info, "platform_context") and session_info.platform_context:
         platform_context = session_info.platform_context
         logger.debug(f"[component_event] 从 session 恢复 platform_context | session={session_id}")
     elif ":" in session_id:
@@ -346,7 +353,8 @@ async def component_event(request: ComponentEventRequest):
                 "group_id": parts[2] if len(parts) > 2 else None,
                 "message_type": "group" if len(parts) > 2 else "c2c",
             }
-            session_info.platform_context = platform_context
+            session_info.platform_context = {k: v for k, v in platform_context.items()
+                                           if k not in ("tool_allowed", "trigger_component")}
             logger.debug(f"[component_event] 从 session_id 构建 platform_context | session={session_id}")
     
     # 根据是否有 platform_context 选择执行路径
