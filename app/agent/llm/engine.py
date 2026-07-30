@@ -669,6 +669,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 think_match = _re.search(r'<think>\s*(.*?)\s*</think>', content, _re.DOTALL)
                 if think_match:
                     reasoning_content = think_match.group(1).strip()
+                    before = content[:think_match.start()].strip()
+                    after = content[think_match.end():].strip()
+                    content = f"{before}\n{after}" if before and after else (before or after)
 
             logger.info(
                 "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s | has_reasoning=%s",
