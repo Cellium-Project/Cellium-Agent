@@ -660,10 +660,15 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
             content = message.content
             
-            # 提取 reasoning_content（用于 thinking 模式）
             reasoning_content = None
-            if hasattr(message, 'reasoning_content'):
+            if hasattr(message, 'reasoning_content') and message.reasoning_content:
                 reasoning_content = message.reasoning_content
+
+            if not reasoning_content and content:
+                import re as _re
+                think_match = _re.search(r'<think>\s*(.*?)\s*</think>', content, _re.DOTALL)
+                if think_match:
+                    reasoning_content = think_match.group(1).strip()
 
             logger.info(
                 "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s | has_reasoning=%s",

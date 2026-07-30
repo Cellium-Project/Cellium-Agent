@@ -580,20 +580,29 @@ class AgentLoop:
 
     def _extract_text_from_thinking(self, content: str) -> tuple:
         """
-        从包含 JSON 思考块的内容中提取纯文本回复
+        从内容中提取思考块和纯文本回复
 
-        Args:
-            content: 可能包含 JSON 块的原始内容
+        支持:
+        - <think>...</think> 标签
+        - ```json {reasoning, action}``` JSON 思考块
+        - {reasoning: ..., action: ...} 内联 JSON
 
         Returns:
-            (is_json_thinking, reasoning_text, after_json_text)
-            - is_json_thinking: 是否为 JSON thinking 格式
-            - reasoning_text: reasoning 内容
-            - after_json_text: JSON 后的普通文本（含 JSON 前的文本）
+            (has_thinking, reasoning_text, visible_text)
+            - has_thinking: 是否找到思考块
+            - reasoning_text: 思考内容
+            - visible_text: 纯文本回复（含思考块前后的文本）
         """
         if not content:
             return False, "", ""
 
+        # 1. <think>...</think> 标签 — 仅剥离标签，不走 thinking 事件（交给 engine 的 reasoning_content 处理）
+        think_pat = re.compile(r'<think>\s*.*?\s*</think>', re.DOTALL)
+        cleaned = think_pat.sub('', content).strip()
+        if cleaned != content.strip():
+            return False, "", cleaned
+
+        # 2. ```json {reasoning, action}``` 块
         json_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
         match = json_pattern.search(content)
 
@@ -610,6 +619,7 @@ class AgentLoop:
             except json.JSONDecodeError:
                 pass
 
+        # 3. 内联 JSON {reasoning, action}
         brace_start = content.find('{')
         if brace_start != -1:
             depth = 0

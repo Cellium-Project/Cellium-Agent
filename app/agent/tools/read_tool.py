@@ -25,7 +25,7 @@ def _find_needle_position(bytes_data: bytes, needle: bytes) -> int:
     return -1, 0
 
 
-def _scan_file_for_needle(file_path: str, needle: str) -> Tuple[int, int, int]:
+def _scan_file_for_needle(file_path: str, needle: str) -> Tuple[int, int, int, bool]:
 
     needle_bytes = needle.encode('utf-8')
     nl_count = needle_bytes.count(ord('\n'))
@@ -38,8 +38,9 @@ def _scan_file_for_needle(file_path: str, needle: str) -> Tuple[int, int, int]:
         pos = 0
         lines_before_pos = 0
         prev_tail = 0
+        truncated = False
 
-        while pos < _MAX_SCAN:
+        while True:
             buf_view = memoryview(buf)
             read_bytes = f.readinto(buf_view[prev_tail:prev_tail + _CHUNK])
             if read_bytes == 0:
@@ -51,9 +52,13 @@ def _scan_file_for_needle(file_path: str, needle: str) -> Tuple[int, int, int]:
             if match_at != -1:
                 abs_match = pos - prev_tail + match_at
                 lines_before_needle = lines_before_pos + bytes(view[:match_at]).count(ord('\n'))
-                return abs_match, match_len, lines_before_needle
+                return abs_match, match_len, lines_before_needle, False
 
             pos += read_bytes
+
+            if pos >= _MAX_SCAN:
+                truncated = True
+                break
 
             next_tail = min(overlap, view_len)
             newline_count = bytes(view[:view_len - next_tail]).count(ord('\n'))
@@ -61,7 +66,7 @@ def _scan_file_for_needle(file_path: str, needle: str) -> Tuple[int, int, int]:
             prev_tail = next_tail
             buf[:prev_tail] = view[view_len - prev_tail:view_len]
 
-        return -1, 0, 0
+        return -1, 0, 0, truncated
 
 
 def _read_byte_range(file_path: str, byte_start: int, byte_end: int, encoding: str = "utf-8") -> str:
@@ -75,9 +80,11 @@ def _read_byte_range(file_path: str, byte_start: int, byte_end: int, encoding: s
 
 
 def _extract_context_around(file_path: str, needle: str, context_lines: int, encoding: str = "utf-8") -> Dict[str, Any]:
-    match_start, match_len, lines_before = _scan_file_for_needle(file_path, needle)
+    match_start, match_len, lines_before, truncated = _scan_file_for_needle(file_path, needle)
     if match_start == -1:
-        return {"found": False, "error": f"needle not found in file (scanned first {_MAX_SCAN // 1024 // 1024}MB)"}
+        if truncated:
+            return {"found": False, "error": f"needle not found in file (scanned first {_MAX_SCAN // 1024 // 1024}MB, scan truncated)"}
+        return {"found": False, "error": f"needle not found in file (full scan completed)"}
 
     match_end = match_start + match_len
 

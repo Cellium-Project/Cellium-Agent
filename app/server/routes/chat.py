@@ -541,7 +541,8 @@ def _extract_json_thinking(content: str) -> dict:
 
 def _split_content_with_thinking(content: str) -> list:
     """
-    将内容按 JSON thinking 分割为片段列表，保持顺序
+    将内容按 thinking 标签分割为片段列表，保持顺序
+    支持: <think>...</think> 和 ```json {reasoning, action}```
     返回: [{"type": "text/thinking", "content": "..."}]
     """
     if not content:
@@ -549,12 +550,27 @@ def _split_content_with_thinking(content: str) -> list:
     
     import re
     result = []
+    last_end = 0
+    
+    # 先处理 <think>...</think> 标签
+    think_pat = re.compile(r'<think>\s*(.*?)\s*</think>', re.DOTALL)
+    for match in think_pat.finditer(content):
+        if match.start() > last_end:
+            text_part = content[last_end:match.start()].strip()
+            if text_part:
+                result.extend(_split_inline_json(text_part))
+        result.append({"type": "thinking", "content": match.group(1).strip()})
+        last_end = match.end()
+    
+    rest = content[last_end:] if last_end > 0 else content
+    
+    # 再处理剩余文本中的 JSON thinking
     json_block_pattern = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
     last_end = 0
     
-    for match in json_block_pattern.finditer(content):
+    for match in json_block_pattern.finditer(rest):
         if match.start() > last_end:
-            text_part = content[last_end:match.start()].strip()
+            text_part = rest[last_end:match.start()].strip()
             if text_part:
                 result.extend(_split_inline_json(text_part))
         
@@ -570,8 +586,8 @@ def _split_content_with_thinking(content: str) -> list:
         
         last_end = match.end()
     
-    if last_end < len(content):
-        text_part = content[last_end:].strip()
+    if last_end < len(rest):
+        text_part = rest[last_end:].strip()
         if text_part:
             result.extend(_split_inline_json(text_part))
     
@@ -626,8 +642,9 @@ def _extract_final_text(content: str) -> str:
         return ""
     
     import re
+    text = re.sub(r'<think>\s*.*?\s*</think>', '', content, flags=re.DOTALL)
     json_block_pattern = re.compile(r'```json\s*[\s\S]*?\s*```', re.IGNORECASE)
-    text = json_block_pattern.sub('', content)
+    text = json_block_pattern.sub('', text)
     text = re.sub(r'^\s*---\s*', '', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     
