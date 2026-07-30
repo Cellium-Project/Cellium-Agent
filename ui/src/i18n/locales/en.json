@@ -408,6 +408,11 @@
     "heuristics": {
       "title": "Heuristics Engine",
       "engineDecision": "Engine Decision",
+      "intentConfig": "Intent-Aware LLM",
+      "intentEnabled": "Enable Intent-Aware LLM",
+      "intentEnabledDesc": "Use a dedicated LLM for intent matching and Gene creation. Leave empty to use the main model",
+      "intentModelDesc": "Leave empty to use the main model",
+      "useMainModel": "Use main model",
       "advancedConfig": "Advanced Config",
       "showAdvanced": "Show Advanced Config",
       "hideAdvanced": "Hide Advanced Config",

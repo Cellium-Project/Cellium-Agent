@@ -187,7 +187,7 @@ def setup_agent_di(
     _cfg.on_change("agent", _on_agent_config_change)
 
     def _on_heuristics_config_change(section, old_val, new_val):
-        """heuristics 配置变更时重新加载 HeuristicEngine"""
+        """heuristics 配置变更时重新加载 HeuristicEngine 和意图 LLM"""
         if section != "heuristics":
             return
         try:
@@ -197,6 +197,39 @@ def setup_agent_di(
             logger.info("[AgentDI] Heuristics 配置已热更新")
         except Exception as e:
             logger.error("[AgentDI] Heuristics 配置热更新失败: %s", e, exc_info=True)
+
+        intent_llm = None
+        intent_enabled = True
+        try:
+            if new_val:
+                intent_cfg = new_val.get("intent", {})
+                intent_enabled = intent_cfg.get("enabled", True)
+                if intent_enabled:
+                    model_cfg = intent_cfg.get("model", {})
+                    if model_cfg.get("api_key") and model_cfg.get("model"):
+                        from app.agent.llm.engine import OpenAICompatibleEngine
+                        intent_llm = OpenAICompatibleEngine(
+                            api_key=model_cfg["api_key"],
+                            base_url=model_cfg.get("base_url", "https://api.openai.com/v1"),
+                            model=model_cfg["model"],
+                            temperature=float(model_cfg.get("temperature", 0.3)),
+                            max_tokens=10,
+                            timeout=int(model_cfg.get("timeout", 30)),
+                            verify_model=False,
+                        )
+                        logger.info("[AgentDI] 意图 LLM 已热重建 | model=%s", intent_llm.model)
+                else:
+                    logger.info("[AgentDI] 意图感知已关闭，推送禁用信号")
+        except Exception as e:
+            logger.warning("[AgentDI] 意图 LLM 热重建失败: %s", e)
+
+        try:
+            from app.agent.loop import AgentLoopManager
+            mgr = AgentLoopManager.get_instance()
+            mgr.update_all_loops(intent_llm=intent_llm, intent_enabled=intent_enabled)
+            logger.info("[AgentDI] 意图配置已推送到所有活跃 loop (enabled=%s)", intent_enabled)
+        except Exception as e:
+            logger.warning("[AgentDI] 推送意图配置失败: %s", e)
 
     _cfg.on_change("heuristics", _on_heuristics_config_change)
 
@@ -462,8 +495,36 @@ def setup_agent_di(
     def _create_agent_loop():
         # 从 DI 容器获取当前的 LLM 引擎（支持热重载）
         current_llm = container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else llm_engine
+
+        # 意图感知 LLM（可选，没配置则用主模型）
+        intent_llm = None
+        intent_enabled = True
+        heuristics_cfg = _cfg.get_section("heuristics") or {}
+        intent_cfg = heuristics_cfg.get("intent", {})
+        intent_enabled = intent_cfg.get("enabled", True)
+        if intent_enabled:
+            model_cfg = intent_cfg.get("model", {})
+            if model_cfg.get("api_key") and model_cfg.get("model"):
+                try:
+                    from app.agent.llm.engine import OpenAICompatibleEngine
+
+                    intent_llm = OpenAICompatibleEngine(
+                        api_key=model_cfg["api_key"],
+                        base_url=model_cfg.get("base_url", "https://api.openai.com/v1"),
+                        model=model_cfg["model"],
+                        temperature=float(model_cfg.get("temperature", 0.3)),
+                        max_tokens=10,
+                        timeout=int(model_cfg.get("timeout", 30)),
+                        verify_model=False,
+                    )
+                    logger.info("[AgentDI] 意图感知 LLM 已创建 | model=%s", intent_llm.model)
+                except Exception as e:
+                    logger.warning("[AgentDI] 意图感知 LLM 创建失败，将使用主模型: %s", e)
+
         loop = AgentLoop(
             llm_engine=current_llm,
+            intent_llm_engine=intent_llm,
+            intent_enabled=intent_enabled,
             shell=_shell,
             tools={
                 "shell": _tool,

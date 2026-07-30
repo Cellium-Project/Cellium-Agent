@@ -420,6 +420,11 @@
     "heuristics": {
       "title": "启发式引擎",
       "engineDecision": "引擎决策",
+      "intentConfig": "意图感知配置",
+      "intentEnabled": "启用意图感知",
+      "intentEnabledDesc": "使用独立的 LLM 进行意图匹配和 Gene 创建，留空则使用主模型",
+      "intentModelDesc": "留空则使用主模型",
+      "useMainModel": "使用主模型",
       "advancedConfig": "高级配置",
       "showAdvanced": "展开高级配置",
       "hideAdvanced": "收起高级配置",

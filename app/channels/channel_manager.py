@@ -209,7 +209,20 @@ class ChannelManager:
         async def safe_send(content: str):
             if not content:
                 return
-            chunks = [content[i:i+MAX_MSG_LEN] for i in range(0, len(content), MAX_MSG_LEN)]
+            MAX_MSG_LEN = 1000
+            chunks = []
+            remaining = content
+            while remaining:
+                if len(remaining) <= MAX_MSG_LEN:
+                    chunks.append(remaining)
+                    break
+                cut = MAX_MSG_LEN
+                for i in range(MAX_MSG_LEN, max(MAX_MSG_LEN - 500, 0), -1):
+                    if remaining[i] == '\n':
+                        cut = i + 1
+                        break
+                chunks.append(remaining[:cut])
+                remaining = remaining[cut:]
             for chunk in chunks:
                 try:
                     await self.send_message(

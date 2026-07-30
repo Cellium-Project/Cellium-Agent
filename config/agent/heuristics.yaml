@@ -1,7 +1,15 @@
 heuristics:
+  section: heuristics
   enabled: true
   log_level: info
   trace_enabled: false
+  intent:
+    enabled: false
+    model:
+      api_key: ''
+      base_url: ''
+      model: ''
+      temperature: 0.3
   thresholds:
     max_iterations_ratio: 0.85
     token_budget_ratio: 0.9

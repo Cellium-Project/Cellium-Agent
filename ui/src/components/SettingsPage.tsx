@@ -1993,10 +1993,15 @@ const HeuristicsSettings: React.FC = () => {
     fetchJSON<Record<string, any>>(API.configSection('heuristics')).then(data => {
       setConfig(data);
       setLoading(false);
-      const matched = findMatchingPreset(data);
-      setSelectedPreset(matched);
     }).catch(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (Object.keys(config).length > 0) {
+      const matched = findMatchingPreset(config);
+      setSelectedPreset(matched);
+    }
+  }, [config]);
 
   const findMatchingPreset = (cfg: Record<string, any>): PresetKey | 'custom' => {
     const cfgPreset = extractPresetFields(cfg);
@@ -2040,7 +2045,6 @@ const HeuristicsSettings: React.FC = () => {
   };
 
   const updateField = (path: string, value: any) => {
-    setSelectedPreset('custom');
     setConfig(prev => {
       const keys = path.split('.');
       const next = { ...prev };
@@ -2090,6 +2094,47 @@ const HeuristicsSettings: React.FC = () => {
               <div className="preset-desc">{t(preset.descriptionKey)}</div>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <div className="settings-card-title">
+            意图感知
+          </div>
+        </div>
+        <div className="settings-card-grid">
+          <div className="form-group">
+            <FieldLabel label={t('settings.heuristics.intentEnabled')} desc={t('settings.heuristics.intentEnabledDesc')} />
+            <label className="toggle-switch">
+              <input type="checkbox" checked={!!(config.intent?.enabled ?? true)} onChange={e => updateField('intent.enabled', e.target.checked)} />
+              <span className="toggle-slider"></span>
+            </label>
+          </div>
+          {(config.intent?.enabled ?? true) && (
+            <>
+              <div className="form-group">
+                <FieldLabel label={t('settings.model.apiKey')} />
+                <input type="password" value={config.intent?.model?.api_key || ''} placeholder={t('settings.heuristics.useMainModel')}
+                  onChange={e => updateField('intent.model.api_key', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label={t('settings.model.baseUrl')} />
+                <input type="text" value={config.intent?.model?.base_url || ''} placeholder="https://api.openai.com/v1"
+                  onChange={e => updateField('intent.model.base_url', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label={t('settings.model.modelId')} />
+                <input type="text" value={config.intent?.model?.model || ''} placeholder={t('settings.heuristics.useMainModel')}
+                  onChange={e => updateField('intent.model.model', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <FieldLabel label={t('settings.model.temperature')} />
+                <input type="number" value={Number(config.intent?.model?.temperature) || 0.3} min={0} max={2} step={0.1}
+                  onChange={e => updateField('intent.model.temperature', parseFloat(e.target.value))} />
+              </div>
+            </>
+          )}
         </div>
       </div>
 

@@ -61,8 +61,12 @@ class AgentLoop:
         flash_mode: bool = False,
         enable_learning: bool = True,
         enable_hybrid: bool = True,
+        intent_llm_engine=None,
+        intent_enabled=True,
     ):
         self.llm = llm_engine
+        self._intent_llm = intent_llm_engine or llm_engine
+        self._intent_enabled = intent_enabled
         self.shell = shell
         self.three_layer_memory = three_layer_memory
         self.max_iterations = max_iterations
@@ -277,7 +281,7 @@ class AgentLoop:
         """请求停止当前推理"""
         self._loop_controller.request_stop()
 
-    def update_config(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None):
+    def update_config(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None, intent_llm=None, intent_enabled=None):
         if flash_mode is not None and flash_mode != self.flash_mode:
             self.flash_mode = flash_mode
             if flash_mode and self.control_loop:
@@ -324,6 +328,12 @@ class AgentLoop:
             elif not enable_learning and self.learning:
                 self.learning = None
                 logger.info("[AgentLoop] Learning 模块已热禁用")
+        if intent_llm is not None:
+            self._intent_llm = intent_llm
+            logger.info("[AgentLoop] 意图 LLM 已热更新")
+        if intent_enabled is not None:
+            self._intent_enabled = intent_enabled
+            logger.info("[AgentLoop] 意图感知 %s", "已启用" if intent_enabled else "已禁用")
 
     def _should_update_goal(self, new_input: str, current_goal: str) -> bool:
         """
@@ -463,7 +473,7 @@ class AgentLoop:
             success = await GeneEvolution.create_gene_with_llm(
                 user_input=user_input,
                 state=state,
-                llm_engine=self.llm
+                llm_engine=self._intent_llm
             )
             if success:
                 logger.info("[AgentLoop] 后台创建 Gene 成功")
@@ -481,6 +491,8 @@ class AgentLoop:
 
     async def _llm_match_gene(self, user_input: str) -> Optional[Dict[str, Any]]:
         """用 LLM 判断用户输入是否匹配已有 Gene"""
+        if not self._intent_enabled:
+            return None
         from app.agent.control.constraint_gene import TaskSignalMatcher
 
         TaskSignalMatcher._load_from_repository()
@@ -506,7 +518,7 @@ class AgentLoop:
 匹配的策略名（或 none）："""
 
         try:
-            resp = await self.llm.chat(messages=[
+            resp = await self._intent_llm.chat(messages=[
                 {"role": "system", "content": "你是一个意图分类器。只输出策略名或 none。"},
                 {"role": "user", "content": prompt},
             ], max_tokens=10)
@@ -1590,7 +1602,7 @@ class AgentLoop:
                         if gene_source == "failure":
                             # Mechanism A: 累计失败 -> 纯后台创建，不干扰主 Agent
                             logger.info("[AgentLoop] Mechanism A: 累计失败触发，后台创建 Gene")
-                            if user_input_for_gene and self.llm:
+                            if user_input_for_gene and self._intent_enabled and self._intent_llm:
                                 try:
                                     from app.agent.control.hard_constraints import GeneEvolution
                                     task = asyncio.create_task(self._create_gene_in_background(
