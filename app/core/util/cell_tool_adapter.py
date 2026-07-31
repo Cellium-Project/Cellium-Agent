@@ -676,6 +676,27 @@ class CellToolAdapter(BaseTool):
 
                         if annotation == list:
                             param_info["items"] = {"type": "string"}
+                        elif isinstance(annotation, str):
+                            type_map = {
+                                "int": "integer",
+                                "float": "number",
+                                "bool": "boolean",
+                                "str": "string",
+                            }
+                            param_info["type"] = type_map.get(annotation, "string")
+                        elif getattr(annotation, "__origin__", None) is list:
+                            param_info["type"] = "array"
+                            item_type = "string"
+                            args = getattr(annotation, "__args__", ())
+                            if args:
+                                arg_map = {
+                                    int: "integer",
+                                    float: "number",
+                                    bool: "boolean",
+                                    str: "string",
+                                }
+                                item_type = arg_map.get(args[0], "string")
+                            param_info["items"] = {"type": item_type}
 
                     params[param_name] = param_info
 

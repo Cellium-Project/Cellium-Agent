@@ -7,7 +7,7 @@ Scheduler - 定时任务调度组件
 创建任务：
   scheduler.create_interval(name, minutes, prompt)     # 间隔执行，如每30分钟
   scheduler.create_daily(name, time, prompt)           # 每天执行，如每天9:00
-  scheduler.create_weekly(name, weekday, time, prompt) # 每周执行，weekday: 0=周一, 6=周日
+  scheduler.create_weekly(name, weekday, time, prompt) # 每周执行，weekday: 单个数字0-6或数组[0,2](0=周一,6=周日)
 
 管理任务：
   scheduler.list()           # 查看所有任务
@@ -18,7 +18,7 @@ Scheduler - 定时任务调度组件
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from app.core.interface.base_cell import BaseCell
 from app.core.scheduler import get_scheduler_manager, TaskConfig
@@ -33,7 +33,7 @@ class Scheduler(BaseCell):
     Agent可用命令：
       scheduler.create_interval(name, minutes, prompt)     # 间隔任务，minutes为分钟数
       scheduler.create_daily(name, time, prompt)           # 每日任务，time格式HH:MM
-      scheduler.create_weekly(name, weekday, time, prompt) # 每周任务，weekday:0-6(0=周一)
+      scheduler.create_weekly(name, weekday, time, prompt) # 每周任务，weekday: 单个数字0-6或数组[0,2](0=周一,6=周日)
       scheduler.list()                                     # 列出任务
       scheduler.delete(task_id)                            # 删除任务
       scheduler.enable(task_id)                            # 启用任务
@@ -126,22 +126,29 @@ class Scheduler(BaseCell):
             "message": f"已创建每日任务: {name} (每天 {time})，下次执行: {next_run.strftime('%Y-%m-%d %H:%M')}"
         }
 
-    def _cmd_create_weekly(self, name: str, weekday, time: str, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """创建每周任务: scheduler.create_weekly(name, weekday, time, prompt) - weekday:0-6或[0,1,2]数组(0=周一)"""
-        if isinstance(weekday, list):
-            weekdays = [int(w) for w in weekday]
-            if not all(0 <= w <= 6 for w in weekdays):
-                return {"error": "星期格式错误，请使用 0-6 (0=周一, 6=周日)"}
-            if not weekdays:
-                return {"error": "至少选择一个星期"}
-        else:
+    def _cmd_create_weekly(self, name: str, weekday: List[int], time: str, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """创建每周任务: scheduler.create_weekly(name, weekday, time, prompt) - weekday为单个数字0-6或数组[0,2](0=周一,6=周日)，数字范围0-6"""
+        if isinstance(weekday, (bool,)):
+            return {"error": "星期格式错误，weekday必须为0-6数字或数组 (0=周一, 6=周日)"}
+        if isinstance(weekday, (int, str)):
+            weekday = [weekday]
+        if not isinstance(weekday, (list, tuple)):
+            return {"error": "星期格式错误，weekday必须为0-6数字或数组 (0=周一, 6=周日)"}
+
+        weekdays = []
+        for w in weekday:
+            if isinstance(w, bool):
+                return {"error": "星期格式错误，weekday必须为0-6数字或数组 (0=周一, 6=周日)"}
             try:
-                w = int(weekday)
-                if not (0 <= w <= 6):
-                    return {"error": "星期格式错误，请使用 0-6 (0=周一, 6=周日)"}
-                weekdays = [w]
-            except ValueError:
-                return {"error": "星期必须是数字 0-6 或数组"}
+                w = int(w)
+            except (TypeError, ValueError):
+                return {"error": "星期格式错误，weekday必须为0-6数字或数组 (0=周一, 6=周日)，不接受中文或英文"}
+            if not (0 <= w <= 6):
+                return {"error": "星期格式错误，请使用 0-6 (0=周一, 6=周日)"}
+            if w not in weekdays:
+                weekdays.append(w)
+        if not weekdays:
+            return {"error": "至少选择一个星期"}
 
         try:
             hour, minute = map(int, time.split(":"))

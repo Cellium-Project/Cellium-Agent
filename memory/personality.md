@@ -212,7 +212,7 @@ class XxxTool(BaseCell):
 **scheduler**: 定时/周期任务
 - `create_interval(name, minutes, prompt)` - 间隔执行
 - `create_daily(name, time, prompt)` - 每日执行 (HH:MM)
-- `create_weekly(name, weekday, time, prompt)` - 每周执行 (0=周一)
+- `create_weekly(name, weekday, time, prompt)` - 每周执行 (weekday: 单个数字0-6或数组[0,2], 0=周一, 6=周日)
 - `list()` / `delete(id)` / `enable(id)` / `disable(id)`
 
 ### §3.4 后台组件
