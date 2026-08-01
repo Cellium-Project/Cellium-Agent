@@ -150,7 +150,7 @@ class AgentLoop:
             logger.info("[AgentLoop] TaskSignalMatcher 已连接记忆系统")
 
         # 提示词构建（新 pieces 系统，按 stability 分层优化 KV 缓存）
-        self._prompt_builder = create_default_builder(memory_dir=memory_dir)
+        self._prompt_builder = create_default_builder(memory_dir=memory_dir, memory=self.three_layer_memory)
         self._prompt_diff_tracker = PromptDiffTracker()
 
         # 会话笔记压缩
@@ -178,12 +178,17 @@ class AgentLoop:
 
         self._tool_executor = ToolExecutor(self.tools, self._builtin_tools, on_tools_changed=self._on_tools_changed)
         self._cmd_handler = CommandHandler()
-        self._auto_hints = AutoHintManager()
 
         self._tool_call_count_in_round = 0
 
         self._pending_gene_prompt = None
         self._redirect_guidance_given = False
+
+    def rebuild_prompt_builder(self):
+        memory_dir = getattr(self.three_layer_memory, 'memory_dir', 'memory') if self.three_layer_memory else 'memory'
+        self._prompt_builder = create_default_builder(memory_dir=memory_dir, memory=self.three_layer_memory)
+        self._prompt_diff_tracker = PromptDiffTracker()
+        logger.info("[AgentLoop] 提示词构建器已重建")
 
     def _on_tools_changed(self, new_tools: Dict[str, Any]):
         """工具列表变化时的回调（由 ToolExecutor 调用）"""
@@ -334,6 +339,11 @@ class AgentLoop:
         if intent_enabled is not None:
             self._intent_enabled = intent_enabled
             logger.info("[AgentLoop] 意图感知 %s", "已启用" if intent_enabled else "已禁用")
+
+    def update_tools(self, builtin_tools: Dict[str, Any] = None):
+        if builtin_tools is not None:
+            self._builtin_tools = dict(builtin_tools)
+        self._refresh_tools()
 
     def _should_update_goal(self, new_input: str, current_goal: str) -> bool:
         """
@@ -1247,6 +1257,10 @@ class AgentLoop:
                     "user_input": user_input,
                     "system_injection": _pending_system_injection,
                     "guidance_message": _pending_guidance_msg,
+                    "iteration": iteration,
+                    "session_id": effective_session,
+                    "tools": self.tools,
+                    "tool_traces": tool_traces,
                 }
 
                 if iteration == 1:
@@ -1262,14 +1276,6 @@ class AgentLoop:
                                     self.three_layer_memory.format_retrieved_context(mem_results)
                         except Exception as e:
                             logger.warning("[AgentLoop] 长期记忆检索失败: %s", e)
-                else:
-                    # 后续轮次：自动工具提示
-                    auto_hints = self._auto_hints.get_auto_tool_hints(self.tools)
-                    security_hint = self._auto_hints.check_security_error_and_suggest(tool_traces)
-                    if security_hint:
-                        auto_hints = auto_hints + "\n\n" + security_hint if auto_hints else security_hint
-                    if auto_hints:
-                        context["auto_hints"] = auto_hints
 
                 # 通过 PromptBuilder 构建结构化消息列表
                 llm_messages = self._prompt_builder.build(context)
@@ -1821,9 +1827,10 @@ class AgentLoop:
 
         builtin_count = len(self._builtin_tools)
         comp_count = len(definitions) - builtin_count
+        tool_names = [d["function"]["name"] for d in definitions]
         logger.info(
-            "[AgentLoop] 发送工具定义 | 内置=%d | 组件=%d | 总计=%d",
-            builtin_count, max(comp_count, 0), len(definitions),
+            "[AgentLoop] 发送工具定义 | 内置=%d | 组件=%d | 总计=%d | names=%s",
+            builtin_count, max(comp_count, 0), len(definitions), tool_names,
         )
         return definitions
 

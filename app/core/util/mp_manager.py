@@ -163,7 +163,7 @@ def run_in_process_async(func: Callable) -> Callable:
         if not _manager._enabled or _manager._executor is None:
             return await func(*args, **kwargs)
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             _manager.executor, 
             lambda: func(*args, **kwargs)

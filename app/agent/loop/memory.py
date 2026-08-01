@@ -78,7 +78,6 @@ class MemoryManager:
                 }
             }]
         })
-
         return tool_call_id
 
     def add_tool_calls_batch(

@@ -366,6 +366,7 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
             memory=self.memory,
             enable_heuristics=False,
             enable_learning=False,
+            enable_hybrid=False,
         )
 
         loop.control_loop = Mock()
@@ -376,8 +377,10 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
         loop._constraint_renderer = Mock()
         loop._constraint_renderer.render = Mock(return_value=Mock(trigger_reason="redirect", max_tokens=0, force_stop=False, forbidden=["forbidden_tool"]))
         loop._constraint_renderer.render_combined = Mock(return_value="")
-        loop.tools["forbidden_tool"] = Mock()
-        loop._builtin_tools["forbidden_tool"] = loop.tools["forbidden_tool"]
+        mock_tool = Mock()
+        mock_tool.definition = {"type": "function", "function": {"name": "forbidden_tool", "description": "forbidden", "parameters": {"type": "object", "properties": {}}}}
+        loop.tools["forbidden_tool"] = mock_tool
+        loop._builtin_tools["forbidden_tool"] = mock_tool
         loop._tool_executor.refresh_tools(loop.tools)
 
         async def _collect_events():
@@ -672,8 +675,10 @@ class TestToolExecution(unittest.TestCase):
 
         from app.agent.loop.memory import MemoryManager
         from unittest.mock import AsyncMock
-        self.loop.tools["forbidden_tool"] = Mock()
-        self.loop._builtin_tools["forbidden_tool"] = self.loop.tools["forbidden_tool"]
+        mock_tool = Mock()
+        mock_tool.definition = {"type": "function", "function": {"name": "forbidden_tool", "description": "forbidden", "parameters": {"type": "object", "properties": {}}}}
+        self.loop.tools["forbidden_tool"] = mock_tool
+        self.loop._builtin_tools["forbidden_tool"] = mock_tool
         self.loop._tool_executor.refresh_tools(self.loop.tools)
 
         self.llm.responses = [
@@ -698,7 +703,7 @@ class TestToolExecution(unittest.TestCase):
     def test_tool_execution_error_handled(self):
         """工具执行异常应被捕获并返回错误结果"""
         error_tool = Mock()
-        error_tool.definition = {"name": "error_tool", "description": "错误工具"}
+        error_tool.definition = {"type": "function", "function": {"name": "error_tool", "description": "错误工具", "parameters": {"type": "object", "properties": {}}}}
 
         self.loop.tools["error_tool"] = error_tool
         self.loop._builtin_tools["error_tool"] = error_tool
@@ -1279,16 +1284,69 @@ class TestPromptContextBuilder(unittest.TestCase):
         self.assertEqual(normal[0]["content"], with_injection[0]["content"])
 
     def test_build_subsequent_round_with_auto_hints(self):
-        """后续轮次应包含 auto_hints"""
-        messages = self.builder.build({
-            "session_messages": [{"role": "user", "content": "test"}],
-            "_flash_mode": True,
-            "_is_first_round": False,
-            "auto_hints": "建议使用 file 工具",
-        })
+        """后续轮次应包含 auto_hints（由 piece renderer 生成）"""
+        from unittest.mock import patch, MagicMock
+
+        mock_manager = MagicMock()
+        mock_manager.get_component_problem_hints.return_value = ""
+        mock_manager.get_auto_tool_hints.return_value = "**可用 Skill**: test"
+        mock_manager.check_security_error_and_suggest.return_value = ""
+
+        with patch("app.agent.loop.auto_hints.get_auto_hint_manager", return_value=mock_manager):
+            messages = self.builder.build({
+                "session_messages": [{"role": "user", "content": "test"}],
+                "_flash_mode": True,
+                "_is_first_round": False,
+                "iteration": 2,
+                "tools": {},
+                "tool_traces": [],
+            })
 
         all_content = " ".join(m["content"] for m in messages if m.get("role") in ("user", "system"))
-        self.assertIn("建议使用 file 工具", all_content)
+        self.assertIn("**可用 Skill**: test", all_content)
+
+    def test_build_first_round_injects_component_problem_hints(self):
+        """第一轮应注入组件问题提示（加载错误/审计）"""
+        from unittest.mock import patch, MagicMock
+
+        mock_manager = MagicMock()
+        mock_manager.get_component_problem_hints.return_value = "## [警告] 组件加载错误 — 需要修复"
+        mock_manager.get_auto_tool_hints.return_value = ""
+        mock_manager.check_security_error_and_suggest.return_value = ""
+
+        with patch("app.agent.loop.auto_hints.get_auto_hint_manager", return_value=mock_manager):
+            messages = self.builder.build({
+                "session_messages": [{"role": "user", "content": "test"}],
+                "_flash_mode": True,
+                "_is_first_round": True,
+                "iteration": 1,
+                "tools": {},
+                "tool_traces": [],
+            })
+
+        all_content = " ".join(m["content"] for m in messages if m.get("role") in ("user", "system"))
+        self.assertIn("组件加载错误", all_content)
+
+    def test_auto_hints_passes_session_id(self):
+        """auto_hints renderer 应将 session_id 传给问题提示生成器"""
+        from unittest.mock import patch, MagicMock
+
+        mock_manager = MagicMock()
+        mock_manager.get_component_problem_hints.return_value = ""
+        mock_manager.get_auto_tool_hints.return_value = ""
+        mock_manager.check_security_error_and_suggest.return_value = ""
+
+        with patch("app.agent.loop.auto_hints.get_auto_hint_manager", return_value=mock_manager):
+            self.builder.build({
+                "session_messages": [{"role": "user", "content": "test"}],
+                "_flash_mode": True,
+                "iteration": 1,
+                "session_id": "sess-abc",
+                "tools": {},
+                "tool_traces": [],
+            })
+
+        mock_manager.get_component_problem_hints.assert_called_with("sess-abc")
 
     def test_prefix_cache_works(self):
         """固定人格应被缓存（system 消息相同）"""

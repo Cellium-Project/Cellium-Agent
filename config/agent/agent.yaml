@@ -1,6 +1,6 @@
 agent:
   section: agent
-  max_iterations: 10
+  max_iterations: 20
   enforce_iteration_limit: false
   request_timeout: 300
   max_sessions: 100

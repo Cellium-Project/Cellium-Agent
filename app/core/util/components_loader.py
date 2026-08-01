@@ -531,7 +531,7 @@ def load_components(
     return loaded
 
 
-def _instantiate_component(module_path: str) -> tuple:
+def _instantiate_component(module_path: str, purge_cache: bool = False) -> tuple:
     parts = module_path.rsplit(".", 1)
     if len(parts) != 2:
         raise ValueError(f"无效的模块路径: {module_path}")
@@ -546,41 +546,42 @@ def _instantiate_component(module_path: str) -> tuple:
     pkg_dir = components_dir / pkg_name
 
     if pkg_dir.is_dir() and (pkg_dir / "__init__.py").exists():
-        for key in list(sys.modules.keys()):
-            if key == pkg_name or key.startswith(f"{pkg_name}."):
-                try:
-                    del sys.modules[key]
-                except Exception:
-                    pass
+        if purge_cache:
+            for key in list(sys.modules.keys()):
+                if key == pkg_name or key.startswith(f"{pkg_name}."):
+                    try:
+                        del sys.modules[key]
+                    except Exception:
+                        pass
 
-        for key in list(sys.modules.keys()):
-            if not key.startswith("_component_"):
-                continue
-            mod = sys.modules.get(key)
-            if mod is None:
-                continue
-            mod_file = getattr(mod, '__file__', None)
-            if mod_file and str(pkg_dir) in mod_file:
-                try:
-                    del sys.modules[key]
-                except Exception:
-                    pass
+            for key in list(sys.modules.keys()):
+                if not key.startswith("_component_"):
+                    continue
+                mod = sys.modules.get(key)
+                if mod is None:
+                    continue
+                mod_file = getattr(mod, '__file__', None)
+                if mod_file and str(pkg_dir) in mod_file:
+                    try:
+                        del sys.modules[key]
+                    except Exception:
+                        pass
 
-        pycache_dir = pkg_dir / "__pycache__"
-        if pycache_dir.exists():
-            for cached_file in pycache_dir.glob("*.pyc"):
-                try:
-                    cached_file.unlink()
-                except Exception:
-                    pass
-
-        for sub_dir in pkg_dir.iterdir():
-            if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
-                for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
+            pycache_dir = pkg_dir / "__pycache__"
+            if pycache_dir.exists():
+                for cached_file in pycache_dir.glob("*.pyc"):
                     try:
                         cached_file.unlink()
                     except Exception:
                         pass
+
+            for sub_dir in pkg_dir.iterdir():
+                if sub_dir.is_dir() and (sub_dir / "__pycache__").exists():
+                    for cached_file in (sub_dir / "__pycache__").glob("*.pyc"):
+                        try:
+                            cached_file.unlink()
+                        except Exception:
+                            pass
 
         cls = None
         for py_file in pkg_dir.rglob("*.py"):
@@ -716,7 +717,7 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
 
         if file_path not in _loaded_files:
             try:
-                instance, info = _instantiate_component(item["module_path"])
+                instance, info = _instantiate_component(item["module_path"], purge_cache=True)
                 register_cell(instance)
                 _loaded_files.add(file_path)
                 if is_package:
@@ -788,8 +789,8 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                         if old_instance and hasattr(old_instance, "on_unload"):
                             old_instance.on_unload()
 
-                        instance, info = _instantiate_component(item["module_path"])
-                        
+                        instance, info = _instantiate_component(item["module_path"], purge_cache=True)
+
                         from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
                         use_sandbox = instance.cell_name not in EXEMPTED_NAMES
                         
@@ -833,18 +834,19 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 pass
     
     removed_files = _loaded_files - current_files
-    removed_tool_names = []
     for file_path in removed_files:
+        if os.path.exists(file_path):
+            continue
         target_name = None
         for name, cell in list(_cell_registry.items()):
             if getattr(cell, '_source_file', '') == file_path:
                 target_name = name
                 break
-        
+
         if target_name:
             cls_name = type(_cell_registry[target_name]).__name__
             module_path = f"components.{pathlib.Path(file_path).stem}.{cls_name}"
-            
+
             try:
                 from app.core.util.component_sandbox import ComponentSandbox
                 if target_name in ComponentSandbox.get_all_sandbox_names():
@@ -852,14 +854,13 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                     logger.debug(f"[HotReload] 已清理沙箱缓存: {target_name}")
             except Exception as e:
                 logger.debug(f"[HotReload] 清理沙箱缓存失败 {target_name}: {e}")
-            
+
             if cls_name in _component_classes:
                 del _component_classes[cls_name]
                 logger.debug(f"[HotReload] 已清理类引用缓存: {cls_name}")
-            
+
             unregister_cell(target_name)
             unregister_from_config(module_path)
-            removed_tool_names.append(target_name)
             
             try:
                 from app.core.util.component_tool_registry import get_component_tool_registry
@@ -878,18 +879,7 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
         
         _loaded_files.discard(file_path)
         _file_mtimes.pop(file_path, None)
-    
-    if removed_tool_names:
-        try:
-            from app.core.util.component_tool_registry import get_component_tool_registry
-            registry = get_component_tool_registry()
-            current_names = set(_cell_registry.keys())
-            cleaned = registry.cleanup_trust_list(current_names)
-            if cleaned:
-                logger.info(f"[HotReload] 已清理信任白名单: {cleaned}")
-        except Exception as e:
-            logger.debug(f"[HotReload] 清理信任白名单失败: {e}")
-    
+
     if report.get("added") or report.get("updated"):
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
@@ -911,16 +901,15 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
 def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, Any]:
     """
     手动清理所有组件相关缓存
-    
+
     用于解决系统级缓存问题，如：
     - 组件删除后仍提示错误
     - 沙箱实例残留
-    - 信任白名单过期
-    
+
     Args:
         force: 是否强制清理（包括正在运行的沙箱）
         dry_run: 是否只预览，不实际执行
-    
+
     Returns:
         清理结果报告
     """
@@ -932,7 +921,6 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
         "component_classes_cleared": 0,
         "sandboxes_cleared": 0,
         "sandboxes_skipped": [],
-        "trust_list_cleaned": [],
         "warnings": [],
     }
     
@@ -977,23 +965,7 @@ def clear_all_caches(force: bool = False, dry_run: bool = False) -> Dict[str, An
     except Exception as e:
         report["warnings"].append(f"清理沙箱缓存失败: {e}")
         logger.warning(f"[CacheCleanup] 清理沙箱缓存失败: {e}")
-    
-    try:
-        from app.core.util.component_tool_registry import get_component_tool_registry
-        registry = get_component_tool_registry()
-        current_names = set(_cell_registry.keys())
-        
-        trusted = registry._load_trust_list()
-        to_remove = [name for name in trusted if name not in current_names]
-        report["trust_list_cleaned"] = to_remove
-        
-        if to_remove and not dry_run:
-            registry.cleanup_trust_list(current_names)
-            logger.info(f"[CacheCleanup] 已清理信任白名单: {to_remove}")
-    except Exception as e:
-        report["warnings"].append(f"清理信任白名单失败: {e}")
-        logger.warning(f"[CacheCleanup] 清理信任白名单失败: {e}")
-    
+
     if not dry_run:
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry

@@ -26,12 +26,9 @@ def main():
 
     from app.core.util.logger import setup_logger, LogMixin, install_buffer
     from app.core.di.container import setup_di_container
-    from app.agent.di_config import setup_agent_di
+    from app.agent.di_config import setup_agent_di, resolve_agent_services
     from app.agent.loop.session_manager import init_session_manager
     from app.agent.loop import AgentLoopManager
-    from app.agent.memory.three_layer import ThreeLayerMemory
-    from app.agent.shell.cellium_shell import CelliumShell
-    from app.agent.llm.engine import BaseLLMEngine
     from app.channels import ChannelManager
     from app.core.util.agent_config import get_config
 
@@ -63,6 +60,7 @@ def main():
             self._setup_session_manager(cfg)
             self._setup_components()
             self._setup_watcher()
+            self._setup_config_watcher()
             self._setup_web_app()
             self._print_event_system_info()
 
@@ -116,20 +114,7 @@ def main():
 
             agent_loop_mgr = AgentLoopManager.get_instance()
 
-            from app.agent.tools.shell_tool import ShellTool
-            from app.agent.tools.memory_tool import MemoryTool
-            from app.agent.tools.file_tool import FileTool
-            from app.agent.tools.read_tool import ReadTool
-            from app.agent.tools.edit_tool import EditTool
-            from app.agent.tools.grep_tool import GrepTool
-            _mem = self.container.resolve(ThreeLayerMemory)
-            _shell = self.container.resolve(CelliumShell)
-            _mem_tool = MemoryTool(three_layer_memory=_mem)
-            _file_tool = FileTool()
-            _read_tool = ReadTool()
-            _edit_tool = EditTool()
-            _grep_tool = GrepTool()
-            _tool = ShellTool(shell=_shell)
+            services = resolve_agent_services(self.container)
 
             enforce_limit = cfg.get("agent.enforce_iteration_limit", False)
             default_iter = cfg.get("agent.max_iterations", 10)
@@ -142,38 +127,25 @@ def main():
                 "enable_learning": True,
             }
             agent_loop_mgr.initialize(
-                llm_engine=self.container.resolve(BaseLLMEngine) if self.container.has(BaseLLMEngine) else None,
-                shell=_shell,
-                three_layer_memory=_mem,
+                llm_engine=services["llm_engine"],
+                shell=services["shell"],
+                three_layer_memory=services["memory"],
                 tools={
-                    "shell": _tool,
-                    "memory": _mem_tool,
-                    "file": _file_tool,
-                    "read": _read_tool,
-                    "edit": _edit_tool,
-                    "grep": _grep_tool,
+                    "shell": services["shell_tool"],
+                    "memory": services["memory_tool"],
+                    "file": services["file_tool"],
+                    "read": services["read_tool"],
+                    "edit": services["edit_tool"],
+                    "grep": services["grep_tool"],
+                    "glob": services["glob_tool"],
+                    "ls": services["ls_tool"],
+                    "config": services["config_tool"],
                 },
                 global_config=agent_cfg,
             )
             channel_mgr = ChannelManager.get_instance()
             channel_mgr.set_agent_loop_manager(agent_loop_mgr)
             self.logger.info("[OK] AgentLoopManager + ChannelManager 集成完成")
-
-            self._setup_channels()
-            self.logger.info("[OK] 外部平台通道初始化完成")
-
-        def _setup_channels(self):
-            from app.channels import register_all_channels, ChannelManager
-
-            registered = register_all_channels(self.logger)
-            if registered:
-                self.logger.info(f"[OK] 已注册 {len(registered)} 个通道适配器: {registered}")
-            else:
-                self.logger.warning("[Channel] 没有注册任何通道适配器")
-
-            channel_mgr = ChannelManager.get_instance()
-            if not channel_mgr._running:
-                self.logger.info("[Channel] 适配器已注册，将在服务器启动后自动连接")
 
         def _setup_session_manager(self, cfg):
             from app.agent.memory.three_layer import ThreeLayerMemory
@@ -209,6 +181,12 @@ def main():
 
             if status.get("tool_count", 0) > 0:
                 self.logger.info("  [HotPlug] %d 个工具已注册", status["tool_count"])
+
+        def _setup_config_watcher(self):
+            from app.core.util.agent_config import get_config
+            cfg = get_config()
+            cfg.start_file_watch(interval=2.0)
+            self.logger.info("[OK] 配置文件监听已启动 | interval=2.0s")
 
         def _setup_web_app(self):
             from app.server.web_server import create_app

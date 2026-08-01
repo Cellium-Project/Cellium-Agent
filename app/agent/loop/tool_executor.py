@@ -73,6 +73,15 @@ class ToolDescriptionGenerator:
             "list":        "正在列出微信下载文件",
             "_default":    "正在处理微信文件",
         },
+        "config": {
+            "help":             "正在查看配置工具帮助",
+            "list_models":      "正在查看可用模型列表",
+            "add_model":        "正在添加模型：{model_name}",
+            "switch_model":     "正在切换模型到：{model_name}",
+            "enable_intent":    "{intent_action}意图感知",
+            "set_intent_model": "正在配置意图感知模型：{model}",
+            "_default":         "正在管理配置：{command}",
+        },
         "_default":    "正在调用 {tool_name}：{param_value}",
     }
 
@@ -188,6 +197,18 @@ class ToolDescriptionGenerator:
             else:
                 ctx["fs_desc"] = "正在操作文件系统"
                 ctx["insight_desc"] = ""
+
+        # Config tool
+        if tool_name == "config":
+            ctx["model_name"] = arguments.get("name") or arguments.get("model_name") or ""
+            ctx["model"] = arguments.get("model") or ""
+            enabled = arguments.get("enabled")
+            if enabled is True:
+                ctx["intent_action"] = "正在开启"
+            elif enabled is False:
+                ctx["intent_action"] = "正在关闭"
+            else:
+                ctx["intent_action"] = "正在查询"
 
         # Memory / Web Search
         ctx["query"] = (arguments.get("query") or arguments.get("q") or arguments.get("keywords") or "")[:30]
@@ -533,7 +554,7 @@ class ToolExecutor:
             return {"error": f"Tool {tool_name} is not callable"}
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, _run_tool)
             return result
         except Exception as e:

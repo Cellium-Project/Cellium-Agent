@@ -78,10 +78,15 @@ class AgentConfig:
         self._callbacks: Dict[str, List[ConfigChangeCallback]] = {}
 
         # 自动重载开关（每次 get() 前检测文件变更）
-        self._auto_reload = False
+        self._auto_reload = True
 
         # 锁（线程安全）
         self._lock = threading.RLock()
+
+        # 文件监听线程
+        self._watch_thread: Optional[threading.Thread] = None
+        self._watch_stop_event = threading.Event()
+        self._watch_interval = 2.0
 
         # 首次加载
         self._load_all()
@@ -234,37 +239,40 @@ class AgentConfig:
 
     # ---- 写入接口 ----
 
-    def set(self, key_path: str, value: Any, persist: bool = False):
+    def set(self, key_path: str, value: Any, persist: bool = True, notify: bool = True):
         """
         运行时动态修改配置值
 
         Args:
             key_path: 点号路径，如 "llm.openai.model"
             value: 新值
-            persist: 是否写回对应 YAML 文件（默认仅内存修改）
+            persist: 是否写回对应 YAML 文件（默认写回，文件为唯一真相）
+            notify: 是否立即触发 on_change 回调（默认触发；
+                    批量修改时可传 False，稍后手动调 reload_section 生效）
         """
         keys = key_path.split(".")
         top_key = keys[0]
-        
+
         with self._lock:
             old_value = self._config.get(top_key)
             if isinstance(old_value, dict):
                 import copy
                 old_value = copy.deepcopy(old_value)
-            
+
             target = self._config
             for k in keys[:-1]:
                 if k not in target or not isinstance(target[k], dict):
                     target[k] = {}
                 target = target[k]
             target[keys[-1]] = value
-            
+
             new_value = self._config.get(top_key)
 
         if persist:
             self._persist_to_file(key_path, value)
-        
-        self._notify_callbacks({top_key: ("updated", old_value, new_value)})
+
+        if notify:
+            self._notify_callbacks({top_key: ("updated", old_value, new_value)})
 
     def _persist_to_file(self, key_path: str, value: Any):
         """将修改写回对应的 YAML 文件"""
@@ -278,11 +286,15 @@ class AgentConfig:
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
             raw = yaml.safe_load(content) or {}
-            
-            self._set_nested(raw, key_path.split("."), value)
+
+            old_raw_value = self._get_nested(raw, key_path.split("."))
+            preserved = self._preserve_env_placeholders(old_raw_value, value)
+            self._set_nested(raw, key_path.split("."), preserved)
             
             with open(filepath, "w", encoding="utf-8") as f:
                 yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            # 同步 mtime 缓存，避免下次 get() 误判文件被外部修改而重复 reload
+            self._mtimes[source_file] = filepath.stat().st_mtime
         except Exception as e:
             if self._logger:
                 self._logger.error(f"[AgentConfig] 写回配置失败 {key_path}: {e}")
@@ -292,6 +304,40 @@ class AgentConfig:
         for k in keys[:-1]:
             d = d.setdefault(k, {})
         d[keys[-1]] = value
+
+    @staticmethod
+    def _get_nested(d: Dict, keys: List[str], default: Any = None) -> Any:
+        cur = d
+        for k in keys:
+            if isinstance(cur, dict) and k in cur:
+                cur = cur[k]
+            else:
+                return default
+        return cur
+
+    @staticmethod
+    def _preserve_env_placeholders(old_value: Any, new_value: Any) -> Any:
+        """写回时保留文件中的 ${VAR} 占位符，避免 env 密钥泄露到 YAML"""
+        if isinstance(old_value, str) and old_value.startswith("${") and old_value.endswith("}"):
+            return old_value
+        if isinstance(old_value, dict) and isinstance(new_value, dict):
+            return {k: AgentConfig._preserve_env_placeholders(old_value.get(k), v) for k, v in new_value.items()}
+        if isinstance(old_value, list) and isinstance(new_value, list):
+            result = []
+            for item in new_value:
+                if isinstance(item, dict):
+                    name = item.get("name")
+                    matched = None
+                    if name is not None:
+                        matched = next(
+                            (o for o in old_value if isinstance(o, dict) and o.get("name") == name),
+                            None,
+                        )
+                    result.append(AgentConfig._preserve_env_placeholders(matched, item))
+                else:
+                    result.append(item)
+            return result
+        return new_value
 
     # ---- 重载机制 ----
 
@@ -349,6 +395,13 @@ class AgentConfig:
                 self._logger.info(f"[AgentConfig] 配置段已热重载: {section}")
             return True
 
+        except yaml.YAMLError as e:
+            if self._logger:
+                self._logger.error(
+                    "[AgentConfig] %s YAML 格式错误，已保留旧配置 | 错误: %s",
+                    source_file, e,
+                )
+            return False
         except Exception as e:
             if self._logger:
                 self._logger.error(f"[AgentConfig] 重载 {section} 失败: {e}")
@@ -393,6 +446,50 @@ class AgentConfig:
         if not self._auto_reload:
             return
         self.reload_changed_files()
+
+    # ---- 文件监听（主动轮询）----
+
+    def start_file_watch(self, interval: float = 2.0):
+        """启动后台线程主动轮询配置文件变更"""
+        if self._watch_thread and self._watch_thread.is_alive():
+            return
+        self._watch_interval = interval
+        self._watch_stop_event.clear()
+        self._watch_thread = threading.Thread(
+            target=self._file_watch_loop,
+            name="ConfigFileWatcher",
+            daemon=True,
+        )
+        self._watch_thread.start()
+        if self._logger:
+            self._logger.info(
+                "[AgentConfig] 文件监听已启动 | interval=%.1fs", interval
+            )
+
+    def stop_file_watch(self):
+        """停止文件监听"""
+        if self._watch_thread is None:
+            return
+        self._watch_stop_event.set()
+        self._watch_thread.join(timeout=5)
+        self._watch_thread = None
+        if self._logger:
+            self._logger.info("[AgentConfig] 文件监听已停止")
+
+    def _file_watch_loop(self):
+        """后台轮询：检测 mtime 变更 → reload_changed_files → on_change 回调"""
+        while not self._watch_stop_event.is_set():
+            try:
+                changes = self.reload_changed_files()
+                if changes and self._logger:
+                    self._logger.info(
+                        "[AgentConfig] 文件变更检测到 | sections=%s",
+                        list(changes.keys()),
+                    )
+            except Exception as e:
+                if self._logger:
+                    self._logger.error("[AgentConfig] 文件监听异常: %s", e)
+            self._watch_stop_event.wait(timeout=self._watch_interval)
 
     # ---- 变更通知 ----
 

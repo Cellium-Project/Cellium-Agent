@@ -82,21 +82,19 @@ class SessionResponse(BaseModel):
     total: int
 
 
-def _get_agent_loop():
-    """从 DI 容器获取 AgentLoop"""
-    from app.agent.loop.agent_loop import AgentLoop
-    container = get_container()
-    try:
-        return container.resolve(AgentLoop)
-    except ValueError:
+async def _get_session_loop(session_id: str):
+    from app.agent.loop import AgentLoopManager
+    mgr = AgentLoopManager.get_instance()
+    if not mgr.is_initialized:
         return None
+    return await mgr.get_loop(session_id)
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """聊话接口（会话感知）"""
     session_id = request.session_id or "default"
-    agent_loop = _get_agent_loop()
+    agent_loop = await _get_session_loop(session_id)
 
     if agent_loop is None:
         return ChatResponse(
@@ -161,7 +159,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     POST 只负责启动任务，事件通过 WebSocket 实时推送
     """
     session_id = request.session_id or "default"
-    agent_loop = _get_agent_loop()
+    agent_loop = await _get_session_loop(session_id)
     task_mgr = get_task_manager()
 
     if agent_loop is None:
@@ -328,7 +326,7 @@ async def component_event(request: ComponentEventRequest):
             return {"status": "not_running", "session_id": session_id}
     
     # 获取 AgentLoop
-    agent_loop = _get_agent_loop()
+    agent_loop = await _get_session_loop(session_id)
     if agent_loop is None:
         return {"status": "error", "error": "Agent 未初始化", "session_id": session_id}
     
@@ -449,13 +447,14 @@ async def cleanup_sessions():
 @router.get("/health")
 async def health():
     """健康检查"""
-    from app.agent.loop.agent_loop import AgentLoop
+    from app.agent.loop import AgentLoopManager
     container = get_container()
     session_mgr = get_session_manager()
 
+    loop_mgr = AgentLoopManager.get_instance()
     di_status = {
         "event_bus": True,
-        "agent_loop": container.has(AgentLoop),
+        "agent_loop": loop_mgr.is_initialized,
         "shell": False,
         "memory": False,
         "security": False,

@@ -4,46 +4,18 @@
 import json
 import logging
 import time
+
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
+
+from .models import ChatResponse, ModelInfo, ToolCall
+from .transport import OpenAICompatTransport
 
 logger = logging.getLogger(__name__)
 
 _EMPTY_RESPONSE_COUNT = 0
 
 _VERIFY_CACHE: Dict[str, bool] = {}
-
-@dataclass(frozen=True)
-class ModelInfo:
-    """单个模型的能力参数"""
-    context_window: int      # 最大输入上下文 (tokens)
-    max_output_tokens: int   # 单次最大输出 (tokens)
-    supports_tools: bool     # 是否支持 function calling / tool use
-    supports_vision: bool = False  # 是否支持多模态/视觉
-
-
-@dataclass
-class ToolCall:
-    """工具调用（LLM 返回的 function_call）"""
-    id: str
-    name: str
-    arguments: Dict[str, Any]
-
-
-@dataclass
-class ChatResponse:
-    """LLM 聊天响应（统一格式，屏蔽不同 provider 差异）"""
-    content: Optional[str] = None
-    tool_calls: List[ToolCall] = field(default_factory=list)
-    model: str = ""
-    finish_reason: str = ""
-    usage: Dict[str, int] = field(default_factory=dict)
-    reasoning_content: Optional[str] = None 
-
-    @property
-    def has_tool_calls(self) -> bool:
-        return len(self.tool_calls) > 0
 
 
 # ---- 默认模型注册表（内置兜底）----
@@ -198,6 +170,9 @@ class BaseLLMEngine(ABC):
     async def health_check(self) -> bool:
         """健康检查"""
 
+    async def close(self):
+        """释放底层资源（httpx 连接池等）。默认无操作，子类按需覆盖。"""
+
 
 # ============================================================
 #  OpenAI 兼容引擎
@@ -252,8 +227,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         self._explicit_max_tokens = max_tokens
 
-        self._client = None
-        self._async_client = None
+        self._transport: Optional[OpenAICompatTransport] = None
 
         max_tokens_hint = "(API自定)" if omit_max_tokens else str(self._model_info.max_output_tokens)
         logger.info(
@@ -292,28 +266,19 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     def max_tokens(self) -> int:
         return self._model_info.max_output_tokens
 
-    def _ensure_sync_client(self):
-        if self._client is None:
-            from openai import OpenAI
-            self._client = OpenAI(
+    def _ensure_transport(self) -> OpenAICompatTransport:
+        if self._transport is None:
+            self._transport = OpenAICompatTransport(
                 api_key=self.api_key,
                 base_url=self.base_url,
                 timeout=self.timeout,
-                **self._extra_client_args,
             )
+        return self._transport
 
-    def _ensure_async_client(self):
-        if self._async_client is None:
-            if not self.api_key:
-                logger.warning("[LLM] API key 为空，跳过 async client 创建，将在首次调用时重试")
-                return
-            from openai import AsyncOpenAI
-            self._async_client = AsyncOpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout,
-                **self._extra_client_args,
-            )
+    async def close(self):
+        if self._transport is not None:
+            await self._transport.aclose()
+            self._transport = None
 
     async def chat(
         self,
@@ -334,9 +299,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             max_tokens: 最大输出 token 覆盖（None → 用模型默认值）
             truncate: 是否在输入超限时自动截断早期消息
         """
-        self._ensure_async_client()
-        if self._async_client is None:
+        if not self.api_key:
             raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
+        transport = self._ensure_transport()
 
         effective_messages = messages
         if truncate and messages:
@@ -378,7 +343,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 extra_body = {"thinking": {"type": "enabled"}}
                 if self._thinking_budget:
                     extra_body["thinking"]["budget_tokens"] = self._thinking_budget
-                params["extra_body"] = extra_body
+                params.update(extra_body)
                 logger.info("[LLM] 思考模式 | model=%s | type=OpenAI-o系列 | budget=%s", self.model, self._thinking_budget or "默认")
             elif "deepseek" in model_lower and "reasoner" in model_lower:
                 logger.info("[LLM] 思考模式 | model=%s | type=DeepSeek-Reasoner", self.model)
@@ -387,7 +352,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 extra_body = {"thinking": {"type": "enabled"}}
                 if self._thinking_budget:
                     extra_body["thinking"]["budget_tokens"] = self._thinking_budget
-                params["extra_body"] = extra_body
+                params.update(extra_body)
 
         req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
@@ -401,7 +366,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         t0 = time.monotonic()
         try:
-            response = await self._async_client.chat.completions.create(**params)
+            parsed = await transport.chat(params)
             elapsed_ms = (time.monotonic() - t0) * 1000
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
@@ -411,7 +376,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             )
             raise
 
-        parsed = self._parse_response(response)
         usage_info = (
             f"prompt={parsed.usage.get('prompt_tokens', '?')}, "
             f"completion={parsed.usage.get('completion_tokens', '?')}, "
@@ -423,7 +387,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             self.model, elapsed_ms, parsed.finish_reason,
             len(parsed.tool_calls),
             len(parsed.content or ""), usage_info,
-            type(response).__name__,
+            type(parsed).__name__,
         )
 
         if parsed.reasoning_content:
@@ -447,7 +411,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 _EMPTY_RESPONSE_COUNT,
                 self.model,
                 getattr(self, 'base_url', '?'),
-                type(response).__name__,
+                type(parsed).__name__,
                 req_tokens,
                 final_max_tokens,
                 tools_count,
@@ -455,7 +419,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 parsed.finish_reason,
                 parsed.usage,
                 self.temperature,
-                str(response)[:500],
+                str(parsed)[:500],
             )
             
             if _EMPTY_RESPONSE_COUNT % 5 == 0:
@@ -492,7 +456,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         **kwargs,
     ) -> ChatResponse:
         """同步调用（测试用）"""
-        self._ensure_sync_client()
+        if not self.api_key:
+            raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
+        transport = self._ensure_transport()
 
         effective_messages = messages
         if messages:
@@ -518,14 +484,13 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
         t0 = time.monotonic()
         try:
-            response = self._client.chat.completions.create(**params)
+            parsed = transport.chat_sync(params)
             elapsed_ms = (time.monotonic() - t0) * 1000
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
             logger.error("[LLM-sync] <<< 失败 | 耗时=%.0fms | %s: %s", elapsed_ms, type(e).__name__, str(e))
             raise
 
-        parsed = self._parse_response(response)
         logger.info(
             "[LLM-sync] <<< 成功 | model=%s | 耗时=%.0fms | finish_reason=%s | tool_calls=%d",
             self.model, elapsed_ms, parsed.finish_reason, len(parsed.tool_calls),
@@ -606,168 +571,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
         return result, True
 
-    @staticmethod
-    def _parse_sse_text_response(raw_text: str) -> ChatResponse:
-        """解析整段 SSE 文本串响应，兼容第三方把流式结果整体返回为字符串"""
-        lines = raw_text.splitlines()
-        full_content = ""
-        finish_reason = ""
-        usage = {}
-        model = ""
-
-        for line in lines:
-            raw = (line or "").strip()
-            if not raw:
-                continue
-            if raw.startswith("data:"):
-                raw = raw[5:].strip()
-            if not raw or raw == "[DONE]":
-                continue
-            try:
-                item = json.loads(raw)
-            except Exception:
-                continue
-
-            if isinstance(item, dict):
-                if not model:
-                    model = item.get("model", "") or model
-                choices = item.get("choices") or []
-                if choices:
-                    choice0 = choices[0] or {}
-                    delta = choice0.get("delta") or {}
-                    delta_content = delta.get("content") if isinstance(delta, dict) else None
-                    if delta_content:
-                        full_content += delta_content
-                    if choice0.get("finish_reason"):
-                        finish_reason = choice0.get("finish_reason") or finish_reason
-                if item.get("usage"):
-                    usage = item.get("usage") or usage
-
-        return ChatResponse(
-            content=full_content,
-            tool_calls=[],
-            model=model,
-            finish_reason=finish_reason or "stop",
-            usage=usage,
-        )
-
-    @staticmethod
-    def _parse_response(raw_response) -> ChatResponse:
-        """统一解析 OpenAI SDK 响应，并兼容部分第三方非标准返回"""
-        if hasattr(raw_response, "choices"):
-            choice = raw_response.choices[0]
-            message = choice.message
-
-            content = message.content
-            
-            reasoning_content = None
-            if hasattr(message, 'reasoning_content') and message.reasoning_content:
-                reasoning_content = message.reasoning_content
-
-            if not reasoning_content and content:
-                import re as _re
-                think_match = _re.search(r'<think>\s*(.*?)\s*</think>', content, _re.DOTALL)
-                if think_match:
-                    reasoning_content = think_match.group(1).strip()
-                    before = content[:think_match.start()].strip()
-                    after = content[think_match.end():].strip()
-                    content = f"{before}\n{after}" if before and after else (before or after)
-
-            logger.info(
-                "[LLM] _parse_response | finish_reason=%s | content=%s | has_tool_calls=%s | has_reasoning=%s",
-                choice.finish_reason,
-                (content or "(空)")[:200],
-                hasattr(message, 'tool_calls') and bool(message.tool_calls),
-                reasoning_content is not None,
-            )
-
-            tool_calls = []
-            if hasattr(message, 'tool_calls') and message.tool_calls:
-                import json as _json
-                for tc in message.tool_calls:
-                    args = {}
-                    if tc.function and tc.function.arguments:
-                        try:
-                            args = _json.loads(tc.function.arguments)
-                        except _json.JSONDecodeError:
-                            args = {"raw": tc.function.arguments}
-                    tool_calls.append(ToolCall(
-                        id=tc.id or "",
-                        name=tc.function.name if tc.function else "",
-                        arguments=args,
-                    ))
-
-            usage = {}
-            if hasattr(raw_response, 'usage') and raw_response.usage:
-                usage = {
-                    "prompt_tokens": raw_response.usage.prompt_tokens or 0,
-                    "completion_tokens": raw_response.usage.completion_tokens or 0,
-                    "total_tokens": raw_response.usage.total_tokens or 0,
-                }
-
-            return ChatResponse(
-                content=content,
-                tool_calls=tool_calls,
-                model=getattr(raw_response, 'model', ''),
-                finish_reason=choice.finish_reason or '',
-                usage=usage,
-                reasoning_content=reasoning_content,
-            )
-
-        if isinstance(raw_response, str):
-            raw = raw_response.strip()
-            if raw.startswith("data:") and "\n" in raw_response:
-                parsed_sse = OpenAICompatibleEngine._parse_sse_text_response(raw_response)
-                logger.warning(
-                    "[LLM] 收到整段 SSE 文本串响应，按兼容模式聚合解析 | content_len=%d | finish_reason=%s",
-                    len(parsed_sse.content or ""),
-                    parsed_sse.finish_reason,
-                )
-                return parsed_sse
-            if raw.startswith("data:"):
-                raw = raw[5:].strip()
-            if raw == "[DONE]":
-                return ChatResponse(content="", tool_calls=[], model="", finish_reason="stop", usage={})
-            try:
-                parsed_json = json.loads(raw)
-            except Exception:
-                preview = raw[:300]
-                logger.warning("[LLM] 收到字符串响应而非标准对象，按纯文本回复处理 | preview=%s", preview)
-                return ChatResponse(
-                    content=raw_response,
-                    tool_calls=[],
-                    model="",
-                    finish_reason="stop",
-                    usage={},
-                )
-            raw_response = parsed_json
-
-        if isinstance(raw_response, dict):
-            if isinstance(raw_response.get("choices"), list) and raw_response["choices"]:
-                choice = raw_response["choices"][0] or {}
-                message = choice.get("message", {}) or {}
-                content = message.get("content", "")
-                return ChatResponse(
-                    content=content,
-                    tool_calls=[],
-                    model=raw_response.get("model", ""),
-                    finish_reason=choice.get("finish_reason", "") or "",
-                    usage=raw_response.get("usage", {}) or {},
-                )
-            if raw_response.get("choices") == [] and raw_response.get("usage"):
-                return ChatResponse(
-                    content="",
-                    tool_calls=[],
-                    model=raw_response.get("model", ""),
-                    finish_reason="stop",
-                    usage=raw_response.get("usage", {}) or {},
-                )
-            preview = str(raw_response)[:300]
-            raise TypeError(f"LLM 返回 dict 但不包含标准 choices 结构: {preview}")
-
-        preview = str(raw_response)[:300]
-        raise TypeError(f"LLM 返回类型异常: {type(raw_response).__name__}, preview={preview}")
-
     async def chat_stream(
         self,
         messages: List[Dict[str, str]],
@@ -775,9 +578,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         **kwargs,
     ):
         """流式生成（SSE/WebSocket 实时推送用）"""
-        self._ensure_async_client()
-        if self._async_client is None:
+        if not self.api_key:
             raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
+        transport = self._ensure_transport()
 
         effective_messages = messages
         if messages:
@@ -786,15 +589,14 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         params = {
             "model": self.model,
             "messages": effective_messages,
-            "stream": True,
             "temperature": kwargs.pop("temperature", self.temperature),
-            "max_tokens": kwargs.pop("max_tokens", self.effective_max_tokens),
         }
+        explicit_max = kwargs.pop("max_tokens", None)
+        if not self._omit_max_tokens:
+            params["max_tokens"] = explicit_max or self.effective_max_tokens
         if tools and self._model_info.supports_tools:
             params["tools"] = tools
         params.update(kwargs)
-
-        stream = await self._async_client.chat.completions.create(**params)
 
         req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
@@ -806,87 +608,98 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
 
         full_content = ""
+        tool_calls_acc: Dict[int, Dict] = {}
         done_sent = False
         saw_content_chunk = False
-        async for chunk in stream:
-            if hasattr(chunk, "choices"):
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    full_content += delta.content
-                    saw_content_chunk = True
-                    yield {"type": "chunk", "content": delta.content, "full_content": full_content}
-                elif not done_sent and (not delta or (chunk.choices and chunk.choices[0].finish_reason in ("stop", None))):
-                    done_sent = True
-                    yield {"type": "done", "full_content": full_content}
+        saw_tool_call_chunk = False
+        async for chunk in transport.chat_stream(params):
+            if not isinstance(chunk, dict):
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                if chunk.get("usage"):
+                    continue
+                continue
+            choice0 = choices[0] or {}
+            delta = choice0.get("delta") or {}
+            if not isinstance(delta, dict):
+                delta = {}
+            delta_content = delta.get("content")
+            finish_reason = choice0.get("finish_reason")
+
+            if delta_content:
+                full_content += delta_content
+                saw_content_chunk = True
+                yield {"type": "chunk", "content": delta_content, "full_content": full_content}
                 continue
 
-            if isinstance(chunk, str):
-                raw = chunk.strip()
-                if raw.startswith("data:") and "\n" in chunk:
-                    parsed_sse = self._parse_sse_text_response(chunk)
-                    if parsed_sse.content:
-                        full_content += parsed_sse.content
-                        saw_content_chunk = True
-                        yield {"type": "chunk", "content": parsed_sse.content, "full_content": full_content}
-                    if parsed_sse.usage:
-                        logger.debug("[LLM] 收到整段 SSE 文本串 chunk，usage=%s", parsed_sse.usage)
-                    if not done_sent:
-                        done_sent = True
-                        yield {"type": "done", "full_content": full_content}
-                    continue
-                if raw.startswith("data:"):
-                    raw = raw[5:].strip()
-                if raw == "[DONE]":
-                    if not done_sent:
-                        done_sent = True
-                        yield {"type": "done", "full_content": full_content}
-                    continue
-                try:
-                    chunk = json.loads(raw)
-                except Exception:
-                    if raw:
-                        full_content += raw
-                        saw_content_chunk = True
-                        yield {"type": "chunk", "content": raw, "full_content": full_content}
-                    continue
-
-            if isinstance(chunk, dict):
-                choices = chunk.get("choices") or []
-                if choices:
-                    choice0 = choices[0] or {}
-                    delta = choice0.get("delta") or {}
-                    delta_content = delta.get("content") if isinstance(delta, dict) else None
-                    finish_reason = choice0.get("finish_reason")
-                    if delta_content:
-                        full_content += delta_content
-                        saw_content_chunk = True
-                        yield {"type": "chunk", "content": delta_content, "full_content": full_content}
+            delta_tool_calls = delta.get("tool_calls")
+            if delta_tool_calls:
+                saw_tool_call_chunk = True
+                for tc in delta_tool_calls:
+                    if not isinstance(tc, dict):
                         continue
-                    if not done_sent and finish_reason in ("stop", None):
-                        done_sent = True
-                        yield {"type": "done", "full_content": full_content}
-                        continue
-                elif chunk.get("usage"):
-                    logger.debug("[LLM] 收到 usage 尾包 chunk，忽略内容")
-                    continue
-                preview = str(chunk)[:200]
-                logger.warning("[LLM] 流式 chunk 为非标准 dict，跳过 | preview=%s", preview)
+                    idx = tc.get("index", 0)
+                    cur = tool_calls_acc.setdefault(idx, {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                    if tc.get("id"):
+                        cur["id"] = tc["id"]
+                    if tc.get("type"):
+                        cur["type"] = tc["type"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        cur["function"]["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        cur["function"]["arguments"] += fn["arguments"]
                 continue
 
-            preview = str(chunk)[:200]
-            logger.warning("[LLM] 流式 chunk 类型异常，跳过 | type=%s | preview=%s", type(chunk).__name__, preview)
+            if not done_sent and finish_reason in ("stop", "length", "content_filter", "tool_calls"):
+                done_sent = True
+                yield {
+                    "type": "done",
+                    "full_content": full_content,
+                    "tool_calls": self._build_streamed_tool_calls(tool_calls_acc),
+                }
+                continue
 
-        if not saw_content_chunk and not full_content:
-            logger.error(
-                "[LLM] 流式空完成 | model=%s | req_tokens≈%d | max_tokens=%d | tools=%d",
+        if not saw_content_chunk and not saw_tool_call_chunk and not full_content:
+            logger.warning(
+                "[LLM] 流式空完成 | model=%s | req_tokens≈%d | max_tokens=%s | tools=%d",
                 self.model,
                 req_tokens,
-                params.get("max_tokens", self.effective_max_tokens),
+                params.get("max_tokens", "API自定"),
                 tools_count,
             )
-            raise ValueError(
-                f"第三方兼容接口返回空流式完成：model={self.model}, req_tokens≈{req_tokens}, max_tokens={params.get('max_tokens', self.effective_max_tokens)}, tools={tools_count}"
-            )
+
+        if not done_sent:
+            yield {
+                "type": "done",
+                "full_content": full_content,
+                "tool_calls": self._build_streamed_tool_calls(tool_calls_acc),
+            }
+
+    @staticmethod
+    def _build_streamed_tool_calls(acc: Dict[int, Dict]) -> List[ToolCall]:
+        result = []
+        for idx in sorted(acc.keys()):
+            cur = acc[idx]
+            fn = cur.get("function") or {}
+            args_text = fn.get("arguments", "") or ""
+            args = {}
+            if args_text:
+                try:
+                    args = json.loads(args_text)
+                except Exception:
+                    args = {"raw": args_text}
+            result.append(ToolCall(
+                id=cur.get("id", "") or "",
+                name=fn.get("name", "") or "",
+                arguments=args,
+            ))
+        return result
 
 
     async def health_check(self) -> bool:
@@ -938,11 +751,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             return True
 
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=10)
-            models_resp = client.models.list()
-
-            available_ids = [m.id for m in models_resp.data]
+            available_ids = self._ensure_transport().list_models()
             logger.debug("[LLM] /models 返回 %d 个可用模型", len(available_ids))
 
             target = self.model.lower().strip()
@@ -1078,13 +887,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         )
 
         engine._verify_deferred = False
-        # 预热：提前创建 async client + 加载模型注册表（避免首次调用时卡顿）
         _get_model_registry()
-        try:
-            engine._ensure_async_client()
-        except Exception as e:
-            logger.warning("[LLMFactory] async client 预热失败，首次调用时会延迟创建: %s", e)
-        logger.info("[LLMFactory] 引擎已创建（async client 已预热）")
+        logger.info("[LLMFactory] 引擎已创建")
         return engine
 
     elif provider == "ollama":
@@ -1112,9 +916,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             engine.model, info.context_window, info.max_output_tokens, info.supports_vision,
         )
         engine._verify_deferred = False
-        engine._ensure_async_client()
         _get_model_registry()
-        logger.info("[LLMFactory] Ollama 引擎已创建（async client 已预热）")
+        logger.info("[LLMFactory] Ollama 引擎已创建（首次调用时初始化 client）")
         return engine
 
     else:

@@ -42,8 +42,11 @@ class MemoryTool(BaseTool):
                         "command": {
                             "type": "string",
                             "description": "要执行的命令",
-                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration"],
+                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration", "profile"],
                         },
+                        "subcommand": {"type": "string", "description": "[profile] 子命令：get / set_agent_name / set_user_name / set_persona"},
+                        "name": {"type": "string", "description": "[profile] set_agent_name/set_user_name 时的名称值"},
+                        "persona": {"type": "string", "description": "[profile] set_persona 时的人格补充内容（如性格特征、说话风格等）"},
                         "entry_id": {"type": "string", "description": "[read_archive] Archive entry ID，用于读取完整对话历史"},
                         "page": {"type": "integer", "description": "[read_archive] 页码，默认 1"},
                         "page_size": {"type": "integer", "description": "[read_archive] 每页字符数，默认 2000"},
@@ -568,6 +571,91 @@ class MemoryTool(BaseTool):
         except Exception as e:
             logger.error("[MemoryTool] read_archive 失败 | error=%s", e)
             return {"success": False, "error": f"读取失败: {e}"}
+
+    # ================================================================
+    # Profile 管理（助手名字 / 用户称呼）
+    # ================================================================
+
+    _PROFILE_AGENT_KEY = "profile:agent_name"
+    _PROFILE_USER_KEY = "profile:user_name"
+    _PROFILE_PERSONA_KEY = "profile:persona"
+
+    def _cmd_profile(self, subcommand: str = "get", name: str = "", persona: str = "") -> dict:
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+
+        sub = (subcommand or "get").strip().lower()
+        if sub not in ("get", "set_agent_name", "set_user_name", "set_persona"):
+            return {"success": False, "error": f"未知子命令: {subcommand}，支持 get/set_agent_name/set_user_name/set_persona"}
+
+        try:
+            repo = self.memory.repository if hasattr(self.memory, 'repository') else self.memory
+
+            if sub == "get":
+                agent_rec = repo.get_by_memory_key(self._PROFILE_AGENT_KEY, schema_type="profile")
+                user_rec = repo.get_by_memory_key(self._PROFILE_USER_KEY, schema_type="profile")
+                persona_rec = repo.get_by_memory_key(self._PROFILE_PERSONA_KEY, schema_type="profile")
+                return {
+                    "success": True,
+                    "agent_name": agent_rec.get("content", "").strip() if agent_rec else "",
+                    "user_name": user_rec.get("content", "").strip() if user_rec else "",
+                    "persona": persona_rec.get("content", "").strip() if persona_rec else "",
+                    "message": "助手名字、用户称呼和人格补充" if (agent_rec or user_rec or persona_rec) else "尚未设置 profile",
+                }
+
+            if sub == "set_persona":
+                if not persona or not persona.strip():
+                    return {"success": False, "error": "persona 不能为空"}
+                persona_clean = persona.strip()
+                result = self.memory.upsert_memory(
+                    title="人格补充",
+                    content=persona_clean,
+                    category="user_info",
+                    schema_type="profile",
+                    memory_key=self._PROFILE_PERSONA_KEY,
+                    metadata={"field": "persona"},
+                    merge_strategy="replace",
+                )
+                if not result.get("success"):
+                    return {"success": False, "error": result.get("error", "保存失败")}
+                logger.info("[MemoryTool] profile set_persona | len=%d", len(persona_clean))
+            else:
+                if not name or not name.strip():
+                    return {"success": False, "error": "name 不能为空"}
+
+                name_clean = name.strip()
+                if sub == "set_agent_name":
+                    key, title = self._PROFILE_AGENT_KEY, "助手名字"
+                    field = "agent_name"
+                else:
+                    key, title = self._PROFILE_USER_KEY, "用户称呼"
+                    field = "user_name"
+
+                result = self.memory.upsert_memory(
+                    title=title,
+                    content=name_clean,
+                    category="user_info",
+                    schema_type="profile",
+                    memory_key=key,
+                    metadata={"field": field},
+                    merge_strategy="replace",
+                )
+                if not result.get("success"):
+                    return {"success": False, "error": result.get("error", "保存失败")}
+                logger.info("[MemoryTool] profile %s | value=%s", sub, name_clean)
+
+            try:
+                from app.agent.loop import AgentLoopManager
+                AgentLoopManager.get_instance().update_all_loops(refresh_profile=True)
+            except Exception as e:
+                logger.debug("[MemoryTool] profile 刷新通知失败: %s", e)
+            return {
+                "success": True,
+                "message": "profile 已更新，下次迭代起生效",
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] profile 失败 | error=%s", e)
+            return {"success": False, "error": f"操作失败: {e}"}
 
     # ================================================================
     # 向量 API 配置

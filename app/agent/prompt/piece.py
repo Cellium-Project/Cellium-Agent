@@ -25,6 +25,7 @@ class PromptPiece:
         name: 唯一标识
         content: 静态内容（直接返回，不经过变量替换）
         template: 带 {{ var }} 占位符的模板文本
+        renderer: 动态渲染函数，接收 context 返回字符串（优先于 template/content）
         condition: 可选条件函数，接收 context dict 返回 bool，
                    为 False 时该 piece 不渲染
         stability: 稳定性级别（static/daily/session/dynamic）
@@ -36,6 +37,7 @@ class PromptPiece:
     name: str
     content: str = ""
     template: str = ""
+    renderer: Optional[Callable[[dict], str]] = None
     condition: Optional[Callable[[dict], bool]] = None
     stability: Stability = "dynamic"
     priority: int = 100
@@ -53,8 +55,9 @@ class PromptPiece:
 
         处理顺序:
           1. condition 条件过滤（返回空字符串）
-          2. template 变量替换（{{ var }} → value）
-          3. content 直接返回（无需替换）
+          2. renderer 动态渲染（优先）
+          3. template 变量替换（{{ var }} → value）
+          4. content 直接返回（无需替换）
 
         Args:
             context: 模板上下文
@@ -70,6 +73,12 @@ class PromptPiece:
                     return ""
             except Exception:
                 pass
+
+        if self.renderer is not None:
+            try:
+                return self.renderer(ctx)
+            except Exception:
+                return ""
 
         if self.template:
             result = self.template

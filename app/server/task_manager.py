@@ -62,20 +62,36 @@ class BackgroundTaskManager:
     TASK_TIMEOUT = 1800
 
     def __init__(self):
-        # session_id -> asyncio.Task
         self._tasks: Dict[str, asyncio.Task] = {}
-        # session_id -> asyncio.Queue (实时事件队列)
         self._queues: Dict[str, asyncio.Queue] = {}
-        # session_id -> TaskInfo
         self._info: Dict[str, TaskInfo] = {}
-        # session_id -> 事件历史列表（用于重新连接时恢复）
         self._event_history: Dict[str, List[dict]] = {}
-        # session_id -> 当前用户输入
         self._pending_inputs: Dict[str, str] = {}
-        # session_id -> 当前事件自增 ID
         self._event_counters: Dict[str, int] = {}
-        # session_id -> 运行中补充消息队列
         self._supplement_messages: Dict[str, List[Dict[str, Any]]] = {}
+        self._cleanup_task: Optional[asyncio.Task] = None
+
+    def _ensure_cleanup_task(self):
+        if self._cleanup_task is None or self._cleanup_task.done():
+            try:
+                self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+            except RuntimeError:
+                pass
+
+    async def _cleanup_loop(self):
+        while True:
+            try:
+                await asyncio.sleep(60)
+                self.cleanup_all_completed()
+                from app.agent.loop.session_manager import get_session_manager
+                try:
+                    get_session_manager().cleanup_expired()
+                except Exception as e:
+                    logger.debug("[TaskManager] session 清理异常: %s", e)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("[TaskManager] 清理循环异常: %s", e)
 
     def has_running_task(self, session_id: str) -> bool:
         """检查是否有运行中的任务"""
@@ -215,6 +231,7 @@ class BackgroundTaskManager:
             logger.warning("[TaskManager] session=%s 已有运行中的任务", session_id)
             return False
 
+        self._ensure_cleanup_task()
         queue = asyncio.Queue(maxsize=100)
         self._queues[session_id] = queue
 

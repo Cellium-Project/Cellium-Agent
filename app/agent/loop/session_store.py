@@ -55,6 +55,7 @@ class SessionStore:
             self.archive_dir = os.path.join(os.path.dirname(store_path), "archive")
         else:
             self.archive_dir = archive_dir
+        self._cache: Optional[Dict] = None
         self._ensure_store()
 
     @classmethod
@@ -148,17 +149,22 @@ class SessionStore:
             logger.info("[SessionStore] 从 archive 导入 %d 个会话", len(discovered))
 
     def _read_store(self) -> Dict:
-        """读取存储"""
+        """读取存储（优先内存缓存）"""
+        if self._cache is not None:
+            return self._cache
         try:
             with open(self.store_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
-            return {"sessions": [], "last_active_session": None}
+            data = {"sessions": [], "last_active_session": None}
+        self._cache = data
+        return data
 
     def _write_store(self, data: Dict):
-        """写入存储"""
+        """写入存储（同步写文件 + 更新缓存）"""
         with open(self.store_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        self._cache = data
 
     def get_or_create_session(self, session_id: str = None) -> SessionMeta:
         """
@@ -286,7 +292,7 @@ class SessionStore:
         store = self._read_store()
         sessions = store.get("sessions", [])
 
-        sessions.sort(key=lambda x: x.get("last_active", ""), reverse=True)
+        sessions = sorted(sessions, key=lambda x: x.get("last_active", ""), reverse=True)
 
         return [SessionMeta(**s) for s in sessions[:limit]]
 

@@ -9,17 +9,8 @@ python-multipart>=0.0.32
 # 配置文件解析
 pyyaml>=6.0.3
 
-# 中文分词（用于记忆检索增强）
-jieba>=0.42.1
-
-# 中文拼音（用于向量检索增强，可选）
-pypinyin>=0.55.0
-
 # 浏览器控制（用于网页搜索和抓取）
 DrissionPage>=4.1.1.4
-
-# OpenAI 兼容客户端（LLM 引擎依赖）
-openai>=2.48.0
 
 # QQ Bot WebSocket 客户端
 websockets>=11.0,<16.0
@@ -27,7 +18,7 @@ websockets>=11.0,<16.0
 # 飞书 Bot SDK
 lark-oapi>=1.7.1
 
-# HTTP 客户端（用于 QQ 和 Telegram 文件上传）
+# HTTP 客户端（LLM 引擎、QQ/Telegram 文件上传）
 httpx>=0.28.1
 
 # 注意：其他功能使用 Python 标准库，无需额外依赖

@@ -136,13 +136,17 @@ class EventBus:
         """统一调用事件处理器，处理同步和异步函数"""
         if inspect.iscoroutinefunction(handler):
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    return asyncio.create_task(handler(event or event_name, *args, **kwargs))
-                else:
-                    return loop.run_until_complete(handler(event or event_name, *args, **kwargs))
+                loop = asyncio.get_running_loop()
+                return asyncio.create_task(handler(event or event_name, *args, **kwargs))
             except RuntimeError:
-                logger.warning(f"异步处理器需要事件循环: {handler.__name__}")
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        return asyncio.create_task(handler(event or event_name, *args, **kwargs))
+                    else:
+                        return loop.run_until_complete(handler(event or event_name, *args, **kwargs))
+                except RuntimeError:
+                    logger.warning(f"异步处理器需要事件循环: {handler.__name__}")
         else:
             if event:
                 return handler(event)

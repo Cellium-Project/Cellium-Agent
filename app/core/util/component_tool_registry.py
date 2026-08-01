@@ -33,8 +33,7 @@ ComponentToolRegistry — 组件工具全局注册表（线程安全）
 
 import logging
 import threading
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from app.core.interface.icell import ICell
 from app.core.util.cell_tool_adapter import CellToolAdapter
@@ -89,205 +88,16 @@ class ComponentToolRegistry:
         with self._lock:
             return len(self._registry)
 
-    # 审查结果缓存（不合规组件的修复建议，供 AgentLoop 注入给 LLM）
-    _audit_hints: Dict[str, str] = {}   # {tool_name: hint_text}
-
-    # 用户审批队列（危险导入的组件等待用户 /trust 确认）
-    # {tool_name: {"cell": BaseCell, "adapter": CellToolAdapter, "audit_result": AuditResult, "requested_at": str}}
-    _pending_approvals: Dict[str, Dict[str, Any]] = {}
-
-    @property
-    def pending_count(self) -> int:
-        """待用户确认信任的组件数量"""
-        with self._lock:
-            return len(self._pending_approvals)
-
-    # ================================================================
-    #  用户信任白名单管理（持久化到文件）
-    # ================================================================
-
-    @staticmethod
-    def _get_trust_list_path() -> Path:
-        """
-        获取信任白名单文件路径
-
-        使用 AgentConfig 统一管理路径，避免硬编码
-        """
-        from app.core.util.agent_config import get_config
-        return get_config().config_root / "trusted_components.json"
-
-    def _load_trust_list(self) -> Set[str]:
-        """加载用户已信任的组件名称集合"""
-        path = self._get_trust_list_path()
-        if path.exists():
-            try:
-                import json
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return set(data.get("trusted_names", []))
-            except Exception as e:
-                logger.warning("[ComponentToolRegistry] 加载信任白名单失败: %s", e)
-        return set()
-
-    def _save_trust_list(self, trusted: Set[str]) -> None:
-        """保存信任白名单"""
-        path = self._get_trust_list_path()
-        try:
-            import json
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump({"trusted_names": sorted(trusted)}, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error("[ComponentToolRegistry] 保存信任白名单失败: %s", e)
-
-    def is_trusted(self, tool_name: str) -> bool:
-        """检查组件是否在用户信任白名单中"""
-        return tool_name in self._load_trust_list()
-
-    def untrust(self, tool_name: str) -> bool:
-        """
-        从信任白名单中移除组件
-        
-        Args:
-            tool_name: 要移除的组件名称
-            
-        Returns:
-            是否成功移除
-        """
-        trusted = self._load_trust_list()
-        if tool_name in trusted:
-            trusted.discard(tool_name)
-            self._save_trust_list(trusted)
-            logger.info("[ComponentToolRegistry] 已从信任白名单移除: %s", tool_name)
-            return True
-        return False
-
-    def cleanup_trust_list(self, valid_tool_names: Set[str]) -> List[str]:
-        trusted = self._load_trust_list()
-        removed = []
-        for name in list(trusted):
-            if name not in valid_tool_names:
-                trusted.discard(name)
-                removed.append(name)
-        if removed:
-            self._save_trust_list(trusted)
-            logger.info("[ComponentToolRegistry] 已清理信任白名单中的 %d 个无效组件: %s", len(removed), removed)
-        return removed
-
-    def trust(self, tool_name: str) -> Dict[str, Any]:
-        """
-        用户执行 /trust 命令，将组件加入信任白名单并立即注册
-        
-        Args:
-            tool_name: 要信任的组件名称
-            
-        Returns:
-            操作结果字典
-        """
-        from datetime import datetime
-
-        with self._lock:
-            if tool_name not in self._pending_approvals:
-                if tool_name in self._registry:
-                    return {
-                        "success": False,
-                        "message": f"'{tool_name}' 已经注册为工具，无需再次信任",
-                        "status": "already_registered",
-                    }
-                return {
-                    "success": False,
-                    "message": f"'{tool_name}' 不在待审批队列中。可用的待审批组件: {list(self._pending_approvals.keys())}",
-                    "status": "not_pending",
-                }
-
-            pending = self._pending_approvals.pop(tool_name)
-            cell = pending["cell"]
-            adapter = pending["adapter"]
-
-            trusted = self._load_trust_list()
-            trusted.add(tool_name)
-            self._save_trust_list(trusted)
-
-            self._audit_hints.pop(tool_name, None)
-
-            existed = tool_name in self._registry
-            self._registry[tool_name] = adapter
-            self._version += 1
-
-            cmds = list(adapter.get_commands().keys())
-            logger.info(
-                "[ComponentToolRegistry] [信任通过] %s (type=%s, commands=%s)",
-                tool_name, adapter.component_type, cmds,
-            )
-
-            return {
-                "success": True,
-                "message": f"已信任并注册 '{tool_name}'，该组件现在可作为 LLM 工具使用",
-                "tool_name": tool_name,
-                "component_type": adapter.component_type,
-                "commands": cmds,
-                "action": "registered" if not existed else "updated",
-                "trusted_at": datetime.now().isoformat(),
-            }
-
-    def get_pending_approvals(self) -> Dict[str, Any]:
-        """
-        获取所有待用户审批的组件详情
-        
-        Returns:
-            {total: N, items: [{tool_name, component_type, issues, hint_summary}]}
-        """
-        with self._lock:
-            items = []
-            for tname, info in self._pending_approvals.items():
-                audit = info.get("audit_result")
-                issues = audit.issues if audit else []
-                danger_issues = [i for i in issues if i.get("rule") == "no_dangerous_imports"]
-                imports_found = [i["message"] for i in danger_issues]
-
-                adapter = info.get("adapter")
-                cell = info.get("cell")
-
-                items.append({
-                    "tool_name": tname,
-                    "component_type": (
-                        getattr(adapter, "component_type", None)
-                        or (type(cell).__name__ if cell else "Unknown")
-                    ),
-                    "issues": issues,
-                    "issue_count": len(issues),
-                    "critical_count": sum(1 for i in issues if i.get("severity") == "critical"),
-                    "danger_imports": imports_found,
-                    "hint_summary": (audit.hint_text[:500] if audit else "") + ("..." if audit and len(audit.hint_text) > 500 else ""),
-                    "requested_at": info.get("requested_at", ""),
-                    "trust_command": f"/trust {tname}",
-                })
-
-            return {
-                "total": len(items),
-                "items": items,
-                "note": (
-                    "以上组件因包含危险导入(os/subprocess 等)，需要用户手动确认信任后才能注册为 LLM 工具。\n"
-                    '请在聊天框输入 /trust <组件名> 来信任该组件，例如: /trust skill_installer'
-                ),
-            }
-
-    def register(self, cell: ICell) -> Optional[CellToolAdapter]:
+    def register(self, cell: ICell, force: bool = False) -> Optional[CellToolAdapter]:
         """
         注册一个组件到工具注册表
-        
+
         Args:
             cell: 已实例化的 BaseCell 子类
-            
+            force: 强制重新审计（热重载时用）
+
         Returns:
-            创建好的 CellToolAdapter 实例，或 None（如果不合规或名称冲突）
-            
-        审查流程：
-          1. 类型检查：必须是 ICell 子类
-          2. 合规审计：ComponentAuditor 检查所有规范
-          3. 名称保护：不覆盖系统保留名
-          4. 危险导入 → 进入待审批队列，等用户 /trust
-          5. 审查通过 → 存入注册表
+            创建好的 CellToolAdapter 实例，或 None（如果名称冲突）
         """
         if not isinstance(cell, ICell):
             logger.warning("[ComponentToolRegistry] 忽略非 ICell 对象: %s", type(cell).__name__)
@@ -296,26 +106,14 @@ class ComponentToolRegistry:
         adapter = CellToolAdapter(cell)
         tool_name = adapter.tool_name
 
+        if not force:
+            with self._lock:
+                existing = self._registry.get(tool_name)
+            if existing is not None and existing.cell is cell:
+                return existing
+
         from app.core.util.component_auditor import get_auditor
         audit_result = get_auditor().audit(cell)
-
-        has_danger = any(i.get("rule") == "no_dangerous_imports" for i in audit_result.issues)
-        if has_danger and not self.is_trusted(tool_name):
-            from datetime import datetime
-            with self._lock:
-                self._pending_approvals[tool_name] = {
-                    "cell": cell,
-                    "adapter": adapter,
-                    "audit_result": audit_result,
-                    "requested_at": datetime.now().isoformat(),
-                }
-
-            logger.warning(
-                "[ComponentToolRegistry] [待审批] %s (type=%s) | score=%d | 包含危险导入，等待用户 /trust",
-                tool_name, adapter.component_type, audit_result.score,
-            )
-            self._audit_hints[tool_name] = self._format_approval_request_hint(tool_name, audit_result)
-            return None
 
         with self._lock:
             if tool_name in self.RESERVED_TOOL_NAMES:
@@ -331,66 +129,25 @@ class ComponentToolRegistry:
             adapter._audit_hint_text = audit_result.hint_text if audit_result.issues else ""
 
             if audit_result.issues:
-                self._audit_hints[tool_name] = audit_result.hint_text
                 logger.warning(
-                    "[ComponentToolRegistry] [注册但有警告] %s (type=%s) | score=%d | issues=%d | 已存储修复建议",
+                    "[ComponentToolRegistry] [注册但有警告] %s (type=%s) | score=%d | issues=%d",
                     tool_name, adapter.component_type,
                     audit_result.score, audit_result.issue_count,
                 )
-            else:
-                if tool_name in self._audit_hints:
-                    self._audit_hints.pop(tool_name, None)
-                    logger.info(
-                        "[ComponentToolRegistry] [修复完成] %s (type=%s, score=%d)",
-                        tool_name, adapter.component_type, audit_result.score,
-                    )
 
             existed = tool_name in self._registry
             self._registry[tool_name] = adapter
             self._version += 1
 
-            action = "更新" if existed else "注册"
             cmds = list(adapter.get_commands().keys())
-            
+            logger.info(
+                "[ComponentToolRegistry] [%s] %s (type=%s, commands=%s)",
+                "更新" if existed else "注册", tool_name, adapter.component_type, cmds,
+            )
+
             self._on_tool_registered(tool_name, adapter, is_new=not existed)
 
         return adapter
-
-    def get_audit_hint(self, tool_name: str) -> str:
-        """获取指定工具的审查修复建议文本"""
-        return self._audit_hints.get(tool_name, "")
-
-    def get_all_audit_hints(self) -> Dict[str, str]:
-        """获取所有未通过审查的工具的修复建议"""
-        return dict(self._audit_hints)
-
-    def clear_audit_hint(self, tool_name: str):
-        """清除指定工具的审查缓存"""
-        self._audit_hints.pop(tool_name, None)
-
-    @staticmethod
-    def _format_approval_request_hint(tool_name: str, audit_result) -> str:
-        danger_issues = [i for i in audit_result.issues if i.get("rule") == "no_dangerous_imports"]
-        imports_list = []
-        for issue in danger_issues:
-            msg = issue.get("message", "")
-            if "import " in msg:
-                imp = msg[msg.index("import "):]
-                imports_list.append(f"  - `{imp}`")
-
-        return (
-            f"### 组件安全审批请求\n\n"
-            f"**组件 `{tool_name}` 因包含以下危险导入，无法自动注册为 LLM 工具：**\n\n"
-            f"\n".join(imports_list) + "\n\n"
-            f"**需要用户手动确认是否信任此组件。请将以下信息原样转告用户：**\n\n"
-            f"> 组件 **{tool_name}** 包含危险模块导入（如 os/subprocess 等）。\n"
-            f"> 这可能带来安全风险，但该组件是系统内置组件，通常是安全的。\n"
-            f">\n"
-            f"> 如果您信任此组件并希望启用它，请在聊天框中输入：\n"
-            f"> `/trust {tool_name}`\n"
-            f">\n"
-            f"> 输入后组件将立即注册为可用工具。"
-        )
 
     def unregister(self, tool_name: str) -> bool:
         """

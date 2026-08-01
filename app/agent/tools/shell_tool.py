@@ -104,10 +104,9 @@ class ShellTool(BaseTool):
 
         return base_desc
 
-    def __init__(self, shell=None, mp_manager=None):
+    def __init__(self, shell=None):
         super().__init__()
         self.shell = shell
-        self.mp_manager = mp_manager
 
     # ================================================================
     #  LLM 接口层 — definition（覆写 BaseTool）

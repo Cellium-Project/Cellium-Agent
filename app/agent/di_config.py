@@ -2,14 +2,15 @@
 """
 Agent 依赖注入容器初始化
 
-将 core 的 DIContainer 用于 Agent 系统各模块的解耦管理。
+将 core 的 DIContainer 用于 Agent 系统无状态单例服务的解耦管理。
 注册的服务：
   - CelliumShell       → Shell 命令执行器
   - ThreeLayerMemory   → 三层记忆系统
   - MemoryManager      → 对话上下文记忆
-  - SecurityPolicy     → 安全策略引擎（命令黑名单/白名单/风险等级）
-  - AgentLoop          → Agent 主循环（需 LLM 引擎）
-  - ShellTool          → Shell 工具
+  - SecurityPolicy     → 安全策略引擎
+  - ShellTool/MemoryTool/FileTool/ReadTool/EditTool/GrepTool/GlobTool/LSTool/ConfigTool
+  - BaseLLMEngine      → LLM 引擎（热重载时重建）
+
 """
 
 import asyncio
@@ -23,7 +24,6 @@ from app.core.di.container import (
 from app.core.bus.event_bus import get_event_bus, EventBus
 from app.agent.shell.cellium_shell import CelliumShell
 from app.agent.loop.memory import MemoryManager
-from app.agent.loop.agent_loop import AgentLoop
 from app.agent.memory.three_layer import ThreeLayerMemory
 from app.agent.security.policy import SecurityPolicy
 from app.agent.tools.shell_tool import ShellTool
@@ -34,10 +34,35 @@ from app.agent.tools.edit_tool import EditTool
 from app.agent.tools.grep_tool import GrepTool
 from app.agent.tools.glob_tool import GlobTool
 from app.agent.tools.ls_tool import LSTool
+from app.agent.tools.config_tool import ConfigTool
 from app.agent.llm.engine import BaseLLMEngine, create_llm_engine
 from app.core.util.agent_config import get_config
 
 logger = logging.getLogger(__name__)
+
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def bind_main_loop(loop: asyncio.AbstractEventLoop):
+    global _main_loop
+    _main_loop = loop
+
+
+def _schedule_async(coro):
+    if _main_loop is not None and _main_loop.is_running():
+        _main_loop.call_soon_threadsafe(lambda: asyncio.ensure_future(coro, loop=_main_loop))
+        return
+    try:
+        running = asyncio.get_running_loop()
+        if running.is_running():
+            running.create_task(coro)
+            return
+    except RuntimeError:
+        pass
+    try:
+        asyncio.run(coro)
+    except RuntimeError:
+        logger.warning("[AgentDI] 无法调度异步任务（无可用事件循环），协程被丢弃")
 
 
 async def _do_channel_reconnect(adapter):
@@ -118,6 +143,14 @@ def setup_agent_di(
     if container is None:
         container = get_container()
 
+    global _main_loop
+    try:
+        _main_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 无运行中事件循环：置 None，由 _schedule_async 回退到 asyncio.run
+        _main_loop = None
+    logger.debug("[AgentDI] 主事件循环已捕获: %s", _main_loop)
+
     _cfg = get_config()
 
     _enforce_limit = _cfg.get("agent.enforce_iteration_limit", False)
@@ -185,6 +218,30 @@ def setup_agent_di(
             logger.error("[AgentDI] Agent 配置热更新失败: %s", e, exc_info=True)
 
     _cfg.on_change("agent", _on_agent_config_change)
+
+    def _on_llm_config_change(section, old_val, new_val):
+        """llm 配置变更时重建 LLM 引擎并推送"""
+        if section != "llm":
+            return
+        try:
+            from app.agent.llm.engine import BaseLLMEngine, create_llm_engine
+            old_engine = None
+            if container.has(BaseLLMEngine):
+                old_engine = container.resolve(BaseLLMEngine)
+            new_engine = create_llm_engine(new_val)
+            container.register(BaseLLMEngine, new_engine, singleton=True)
+            if old_engine is not None and old_engine is not new_engine:
+                _schedule_async(old_engine.close())
+            logger.info("[AgentDI] LLM 引擎已热重建 | model=%s", new_engine.model)
+
+            from app.agent.loop import AgentLoopManager
+            mgr = AgentLoopManager.get_instance()
+            updated = mgr.update_llm_engine(new_engine)
+            logger.info("[AgentDI] LLM 引擎已推送到 %d 个活跃 loop", updated)
+        except Exception as e:
+            logger.error("[AgentDI] LLM 热重建失败: %s", e, exc_info=True)
+
+    _cfg.on_change("llm", _on_llm_config_change)
 
     def _on_heuristics_config_change(section, old_val, new_val):
         """heuristics 配置变更时重新加载 HeuristicEngine 和意图 LLM"""
@@ -322,14 +379,10 @@ def setup_agent_di(
             if adapter:
                 adapter.app_id = qq_config.get_app_id(force_reload=True)
                 adapter.app_secret = qq_config.get_app_secret(force_reload=True)
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.create_task(_do_channel_reconnect(adapter))
-                )
+                _schedule_async(_do_channel_reconnect(adapter))
                 logger.info("[AgentDI] QQ 通道配置已热更新，正在重连...")
             elif qq_config.should_auto_start():
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.create_task(_do_channel_start(channel_mgr, qq_config))
-                )
+                _schedule_async(_do_channel_start(channel_mgr, qq_config))
                 logger.info("[AgentDI] QQ 通道配置已热更新，正在启动...")
             else:
                 logger.warning("[AgentDI] QQ 通道配置已更新，但凭证缺失或未启用")
@@ -341,14 +394,10 @@ def setup_agent_di(
                 tg_adapter.bot_token = tg_config.get_bot_token(force_reload=True)
                 tg_adapter.whitelist_user_ids = set(tg_config.get_whitelist_user_ids(force_reload=True))
                 tg_adapter.whitelist_usernames = set(u.lower() for u in tg_config.get_whitelist_usernames(force_reload=True))
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.create_task(_do_channel_reconnect(tg_adapter))
-                )
+                _schedule_async(_do_channel_reconnect(tg_adapter))
                 logger.info("[AgentDI] Telegram 通道配置已热更新，正在重连...")
             elif tg_config.should_auto_start():
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.create_task(_do_telegram_channel_start(channel_mgr, tg_config))
-                )
+                _schedule_async(_do_telegram_channel_start(channel_mgr, tg_config))
                 logger.info("[AgentDI] Telegram 通道配置已热更新，正在启动...")
             else:
                 logger.warning("[AgentDI] Telegram 通道配置已更新，但凭证缺失或未启用")
@@ -361,20 +410,16 @@ def setup_agent_di(
                 new_app_id = feishu_config.get_app_id(force_reload=True)
                 new_app_secret = feishu_config.get_app_secret(force_reload=True)
                 new_whitelist = feishu_config.get_whitelist_users(force_reload=True)
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.create_task(
-                        feishu_adapter.update_config(
-                            app_id=new_app_id,
-                            app_secret=new_app_secret,
-                            whitelist_users=new_whitelist,
-                        )
+                _schedule_async(
+                    feishu_adapter.update_config(
+                        app_id=new_app_id,
+                        app_secret=new_app_secret,
+                        whitelist_users=new_whitelist,
                     )
                 )
                 logger.info("[AgentDI] 飞书通道配置已热更新，正在重连...")
             elif feishu_config.should_auto_start():
-                asyncio.get_event_loop().call_soon_threadsafe(
-                    lambda: asyncio.create_task(_do_feishu_channel_start(channel_mgr, feishu_config))
-                )
+                _schedule_async(_do_feishu_channel_start(channel_mgr, feishu_config))
                 logger.info("[AgentDI] 飞书通道配置已热更新，正在启动...")
             else:
                 logger.warning("[AgentDI] 飞书通道配置已更新，但凭证缺失或未启用")
@@ -383,11 +428,11 @@ def setup_agent_di(
 
     _cfg.on_change("channels", _on_channels_config_change)
 
-    # --- 1. 注册 EventBus ---
+    # --- 注册 EventBus ---
     if not container.has(EventBus):
         container.register(EventBus, get_event_bus(), singleton=True)
 
-    # --- 2. 创建/注册 LLM 引擎---
+    # --- 创建/注册 LLM 引擎 ---
     if llm_engine is None:
         try:
             llm_engine = create_llm_engine()
@@ -399,7 +444,7 @@ def setup_agent_di(
     if llm_engine is not None and not container.has(BaseLLMEngine):
         container.register(BaseLLMEngine, llm_engine, singleton=True)
 
-    # --- 2. 注册安全策略（先于Shell，因为Shell依赖它）---
+    # --- 注册安全策略---
     _security_cfg = _cfg.get_section("security") or {}
     _security = SecurityPolicy(
         permission_level=_security_cfg.get("permission_level", "standard"),
@@ -407,7 +452,7 @@ def setup_agent_di(
     if not container.has(SecurityPolicy):
         container.register(SecurityPolicy, _security, singleton=True)
 
-    # --- 3. 注册 Shell（注入 SecurityPolicy）---
+    # --- 注册 Shell（注入 SecurityPolicy）---
     agent_cfg = _cfg.get_section("agent") or {}
     shell_cwd = agent_cfg.get("shell_cwd", "") or None
     if shell_cwd and not os.path.isabs(shell_cwd):
@@ -416,12 +461,12 @@ def setup_agent_di(
     if not container.has(CelliumShell):
         container.register(CelliumShell, _shell, singleton=True)
 
-    # --- 4. 注册三层记忆 ---
+    # --- 注册三层记忆 ---
     _memory = ThreeLayerMemory(memory_dir, allow_sensitive_store=allow_sensitive_store)
     if not container.has(ThreeLayerMemory):
         container.register(ThreeLayerMemory, _memory, singleton=True)
 
-    # --- 5. 注册对话上下文 MemoryManager ---
+    # --- 注册对话上下文 MemoryManager ---
     memory_cfg = _cfg.get_section("memory") or {}
     short_term = memory_cfg.get("short_term", {})
     _mem_mgr = MemoryManager(
@@ -441,111 +486,50 @@ def setup_agent_di(
 
     _cfg.on_change("memory", _on_memory_config_change)
 
-    # --- 6. 获取多进程管理器（用于 ShellTool 防阻塞）---
-    try:
-        from app.core.util.mp_manager import get_multiprocess_manager as get_mp
-        _mp_manager = get_mp()
-    except Exception:
-        _mp_manager = None
-
-    # --- 7. 注册 ShellTool（注入 MultiprocessManager）---
-    _tool = ShellTool(
-        shell=_shell,
-        mp_manager=_mp_manager,
-    )
+    # --- 注册 ShellTool（注入 Shell）---
+    _tool = ShellTool(shell=_shell)
     if not container.has(ShellTool):
         container.register(ShellTool, _tool, singleton=True)
 
-    # --- 8b. 注册 MemoryTool（注入 ThreeLayerMemory，让 LLM 可主动读写长期记忆）---
+    # --- 注册 MemoryTool（注入 ThreeLayerMemory）---
     _mem_tool = MemoryTool(three_layer_memory=_memory)
     if not container.has(MemoryTool):
         container.register(MemoryTool, _mem_tool, singleton=True)
 
-    # --- 8c. 注册 FileTool（专用文件读写工具，替代不可靠的 shell 文件命令）---
+    # --- 注册 FileTool ---
     _file_tool = FileTool()
     if not container.has(FileTool):
         container.register(FileTool, _file_tool, singleton=True)
 
-    # --- 8d. 注册 ReadTool（文件读取工具）---
+    # --- 注册 ReadTool ---
     _read_tool = ReadTool()
     if not container.has(ReadTool):
         container.register(ReadTool, _read_tool, singleton=True)
 
-    # --- 8e. 注册 EditTool（文件编辑工具）---
+    # --- 注册 EditTool ---
     _edit_tool = EditTool()
     if not container.has(EditTool):
         container.register(EditTool, _edit_tool, singleton=True)
 
-    # --- 8f. 注册 GrepTool（内容搜索工具）---
+    # --- 注册 GrepTool ---
     _grep_tool = GrepTool()
     if not container.has(GrepTool):
         container.register(GrepTool, _grep_tool, singleton=True)
 
-    # --- 8g. 注册 GlobTool（文件名模式匹配工具）---
+    # --- 注册 GlobTool ---
     _glob_tool = GlobTool()
     if not container.has(GlobTool):
         container.register(GlobTool, _glob_tool, singleton=True)
 
-    # --- 8h. 注册 LSTool（目录列表工具）---
+    # --- 注册 LSTool ---
     _ls_tool = LSTool()
     if not container.has(LSTool):
         container.register(LSTool, _ls_tool, singleton=True)
 
-    # --- 9. 注册 AgentLoop---
-    def _create_agent_loop():
-        # 从 DI 容器获取当前的 LLM 引擎（支持热重载）
-        current_llm = container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else llm_engine
-
-        # 意图感知 LLM（可选，没配置则用主模型）
-        intent_llm = None
-        intent_enabled = True
-        heuristics_cfg = _cfg.get_section("heuristics") or {}
-        intent_cfg = heuristics_cfg.get("intent", {})
-        intent_enabled = intent_cfg.get("enabled", True)
-        if intent_enabled:
-            model_cfg = intent_cfg.get("model", {})
-            if model_cfg.get("api_key") and model_cfg.get("model"):
-                try:
-                    from app.agent.llm.engine import OpenAICompatibleEngine
-
-                    intent_llm = OpenAICompatibleEngine(
-                        api_key=model_cfg["api_key"],
-                        base_url=model_cfg.get("base_url", "https://api.openai.com/v1"),
-                        model=model_cfg["model"],
-                        temperature=float(model_cfg.get("temperature", 0.3)),
-                        max_tokens=10,
-                        timeout=int(model_cfg.get("timeout", 30)),
-                        verify_model=False,
-                    )
-                    logger.info("[AgentDI] 意图感知 LLM 已创建 | model=%s", intent_llm.model)
-                except Exception as e:
-                    logger.warning("[AgentDI] 意图感知 LLM 创建失败，将使用主模型: %s", e)
-
-        loop = AgentLoop(
-            llm_engine=current_llm,
-            intent_llm_engine=intent_llm,
-            intent_enabled=intent_enabled,
-            shell=_shell,
-            tools={
-                "shell": _tool,
-                "memory": _mem_tool,
-                "file": _file_tool,
-                "read": _read_tool,
-                "edit": _edit_tool,
-                "grep": _grep_tool,
-                "glob": _glob_tool,
-                "ls": _ls_tool,
-            },
-            max_iterations=_agent_config_holder["max_iterations"],
-            three_layer_memory=_memory,   # 注入三层记忆
-            flash_mode=_agent_config_holder["flash_mode"],        # Flash 模式配置（支持热重载）
-            enable_heuristics=_agent_config_holder["enable_heuristics"],
-            enable_learning=_agent_config_holder["enable_learning"],
-        )
-        return loop
-
-    if not container.has(AgentLoop):
-        container.register_factory(AgentLoop, _create_agent_loop)
+    # --- 注册 ConfigTool ---
+    _config_tool = ConfigTool()
+    if not container.has(ConfigTool):
+        container.register(ConfigTool, _config_tool, singleton=True)
 
     logger.info("[AgentDI] 依赖注入容器初始化完成 (LLM=%s)", "OK" if llm_engine else "None")
 
@@ -565,7 +549,6 @@ def resolve_agent_services(container: DIContainer = None):
     return {
         "shell": container.resolve(CelliumShell),
         "memory": container.resolve(ThreeLayerMemory),
-        "agent_loop": container.resolve(AgentLoop),
         "shell_tool": container.resolve(ShellTool),
         "memory_tool": container.resolve(MemoryTool) if container.has(MemoryTool) else None,
         "file_tool": container.resolve(FileTool) if container.has(FileTool) else None,
@@ -574,6 +557,7 @@ def resolve_agent_services(container: DIContainer = None):
         "grep_tool": container.resolve(GrepTool) if container.has(GrepTool) else None,
         "glob_tool": container.resolve(GlobTool) if container.has(GlobTool) else None,
         "ls_tool": container.resolve(LSTool) if container.has(LSTool) else None,
+        "config_tool": container.resolve(ConfigTool) if container.has(ConfigTool) else None,
         "security": container.resolve(SecurityPolicy),
         "llm_engine": container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None,
     }

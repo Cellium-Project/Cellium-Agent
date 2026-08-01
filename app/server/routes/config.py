@@ -99,7 +99,6 @@ def _remove_model_from_llm_config(name: str):
 class ConfigValue(BaseModel):
     """动态设置配置值"""
     value: Any
-    persist: bool = False  
 
 
 @router.get("/status")
@@ -186,16 +185,14 @@ async def update_section(
     body: ConfigValue,
 ):
     """
-    运行时修改配置
+    运行时修改配置（写回 YAML 文件，文件为唯一真相）
 
     Args:
         section: 点号路径，如 llm.openai.model 或 security.permission_level
         body.value: 新值
-        body.persist: 是否同时写回 YAML 文件（默认仅内存生效）
     """
     config = _get_agent_config()
 
-    # 验证安全限制（不允许通过 API 修改某些关键项）
     _forbidden_prefixes = ("server.host", "server.port", "routes.")
     for prefix in _forbidden_prefixes:
         if section.startswith(prefix):
@@ -205,23 +202,16 @@ async def update_section(
             )
 
     old_value = config.get(section)
-    
-    # 保护敏感字段：如果新值中的敏感字段是脱敏值 "***"，则保留原始值
+
     protected_value = _protect_sensitive_fields(body.value, old_value)
-    
-    config.set(section, protected_value, persist=body.persist)
+
+    config.set(section, protected_value, persist=True)
 
     return {
         "status": "ok",
         "section": section,
         "old_value": _sanitize_value(old_value),
         "new_value": _sanitize_value(body.value),
-        "persisted": body.persist,
-        "note": (
-            "已写入内存并同步到文件，下次启动将保留"
-            if body.persist else
-            "已写入内存（进程重启后丢失），设 persist=true 可写回文件"
-        ),
     }
 
 
@@ -464,8 +454,6 @@ async def reload_llm_engine():
     """
     import logging
     from app.core.di.container import get_container
-    from app.agent.llm.engine import create_llm_engine
-    from app.agent.loop.agent_loop import AgentLoop
     from app.agent.loop.agent_loop_manager import AgentLoopManager
 
     logger = logging.getLogger(__name__)
@@ -479,34 +467,17 @@ async def reload_llm_engine():
 
     try:
         container = get_container()
-
-        new_engine = create_llm_engine(llm_config)
-
         from app.agent.llm.engine import BaseLLMEngine
-        container.register(BaseLLMEngine, new_engine, singleton=True)
-        logger.info("[ConfigAPI] BaseLLMEngine 已重新注册 | 新模型=%s", new_engine.model)
-
-        if container.has(AgentLoop):
-            old_loop = container.resolve(AgentLoop)
-            old_loop.llm = new_engine
-            logger.info("[ConfigAPI] AgentLoop.llm 已更新 | 新模型=%s", new_engine.model)
+        new_engine = container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None
 
         loop_mgr = AgentLoopManager.get_instance()
-        if loop_mgr:
-            loop_mgr._llm_engine = new_engine
-            updated_count = 0
-            for session_id in list(loop_mgr._loops.keys()):
-                meta = loop_mgr._loops.get(session_id)
-                if meta and hasattr(meta.agent_loop, 'llm'):
-                    meta.agent_loop.llm = new_engine
-                    updated_count += 1
-            logger.info("[ConfigAPI] AgentLoopManager._llm_engine 已更新 | 已更新 %d 个会话", updated_count)
+        updated_count = loop_mgr.active_session_count if loop_mgr else 0
 
         return {
             "status": "ok",
             "message": "LLM 引擎已重新加载",
-            "model": new_engine.model,
-            "updated_sessions": updated_count if loop_mgr else 0,
+            "model": new_engine.model if new_engine else "unknown",
+            "updated_sessions": updated_count,
         }
 
     except Exception as e:

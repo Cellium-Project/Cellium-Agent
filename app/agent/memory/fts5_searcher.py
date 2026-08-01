@@ -101,8 +101,30 @@ class FTS5MemorySearcher:
                 needs_rebuild = True
             if needs_rebuild:
                 self._rebuild_with_tokens()
+                self._re_tokenize_all()
+            else:
+                self.cursor.execute("PRAGMA user_version")
+                version = int(self.cursor.fetchone()[0] or 0)
+                if version < 2:
+                    self._re_tokenize_all()
+                    self.cursor.execute("PRAGMA user_version = 2")
+                    self.conn.commit()
         except Exception as e:
             logger.warning("[FTS5] 迁移检查失败: %s", e)
+
+    def _re_tokenize_all(self):
+        """用新版分词器重新生成所有记录的 tokens（bigram 迁移）"""
+        try:
+            self.cursor.execute("SELECT rowid, title, content FROM memory_index")
+            rows = self.cursor.fetchall()
+            for row in rows:
+                tokens = self.tokenizer.tokenize_for_search(f"{row[1]} {row[2]}")
+                self.cursor.execute("UPDATE memory_index SET tokens = ? WHERE rowid = ?", (tokens, row[0]))
+            if rows:
+                self.conn.commit()
+                logger.info("[FTS5] 已用新分词器重建 %d 条记录 tokens", len(rows))
+        except Exception as e:
+            logger.warning("[FTS5] 重新分词失败: %s", e)
 
     def _rebuild_with_tokens(self):
         """重建表以添加分词字段"""

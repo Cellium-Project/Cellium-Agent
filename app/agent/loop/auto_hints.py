@@ -3,7 +3,6 @@
 自动工具提示生成器 - 从 AgentLoop 中提取
 
 职责：
-  - 组件审查修复建议（每轮持续注入）
   - 工具使用帮助自动注入
   - 单工具详细帮助生成
   - 重定向引导消息构建
@@ -21,7 +20,23 @@ class AutoHintManager:
 
     def __init__(self):
         self._injected_tool_helps: Dict[str, str] = {}
-        self._shown_audit_hints: set = set()
+        # session_id -> {tool_name: 审计签名}，签名变化时重新注入
+        self._shown_audit_hints: Dict[str, Dict[str, str]] = {}
+        # session_id -> {file_path: 错误签名}，签名变化时重新注入
+        self._shown_load_errors: Dict[str, Dict[str, str]] = {}
+
+    def get_component_problem_hints(self, session_id: str = "default") -> str:
+        hints = []
+
+        load_hint = self._get_load_errors_hint(session_id)
+        if load_hint:
+            hints.append(load_hint)
+
+        audit_hint = self._get_audit_hints_hint(session_id)
+        if audit_hint:
+            hints.append(audit_hint)
+
+        return "\n\n".join(hints)
 
     def check_security_error_and_suggest(self, tool_traces: List[Dict]) -> str:
         """
@@ -55,29 +70,10 @@ class AutoHintManager:
         return ""
 
     def get_auto_tool_hints(self, tools: Dict[str, Any]) -> str:
-        hints = []
-
         skill_hint = self._get_skill_hint()
-        if skill_hint:
-            hints.append(skill_hint)
+        return skill_hint
 
-        try:
-            from app.core.util.component_tool_registry import get_component_tool_registry
-            reg = get_component_tool_registry()
-            for tname, hint_text in reg.get_all_audit_hints().items():
-                if hint_text and tname not in self._shown_audit_hints:
-                    hints.append(hint_text)
-                    self._shown_audit_hints.add(tname)
-                    logger.debug("[AutoHint] 注入审查修复建议(首次): %s", tname)
-        except Exception as e:
-            logger.debug("[AutoHint] 审查提示获取失败: %s", e)
-
-        return "\n\n".join(hints)
-
-    def clear_audit_hint(self, tool_name: str):
-        self._shown_audit_hints.discard(tool_name)
-
-    def _get_load_errors_hint(self) -> str:
+    def _get_load_errors_hint(self, session_id: str) -> str:
         """
         获取组件加载错误的提示
 
@@ -87,17 +83,31 @@ class AutoHintManager:
         try:
             from app.core.util.components_loader import get_load_errors
             load_errors = get_load_errors()
+            shown = self._shown_load_errors.setdefault(session_id, {})
+
             if not load_errors:
+                shown.clear()
                 return ""
 
+            current = {
+                fp: f"{info.get('error_type', '')}:{info.get('error', '')}"
+                for fp, info in load_errors.items()
+            }
+
+            pending = {fp for fp, sign in current.items() if shown.get(fp) != sign}
+            if not pending:
+                return ""
+
+            shown.update({fp: current[fp] for fp in pending})
             lines = [
                 "## [警告] 组件加载错误 — 需要修复",
                 "",
-                f"检测到 {len(load_errors)} 个组件文件加载失败：",
+                f"检测到 {len(pending)} 个组件文件加载失败：",
                 "",
             ]
 
-            for idx, (file_path, error_info) in enumerate(load_errors.items(), 1):
+            for idx, file_path in enumerate(sorted(pending), 1):
+                error_info = load_errors[file_path]
                 file_name = error_info.get("file", "unknown")
                 error_msg = error_info.get("error", "Unknown error")
                 error_type = error_info.get("error_type", "Error")
@@ -111,7 +121,7 @@ class AutoHintManager:
             lines.extend([
                 "---",
                 "**修复方法（由 Agent 执行）**：",
-                "1. 使用 `file` 工具读取有问题的组件文件",
+                "1. 读取有问题的组件文件",
                 "2. 根据错误信息修复代码问题（如语法错误、导入错误、返回结构等）",
                 "3. 调用 `component.reload(name='组件名')` 重新加载组件",
                 "4. 再次调用 `component.list()` 确认错误已解决",
@@ -123,6 +133,46 @@ class AutoHintManager:
             return "\n".join(lines)
         except Exception as e:
             logger.debug("[AutoHint] 加载错误提示获取失败: %s", e)
+            return ""
+
+    def _get_audit_hints_hint(self, session_id: str) -> str:
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            reg = get_component_tool_registry()
+            parts = []
+            shown = self._shown_audit_hints.setdefault(session_id, {})
+
+            current = {}
+            for adapter in reg.get_all_adapters().values():
+                tname = adapter.tool_name
+                issues = getattr(adapter, '_audit_issues', None)
+                if not issues:
+                    continue
+                sign = "\n".join(
+                    f"{i.get('severity')}|{i.get('rule')}|{i.get('message')}"
+                    for i in issues
+                )
+                current[tname] = sign
+
+            for tname in list(shown.keys()):
+                if tname not in current:
+                    del shown[tname]
+
+            pending = {t for t, sign in current.items() if shown.get(t) != sign}
+            if not pending:
+                return ""
+
+            for tname in sorted(pending):
+                adapter = reg.get(tname)
+                hint_text = getattr(adapter, '_audit_hint_text', "") or ""
+                if hint_text:
+                    parts.append(hint_text)
+                    shown[tname] = current[tname]
+                    logger.debug("[AutoHint] 注入审计修复建议: %s", tname)
+
+            return "\n\n".join(parts)
+        except Exception as e:
+            logger.debug("[AutoHint] 审计提示获取失败: %s", e)
             return ""
 
     def _get_skill_hint(self) -> str:
@@ -361,3 +411,20 @@ This is just a gentle reminder - ignore if not applicable.
             parts.append(f"### {name}\n{desc}\n参数:\n" + "\n".join(param_strs))
 
         return "\n\n".join(parts)
+
+
+_global_auto_hints: Optional[AutoHintManager] = None
+
+
+def get_auto_hint_manager() -> AutoHintManager:
+    """获取全局 AutoHintManager 单例（shown 状态跨轮持久）"""
+    global _global_auto_hints
+    if _global_auto_hints is None:
+        _global_auto_hints = AutoHintManager()
+    return _global_auto_hints
+
+
+def reset_auto_hint_manager():
+    """重置全局单例（仅测试用）"""
+    global _global_auto_hints
+    _global_auto_hints = None

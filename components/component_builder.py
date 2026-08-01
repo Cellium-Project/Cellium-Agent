@@ -818,7 +818,7 @@ def example_function():
                 result["fix_guide"] = (
                     "[系统提示] 此组件存在规范问题，需要修复：\n"
                     "1. 查看 audit_issues 了解具体问题；\n"
-                    "2. 使用 file 工具读取并修改组件文件；\n"
+                    "2. 读取并修改组件文件；\n"
                     "3. 调用 component.reload(name='组件名') 重新加载。\n"
                 )
             else:

@@ -39,6 +39,8 @@ class AgentLoopManager:
         self._shell = None
         self._three_layer_memory = None
         self._global_config = {}
+        self._intent_enabled: Optional[bool] = None
+        self._intent_llm = None
 
     @classmethod
     def get_instance(cls) -> 'AgentLoopManager':
@@ -59,6 +61,33 @@ class AgentLoopManager:
         self._tools = tools or {}
         self._global_config = global_config or {}
         logger.info("[AgentLoopManager] Initialized")
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._llm_engine is not None
+
+    @property
+    def active_session_count(self) -> int:
+        return len(self._loops)
+
+    def update_llm_engine(self, new_engine) -> int:
+        if not new_engine:
+            return 0
+        self._llm_engine = new_engine
+        updated = 0
+        for session_id, meta in list(self._loops.items()):
+            loop = meta.agent_loop
+            try:
+                if hasattr(loop, 'llm'):
+                    loop.llm = new_engine
+                compactor = getattr(loop, '_session_compactor', None)
+                if compactor is not None and hasattr(compactor, 'llm'):
+                    compactor.llm = new_engine
+                updated += 1
+            except Exception as e:
+                logger.warning(f"[AgentLoopManager] LLM 推送失败 session={session_id}: {e}")
+        logger.info(f"[AgentLoopManager] LLM 引擎已推送到 {updated} 个活跃 loop")
+        return updated
 
     async def get_loop(self, session_id: str) -> Any:
         if session_id in self._loops:
@@ -135,6 +164,34 @@ class AgentLoopManager:
         enable_heuristics = self._global_config.get("enable_heuristics", True)
         enable_learning = self._global_config.get("enable_learning", True)
 
+        intent_enabled = self._intent_enabled
+        intent_llm = self._intent_llm
+        if intent_enabled is None:
+            try:
+                from app.core.util.agent_config import get_config
+                _cfg = get_config()
+                h_cfg = _cfg.get_section("heuristics") or {}
+                intent_cfg = h_cfg.get("intent", {})
+                intent_enabled = intent_cfg.get("enabled", True)
+                if intent_enabled:
+                    model_cfg = intent_cfg.get("model", {})
+                    if model_cfg.get("api_key") and model_cfg.get("model"):
+                        from app.agent.llm.engine import OpenAICompatibleEngine
+                        intent_llm = OpenAICompatibleEngine(
+                            api_key=model_cfg["api_key"],
+                            base_url=model_cfg.get("base_url", "https://api.openai.com/v1"),
+                            model=model_cfg["model"],
+                            temperature=float(model_cfg.get("temperature", 0.3)),
+                            max_tokens=10,
+                            timeout=int(model_cfg.get("timeout", 30)),
+                            verify_model=False,
+                        )
+                self._intent_enabled = intent_enabled
+                self._intent_llm = intent_llm
+            except Exception as e:
+                logger.warning("[AgentLoopManager] 读取意图配置失败，默认禁用: %s", e)
+                intent_enabled = False
+
         session_shell = ShellTool()
         session_tools = dict(self._tools) if self._tools else {}
 
@@ -151,6 +208,8 @@ class AgentLoopManager:
             enable_heuristics=enable_heuristics,
             flash_mode=flash_mode,
             enable_learning=enable_learning,
+            intent_llm_engine=intent_llm,
+            intent_enabled=intent_enabled,
         )
 
     async def cleanup_all(self):
@@ -168,7 +227,17 @@ class AgentLoopManager:
         self._locks.clear()
         logger.info("[AgentLoopManager] All sessions cleaned up")
 
-    def update_all_loops(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None, intent_llm=None, intent_enabled=None):
+    def update_all_loops(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None, intent_llm=None, intent_enabled=None, builtin_tools: Dict = None, refresh_profile: bool = False):
+        if intent_enabled is not None:
+            self._intent_enabled = intent_enabled
+            if intent_enabled and intent_llm is not None:
+                self._intent_llm = intent_llm
+            elif not intent_enabled:
+                self._intent_llm = None
+        elif intent_llm is not None:
+            self._intent_llm = intent_llm
+        if builtin_tools is not None:
+            self._tools = dict(builtin_tools)
         if not self._loops:
             return
         updated = 0
@@ -177,7 +246,11 @@ class AgentLoopManager:
             try:
                 if hasattr(loop, 'update_config'):
                     loop.update_config(flash_mode=flash_mode, max_iterations=max_iterations, enable_learning=enable_learning, intent_llm=intent_llm, intent_enabled=intent_enabled)
-                    updated += 1
+                if hasattr(loop, 'update_tools') and builtin_tools is not None:
+                    loop.update_tools(builtin_tools=builtin_tools)
+                if refresh_profile and hasattr(loop, 'rebuild_prompt_builder'):
+                    loop.rebuild_prompt_builder()
+                updated += 1
             except Exception as e:
                 logger.warning(f"[AgentLoopManager] Update error for {session_id}: {e}")
         logger.info(f"[AgentLoopManager] 已热更新 {updated} 个 loop")

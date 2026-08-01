@@ -299,7 +299,7 @@ class BaseTool:
                 _example_parts = [f'"{_req_params[0]}": "<{_req_params[0]}>"']
             else:
                 _example_parts = ['"(无需额外参数)"']
-            _examples.append(f'  • {cmd["command"]}: {{" ".join(_example_parts)}}')
+            _examples.append(f'  • {cmd["command"]}: {" ".join(_example_parts)}')
             
             for pname, pinfo in cmd["parameters"].items():
                 all_properties[pname] = {

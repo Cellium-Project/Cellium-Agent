@@ -11,18 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
-from app.server.routes.chat import router as chat_router
-from app.server.routes.config import router as config_router
-from app.server.routes.memory import router as memory_router
-from app.server.routes.components import router as components_router
-from app.server.routes.logs import router as logs_router
-from app.server.routes.channels import router as channels_router
-from app.server.routes.session_events import router as session_events_router
-from app.server.routes.skills import router as skills_router
-from app.server.routes.gene import router as gene_router
-from app.server.routes.scheduler import router as scheduler_router
-from app.server.routes.upload import router as upload_router
-
 
 @asynccontextmanager
 async def lifespan_context(app: FastAPI):
@@ -32,9 +20,16 @@ async def lifespan_context(app: FastAPI):
         WSConnectionManager.set_main_loop(asyncio.get_running_loop())
     except RuntimeError:
         pass
+    try:
+        from app.agent.di_config import bind_main_loop
+        bind_main_loop(asyncio.get_running_loop())
+    except RuntimeError:
+        pass
 
-    from app.channels import ChannelManager
+    from app.channels import ChannelManager, register_all_channels
+    import logging as _logging
     channel_mgr = ChannelManager.get_instance()
+    register_all_channels(_logging.getLogger("app"))
     if channel_mgr.list_platforms() and not channel_mgr.is_running:
         await channel_mgr.start_all(with_queue=False)
     
@@ -95,6 +90,18 @@ def create_app() -> FastAPI:
         allow_methods=cors_methods,
         allow_headers=cors_headers,
     )
+
+    from app.server.routes.chat import router as chat_router
+    from app.server.routes.config import router as config_router
+    from app.server.routes.memory import router as memory_router
+    from app.server.routes.components import router as components_router
+    from app.server.routes.logs import router as logs_router
+    from app.server.routes.channels import router as channels_router
+    from app.server.routes.session_events import router as session_events_router
+    from app.server.routes.skills import router as skills_router
+    from app.server.routes.gene import router as gene_router
+    from app.server.routes.scheduler import router as scheduler_router
+    from app.server.routes.upload import router as upload_router
 
     app.include_router(chat_router)
     app.include_router(config_router)

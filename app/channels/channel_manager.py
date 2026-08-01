@@ -245,11 +245,20 @@ class ChannelManager:
                     event_type = event.get("type")
 
                     if minimal_output:
-                        if event_type == "done":
+                        if event_type == "content_chunk":
+                            chunk_content = event.get("content", "")
+                            if chunk_content:
+                                await safe_send(chunk_content)
+                                sent_any = True
+                        elif event_type == "done":
                             done_content = event.get("content", "")
-                            await safe_send(done_content or "...")
+                            if not sent_any:
+                                await safe_send(done_content or "...")
                         elif event_type == "stopped":
                             await safe_send("> ⏹ **已停止**: 当前任务已终止")
+                        elif event_type == "error":
+                            error_msg = event.get("error", "未知错误")
+                            await safe_send(f"> ❌ **错误**: `{error_msg}`")
                     else:
                         if event_type == "scheduler_task_start":
                             task_name = event.get("task_name", "未命名任务")
