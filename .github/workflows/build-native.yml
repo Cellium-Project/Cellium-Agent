@@ -32,7 +32,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         run: |
@@ -40,7 +40,7 @@ jobs:
           gcc ${{ matrix.flags }} -o ${{ matrix.output }} vector_engine.c
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vector-engine-${{ matrix.target }}
           path: native/${{ matrix.output }}
@@ -51,10 +51,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
