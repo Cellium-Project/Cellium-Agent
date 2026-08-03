@@ -60,6 +60,7 @@ class SessionCompactor:
         tool_call_threshold: int = 21, 
         keep_recent_messages: int = 10,
         max_notes_length: int = 2000,
+        message_count_threshold: int = 900, 
         repository: "MemoryRepository" = None,
     ):
         self.llm = llm_engine
@@ -67,6 +68,7 @@ class SessionCompactor:
         self.tool_call_threshold = tool_call_threshold
         self.keep_recent_messages = keep_recent_messages
         self.max_notes_length = max_notes_length
+        self.message_count_threshold = message_count_threshold
         self._pending_compact = False  # 标记是否有待执行的压缩
         self._tool_call_count = 0  # 累计工具调用次数
         self._last_compact_tokens = 0  # 上次压缩后的 token 数量
@@ -107,6 +109,17 @@ class SessionCompactor:
             logger.info(
                 "[SessionCompactor] 工具调用触发压缩 | tool_calls=%d (阈值=%d)",
                 self._tool_call_count, self.tool_call_threshold
+            )
+            return True
+
+        # 条件3：消息数超过阈值（高频短交互时 token 可能未到阈值，但消息数逼近
+        # MemoryManager.get_messages 的 1000 条硬上限，避免被粗暴截断）
+        message_count = len(memory.messages)
+        message_exceeded = not cooldown_blocked and message_count >= self.message_count_threshold
+        if message_exceeded:
+            logger.info(
+                "[SessionCompactor] 消息数触发压缩 | 消息=%d (阈值=%d)",
+                message_count, self.message_count_threshold
             )
             return True
 

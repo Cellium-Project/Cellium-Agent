@@ -162,6 +162,7 @@ class AgentLoop:
             tool_call_threshold=session_config.get("tool_call_threshold", 10),
             keep_recent_messages=session_config.get("keep_recent_messages", 10),
             max_notes_length=session_config.get("max_notes_length", 2000),
+            message_count_threshold=session_config.get("message_count_threshold", 900),
             repository=three_layer_memory.repository if three_layer_memory else None,
         )
 
@@ -224,6 +225,7 @@ class AgentLoop:
                 "token_threshold": 100000,
                 "keep_recent_messages": 10,
                 "max_notes_length": 2000,
+                "message_count_threshold": 900,
                 "notes_dir": f"{memory_dir}/notes",
             },
         }
