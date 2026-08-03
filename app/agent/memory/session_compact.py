@@ -154,7 +154,13 @@ class SessionCompactor:
 
     async def compact_now(self, memory: "MemoryManager", notes: "SessionNotes"):
         """
-        同步执行压缩（在迭代开始前调用）
+        同步执行压缩
+
+        策略（Map-Reduce + 递归兜底）：
+          1. 将旧消息分块（块间重叠 10-15%，防块边界丢信息）
+          2. Map 阶段：每块独立调 LLM 生成结构化摘要
+          3. 合并各块摘要到 notes（append 去重合并）
+          4. Reduce 兜底：若合并后的摘要仍超窗口，对摘要再摘要（递归）
 
         Args:
             memory: MemoryManager 实例
@@ -173,31 +179,162 @@ class SessionCompactor:
 
         old_messages = memory.messages[:-self.keep_recent_messages]
 
-        formatted = self._format_messages(old_messages)
-        summary_data = await self._generate_summary_with_llm(formatted)
+        blocks = self._chunk_messages(old_messages)
+        logger.info(
+            "[SessionCompactor] 分块压缩 | 消息=%d → %d 块",
+            len(old_messages), len(blocks),
+        )
 
         notes.load()
-        if summary_data.get("goal"):
-            notes.update_goal_from_summary(summary_data["goal"])
-        notes.set_completed(summary_data.get("actions", []))
-        for finding in summary_data.get("findings", []):
-            notes.add_finding(finding)
-        for error in summary_data.get("errors", []):
-            notes.add_error(error, resolution=None)
+
+        summaries = []
+        for idx, block in enumerate(blocks):
+            formatted = self._format_messages(block)
+            if not formatted:
+                continue
+            summary_data = await self._generate_summary_with_llm(formatted)
+            summaries.append(summary_data)
+            logger.debug(
+                "[SessionCompactor] 块 %d/%d 摘要完成 | 消息=%d",
+                idx + 1, len(blocks), len(block),
+            )
+
+        if not summaries:
+            logger.warning("[SessionCompactor] 所有分块摘要为空，跳过压缩")
+            return
+
+        summaries = await self._recursive_reduce(summaries)
+
+        for summary_data in summaries:
+            if summary_data.get("goal"):
+                notes.update_goal_from_summary(summary_data["goal"])
+            for action in summary_data.get("actions", []):
+                notes.add_completed(action)
+            for finding in summary_data.get("findings", []):
+                notes.add_finding(finding)
+            for error in summary_data.get("errors", []):
+                notes.add_error(error, resolution=None)
 
         notes.save()
 
-        if self._repository:
-            self._persist_notes_to_long_term(notes, summary_data)
+        merged_summary = self._merge_summaries(summaries)
 
-        self._replace_old_messages(memory, notes, summary_data.get("summary", ""))
+        if self._repository:
+            self._persist_notes_to_long_term(notes, merged_summary)
+
+        self._replace_old_messages(memory, notes, merged_summary.get("summary", ""))
 
         self._last_compact_tokens = self._estimate_tokens(memory)
 
         logger.info(
-            "[SessionCompactor] LLM 压缩完成 | 压缩 %d 条消息 | 保留 %d 条原文 | 当前 tokens=%d",
-            len(old_messages), self.keep_recent_messages, self._last_compact_tokens
+            "[SessionCompactor] LLM 压缩完成 | 压缩 %d 条消息 (%d 块) | 保留 %d 条原文 | 当前 tokens=%d",
+            len(old_messages), len(blocks), self.keep_recent_messages, self._last_compact_tokens
         )
+
+    def _chunk_messages(self, messages: List[Dict], max_chars: int = 6000, overlap_ratio: float = 0.15) -> List[List[Dict]]:
+        if not messages:
+            return []
+
+        total = sum(len(str(m.get("content") or "")) for m in messages)
+        if total <= max_chars:
+            return [messages]
+
+        blocks = []
+        current: List[Dict] = []
+        current_chars = 0
+        overlap_chars = int(max_chars * overlap_ratio)
+
+        for msg in messages:
+            m_chars = len(str(msg.get("content") or ""))
+            if current and current_chars + m_chars > max_chars:
+                blocks.append(current)
+                overlap_take = []
+                used = 0
+                for m in reversed(current):
+                    mc = len(str(m.get("content") or ""))
+                    if used + mc > overlap_chars:
+                        break
+                    overlap_take.insert(0, m)
+                    used += mc
+                current = list(overlap_take)
+                current_chars = used
+            current.append(msg)
+            current_chars += m_chars
+
+        if current:
+            blocks.append(current)
+        return blocks
+
+    async def _recursive_reduce(self, summaries: List[Dict]) -> List[Dict]:
+        MAX_SUMMARY_CHARS = 8000
+        current = list(summaries)
+
+        while True:
+            text = self._summaries_to_text(current)
+            if len(text) <= MAX_SUMMARY_CHARS or len(current) <= 1:
+                return current
+
+            logger.info(
+                "[SessionCompactor] 摘要超预算，递归归约 | 块=%d | 文本=%d 字符",
+                len(current), len(text),
+            )
+            reduced = []
+            for chunk in self._chunk_summaries(current, MAX_SUMMARY_CHARS):
+                formatted = self._summaries_to_text(chunk)
+                summary_data = await self._generate_summary_with_llm(formatted)
+                reduced.append(summary_data)
+            current = reduced
+
+    def _summaries_to_text(self, summaries: List[Dict]) -> str:
+        """将结构化摘要列表序列化为可读文本"""
+        parts = []
+        for s in summaries:
+            lines = []
+            if s.get("goal"):
+                lines.append(f"目标: {s['goal']}")
+            for a in s.get("actions", []):
+                lines.append(f"- 操作: {a}")
+            for f in s.get("findings", []):
+                lines.append(f"- 发现: {f}")
+            for e in s.get("errors", []):
+                lines.append(f"- 错误: {e}")
+            if s.get("summary"):
+                lines.append(f"总结: {s['summary']}")
+            if lines:
+                parts.append("\n".join(lines))
+        return "\n\n".join(parts)
+
+    def _chunk_summaries(self, summaries: List[Dict], max_chars: int) -> List[List[Dict]]:
+        blocks, current, cc = [], [], 0
+        for s in summaries:
+            sc = len(self._summaries_to_text([s]))
+            if current and cc + sc > max_chars:
+                blocks.append(current)
+                current, cc = [], 0
+            current.append(s)
+            cc += sc
+        if current:
+            blocks.append(current)
+        return blocks
+
+    def _merge_summaries(self, summaries: List[Dict]) -> Dict:
+        merged = {"goal": "", "actions": [], "findings": [], "errors": [], "summary": ""}
+        for s in summaries:
+            if s.get("goal") and not merged["goal"]:
+                merged["goal"] = s["goal"]
+            for a in s.get("actions", []):
+                if a not in merged["actions"]:
+                    merged["actions"].append(a)
+            for f in s.get("findings", []):
+                if f not in merged["findings"]:
+                    merged["findings"].append(f)
+            for e in s.get("errors", []):
+                if e not in merged["errors"]:
+                    merged["errors"].append(e)
+            if s.get("summary"):
+                merged["summary"] += s["summary"] + "\n"
+        merged["summary"] = merged["summary"].strip()
+        return merged
 
     def _infer_category(self, note_type: str, content: str) -> str:
         content_lower = content.lower()

@@ -10,6 +10,7 @@ SessionNotes — 会话笔记管理器
 
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -139,6 +140,10 @@ class SessionNotes:
                 # 长内容：检查相似度
                 shorter = min(len(new_normalized), len(existing_normalized))
                 longer = max(len(new_normalized), len(existing_normalized))
+                new_nums = re.findall(r"\d+", new_normalized)
+                existing_nums = re.findall(r"\d+", existing_normalized)
+                if new_nums and existing_nums and new_nums != existing_nums:
+                    continue
                 if shorter / longer >= 0.7:
                     overlap = 0
                     for i in range(len(new_normalized) - 10):

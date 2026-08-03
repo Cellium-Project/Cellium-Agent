@@ -249,7 +249,7 @@ def get_auto_hints_piece() -> PromptPiece:
             tools = ctx.get("tools", {})
             tool_traces = ctx.get("tool_traces", [])
             dynamic = auto_hints.get_auto_tool_hints(tools)
-            security_hint = auto_hints.check_security_error_and_suggest(tool_traces)
+            security_hint = auto_hints.check_security_error_and_suggest(tool_traces, ctx.get("session_id", "default"))
             if security_hint:
                 dynamic = dynamic + "\n\n" + security_hint if dynamic else security_hint
             if dynamic:

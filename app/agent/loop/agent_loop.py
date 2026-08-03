@@ -38,7 +38,6 @@ from .auto_hints import AutoHintManager
 from .loop_controller import LoopController
 from app.agent.prompt import PromptBuilder, PromptDiffTracker, create_default_builder
 from .loop_event_publisher import LoopEventPublisher
-from .round_trimmer import trim_old_rounds
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +182,7 @@ class AgentLoop:
 
         self._pending_gene_prompt = None
         self._redirect_guidance_given = False
+        self._last_ctrl_signature = "" 
 
     def rebuild_prompt_builder(self):
         memory_dir = getattr(self.three_layer_memory, 'memory_dir', 'memory') if self.three_layer_memory else 'memory'
@@ -920,6 +920,7 @@ class AgentLoop:
                 self._pending_gene_prompt = None
 
         self._redirect_guidance_given = False
+        self._last_ctrl_signature = ""
 
         try:
             # === 1. 消息接收事件 ===
@@ -1078,14 +1079,13 @@ class AgentLoop:
                 _active_constraint = None
                 _pending_system_injection = system_injection
 
-                # 注入匹配到的 Gene 内容（每轮迭代都注入）
+                # 注入当前任务的 Gene 约束（任务级运行时状态，动态注入）
                 if self._loop_state and self._loop_state.matched_gene_content:
                     gene_injection = f"[任务约束 - {self._loop_state.matched_gene_type}]\n{self._loop_state.matched_gene_content}"
                     if _pending_system_injection:
                         _pending_system_injection = f"{_pending_system_injection}\n\n{gene_injection}"
                     else:
                         _pending_system_injection = gene_injection
-                    logger.debug("[AgentLoop] 本轮注入 Gene | task_type=%s | iter=%d", self._loop_state.matched_gene_type, iteration)
 
                 if self.control_loop and self._loop_state:
                     # 更新状态
@@ -1109,10 +1109,11 @@ class AgentLoop:
                     )
                     _active_constraint = constraint
                     ctrl_injection = self._constraint_renderer.render_combined(constraint)
-                    if _pending_system_injection and ctrl_injection:
-                        _pending_system_injection = f"{_pending_system_injection}\n{ctrl_injection}"
-                    elif ctrl_injection:
-                        _pending_system_injection = ctrl_injection
+                    # 控制环约束：内容变化时写入历史（去重），避免每轮重复注入
+                    if ctrl_injection and ctrl_injection != self._last_ctrl_signature:
+                        effective_memory.add_system_message(ctrl_injection)
+                        self._last_ctrl_signature = ctrl_injection
+                        logger.debug("[AgentLoop] 控制环约束已写入历史 | action=%s | iter=%d", decision.action_type, iteration)
                     _force_stop = constraint.force_stop
 
                     if decision.force_memory_compact and not self.flash_mode and not is_gene_processing:
@@ -1202,18 +1203,18 @@ class AgentLoop:
                     if warnings:
                         logger.warning("[Heuristics] %s", "; ".join(warnings))
 
-                # === 构建提示词 ===
-                session_messages = effective_memory.get_messages()
-
-                session_messages = trim_old_rounds(session_messages, keep_rounds=50)
-
-                # Gene 创建任务注入
+                # Gene 创建任务写入历史一次（避免每轮重复注入）
                 if self._pending_gene_prompt:
                     gene_context = f"[Gene 创建任务]\n{self._pending_gene_prompt}"
-                    if _pending_system_injection:
-                        _pending_system_injection = f"{_pending_system_injection}\n\n{gene_context}"
-                    else:
-                        _pending_system_injection = gene_context
+                    effective_memory.add_system_message(gene_context)
+                    self._pending_gene_prompt = None
+                    logger.debug("[AgentLoop] Gene 创建任务已写入历史 | iter=%d", iteration)
+
+                # === 构建提示词 ===
+                # 不裁剪历史：压缩（SessionCompactor）才是对话的"新开始"。
+                # 每轮裁剪会破坏前缀缓存，且压缩阈值(100k token)会先于 API 上限触发。
+                session_messages = effective_memory.get_messages()
+
                 # 准备 REPLAN 上下文
                 replan_message = None
                 if (self._hybrid_controller and 

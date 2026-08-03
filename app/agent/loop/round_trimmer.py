@@ -34,7 +34,10 @@ def trim_old_rounds(messages: List[Dict], keep_rounds: int = 3) -> List[Dict]:
     if len(user_positions) <= keep_rounds:
         return messages
 
-    system_positions = set(_find_system_messages(messages))
+    first_user_idx = user_positions[0] if user_positions else 0
+    prefix_system_positions = set(
+        i for i in _find_system_messages(messages) if i < first_user_idx
+    )
     compact_boundary_idx = None
     for i, msg in enumerate(messages):
         if _is_compact_boundary(msg):
@@ -53,7 +56,8 @@ def trim_old_rounds(messages: List[Dict], keep_rounds: int = 3) -> List[Dict]:
     removed_count = 0
     for i, msg in enumerate(messages):
         if i < cut_position:
-            if i in system_positions:
+            # 仅保留对话开始前的系统前缀；对话中的 system（约束）跟随轮次裁剪
+            if i in prefix_system_positions:
                 result.append(msg)
             elif _is_compact_boundary(msg):
                 result.append(msg)

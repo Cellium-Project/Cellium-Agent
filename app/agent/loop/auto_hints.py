@@ -24,6 +24,8 @@ class AutoHintManager:
         self._shown_audit_hints: Dict[str, Dict[str, str]] = {}
         # session_id -> {file_path: 错误签名}，签名变化时重新注入
         self._shown_load_errors: Dict[str, Dict[str, str]] = {}
+        # session_id -> {拦截签名}，同一条拦截只提示一次
+        self._shown_security_hints: Dict[str, Dict[str, str]] = {}
 
     def get_component_problem_hints(self, session_id: str = "default") -> str:
         hints = []
@@ -38,16 +40,18 @@ class AutoHintManager:
 
         return "\n\n".join(hints)
 
-    def check_security_error_and_suggest(self, tool_traces: List[Dict]) -> str:
+    def check_security_error_and_suggest(self, tool_traces: List[Dict], session_id: str = "default") -> str:
         """
         检测工具执行结果中的安全拦截错误，并返回组件自扩展建议
 
         Args:
             tool_traces: 最近的工具执行结果列表
+            session_id: 会话 ID，用于记忆已提示过的拦截
 
         Returns:
             如果检测到安全拦截，返回使用 component.generate() 的建议
         """
+        shown = self._shown_security_hints.setdefault(session_id, {})
         for trace in tool_traces:
             result = trace.get("result", {})
             if not isinstance(result, dict):
@@ -56,6 +60,10 @@ class AutoHintManager:
             if not error_msg:
                 continue
             if "安全拦截" in error_msg or "Permission denied" in error_msg:
+                sign = f"{trace.get('tool', '?')}:{error_msg}"
+                if shown.get(sign):
+                    continue
+                shown[sign] = "1"
                 return (
                     "## [警告] 安全策略拦截提示\n\n"
                     "检测到命令被安全策略拦截。\n\n"

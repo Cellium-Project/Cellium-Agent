@@ -200,6 +200,7 @@ class MemoryManager:
             "[系统提示 - Gene 创建评估]",
             "[HARD CONSTRAINTS]",
             "[任务约束",
+            "[Gene 创建任务]",
         ]
 
         original_count = len(self.messages)

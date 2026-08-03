@@ -641,7 +641,7 @@ def example_function():
         show_commands: bool = False,
         search: str = "",
         page: int = 1,
-        page_size: int = 10,
+        page_size: int = 27,
     ) -> Dict[str, Any]:
         """
         列出所有已注册的组件及其命令
@@ -650,7 +650,7 @@ def example_function():
             show_commands: 是否显示每个组件的命令详情（默认 false）
             search: 按组件名模糊匹配（不区分大小写）
             page: 页码（从 1 开始）
-            page_size: 每页数量（默认 10）
+            page_size: 每页数量（默认 27）
 
         Returns:
             {
@@ -1204,7 +1204,7 @@ class BackgroundMonitor(BaseCell):
                         "show_commands": "是否显示命令详情（默认 false）",
                         "search": "按组件名模糊匹配（不区分大小写）",
                         "page": "页码（从 1 开始，默认 1）",
-                        "page_size": "每页数量（默认 10，最大 50）",
+                        "page_size": "每页数量（默认 27）",
                     },
                     "hint": (
                         '调用示例:\n'
