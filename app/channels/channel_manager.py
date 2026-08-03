@@ -210,14 +210,17 @@ class ChannelManager:
             if not content:
                 return
             MAX_MSG_LEN = 1000
+            MIN_CHUNK_LEN = 100  
             chunks = []
             remaining = content
             while remaining:
                 if len(remaining) <= MAX_MSG_LEN:
                     chunks.append(remaining)
                     break
+                # 从 MAX_MSG_LEN 位置向前搜索到 MIN_CHUNK_LEN，找最近的换行符
                 cut = MAX_MSG_LEN
-                for i in range(MAX_MSG_LEN, max(MAX_MSG_LEN - 500, 0), -1):
+                search_end = min(MAX_MSG_LEN, len(remaining) - 1)
+                for i in range(search_end, MIN_CHUNK_LEN - 1, -1):
                     if remaining[i] == '\n':
                         cut = i + 1
                         break
