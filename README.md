@@ -117,11 +117,9 @@ python main.py
 Main dependencies:
 - FastAPI + Uvicorn (Web framework)
 - PyYAML (Configuration parsing)
-- Jieba (Chinese word segmentation)
 - DrissionPage (Web search and browser automation)
-- openai (OpenAI API client)
 - websockets (QQ Bot WebSocket client)
-- httpx (HTTP client for external platform file upload)
+- httpx (HTTP client for OpenAI-compatible API calls and external platform file upload)
 
 ### Configure Models
 
@@ -641,8 +639,8 @@ This project adopts the [Strategy Gene](https://arxiv.org/abs/2604.15097) design
 
 The paper proposes encoding experience into compact Gene objects (~230 tokens) instead of documentation-heavy Skill packages (~2,500 tokens). This project implements this in the Control Loop's Hard Constraint layer:
 
-- **Task Matching**: Match Gene templates using keywords from user input
-- **Dynamic Injection**: Inject matched Gene as system prompt into LLM
+- **Task Matching**: Match Gene templates via LLM intent classification on user input
+- **Dynamic Injection**: Inject matched Gene as runtime state into LLM (task-level dynamic injection, does not pollute conversation history)
 - **Experience Evolution**: Automatically extract Avoid_Cues from failure feedback and update Gene
 
 ### Implemented Features
@@ -650,7 +648,7 @@ The paper proposes encoding experience into compact Gene objects (~230 tokens) i
 | Paper Concept | This Project Implementation |
 |---------------|----------------------------|
 | Gene Structure | `[HARD CONSTRAINTS]` + `[CONTROL ACTION]` + `[AVOID]` |
-| Task Matching | `TaskSignalMatcher` keyword matching |
+| Task Matching | `TaskSignalMatcher` LLM intent matching |
 | Avoid_Cues | Auto-extract from failure feedback, write to `[AVOID]` section |
 | Version Management | `version` field + `evolution_history` tracking changes |
 | Effect Evaluation | `success_rate`, `avg_reward`, `consecutive_success/failure` |

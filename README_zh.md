@@ -117,11 +117,9 @@ python main.py
 主要依赖：
 - FastAPI + Uvicorn（Web 框架）
 - PyYAML（配置解析）
-- Jieba（中文分词）
 - DrissionPage（用于网页搜索和操作浏览器）
-- openai（OpenAI API 客户端）
 - websockets（QQ Bot WebSocket 客户端）
-- httpx（HTTP 客户端，用于外部平台文件上传）
+- httpx（HTTP 客户端，用于 OpenAI 兼容 API 调用与外部平台文件上传）
 
 ### 配置模型
 
@@ -677,8 +675,8 @@ Cellium Agent --- **2026-04-22** 引入 [Strategy Gene](https://arxiv.org/abs/26
 
 论文提出将经验编码为紧凑的 Gene 对象（~230 tokens），替代文档型 Skill 包（~2,500 tokens）。本项目在 Control Loop 的 Hard Constraint 层实现：
 
-- **任务匹配**：用户输入关键词匹配 Gene 模板
-- **动态注入**：匹配到的 Gene 作为系统提示注入 LLM
+- **任务匹配**：用户输入经 LLM 意图分类匹配 Gene 模板
+- **动态注入**：匹配到的 Gene 作为运行时状态注入 LLM（任务级动态注入，不污染对话历史）
 - **经验进化**：失败时自动提取 Avoid_Cues 并更新 Gene
 
 ### 实现的功能
@@ -686,7 +684,7 @@ Cellium Agent --- **2026-04-22** 引入 [Strategy Gene](https://arxiv.org/abs/26
 | 论文概念 | 本项目实现 |
 |----------|-----------|
 | Gene 结构 | `[HARD CONSTRAINTS]` + `[CONTROL ACTION]` + `[AVOID]` |
-| 任务匹配 | `TaskSignalMatcher` 关键词匹配 |
+| 任务匹配 | `TaskSignalMatcher` LLM 意图匹配 |
 | Avoid_Cues | 从失败反馈自动提取，写入 `[AVOID]` 段 |
 | 版本管理 | `version` 字段 + `evolution_history` 记录变更 |
 | 效果评估 | `success_rate`, `avg_reward`, `consecutive_success/failure` |
