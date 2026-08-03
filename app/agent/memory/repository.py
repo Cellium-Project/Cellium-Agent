@@ -11,6 +11,7 @@ import array
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -794,6 +795,7 @@ class MemoryRepository:
             entry["score"] += rrf_score
             entry.setdefault("search_signals", {})["embedding_rank"] = rank
             entry["embedding_score"] = emb_score
+            entry["cosine_similarity"] = result.get("cosine_similarity")
 
         normalized_query = query.lower()
         for entry in merged.values():
@@ -1255,7 +1257,23 @@ class MemoryRepository:
 
         engine = get_engine()
         results = engine.batch_topk(query_vector, existing_ids, existing_flat, dim, top_k=top_k, threshold=0.3)
-        return [{"rowid": int(rid), "embedding_score": score} for rid, score in results]
+        if not results:
+            return []
+
+        id_to_idx = {rid: i for i, rid in enumerate(existing_ids)}
+        output = []
+        for rid, score in results:
+            stored = None
+            idx = id_to_idx.get(rid)
+            if idx is not None:
+                base = idx * dim
+                stored = existing_flat[base:base + dim]
+            output.append({
+                "rowid": int(rid),
+                "embedding_score": score,
+                "cosine_similarity": self._cosine_similarity(query_vector, stored) if stored else 0.0,
+            })
+        return output
 
     def _public_record(self, record_id: str) -> Optional[Dict[str, Any]]:
         record = self._get_catalog_record(record_id)
@@ -1281,6 +1299,7 @@ class MemoryRepository:
             "deleted_reason": record.get("deleted_reason", ""),
             "merged_into": record.get("merged_into", ""),
             "score": 0.0,
+            "cosine_similarity": None,
         }
 
 
@@ -1489,7 +1508,12 @@ class MemoryRepository:
     def _cosine_similarity(left: List[float], right: List[float]) -> float:
         if not left or not right or len(left) != len(right):
             return 0.0
-        return get_engine().dot(left, right)
+        dot = sum(a * b for a, b in zip(left, right))
+        norm_left = math.sqrt(sum(a * a for a in left))
+        norm_right = math.sqrt(sum(b * b for b in right))
+        if norm_left == 0.0 or norm_right == 0.0:
+            return 0.0
+        return max(-1.0, min(1.0, dot / (norm_left * norm_right)))
 
     @staticmethod
     def _gen_source_id(prefix: str = "manual") -> str:
