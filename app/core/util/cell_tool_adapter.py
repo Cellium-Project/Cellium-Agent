@@ -256,6 +256,7 @@ class CellToolAdapter(BaseTool):
                 )
                 if has_var_keyword:
                     cleaned_args = dict(all_args)
+                    cleaned_args.pop("_intent", None)
                 else:
                     cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
 
@@ -410,6 +411,8 @@ class CellToolAdapter(BaseTool):
 
         if has_var_keyword:
             cleaned_args = dict(all_args)
+            # _intent 是描述元数据，不应传给组件方法
+            cleaned_args.pop("_intent", None)
             if isinstance(cleaned_args.get("kwargs"), dict):
                 extra = cleaned_args.pop("kwargs")
                 cleaned_args.update(extra)

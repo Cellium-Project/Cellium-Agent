@@ -54,7 +54,7 @@ class BaseCell(ICell, metaclass=AutoInjectMeta):
         if not hasattr(self, method_name):
             raise CommandNotFoundError(command, self.cell_name)
         
-        kwargs = {k: v for k, v in arguments.items() if k != "command"}
+        kwargs = {k: v for k, v in arguments.items() if k not in ("command", "_intent")}
         
         if session_id:
             kwargs["session_id"] = session_id

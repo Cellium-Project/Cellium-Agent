@@ -496,6 +496,11 @@ class ToolExecutor:
         tool_name = tool_call.name
         arguments = tool_call.arguments
 
+        if isinstance(arguments, dict):
+            arguments = {k: v for k, v in arguments.items() if k != "_intent"}
+        else:
+            arguments = dict(arguments or {})
+
         tool_allowed = platform_context.get("tool_allowed") if platform_context else None
         if tool_allowed is False:
             _blocked_tools = {
