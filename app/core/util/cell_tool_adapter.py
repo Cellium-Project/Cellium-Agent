@@ -60,6 +60,7 @@ EXEMPTED_NAMES: Set[str] = {
     "weixin_files",
     "web_fetch",
     "scheduler",
+    "sub_agent",  
 }
 
 # 是否启用沙箱模式（可通过配置关闭）

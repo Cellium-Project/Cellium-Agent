@@ -21,3 +21,4 @@ enabled_components:
 - components.scheduler.Scheduler
 - components.feishu_files.FeishuFiles
 - components.weixin_files.WeixinFiles
+- components.sub_agent.SubAgent

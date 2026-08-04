@@ -283,6 +283,22 @@ xxx.status()       # 查看状态
 
 组件触发事件后，Agent 会收到消息并回复到该对话（支持 QQ、Telegram 等外部平台，自动路由）。
 
+### §3.5 子 Agent 系统（sub_agent）
+
+**用途**: 任务拆解为独立子任务时，并行子 Agent 各自完成，显著提速。
+
+**命令**: `parallel(tasks)` 并行（tasks 为对象数组，每项含 name/task/tools/persona/constraints/max_iterations；**单任务也传单元素数组**）· `list()` · `status(name)` · `cancel(name)`
+
+**tools**（可选，控制子 Agent 工具权限）: 可用 `read edit file grep glob ls shell memory`；不传则无工具只能文本回复；**禁止**传 `config/weixin_files/web_search/web_fetch/telegram_files/scheduler/qq_files/feishu_files`
+
+**铁律**:
+1. 任务相互独立、可汇总时才拆并行；串行依赖任务不要拆
+2. 每个子 Agent 给清晰 `task`（目标+要求），`tools` 最小权限（审查只给只读）
+3. 完成后**汇总各子 Agent 结果**再回复，别只转发原始输出
+4. 子 Agent ≤ 5 个；复杂任务优先 `parallel` 一次发起
+
+**示例**: `sub_agent.parallel(tasks=[{"name":"reviewer","task":"审查 src/main.py 列出问题","tools":["read","grep"],"constraints":"只读"},{"name":"tester","task":"检查 tests/ 覆盖情况","tools":["glob","ls"],"constraints":"只读"}])`
+
 ---
 
 ## §4 MEMORY SYSTEM

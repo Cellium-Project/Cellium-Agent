@@ -1116,12 +1116,23 @@ body {
     margin-bottom: 10px;
 }
 
+.tool-traces-wrap .tool-trace {
+    margin-bottom: 0;
+}
+
+.tool-description {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
 .tool-trace {
     background: var(--bg-tertiary);
     border: 1px solid var(--gray-200);
     border-radius: 6px;
     overflow: hidden;
     font-size: 12px;
+    margin-bottom: 8px;
     animation: toolIn 0.25s ease-out forwards;
 }
 
