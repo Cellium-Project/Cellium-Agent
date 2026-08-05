@@ -180,15 +180,25 @@ class SessionCompactor:
             logger.debug("[SessionCompactor] 消息数不足，无需压缩")
             return
 
-        old_messages = memory.messages[:-self.keep_recent_messages]
+        notes.load()
+
+        has_prior_notes = notes.exists() and (notes.get_goal() or notes.get_completed() or notes.get_findings() or notes.get_errors())
+        if has_prior_notes:
+            compact_idx = next(
+                (i for i, m in enumerate(memory.messages) if m.get("_is_compacted_notes")), -1
+            )
+            if compact_idx >= 0:
+                old_messages = memory.messages[compact_idx + 1:-self.keep_recent_messages]
+            else:
+                old_messages = memory.messages[:-self.keep_recent_messages]
+        else:
+            old_messages = memory.messages[:-self.keep_recent_messages]
 
         blocks = self._chunk_messages(old_messages)
         logger.info(
-            "[SessionCompactor] 分块压缩 | 消息=%d → %d 块",
-            len(old_messages), len(blocks),
+            "[SessionCompactor] 分块压缩 | 消息=%d → %d 块 | 增量模式=%s",
+            len(old_messages), len(blocks), has_prior_notes,
         )
-
-        notes.load()
 
         summaries = []
         # 每块摘要：不设超时（相信 API），失败内部重试，最终降级规则摘要，压缩必然完成
@@ -526,8 +536,15 @@ class SessionCompactor:
                 response = await self.llm.chat(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
-                    max_tokens=1000,
+                    max_tokens=4000,
                 )
+                if getattr(response, "finish_reason", None) == "length":
+                    logger.warning(
+                        "[SessionCompactor] 摘要输出被截断(finish_reason=length)，降级规则摘要 | attempt=%d/%d",
+                        attempt, max_retries,
+                    )
+                    last_error = "输出截断"
+                    break
 
                 import json
                 content = response.content or "{}"

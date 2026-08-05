@@ -46,6 +46,7 @@ class SessionNotes:
     
     # 最大历史目标数量
     MAX_GOAL_HISTORY = 10
+    MAX_SECTION_ITEMS = 50
 
     # 笔记段落模板
     SECTIONS = {
@@ -171,6 +172,9 @@ class SessionNotes:
 
         if not self._is_duplicate(content, self._content[section]):
             self._content[section].append(content)
+            # 收敛：超上限丢弃最早项（旧的已在长期记忆，快照只保留最近摘要）
+            if len(self._content[section]) > self.MAX_SECTION_ITEMS:
+                self._content[section] = self._content[section][-self.MAX_SECTION_ITEMS:]
 
     def set_goal(self, goal: str, force: bool = False):
         """

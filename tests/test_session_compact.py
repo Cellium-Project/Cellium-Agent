@@ -11,7 +11,9 @@
 """
 import asyncio
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -244,6 +246,99 @@ class TestNoTruncation(unittest.TestCase):
             short_mem.add_user_message("短" * 5)
         self.assertFalse(compactor.should_compact(short_mem), "token 未到不应压缩")
         self.assertEqual(len(short_mem.get_messages()), 1200, "不应截断")
+
+
+# ================================================================
+# 增量压缩与上下文闭环测试
+# ================================================================
+
+class SeqEngine:
+    """每次返回不同摘要，避免去重误判"""
+    calls = 0
+
+    async def chat(self, messages, tools=None, **kwargs):
+        SeqEngine.calls += 1
+        tag = f"标签{SeqEngine.calls:04d}"
+        long = "这是非常关键的发现内容描述" * 8
+        return type("R", (), {"content": __import__("json").dumps(
+            {"goal": f"目标{tag}",
+             "actions": [f"完成操作动作{tag}项目{i} 具体执行了步骤{i} 输出结果{i}" for i in range(2)],
+             "findings": [f"{long}{tag}编号{i}" for i in range(2)],
+             "errors": [], "summary": f"摘要{tag}"})})()
+
+
+class LengthEngine:
+    """返回 finish_reason=length，模拟输出截断"""
+    calls = 0
+
+    async def chat(self, messages, tools=None, **kwargs):
+        LengthEngine.calls += 1
+        return type("R", (), {"content": '{"goal": "未完成', "finish_reason": "length"})()
+
+
+class TestIncrementalCompact(unittest.TestCase):
+    """增量压缩：二次压缩只压新消息"""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="cellium_inc_")
+        SeqEngine.calls = 0
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _make_memory(self, n, prefix, long=False):
+        mem = MemoryManager()
+        extra = "很长的内容" * 30 if long else ""
+        for i in range(n):
+            if i % 2 == 0:
+                mem.add_user_message(f"{prefix}问题{i} " + extra)
+            else:
+                mem.add_assistant_message(f"{prefix}回答{i} " + extra)
+        return mem
+
+    def test_second_compact_only_incremental(self):
+        """二次压缩只压新消息，不重压旧快照"""
+        notes = SessionNotes(session_id="s", notes_dir=os.path.join(self._tmp, "notes"))
+        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10, retry_backoff_base=0)
+        mem = self._make_memory(60, "第一批", long=True)
+        asyncio.run(compactor.compact_now(mem, notes))
+        first_calls = SeqEngine.calls
+        self.assertGreaterEqual(first_calls, 1, "首次压缩应产生LLM调用")
+        self.assertTrue(mem.messages[0].get("_is_compacted_notes"), "压缩后首条应带标记")
+
+        for i in range(40):
+            mem.add_user_message(f"第二批问题{i} " + "内容" * 30)
+            mem.add_assistant_message(f"第二批回答{i} " + "内容" * 30)
+        n_before = len(mem.messages)
+        asyncio.run(compactor.compact_now(mem, notes))
+        second_calls = SeqEngine.calls - first_calls
+        self.assertLessEqual(second_calls, first_calls, "二次压缩不应重压全部历史")
+        self.assertLessEqual(len(mem.messages), n_before, "压缩后消息数应回落")
+
+    def test_notes_accumulate_with_cap(self):
+        """notes 追加式 + 上限收敛：40次压缩不超50条"""
+        notes = SessionNotes(session_id="s", notes_dir=os.path.join(self._tmp, "notes"))
+        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10, retry_backoff_base=0)
+        mem = self._make_memory(60, "批0", long=True)
+        asyncio.run(compactor.compact_now(mem, notes))
+        for rnd in range(40):
+            for i in range(15):
+                mem.add_user_message(f"批{rnd}问题{i} " + "内容" * 30)
+                mem.add_assistant_message(f"批{rnd}回答{i} " + "内容" * 30)
+            asyncio.run(compactor.compact_now(mem, notes))
+        self.assertLessEqual(len(notes.get_findings()), 50, "findings应收敛到上限")
+        self.assertLessEqual(len(notes.get_completed()), 50, "completed应收敛到上限")
+
+
+class TestFinishReasonLength(unittest.TestCase):
+    """finish_reason=length 立即降级不重试"""
+
+    def test_length_triggers_fallback_no_retry(self):
+        compactor = SessionCompactor(llm_engine=LengthEngine(), retry_backoff_base=0)
+        LengthEngine.calls = 0
+        result = asyncio.run(compactor._generate_summary_with_llm("[用户]: 测试"))
+        self.assertEqual(LengthEngine.calls, 1, "length后应立即降级，不重试")
+        self.assertTrue(result.get("summary", ""), "应返回规则降级摘要")
 
 
 if __name__ == "__main__":
