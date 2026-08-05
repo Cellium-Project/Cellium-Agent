@@ -9,6 +9,7 @@ SessionCompactor — 会话记忆压缩器
   - 用笔记替代旧消息，保留最近 N 条原文
 """
 
+import asyncio
 import logging
 from typing import Dict, List, TYPE_CHECKING
 
@@ -60,15 +61,15 @@ class SessionCompactor:
         tool_call_threshold: int = 21, 
         keep_recent_messages: int = 10,
         max_notes_length: int = 2000,
-        message_count_threshold: int = 900, 
         repository: "MemoryRepository" = None,
+        retry_backoff_base: float = 2.0,  # 失败重试指数退避基数（秒）
     ):
         self.llm = llm_engine
         self.token_threshold = token_threshold
         self.tool_call_threshold = tool_call_threshold
         self.keep_recent_messages = keep_recent_messages
         self.max_notes_length = max_notes_length
-        self.message_count_threshold = message_count_threshold
+        self.retry_backoff_base = retry_backoff_base
         self._pending_compact = False  # 标记是否有待执行的压缩
         self._tool_call_count = 0  # 累计工具调用次数
         self._last_compact_tokens = 0  # 上次压缩后的 token 数量
@@ -112,18 +113,7 @@ class SessionCompactor:
             )
             return True
 
-        # 条件3：消息数超过阈值（高频短交互时 token 可能未到阈值，但消息数逼近
-        # MemoryManager.get_messages 的 1000 条硬上限，避免被粗暴截断）
-        message_count = len(memory.messages)
-        message_exceeded = not cooldown_blocked and message_count >= self.message_count_threshold
-        if message_exceeded:
-            logger.info(
-                "[SessionCompactor] 消息数触发压缩 | 消息=%d (阈值=%d)",
-                message_count, self.message_count_threshold
-            )
-            return True
-
-        # 条件1：Token 数量超过阈值（需要 LLM 生成摘要）
+        # 条件3：Token 数量超过阈值（需要 LLM 生成摘要）
         if self.llm is None:
             return False
 
@@ -183,8 +173,8 @@ class SessionCompactor:
         self._tool_call_count = 0  # 重置工具调用计数器
 
         if self.llm is None:
-            logger.debug("[SessionCompactor] 无 LLM 引擎，跳过压缩")
-            return
+            logger.error("[SessionCompactor] 无 LLM 引擎，无法执行压缩")
+            raise ValueError("SessionCompactor 需要 LLM 引擎才能执行压缩")
 
         if len(memory.messages) <= self.keep_recent_messages:
             logger.debug("[SessionCompactor] 消息数不足，无需压缩")
@@ -201,6 +191,7 @@ class SessionCompactor:
         notes.load()
 
         summaries = []
+        # 每块摘要：不设超时（相信 API），失败内部重试，最终降级规则摘要，压缩必然完成
         for idx, block in enumerate(blocks):
             formatted = self._format_messages(block)
             if not formatted:
@@ -280,9 +271,10 @@ class SessionCompactor:
 
     async def _recursive_reduce(self, summaries: List[Dict]) -> List[Dict]:
         MAX_SUMMARY_CHARS = 8000
+        MAX_REDUCE_ROUNDS = 10  # 收敛保护：超轮数直接返回，防止死循环
         current = list(summaries)
 
-        while True:
+        for _ in range(MAX_REDUCE_ROUNDS):
             text = self._summaries_to_text(current)
             if len(text) <= MAX_SUMMARY_CHARS or len(current) <= 1:
                 return current
@@ -295,8 +287,19 @@ class SessionCompactor:
             for chunk in self._chunk_summaries(current, MAX_SUMMARY_CHARS):
                 formatted = self._summaries_to_text(chunk)
                 summary_data = await self._generate_summary_with_llm(formatted)
-                reduced.append(summary_data)
+                # 合并 chunk 原始 goal/errors（小而关键，防降级目标丢失），
+                # 不合并 findings/summary 以避免 reduce 永不收敛（死循环）
+                if summary_data:
+                    merged = self._merge_summaries([summary_data, *chunk])
+                    # 收敛保护：只保留 LLM 新摘要的 findings/summary，避免拼接无限膨胀
+                    merged["findings"] = summary_data.get("findings", []) or []
+                    merged["summary"] = summary_data.get("summary", "") or merged["summary"]
+                    reduced.append(merged)
+                else:
+                    reduced.append(self._merge_summaries(chunk))
             current = reduced
+
+        return current
 
     def _summaries_to_text(self, summaries: List[Dict]) -> str:
         """将结构化摘要列表序列化为可读文本"""
@@ -514,27 +517,81 @@ class SessionCompactor:
         return "\n".join(lines)[:8000]
 
     async def _generate_summary_with_llm(self, messages_text: str) -> Dict:
-        """使用 LLM 生成结构化摘要"""
-        try:
-            prompt = LLM_SUMMARIZE_PROMPT.format(messages=messages_text)
-            response = await self.llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1000,
-            )
+        prompt = LLM_SUMMARIZE_PROMPT.format(messages=messages_text)
 
-            import json
-            content = response.content or "{}"
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                return json.loads(content[start:end])
-            else:
-                logger.warning("[SessionCompactor] LLM 返回格式异常 | content=%s", content[:200])
-                return {}
-        except Exception as e:
-            logger.error("[SessionCompactor] LLM 摘要生成失败 | error=%s", e)
-            return {}
+        max_retries = 3
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await self.llm.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=1000,
+                )
+
+                import json
+                content = response.content or "{}"
+                start = content.find("{")
+                end = content.rfind("}") + 1
+                if start >= 0 and end > start:
+                    return json.loads(content[start:end])
+                else:
+                    logger.warning(
+                        "[SessionCompactor] LLM 返回格式异常，重试 | attempt=%d/%d | content=%s",
+                        attempt, max_retries, content[:200],
+                    )
+                    last_error = "格式异常"
+                    continue
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "[SessionCompactor] LLM 摘要失败，重试 | attempt=%d/%d | error=%s",
+                    attempt, max_retries, e,
+                )
+                await asyncio.sleep(self.retry_backoff_base * (2 ** (attempt - 1)))
+
+        logger.error(
+            "[SessionCompactor] LLM 摘要重试 %d 次均失败，降级为规则摘要 | last_error=%s",
+            max_retries, last_error,
+        )
+        return self._fallback_summary(messages_text)
+
+    def _fallback_summary(self, messages_text: str) -> Dict:
+        """规则降级摘要：LLM 不可用时从文本提取保底摘要，结构兼容，保证压缩不中断"""
+        lines = [l.strip() for l in (messages_text or "").splitlines() if l.strip()]
+        if not lines:
+            return {"goal": "", "actions": [], "findings": [], "errors": [], "summary": "（LLM 摘要不可用，已降级）"}
+
+        goal = ""
+        for line in lines:
+            if line.startswith("[用户]"):
+                goal = line[len("[用户]"):].strip()
+                goal = goal.split(":", 1)[-1].strip()[:100] if ":" in goal else goal[:100]
+                break
+
+        findings = []
+        for line in lines:
+            if line.startswith("[用户]") or line.startswith("[助手]"):
+                item = line.split("]:", 1)[-1].strip()[:80]
+                if item and item not in findings:
+                    findings.append(item)
+            if len(findings) >= 10:
+                break
+
+        errors = [line.split("]:", 1)[-1].strip()[:80] for line in lines]
+        errors = [e for e in errors if "error" in e.lower() or "失败" in e or "异常" in e][:5]
+
+        summary = f"（降级摘要）共 {len(lines)} 条消息。"
+        if goal:
+            summary += f"目标：{goal}。"
+
+        return {
+            "goal": goal,
+            "actions": [],
+            "findings": findings,
+            "errors": errors,
+            "summary": summary,
+        }
 
     def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = ""):
         """用笔记替代旧消息"""

@@ -162,7 +162,6 @@ class AgentLoop:
             tool_call_threshold=session_config.get("tool_call_threshold", 10),
             keep_recent_messages=session_config.get("keep_recent_messages", 10),
             max_notes_length=session_config.get("max_notes_length", 2000),
-            message_count_threshold=session_config.get("message_count_threshold", 900),
             repository=three_layer_memory.repository if three_layer_memory else None,
         )
 
@@ -225,7 +224,6 @@ class AgentLoop:
                 "token_threshold": 100000,
                 "keep_recent_messages": 10,
                 "max_notes_length": 2000,
-                "message_count_threshold": 900,
                 "notes_dir": f"{memory_dir}/notes",
             },
         }
@@ -1041,6 +1039,10 @@ class AgentLoop:
                     yield {"type": "thinking", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
                     await self._session_compactor.compact_now(effective_memory, session_notes)
+                    self._persist_conversation(
+                        user_input="", response_content=None,
+                        session_id=effective_session, memory=effective_memory,
+                    )
 
                 if self._loop_controller.is_stop_requested:
                     logger.info("[AgentLoop] 检测到停止请求，中断推理")
@@ -1899,14 +1901,20 @@ class AgentLoop:
                 return
 
             # 保存本轮的完整消息（包括工具调用）
-            # 从 all_messages 中提取最后一轮的消息
-            last_user_idx = -1
-            for i in range(len(all_messages) - 1, -1, -1):
-                if all_messages[i].get("role") == "user":
-                    last_user_idx = i
-                    break
-            
-            round_messages = all_messages[last_user_idx:] if last_user_idx >= 0 else all_messages
+            # 从 all_messages 中提取最后一轮的消息；
+            # 若存在压缩快照，则从快照起持久化，保留 _is_compacted_notes 标记供冷启动恢复
+            compact_idx = next(
+                (i for i, m in enumerate(all_messages) if m.get("_is_compacted_notes")), -1
+            )
+            if compact_idx >= 0:
+                round_messages = all_messages[compact_idx:]
+            else:
+                last_user_idx = -1
+                for i in range(len(all_messages) - 1, -1, -1):
+                    if all_messages[i].get("role") == "user":
+                        last_user_idx = i
+                        break
+                round_messages = all_messages[last_user_idx:] if last_user_idx >= 0 else all_messages
             
             source_id = self.three_layer_memory.persist_session(
                 user_input, actual_response, session_id=sid, messages=round_messages,

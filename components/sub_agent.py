@@ -325,7 +325,9 @@ class SubAgent(BaseCell):
             _os.makedirs(sub_mem_dir, exist_ok=True)
             builder = create_default_builder(memory_dir=sub_mem_dir, memory=None)
             loop._prompt_builder = builder
-            loop._prompt_diff_tracker.__init__() 
+            loop._prompt_diff_tracker.__init__()
+            loop._notes_dir = _os.path.join(sub_mem_dir, "notes")
+            loop._session_notes_cache = {}
             logger.info("[SubAgent] 已隔离子 Agent 人格（独立 memory_dir=%s）", sub_mem_dir)
         except Exception as e:
             logger.warning("[SubAgent] 隔离人格失败，回退默认: %s", e)

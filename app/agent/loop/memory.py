@@ -148,13 +148,6 @@ class MemoryManager:
         """获取消息列表"""
         messages = self.messages
 
-        if len(messages) > 1000:
-            logger.info(
-                "[MemoryManager] 安全上限截断 | %d→1000条",
-                len(messages),
-            )
-            messages = messages[-1000:]
-
         messages = self._fix_message_sequence(messages)
 
         if self._ephemeral_messages:

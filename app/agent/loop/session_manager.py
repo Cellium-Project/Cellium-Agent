@@ -157,16 +157,24 @@ class SessionManager:
             if len(messages) < 1:
                 return
 
-            last_user_idx = -1
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") == "user":
-                    last_user_idx = i
-                    break
+            # 若存在压缩快照，则从快照起持久化，保留标记供冷启动恢复
+            compact_idx = next(
+                (i for i, m in enumerate(messages) if m.get("_is_compacted_notes")), -1
+            )
+            if compact_idx >= 0:
+                round_messages = messages[compact_idx:]
+            else:
+                last_user_idx = -1
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") == "user":
+                        last_user_idx = i
+                        break
 
-            if last_user_idx == -1:
-                return
+                if last_user_idx == -1:
+                    return
 
-            round_messages = messages[last_user_idx:]
+                round_messages = messages[last_user_idx:]
+
             if not round_messages:
                 return
 
@@ -211,6 +219,19 @@ class SessionManager:
         if not records:
             return 0
 
+        latest = records[-1]
+        latest_has_compacted = False
+        for m in latest.get("messages", []):
+            if isinstance(m, dict) and m.get("_is_compacted_notes"):
+                latest_has_compacted = True
+                break
+        if latest_has_compacted:
+            logger.info(
+                "[SessionManager] 检测到压缩快照，仅恢复压缩后状态 | session=%s",
+                session_id,
+            )
+            records = [latest]
+
         restored_count = 0
 
         for rec in records:
@@ -224,6 +245,8 @@ class SessionManager:
 
                         if role == "user":
                             memory.add_user_message(content or "")
+                            if msg.get("_is_compacted_notes"):
+                                memory.messages[-1]["_is_compacted_notes"] = True
                             restored_count += 1
                         elif role == "assistant":
                             reasoning_content = msg.get("reasoning_content")
