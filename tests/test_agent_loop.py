@@ -379,6 +379,8 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
         loop._constraint_renderer.render_combined = Mock(return_value="")
         mock_tool = Mock()
         mock_tool.definition = {"type": "function", "function": {"name": "forbidden_tool", "description": "forbidden", "parameters": {"type": "object", "properties": {}}}}
+        mock_tool.execute = Mock(return_value={"result": "executed"})
+        mock_tool.execute_with_context = Mock(return_value={"result": "executed"})
         loop.tools["forbidden_tool"] = mock_tool
         loop._builtin_tools["forbidden_tool"] = mock_tool
         loop._tool_executor.refresh_tools(loop.tools)
@@ -392,9 +394,9 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
         events = asyncio.run(_collect_events())
         tool_results = [e for e in events if e["type"] == "tool_result"]
 
+        # 控制环约束不再阻止工具执行：即便约束含 forbidden，工具仍应正常执行
         self.assertTrue(tool_results)
-        self.assertTrue(tool_results[0]["result"].get("blocked"))
-        self.assertIn("blocked by current control decision", tool_results[0]["result"]["error"])
+        self.assertNotIn("blocked", tool_results[0]["result"])
 
 
 class TestAgentLoopMemoryPersistence(unittest.TestCase):
@@ -677,6 +679,8 @@ class TestToolExecution(unittest.TestCase):
         from unittest.mock import AsyncMock
         mock_tool = Mock()
         mock_tool.definition = {"type": "function", "function": {"name": "forbidden_tool", "description": "forbidden", "parameters": {"type": "object", "properties": {}}}}
+        mock_tool.execute = Mock(return_value={"result": "executed"})
+        mock_tool.execute_with_context = Mock(return_value={"result": "executed"})
         self.loop.tools["forbidden_tool"] = mock_tool
         self.loop._builtin_tools["forbidden_tool"] = mock_tool
         self.loop._tool_executor.refresh_tools(self.loop.tools)
@@ -697,8 +701,9 @@ class TestToolExecution(unittest.TestCase):
 
         events = asyncio.run(run_test())
         tool_results = [e for e in events if e.get("type") == "tool_result"]
+        # 控制环约束不再阻止工具执行：即便约束含 forbidden，工具仍应正常执行
         self.assertTrue(len(tool_results) > 0)
-        self.assertTrue(tool_results[0]["result"].get("blocked"))
+        self.assertNotIn("blocked", tool_results[0]["result"])
 
     def test_tool_execution_error_handled(self):
         """工具执行异常应被捕获并返回错误结果"""

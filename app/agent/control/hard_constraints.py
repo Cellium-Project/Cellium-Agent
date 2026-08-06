@@ -317,31 +317,21 @@ class HardConstraintRenderer:
         decision: ControlDecision,
     ) -> HardConstraint:
         """渲染 redirect 约束"""
-        # 如果有具体的禁止/推荐工具，使用详细模板
-        if forbidden and state:
-            last_tool = forbidden[-1] if forbidden else "last_tool"
-            suggested = decision.suggested_tools[:3] if decision.suggested_tools else preferred
-            suggested_str = ", ".join(suggested) if suggested else "different tool"
+        suggested = decision.suggested_tools[:3] if decision.suggested_tools else preferred
+        suggested_str = ", ".join(suggested) if suggested else "different tool"
 
-            forbidden_str = ", ".join(forbidden[:2]) if forbidden else last_tool
-
-            hard_constraints = f"""[HARD CONSTRAINTS]
-You MUST obey control instruction. Violations = incorrect.
-[CONTROL ACTION]
-Action: REDIRECT
-MUST: Use {suggested_str}, change strategy.
-MUST NOT: Use {forbidden_str}.
-[CONTEXT HINT]
-Current approach may be stuck."""
-        else:
-            hard_constraints = HardConstraintTemplates.REDIRECT_HARD
+        soft_hint = (
+            f"[CONTROL HINT]\n"
+            f"If the current approach appears stuck, consider trying: {suggested_str}.\n"
+            f"Use your best judgment — the previous tool calls are not forbidden."
+        )
 
         return HardConstraint(
-            hard_constraints=hard_constraints,
+            hard_constraints=soft_hint,
             failure_conditions=failure_conditions or "Repeating same action = FAILED",
             trigger_reason="redirect",
-            forbidden=forbidden,
-            preferred=preferred,
+            forbidden=[],
+            preferred=suggested,
             max_tokens=self.max_output_tokens,
         )
 

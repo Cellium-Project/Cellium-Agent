@@ -123,11 +123,12 @@ class TestHeuristicEngineReal(unittest.TestCase):
         self.assertIn("redirect_suggestions", fused.metadata)
 
     def test_same_tool_repetition_rule(self):
+        # 同一文件相同位置连续读取 4 次 = 真重复（匹配 repetition_threshold）
         calls = [
-            {"name": "file", "args": {"path": "/a"}},
-            {"name": "file", "args": {"path": "/b"}},
-            {"name": "file", "args": {"path": "/c"}},
-            {"name": "file", "args": {"path": "/d"}},
+            {"name": "read", "args": {"file_path": "/a", "offset": 0, "limit": 100}},
+            {"name": "read", "args": {"file_path": "/a", "offset": 0, "limit": 100}},
+            {"name": "read", "args": {"file_path": "/a", "offset": 0, "limit": 100}},
+            {"name": "read", "args": {"file_path": "/a", "offset": 0, "limit": 100}},
         ]
         context = self._create_context(
             recent_tool_calls=calls,

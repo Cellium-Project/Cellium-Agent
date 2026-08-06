@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import hashlib
+import json
 import logging
 from typing import List, Dict, Tuple
 
@@ -13,7 +15,7 @@ def get_call_signature(call: Dict) -> str:
     if not call or not isinstance(call, dict):
         return "unknown"
 
-    tool_name = call.get("tool_name", call.get("tool", "unknown"))
+    tool_name = call.get("tool_name", call.get("tool", call.get("name", "unknown")))
     args = call.get("arguments", call.get("args", {}))
 
     if not isinstance(args, dict):
@@ -91,6 +93,16 @@ def get_call_signature(call: Dict) -> str:
             return f"web_fetch:find_in_page:{keyword}"
         return f"web_fetch:{command}"
 
+    if tool_name == "file":
+        command = args.get("command", "fs")
+        action = args.get("action", "")
+        path = args.get("path", "")[:60]
+        return f"file:{command}:{action}:{path}"
+
+    if args:
+        arg_preview = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+        arg_hash = hashlib.md5(arg_preview.encode("utf-8", errors="replace")).hexdigest()[:8]
+        return f"{tool_name}:{arg_hash}"
     return tool_name
 
 
@@ -231,6 +243,13 @@ class FeatureExtractor:
 
         base_score = min(max_consecutive / len(recent), 1.0)
 
+        # 至少 3 次连续相同才算显著重复；按连续次数渐进打分，避免 3 次即满分
+        if max_consecutive < 3:
+            base_score = 0.0
+        else:
+            # 3次→0.25, 4次→0.5, 5次→0.75, 6次+→1.0
+            base_score = min((max_consecutive - 2) / 4, 1.0)
+
         high_freq_tools = {"file", "memory"}
         recent_tools = set()
         for call in recent:
@@ -366,7 +385,8 @@ class FeatureExtractor:
         return failures
 
     def _is_strategy_repeating(self, calls: List[Dict]) -> bool:
-        if len(calls) < 2:
+        # 至少 3 次调用且签名全相同才算策略重复，2 次同签名不误判
+        if len(calls) < 3:
             return False
 
         signatures = [get_call_signature(c) for c in calls]

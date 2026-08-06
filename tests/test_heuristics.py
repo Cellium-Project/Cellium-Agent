@@ -20,7 +20,7 @@ from app.agent.heuristics.types import (
     RuleEvaluationResult,
 )
 from app.agent.heuristics.engine import HeuristicEngine
-from app.agent.heuristics.features import FeatureExtractor
+from app.agent.heuristics.features import FeatureExtractor, get_call_signature
 from app.agent.learning.memory_policy import PolicyBanditMemory
 from app.agent.control.action_bandit import ActionBandit
 from app.agent.control.control_loop import ControlLoop
@@ -76,7 +76,7 @@ class TestFeatureExtractor(unittest.TestCase):
         self.assertGreater(features.tool_diversity_score, 0)
 
     def test_repetition_score(self):
-        """测试重复分数计算"""
+        """测试重复分数计算（渐进曲线：3次=0.25，4次=0.5）"""
         extractor = FeatureExtractor()
         context = EvaluationContext(
             session_id="test",
@@ -95,7 +95,8 @@ class TestFeatureExtractor(unittest.TestCase):
         )
         features = extractor.extract(context)
 
-        self.assertGreaterEqual(features.repetition_score, 0.5)
+        self.assertGreater(features.repetition_score, 0.0, "3次重复应>0")
+        self.assertLess(features.repetition_score, 0.5, "3次重复不应过半")
 
     def test_pattern_detection_abab(self):
         """测试 ABAB 模式检测"""
@@ -121,6 +122,49 @@ class TestFeatureExtractor(unittest.TestCase):
 
         self.assertEqual(features.pattern_detected, "cycle")
         self.assertEqual(features.pattern_cycle_length, 2)
+
+
+class TestCallSignatureAndRepetition(unittest.TestCase):
+    """自定义工具签名与重复检测阈值（防误报回归）"""
+
+    def setUp(self):
+        self.extractor = FeatureExtractor()
+
+    def test_custom_tool_signature_parameter_sensitive(self):
+        """自定义工具签名应纳入参数哈希：参数不同不算重复"""
+        s1 = get_call_signature({"tool_name": "ai_daily", "arguments": {"任务": "生成日报"}})
+        s2 = get_call_signature({"tool_name": "ai_daily", "arguments": {"任务": "生成周报"}})
+        s3 = get_call_signature({"tool_name": "ai_daily", "arguments": {"任务": "生成日报"}})
+        self.assertEqual(s1, s3, "同参数应同签名")
+        self.assertNotEqual(s1, s2, "不同参数应不同签名")
+        self.assertTrue(s1.startswith("ai_daily:"), "自定义工具签名应带参数哈希")
+
+    def test_two_calls_not_repetition(self):
+        """2 次相同签名不算重复（防 ai_daily 调 2 次误报）"""
+        calls = [
+            {"tool_name": "ai_daily", "arguments": {"任务": "A"}},
+            {"tool_name": "ai_daily", "arguments": {"任务": "A"}},
+        ]
+        self.assertEqual(self.extractor._calc_repetition_score(calls), 0.0, "2次相同不应判重复")
+        self.assertFalse(self.extractor._is_strategy_repeating(calls), "2次不应判策略重复")
+
+    def test_two_calls_diff_params_not_repetition(self):
+        """2 次不同参数（同一自定义工具）不算重复"""
+        calls = [
+            {"tool_name": "ai_daily", "arguments": {"任务": "A"}},
+            {"tool_name": "ai_daily", "arguments": {"任务": "B"}},
+        ]
+        self.assertEqual(self.extractor._calc_repetition_score(calls), 0.0)
+
+    def test_three_calls_same_is_repetition(self):
+        """3 次相同签名才算重复"""
+        calls = [
+            {"tool_name": "ai_daily", "arguments": {"任务": "A"}},
+            {"tool_name": "ai_daily", "arguments": {"任务": "A"}},
+            {"tool_name": "ai_daily", "arguments": {"任务": "A"}},
+        ]
+        self.assertGreater(self.extractor._calc_repetition_score(calls), 0.0, "3次相同应判重复")
+        self.assertTrue(self.extractor._is_strategy_repeating(calls), "3次应判策略重复")
 
 
 class TestFeatureExtractorRuntimeSignals(unittest.TestCase):

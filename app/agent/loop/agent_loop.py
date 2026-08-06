@@ -1440,8 +1440,7 @@ class AgentLoop:
                         if is_gene_processing_round:
                             blocked_by_constraint = False
                         else:
-                            forbidden_tools = self._get_forbidden_tool_names(_active_constraint)
-                            blocked_by_constraint = tool_name in forbidden_tools
+                            blocked_by_constraint = False
 
                         # 使用 LLM 返回的原始 tool_call.id，保持 ID 一致性
                         original_tool_call_id = getattr(tool_call, 'id', None)
