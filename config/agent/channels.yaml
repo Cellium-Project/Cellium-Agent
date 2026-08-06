@@ -1,24 +1,38 @@
+# ============================================================
+# 消息通道配置（接入 QQ / Telegram / 飞书 / 微信 等平台）
+# ============================================================
+# 字段值支持两种写法：
+#   1. 直接写值：如 app_id: 'abc123'
+#   2. 引用环境变量：${变量名}，变量在项目根目录 .env 中定义
+#
+# 通用字段说明：
+#   - enabled: 是否启用该通道（false 则完全禁用）
+#   - auto_start: 是否随服务启动自动连接
+#
+# 修改保存后无需重启，配置变更会自动热重载并重连
+# ============================================================
+
 channels:
   feishu:
-    app_id: ''
-    app_secret: ''
-    auto_start: true
-    enabled: true
-    whitelist_users: []
+    app_id: ''                # 飞书开放平台的 App ID
+    app_secret: ''            # 飞书开放平台的 App Secret
+    auto_start: true          # 是否随服务启动自动连接
+    enabled: true             # 是否启用飞书通道
+    whitelist_users: []       # 白名单用户（open_id 列表），留空表示不限制
   qq:
-    app_id: ''
-    app_secret:
-    auto_start: true
-    enabled: true
-    intents: 1107296256
+    app_id: ''                # QQ 机器人平台分配的 App ID（BotAppID）
+    app_secret:               # QQ 机器人平台分配的 App Secret（BotToken）
+    auto_start: true          # 是否随服务启动自动连接
+    enabled: true             # 是否启用 QQ 通道
+    intents: 1107296256       # 事件订阅 intents 位掩码（默认监听全部常规事件，一般无需修改）
   telegram:
-    auto_start: true
-    bot_token: ''
-    enabled: true
-    whitelist_user_ids: []
-    whitelist_usernames: []
+    auto_start: true          # 是否随服务启动自动连接
+    bot_token: ''             # Telegram Bot Token（向 @BotFather 申请）
+    enabled: true             # 是否启用 Telegram 通道
+    whitelist_user_ids: []    # 白名单用户数字 ID（数字），留空表示不限制
+    whitelist_usernames: []   # 白名单用户名（不含 @），留空表示不限制
   weixin:
-    auto_start: true
-    bot_agent: Cellium Agent
-    enabled: true
-    state_dir: data/weixin
+    auto_start: true          # 是否随服务启动自动连接
+    bot_agent: Cellium Agent  # 微信机器人显示名称
+    enabled: true             # 是否启用微信通道（扫码登录）
+    state_dir: data/weixin    # 登录状态/会话数据保存目录

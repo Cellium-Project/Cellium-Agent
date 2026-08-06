@@ -302,6 +302,12 @@ def _protect_sensitive_fields(new_value: Any, old_value: Any) -> Any:
     保护敏感字段：如果新值中的敏感字段是脱敏值 "***"，则保留原始值
 
     这解决了前端获取配置时敏感字段被脱敏，保存时脱敏值覆盖原始值的问题
+
+    重要：list 中的 dict 项按 name 字段匹配（如 llm.models 按 name 匹配），
+    而不是按索引匹配。原因：
+      - 用户可以新增/删除模型，导致 list 长度变化
+      - 用户可以重新排序模型，按索引匹配会把 api_key 错误地"保护"到别的模型上
+      - 用户修改单个模型字段，按索引匹配可能匹配错对象
     """
     if isinstance(new_value, dict) and isinstance(old_value, dict):
         import copy
@@ -321,10 +327,27 @@ def _protect_sensitive_fields(new_value: Any, old_value: Any) -> Any:
                             if value == "***" or (len(value) > 4 and value[4:-4].count('*') >= 3):
                                 new_obj[key] = old_obj[key]
             elif isinstance(new_obj, list) and isinstance(old_obj, list):
-                # 处理列表：按索引匹配
-                for i, (new_item, old_item) in enumerate(zip(new_obj, old_obj)):
-                    if isinstance(new_item, dict) and isinstance(old_item, dict):
-                        _recursive_protect(new_item, old_item)
+                # 关键修复：list 中的 dict 按 name 字段匹配，而不是 zip 索引
+                # 这样新增/删除/重排序都不会导致 api_key 错位
+                old_by_name = {}
+                old_unnamed = []
+                for o in old_obj:
+                    if isinstance(o, dict) and o.get("name") is not None:
+                        old_by_name[o["name"]] = o
+                    else:
+                        old_unnamed.append(o)
+
+                matched_old = set()
+                for new_item in new_obj:
+                    if isinstance(new_item, dict):
+                        name = new_item.get("name")
+                        if name is not None and name in old_by_name:
+                            _recursive_protect(new_item, old_by_name[name])
+                            matched_old.add(name)
+                        elif old_unnamed:
+                            # 没有 name 或 name 不匹配，回退到按索引（仅对未匹配项）
+                            _recursive_protect(new_item, old_unnamed[0])
+                            old_unnamed.pop(0)
 
         _recursive_protect(result, old_value)
         return result
@@ -450,38 +473,67 @@ async def reload_llm_engine():
     """
     重新加载 LLM 引擎（切换模型后需要调用）
 
-    会直接更新现有 AgentLoop 的 llm 引用，而不是替换整个实例
+    真热重载：从当前 llm 配置创建新引擎，替换容器中的旧引擎，
+    并推送到所有活跃 AgentLoop（loop.llm = new_engine）。
     """
     import logging
     from app.core.di.container import get_container
     from app.agent.loop.agent_loop_manager import AgentLoopManager
+    from app.agent.llm.engine import BaseLLMEngine, create_llm_engine
 
     logger = logging.getLogger(__name__)
 
     config = _get_agent_config()
-    config.reload_section("llm")
     llm_config = config.get_section("llm")
 
     if not llm_config:
         raise HTTPException(status_code=500, detail="LLM 配置不存在")
 
-    try:
-        container = get_container()
-        from app.agent.llm.engine import BaseLLMEngine
-        new_engine = container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None
+    container = get_container()
+    old_engine = container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None
 
+    try:
+        # 真正创建新引擎
+        new_engine = create_llm_engine(llm_config)
+        if new_engine is None:
+            raise HTTPException(
+                status_code=400,
+                detail="LLM 配置不完整：缺少 api_key / base_url / model，请在 Settings → 模型 填写后再保存"
+            )
+
+        # 替换容器中的引擎
+        container.register(BaseLLMEngine, new_engine, singleton=True)
+
+        # 异步关闭旧引擎（如果有）
+        if old_engine is not None and old_engine is not new_engine:
+            try:
+                import asyncio
+                asyncio.ensure_future(old_engine.close())
+            except Exception as e:
+                logger.warning("[ConfigAPI] 旧引擎关闭失败: %s", e)
+
+        # 推送到所有活跃 loop
         loop_mgr = AgentLoopManager.get_instance()
-        updated_count = loop_mgr.active_session_count if loop_mgr else 0
+        updated = loop_mgr.update_llm_engine(new_engine)
+
+        logger.info(
+            "[ConfigAPI] LLM 引擎已重建并推送 | model=%s | active_loops=%d | pushed=%d",
+            getattr(new_engine, 'model', 'unknown'),
+            loop_mgr.active_session_count,
+            updated,
+        )
 
         return {
             "status": "ok",
             "message": "LLM 引擎已重新加载",
-            "model": new_engine.model if new_engine else "unknown",
-            "updated_sessions": updated_count,
+            "model": getattr(new_engine, 'model', 'unknown'),
+            "updated_sessions": updated,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("[ConfigAPI] 重新加载 LLM 引擎失败: %s", str(e))
+        logger.error("[ConfigAPI] 重新加载 LLM 引擎失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"重新加载失败: {str(e)}")
 
 

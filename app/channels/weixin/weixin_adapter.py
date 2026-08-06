@@ -672,7 +672,7 @@ class WeixinClient:
         if on_qr:
             on_qr(qrcode_url)
         else:
-            logger.info(f"请扫码添加微信bot: {qrcode_url}")
+            logger.info(f"请扫码添加微信Bot: {qrcode_url}")
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

@@ -438,7 +438,12 @@ def setup_agent_di(
             llm_engine = create_llm_engine()
             logger.info("[AgentDI] LLM 引擎已从配置创建 (model=%s)", getattr(llm_engine, 'model', '?'))
         except Exception as e:
-            logger.error("[AgentDI] LLM 引擎创建失败，启动降级模式（可在 WebUI 配置后重载）: %s", e)
+            logger.warning(
+                "[AgentDI] LLM 引擎创建失败，启动降级模式 | 原因: %s | "
+                "请检查 config/agent/llm.yaml 中的 api_key/base_url/model 配置",
+                e,
+                exc_info=True,
+            )
             llm_engine = None
 
     if llm_engine is not None and not container.has(BaseLLMEngine):

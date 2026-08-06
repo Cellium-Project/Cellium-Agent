@@ -1,17 +1,53 @@
+# ============================================================
+# LLM 模型配置
+# ============================================================
+# 字段值支持两种写法：
+#   1. 直接写值：如 base_url: https://api.openai.com/v1
+#   2. 引用环境变量：${变量名} 或 ${变量名:默认值}
+#      变量可在项目根目录 .env 中定义，也可在系统环境变量中设置
+#
+# 修改说明：
+#   - 修改 api_key / base_url / model 后，保存即可自动热重载生效
+#   - 若 api_key 使用 ${VAR} 占位符，WebUI 中显示为 ***，
+#     想更换 key 需在 WebUI 输入框粘贴新 key 后保存，或直接改 .env
+# ============================================================
+
 llm:
   section: llm
-  provider: openai
+  provider: openai            # 服务商类型: openai / ollama / custom
   streaming:
-    enabled: true
+    enabled: true             # 是否启用流式输出
   thinking:
-    enabled: false
-    budget_tokens: 1000
-  models:
-  - name: model-1
-    api_key: ${LLM_MODELS_API_KEY}
-    base_url: ${LLM_MODELS_BASE_URL}
-    model: ${LLM_MODELS_MODEL}
-    temperature: 0.7
-    timeout: 120
-    vision: true
-  current_model: model-1
+    enabled: false            # 是否启用思考模式（推理模型专用）
+    budget_tokens: 1000       # 思考 token 预算上限
+  models:                     # 模型列表，可添加多个模型
+  - name: model-1             # 模型唯一标识（WebUI 中显示的名字，不可重复）
+    api_key: ${LLM_MODELS_API_KEY}        # API Key（建议用环境变量，避免明文）
+    base_url: ${LLM_MODELS_BASE_URL}      # API 地址，如 https://api.openai.com/v1
+    model: ${LLM_MODELS_MODEL}            # 模型名，如 MiniMax-M3
+    temperature: 0.7          # 采样温度 0~2，越高越随机
+    timeout: 120              # 请求超时（秒）
+    vision: true              # 是否支持图片/视觉输入（占位用）
+  current_model: model-1      # 当前启用的模型（对应 models 中的 name）
+
+# ============================================================
+# 如何新增一个模型？
+# 复制 models 列表中的一个 - name: xxx 整段，修改 name 和各字段即可
+# 示例：
+#  models:
+#  - name: model-1
+#    api_key: ${LLM_MODELS_API_KEY}
+#    base_url: ${LLM_MODELS_BASE_URL}
+#    model: ${LLM_MODELS_MODEL}
+#    temperature: 0.7
+#    timeout: 120
+#    vision: true
+#  - name: model-2            # ← 新增段
+#    api_key: sk-xxx          # 可直接写明文，也可用 ${VAR}
+#    base_url: https://api.openai.com/v1
+#    model: deepseek-v4-flash
+#    temperature: 0.3
+#    timeout: 120
+#    vision: false
+#  然后修改 current_model 指向新模型名即可切换
+# ============================================================

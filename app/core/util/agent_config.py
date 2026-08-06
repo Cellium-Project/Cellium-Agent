@@ -269,12 +269,12 @@ class AgentConfig:
             new_value = self._config.get(top_key)
 
         if persist:
-            self._persist_to_file(key_path, value)
+            self._persist_to_file(key_path, value, old_value)
 
         if notify:
             self._notify_callbacks({top_key: ("updated", old_value, new_value)})
 
-    def _persist_to_file(self, key_path: str, value: Any):
+    def _persist_to_file(self, key_path: str, value: Any, resolved_old: Any = None):
         """将修改写回对应的 YAML 文件"""
         top_key = key_path.split(".")[0]
         source_file = self._section_sources.get(top_key)
@@ -287,10 +287,12 @@ class AgentConfig:
                 content = f.read()
             raw = yaml.safe_load(content) or {}
 
-            old_raw_value = self._get_nested(raw, key_path.split("."))
-            preserved = self._preserve_env_placeholders(old_raw_value, value)
-            self._set_nested(raw, key_path.split("."), preserved)
-            
+            keys = key_path.split(".")
+            old_raw_value = self._get_nested(raw, keys)
+            resolved_target = self._get_resolved_sub(resolved_old, keys[1:]) if resolved_old is not None else None
+            preserved = self._preserve_env_placeholders(old_raw_value, value, resolved_target)
+            self._set_nested(raw, keys, preserved)
+
             with open(filepath, "w", encoding="utf-8") as f:
                 yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
             # 同步 mtime 缓存，避免下次 get() 误判文件被外部修改而重复 reload
@@ -316,28 +318,56 @@ class AgentConfig:
         return cur
 
     @staticmethod
-    def _preserve_env_placeholders(old_value: Any, new_value: Any) -> Any:
-        """写回时保留文件中的 ${VAR} 占位符，避免 env 密钥泄露到 YAML"""
+    def _preserve_env_placeholders(old_value: Any, new_value: Any, resolved_old: Any = None) -> Any:
+        """写回时保留 ${VAR} 占位符，仅当新值为回显值/掩码/空值，否则写入真实新值"""
         if isinstance(old_value, str) and old_value.startswith("${") and old_value.endswith("}"):
-            return old_value
+            if AgentConfig._is_echo_or_masked(new_value, resolved_old):
+                return old_value
+            return new_value
         if isinstance(old_value, dict) and isinstance(new_value, dict):
-            return {k: AgentConfig._preserve_env_placeholders(old_value.get(k), v) for k, v in new_value.items()}
+            resolved_dict = resolved_old if isinstance(resolved_old, dict) else {}
+            return {k: AgentConfig._preserve_env_placeholders(old_value.get(k), v, resolved_dict.get(k)) for k, v in new_value.items()}
         if isinstance(old_value, list) and isinstance(new_value, list):
             result = []
             for item in new_value:
                 if isinstance(item, dict):
                     name = item.get("name")
                     matched = None
+                    resolved_matched = None
                     if name is not None:
                         matched = next(
                             (o for o in old_value if isinstance(o, dict) and o.get("name") == name),
                             None,
                         )
-                    result.append(AgentConfig._preserve_env_placeholders(matched, item))
+                        if isinstance(resolved_old, list):
+                            resolved_matched = next(
+                                (o for o in resolved_old if isinstance(o, dict) and o.get("name") == name),
+                                None,
+                            )
+                    result.append(AgentConfig._preserve_env_placeholders(matched, item, resolved_matched))
                 else:
                     result.append(item)
             return result
         return new_value
+
+    @staticmethod
+    def _is_echo_or_masked(new_value: Any, resolved_old: Any) -> bool:
+        """判断新值是否为原值回显/掩码/空值"""
+        if not isinstance(new_value, str):
+            return False
+        if new_value == "***" or new_value == "":
+            return True
+        return isinstance(resolved_old, str) and new_value == resolved_old
+
+    @staticmethod
+    def _get_resolved_sub(obj: Any, keys: List[str]) -> Any:
+        """按路径从已解析配置中提取子值"""
+        for k in keys:
+            if isinstance(obj, dict):
+                obj = obj.get(k)
+            else:
+                return None
+        return obj
 
     # ---- 重载机制 ----
 

@@ -221,41 +221,43 @@ class QQConnectClient:
     def __init__(self, host: str = QQ_API_HOST, timeout: float = 10.0):
         self.host = host
         self.timeout = timeout
+        self._client = httpx.AsyncClient(timeout=timeout)
 
     async def create_bind_task(self) -> BindTask:
         key = _generate_key()
         url = f"https://{self.host}/lite/create_bind_task"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                url,
-                json={"key": key},
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("retcode") != 0:
-                raise RuntimeError(f"create_bind_task failed: {data.get('msg', 'unknown')}")
-            task_id = data["data"]["task_id"]
-            return BindTask(task_id=task_id, key=key)
+        resp = await self._client.post(
+            url,
+            json={"key": key},
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("retcode") != 0:
+            raise RuntimeError(f"create_bind_task failed: {data.get('msg', 'unknown')}")
+        task_id = data["data"]["task_id"]
+        return BindTask(task_id=task_id, key=key)
 
     async def poll_bind_result(self, task_id: str) -> BindResult:
         url = f"https://{self.host}/lite/poll_bind_result"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                url,
-                json={"task_id": task_id},
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("retcode") != 0:
-                raise RuntimeError(f"poll_bind_result failed: {data.get('msg', 'unknown')}")
-            d = data.get("data", {})
-            return BindResult(
-                status=d.get("status", BIND_STATUS_NONE),
-                bot_appid=str(d.get("bot_appid", "")),
-                bot_encrypt_secret=d.get("bot_encrypt_secret", ""),
-            )
+        resp = await self._client.post(
+            url,
+            json={"task_id": task_id},
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("retcode") != 0:
+            raise RuntimeError(f"poll_bind_result failed: {data.get('msg', 'unknown')}")
+        d = data.get("data", {})
+        return BindResult(
+            status=d.get("status", BIND_STATUS_NONE),
+            bot_appid=str(d.get("bot_appid", "")),
+            bot_encrypt_secret=d.get("bot_encrypt_secret", ""),
+        )
+
+    async def close(self):
+        await self._client.aclose()
 
     async def login_qr_start(self) -> dict:
         task = await self.create_bind_task()

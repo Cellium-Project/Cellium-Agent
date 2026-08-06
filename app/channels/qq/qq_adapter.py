@@ -306,7 +306,7 @@ class QQAdapter(ChannelAdapter):
             if not qrcode_url:
                 raise RuntimeError(f"获取二维码失败: {start}")
 
-            logger.info(f"[QQAdapter] 请扫码登录 QQ Bot: {qrcode_url}")
+            logger.info(f"请扫码添加QQBot: {qrcode_url}")
 
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -727,6 +727,9 @@ class QQAdapter(ChannelAdapter):
             await self._ws.close()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._connect_client:
+            await self._connect_client.close()
+            self._connect_client = None
 
     # ============================================================
     # 文件处理功能

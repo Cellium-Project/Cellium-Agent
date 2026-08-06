@@ -49,18 +49,14 @@ class AgentLoopManager:
         return cls._instance
 
     def initialize(self, llm_engine, shell, three_layer_memory, tools: Dict = None, global_config: Dict = None):
-        if not llm_engine:
-            raise ValueError("llm_engine is required")
         if not shell:
             raise ValueError("shell is required")
         if not three_layer_memory:
             raise ValueError("three_layer_memory is required")
-        self._llm_engine = llm_engine
-        self._shell = shell
+        self._llm_engine = llm_engine  
         self._three_layer_memory = three_layer_memory
         self._tools = tools or {}
         self._global_config = global_config or {}
-        logger.info("[AgentLoopManager] Initialized")
 
     @property
     def is_initialized(self) -> bool:
@@ -145,6 +141,13 @@ class AgentLoopManager:
         return self._locks[session_id]
 
     async def run_with_lock(self, session_id: str, user_input: str) -> Dict[str, Any]:
+        # 降级模式：LLM 未配置时直接返回友好提示，不创建 AgentLoop
+        if self._llm_engine is None:
+            return {
+                "error": "llm_not_configured",
+                "content": "LLM 引擎未配置。请打开 WebUI 的 Settings → 模型，填写 API Key / Base URL / 模型名 后保存，再发送消息。",
+                "success": False,
+            }
         lock = await self.get_lock(session_id)
         async with lock:
             loop = await self.get_loop(session_id)

@@ -26,6 +26,9 @@ class QQChannelConfig(BaseChannelConfig):
     def credentials(self) -> Dict[str, str]:
         return {"app_id": self._app_id or "", "app_secret": self._app_secret or ""}
 
+    def has_credentials(self) -> bool:
+        return True
+
     def _load_config(self):
         channel_cfg = self._load_yaml_config()
         self._app_id = channel_cfg.get("app_id") or os.environ.get("QQ_BOT_APP_ID")
