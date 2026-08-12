@@ -185,7 +185,11 @@ class BaseChannelConfig(ABC):
     DEFAULT_CONFIG_PATH = "config/agent/channels.yaml"
 
     def __init__(self, config_path: str = None):
-        self._config_path = config_path or self.DEFAULT_CONFIG_PATH
+        if config_path:
+            self._config_path = config_path
+        else:
+            from app.core.util.runtime_paths import resolve_config_dir
+            self._config_path = os.path.join(resolve_config_dir(), "channels.yaml")
         self._lock = threading.Lock()
         self._cache: Dict[str, Any] = {}
         self._cache_time: float = 0

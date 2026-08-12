@@ -23,6 +23,7 @@ class OpenAICompatTransport:
         self.timeout = timeout
         self._async_client: Optional[httpx.AsyncClient] = None
         self._sync_client: Optional[httpx.Client] = None
+        self._async_client_loop: object = None  # AsyncClient 绑定的事件循环
 
     @property
     def _headers(self) -> Dict[str, str]:
@@ -32,8 +33,25 @@ class OpenAICompatTransport:
         }
 
     def _ensure_async_client(self) -> httpx.AsyncClient:
+        import asyncio
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if self._async_client is not None and self._async_client_loop is not None and self._async_client_loop is not current_loop:
+            try:
+                if not self._async_client_loop.is_closed():
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._async_client.aclose(), self._async_client_loop
+                    )
+                    fut.result(timeout=5)
+            except Exception:
+                pass
+            self._async_client = None
+            self._async_client_loop = None
         if self._async_client is None:
             self._async_client = httpx.AsyncClient(timeout=self.timeout)
+            self._async_client_loop = current_loop
         return self._async_client
 
     def _ensure_sync_client(self) -> httpx.Client:

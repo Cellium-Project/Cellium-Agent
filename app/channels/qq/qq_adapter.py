@@ -337,7 +337,8 @@ class QQAdapter(ChannelAdapter):
     def _save_credentials_to_config(self, app_id: str, app_secret: str):
         import yaml
         from pathlib import Path
-        config_path = Path("config/agent/channels.yaml")
+        from app.core.util.runtime_paths import resolve_config_dir
+        config_path = Path(resolve_config_dir()) / "channels.yaml"
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}

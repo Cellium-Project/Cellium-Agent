@@ -139,14 +139,30 @@ class EventBus:
                 loop = asyncio.get_running_loop()
                 return asyncio.create_task(handler(event or event_name, *args, **kwargs))
             except RuntimeError:
+                loop = None
                 try:
                     loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        return asyncio.create_task(handler(event or event_name, *args, **kwargs))
-                    else:
-                        return loop.run_until_complete(handler(event or event_name, *args, **kwargs))
+                    if loop.is_closed():
+                        loop = None
                 except RuntimeError:
-                    logger.warning(f"异步处理器需要事件循环: {handler.__name__}")
+                    loop = None
+                if loop is not None and loop.is_running():
+                    return asyncio.create_task(handler(event or event_name, *args, **kwargs))
+                if loop is not None and not loop.is_closed():
+                    try:
+                        return loop.run_until_complete(handler(event or event_name, *args, **kwargs))
+                    except RuntimeError:
+                        pass
+                result_holder = []
+                def _runner():
+                    try:
+                        async def _wrapped():
+                            return await handler(event or event_name, *args, **kwargs)
+                        result_holder.append(asyncio.run(_wrapped()))
+                    except Exception as e:
+                        result_holder.append(e)
+                threading.Thread(target=_runner, daemon=True, name=f"evt-{handler.__name__}").start()
+                return result_holder
         else:
             if event:
                 return handler(event)

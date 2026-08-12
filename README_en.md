@@ -23,7 +23,7 @@
 
 **A Self-Evolving AI Agent**
 
-English | [中文](README.md)
+English | [中文](https://github.com/Cellium-Project/Cellium-Agent/blob/main/README.md)
 
 </div>
 
@@ -105,7 +105,7 @@ curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/downlo
 curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/download/Cellium-Agent-macOS.tar.gz && tar -xzf Cellium-Agent-macOS.tar.gz && cd Cellium-Agent-macOS && ./start-cellium.sh
 ```
 
-> See [INSTALL.md](INSTALL.md) for more installation options
+> See [INSTALL.md](https://github.com/Cellium-Project/Cellium-Agent/blob/main/INSTALL.md) for more installation options
 
 ### Install via pip (PyPI)
 

@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellium-agent"
-version = "1.4.2"
+version = "1.4.2.post1"
 description = "Cellium Agent - 桌面 AI 助手"
-readme = "README.md"
+readme = "README_en.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.140.0",

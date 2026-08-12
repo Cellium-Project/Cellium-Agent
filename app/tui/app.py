@@ -310,6 +310,15 @@ class CelliumTUI(App):
         self.theme = self.load_theme_pref()
         self.lang = self.load_lang_pref()
         self.bootstrap = bootstrap
+
+        import threading as _threading
+        self._agent_loop = asyncio.new_event_loop()
+        self._agent_loop_thread = _threading.Thread(
+            target=self._agent_loop.run_forever,
+            daemon=True,
+            name="tui-agent-loop",
+        )
+        self._agent_loop_thread.start()
         self.session_id = session_id or self._default_session_id()
         self.model_name = self._current_model_name()
         self._busy = False
@@ -534,6 +543,20 @@ class CelliumTUI(App):
             self._last_width = w
             self._refresh_status()
             self._apply_responsive_sidebar()
+
+    def on_unmount(self) -> None:
+        """退出时关闭常驻后台事件循环"""
+        loop = getattr(self, "_agent_loop", None)
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+                import threading as _threading
+                th = getattr(self, "_agent_loop_thread", None)
+                if th is not None and th.is_alive():
+                    th.join(timeout=2)
+                loop.close()
+            except Exception:
+                pass
 
     def on_app_focus(self, event):
         if self.input is not None:
@@ -1109,9 +1132,6 @@ class CelliumTUI(App):
                     await asyncio.wait_for(self._bootstrap_ready.wait(), timeout=30)
                 except asyncio.TimeoutError:
                     pass
-            # 同步重活（import agent 模块 / 创建 AgentLoop / 构造 memory）移出主循环，
-            # 否则首次发送时这些同步代码会阻塞事件循环，导致用户消息延迟显示。
-            # 这里在后台线程完成，主循环保持响应。
             mgr = await asyncio.to_thread(self._get_agent_mgr)
             lock = await mgr.get_lock(self.session_id)
             async with lock:
@@ -1120,9 +1140,7 @@ class CelliumTUI(App):
                 memory = await asyncio.to_thread(
                     self._get_session_memory, self.session_id
                 )
-                # run_stream 首次迭代含大量同步初始化（heuristics/learning/control
-                # start_session、prompt 构建等），且后续 LLM 流式调用也耗时，
-                # 全部放后台线程跑，事件经队列回主循环处理，保证 UI 全程不卡。
+
                 queue: asyncio.Queue = asyncio.Queue()
                 stop_event = threading.Event()
                 _stream_error = None
@@ -1131,16 +1149,16 @@ class CelliumTUI(App):
                     """后台线程消费 run_stream，事件放入队列（线程安全）"""
                     nonlocal _stream_error
                     try:
-                        loop_evt_loop = asyncio.new_event_loop()
+                        async def _consume():
+                            async for evt in loop.run_stream(
+                                text, memory=memory, session_id=self.session_id
+                            ):
+                                queue.put_nowait(("event", evt))
+                        fut = asyncio.run_coroutine_threadsafe(_consume(), self._agent_loop)
                         try:
-                            async def _consume():
-                                async for evt in loop.run_stream(
-                                    text, memory=memory, session_id=self.session_id
-                                ):
-                                    queue.put_nowait(("event", evt))
-                            loop_evt_loop.run_until_complete(_consume())
-                        finally:
-                            loop_evt_loop.close()
+                            fut.result(timeout=1800)
+                        except asyncio.CancelledError:
+                            pass
                     except Exception as e:
                         _stream_error = e
                         queue.put_nowait(("error", e))
