@@ -121,7 +121,8 @@ class SessionState:
 
 
 def _get_session_path(app_id: str) -> Path:
-    cache_dir = Path("workspace") / ".cache" / "qqbot"
+    from app.core.util.runtime_paths import resolve_dir_writable
+    cache_dir = Path(resolve_dir_writable("workspace")) / ".cache" / "qqbot"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / f"session_{app_id}.json"
 
@@ -271,7 +272,8 @@ class QQAdapter(ChannelAdapter):
         self._send_lock = asyncio.Lock()
 
         # 数据目录（用于存储下载的文件）
-        self._data_dir = Path("workspace") / "downloads" / "qq"
+        from app.core.util.runtime_paths import resolve_dir_writable
+        self._data_dir = Path(resolve_dir_writable("workspace")) / "downloads" / "qq"
         self._data_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_connect_client(self):

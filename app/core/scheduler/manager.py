@@ -92,7 +92,8 @@ class SchedulerManager:
             return
         
         self._tasks: Dict[str, TaskConfig] = {}
-        self._tasks_storage = Path("data/scheduler.json")
+        from app.core.util.runtime_paths import resolve_dir_writable
+        self._tasks_storage = Path(resolve_dir_writable("data")) / "scheduler.json"
         self._tasks_storage.parent.mkdir(parents=True, exist_ok=True)
         
         self._pending_queue: List[ScheduledTask] = []
@@ -100,7 +101,7 @@ class SchedulerManager:
         self._history: List[ScheduledTask] = []
         self._max_history = 100
         
-        self._storage_path = Path("data/scheduler_history.json")
+        self._storage_path = Path(resolve_dir_writable("data")) / "scheduler_history.json"
         
         self._running = False
         self._loop_task = None

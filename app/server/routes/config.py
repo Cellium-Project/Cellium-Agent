@@ -6,11 +6,11 @@
 
 接口列表:
   GET  /api/config/status      → 配置文件状态总览
-  GET  /api/config             → 查看当前完整配置（脱敏）
+  GET  /api/config             → 查看当前完整配置
   GET  /api/config/{section}   → 查看指定配置段
   POST /api/config/reload      → 全量热重载
   POST /api/config/reload/{section} → 单段热重载
-  PUT  /api/config/{section}   → 运行时修改配置（内存+可选持久化）
+  PUT  /api/config/{section}   → 运行时修改配置
 """
 
 from pathlib import Path
@@ -24,23 +24,6 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 def _get_agent_config():
     from app.core.util.agent_config import get_config
     return get_config()
-
-
-def _get_original_api_key(name: str, new_api_key: str) -> str:
-    """如果新 api_key 是 '***'，返回原配置中的值"""
-    if new_api_key != '***':
-        return new_api_key
-    config = _get_agent_config()
-    llm_section = config.get_section("llm")
-    models = llm_section.get("models", [])
-    for m in models:
-        if m.get("name") == name:
-            return m.get("api_key", new_api_key)
-    presets = _load_models_presets()
-    for p in presets:
-        if p.get("name") == name:
-            return p.get("api_key", new_api_key)
-    return new_api_key
 
 
 def _sync_model_to_llm_config(name: str, model_dict: Dict, add: bool = False):
@@ -62,7 +45,9 @@ def _sync_model_to_llm_config(name: str, model_dict: Dict, add: bool = False):
 
     for i, m in enumerate(models):
         if m.get("name") == name:
-            models[i] = model_dict
+            # 合并旧字段，避免覆盖 vision 等额外配置
+            merged = {**m, **model_dict}
+            models[i] = merged
             config.set("llm.models", models, persist=True)
             if not current_model:
                 config.set("llm.current_model", name, persist=True)
@@ -77,23 +62,6 @@ def _sync_model_to_llm_config(name: str, model_dict: Dict, add: bool = False):
         new_current = models[-1].get("name", "")
         config.set("llm.current_model", new_current, persist=True)
         logger.info("[_sync_model_to_llm_config] 设置 current_model=%s", new_current)
-
-
-def _remove_model_from_llm_config(name: str):
-    """从 llm.models 列表移除模型"""
-    config = _get_agent_config()
-    llm_section = config.get_section("llm")
-    models = llm_section.get("models", [])
-    current_model = llm_section.get("current_model", "")
-
-    models = [m for m in models if m.get("name") != name]
-    config.set("llm.models", models, persist=True)
-
-    if current_model == name:
-        if models:
-            config.set("llm.current_model", models[0].get("name", ""), persist=True)
-        else:
-            config.set("llm.current_model", "", persist=True)
 
 
 class ConfigValue(BaseModel):
@@ -470,12 +438,7 @@ async def switch_model(body: ModelSwitchRequest):
 
 @router.post("/model/reload-engine")
 async def reload_llm_engine():
-    """
-    重新加载 LLM 引擎（切换模型后需要调用）
-
-    真热重载：从当前 llm 配置创建新引擎，替换容器中的旧引擎，
-    并推送到所有活跃 AgentLoop（loop.llm = new_engine）。
-    """
+    """重新加载 LLM 引擎"""
     import logging
     from app.core.di.container import get_container
     from app.agent.loop.agent_loop_manager import AgentLoopManager
@@ -493,7 +456,6 @@ async def reload_llm_engine():
     old_engine = container.resolve(BaseLLMEngine) if container.has(BaseLLMEngine) else None
 
     try:
-        # 真正创建新引擎
         new_engine = create_llm_engine(llm_config)
         if new_engine is None:
             raise HTTPException(
@@ -501,10 +463,8 @@ async def reload_llm_engine():
                 detail="LLM 配置不完整：缺少 api_key / base_url / model，请在 Settings → 模型 填写后再保存"
             )
 
-        # 替换容器中的引擎
         container.register(BaseLLMEngine, new_engine, singleton=True)
 
-        # 异步关闭旧引擎（如果有）
         if old_engine is not None and old_engine is not new_engine:
             try:
                 import asyncio
@@ -512,7 +472,6 @@ async def reload_llm_engine():
             except Exception as e:
                 logger.warning("[ConfigAPI] 旧引擎关闭失败: %s", e)
 
-        # 推送到所有活跃 loop
         loop_mgr = AgentLoopManager.get_instance()
         updated = loop_mgr.update_llm_engine(new_engine)
 
@@ -536,110 +495,3 @@ async def reload_llm_engine():
         logger.error("[ConfigAPI] 重新加载 LLM 引擎失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"重新加载失败: {str(e)}")
 
-
-# ============================================================
-# 模型预设管理 API（存储在 settings.yaml）
-# ============================================================
-
-class ModelPreset(BaseModel):
-    name: str
-    provider: str = "openai"
-    base_url: str
-    model: str
-    api_key: str = ""
-    temperature: float = 0.7
-    timeout: int = 120
-
-
-class ModelPresetsRequest(BaseModel):
-    models: list[ModelPreset]
-
-
-_MODELS_CONFIG_PATH: str | None = None
-
-
-def _get_models_config_path() -> str:
-    global _MODELS_CONFIG_PATH
-    if _MODELS_CONFIG_PATH:
-        return _MODELS_CONFIG_PATH
-    from pathlib import Path
-    base_dir = Path(__file__).resolve().parent.parent.parent.parent
-    _MODELS_CONFIG_PATH = str(base_dir / "config" / "models.yaml")
-    return _MODELS_CONFIG_PATH
-
-
-def _load_models_presets() -> list[dict]:
-    import yaml
-    path = _get_models_config_path()
-    if not Path(path).exists():
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return data.get("model_presets", []) if data else []
-
-
-def _save_models_presets(presets: list[dict]):
-    import yaml
-    path = _get_models_config_path()
-    llm_section = _get_agent_config().get_section("llm")
-    llm_models = {m.get("name"): m for m in llm_section.get("models", [])}
-    for p in presets:
-        if p.get("api_key") == "***" and p.get("name") in llm_models:
-            p["api_key"] = llm_models[p["name"]].get("api_key", "")
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump({"model_presets": presets}, f, default_flow_style=False, allow_unicode=True)
-
-
-@router.get("/models")
-async def list_models():
-    """获取所有已保存的模型预设（脱敏 api_key）"""
-    presets = _load_models_presets()
-    sanitized = []
-    for p in presets:
-        p = dict(p)
-        if p.get("api_key"):
-            p["api_key"] = "***"
-        sanitized.append(p)
-    return {"models": sanitized}
-
-
-@router.post("/models")
-async def save_models(body: ModelPresetsRequest):
-    """保存模型预设列表（覆盖式）"""
-    presets = [m.model_dump() for m in body.models]
-    _save_models_presets(presets)
-    return {"status": "ok", "count": len(presets)}
-
-
-@router.post("/model")
-async def add_or_update_model(body: ModelPreset):
-    """添加或更新单个模型预设（同时更新 llm.models）"""
-    presets = _load_models_presets()
-    model_dict = body.model_dump()
-
-    for i, p in enumerate(presets):
-        if p.get("name") == body.name:
-            presets[i] = model_dict
-            _save_models_presets(presets)
-            _sync_model_to_llm_config(body.name, model_dict)
-            return {"status": "ok", "message": f"模型 [{body.name}] 已更新", "model": model_dict}
-
-    presets.append(model_dict)
-    _save_models_presets(presets)
-    _sync_model_to_llm_config(body.name, model_dict, add=True)
-    return {"status": "ok", "message": f"模型 [{body.name}] 已添加", "model": model_dict}
-
-
-@router.delete("/model/{name}")
-async def delete_model(name: str):
-    """删除指定名称的模型预设（同时从 llm.models 移除）"""
-    presets = _load_models_presets()
-    original_len = len(presets)
-    presets = [p for p in presets if p.get("name") != name]
-
-    if len(presets) == original_len:
-        raise HTTPException(status_code=404, detail=f"未找到模型: {name}")
-
-    _save_models_presets(presets)
-    _remove_model_from_llm_config(name)
-    return {"status": "ok", "message": f"模型 [{name}] 已删除"}

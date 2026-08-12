@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import ast
 import importlib
 import importlib.util
 import inspect
@@ -18,7 +19,6 @@ except ImportError:
 
 from app.core.di.container import DIContainer
 
-# 组件采用外置模式，通过文件系统动态加载
 from app.core.interface.icell import ICell
 from app.core.interface.base_cell import BaseCell
 
@@ -232,14 +232,8 @@ def unregister_from_config(module_path: str):
 
 def get_components_dir() -> pathlib.Path:
     """获取组件扫描目录（components/）"""
-    # 支持 Nuitka 打包后的路径
-    if getattr(sys, 'frozen', False):
-        # Nuitka 打包后，sys.executable 指向 .exe 文件
-        base_dir = pathlib.Path(sys.executable).resolve().parent
-    else:
-        # 开发环境
-        base_dir = pathlib.Path(__file__).resolve().parent.parent.parent.parent
-    return base_dir / "components"
+    from app.core.util.runtime_paths import resolve_dir
+    return pathlib.Path(resolve_dir("components"))
 
 
 
@@ -337,12 +331,11 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
     module_name = f"_component_{rel_path.stem}_{hash(str(file_path)) & 0xFFFFFF}"
 
     try:
-        cached = importlib.util.cache_from_source(str(file_path))
-        if cached and os.path.exists(cached):
-            os.remove(cached)
-            logger.debug(f"[Component] discover 阶段删除缓存: {cached}")
-    except Exception as e:
-        logger.debug(f"[Component] discover 阶段删除缓存失败: {e}")
+        ast_classes = _extract_cell_classes_ast(file_path)
+        if ast_classes:
+            return ast_classes, None
+    except Exception:
+        pass
 
     if module_name in sys.modules:
         del sys.modules[module_name]
@@ -389,6 +382,57 @@ def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
                 })
 
     return found, None
+
+_COMPONENT_BASE_MODULES = ("app.core.interface.base_cell", "app.core.interface.icell")
+
+
+def _extract_cell_classes_ast(file_path: pathlib.Path) -> list:
+    try:
+        source = file_path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(file_path))
+    except SyntaxError:
+        return []
+
+    base_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module in _COMPONENT_BASE_MODULES:
+                for alias in node.names:
+                    base_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _COMPONENT_BASE_MODULES:
+                    base_names.add(alias.asname or alias.name.rsplit(".", 1)[-1])
+
+    if not base_names:
+        return []
+
+    rel_path = file_path.relative_to(get_components_dir())
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
+        if any(b in base_names for b in bases):
+            if _ast_is_abstract(node):
+                continue
+            found.append({
+                "class_name": node.name,
+                "module_path": f"components.{rel_path.stem}.{node.name}",
+                "cls": None,
+            })
+    return found
+
+
+def _ast_is_abstract(class_node: ast.ClassDef) -> bool:
+    for stmt in class_node.body:
+        if isinstance(stmt, ast.FunctionDef) or isinstance(stmt, ast.AsyncFunctionDef):
+            for dec in stmt.decorator_list:
+                if isinstance(dec, ast.Name) and dec.id == "abstractmethod":
+                    return True
+                if isinstance(dec, ast.Attribute) and dec.attr == "abstractmethod":
+                    return True
+    return False
 
 
 def _extract_cell_classes_from_package(pkg_dir: pathlib.Path) -> tuple:
@@ -712,7 +756,6 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
         file_path = item["file"]
         current_files.add(file_path)
 
-        cell_name_lower = item["cls"]().__class__.__name__.lower()
         is_package = item.get("is_package", False)
 
         if file_path not in _loaded_files:

@@ -21,6 +21,9 @@ lark-oapi>=1.7.1
 # HTTP 客户端（LLM 引擎、QQ/Telegram 文件上传）
 httpx>=0.28.1
 
+# TUI
+textual>=8.0.0
+
 # 注意：其他功能使用 Python 标准库，无需额外依赖
 # - sqlite3: FTS5 全文检索（Python 标准库）
 # - subprocess: 命令执行（Python 标准库）

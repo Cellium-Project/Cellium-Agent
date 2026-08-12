@@ -16,7 +16,10 @@ class Snapshot:
 
 class CodeRuntime:
     def __init__(self, workspace_root: str = None):
-        self.workspace_root = workspace_root or os.getcwd()
+        if workspace_root is None:
+            from app.core.util.runtime_paths import resolve_dir_writable
+            workspace_root = resolve_dir_writable("workspace")
+        self.workspace_root = workspace_root
         self._snapshots: Dict[str, Snapshot] = {}
         self._encoding_cache: Dict[str, str] = {}
 

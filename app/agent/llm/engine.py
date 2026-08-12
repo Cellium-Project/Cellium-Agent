@@ -3,6 +3,7 @@
 
 import json
 import logging
+import re
 import time
 
 from abc import ABC, abstractmethod
@@ -17,12 +18,10 @@ _EMPTY_RESPONSE_COUNT = 0
 
 _VERIFY_CACHE: Dict[str, bool] = {}
 
-
 # ---- 默认模型注册表（内置兜底）----
 _DEFAULT_MODEL_REGISTRY: Dict[str, ModelInfo] = {
     "default": ModelInfo(8192, 4096, True),
 }
-
 
 def _load_model_registry() -> Dict[str, ModelInfo]:
     """从配置文件加载模型注册表，失败时使用内置默认值"""
@@ -54,8 +53,6 @@ def _load_model_registry() -> Dict[str, ModelInfo]:
 
     return dict(_DEFAULT_MODEL_REGISTRY)
 
-
-# 全局缓存（进程内只加载一次）
 _MODEL_REGISTRY: Optional[Dict[str, ModelInfo]] = None
 
 
@@ -128,10 +125,7 @@ def _estimate_messages_tokens(messages: List[Dict]) -> int:
     for msg in messages:
         content = msg.get("content", "")
         role = msg.get("role", "")
-        # 每条消息有 ~4 token 的格式开销 (role + header)
         total += _estimate_tokens(content) + 4
-
-    # system prompt 和工具定义也有额外开销，加 10% buffer
     total = int(total * 1.1)
     return max(total, 10)
 
@@ -266,42 +260,17 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     def max_tokens(self) -> int:
         return self._model_info.max_output_tokens
 
-    def _ensure_transport(self) -> OpenAICompatTransport:
-        if self._transport is None:
-            self._transport = OpenAICompatTransport(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout,
-            )
-        return self._transport
-
-    async def close(self):
-        if self._transport is not None:
-            await self._transport.aclose()
-            self._transport = None
-
-    async def chat(
+    def _build_params(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict],
         tools: List[Dict] = None,
         temperature: float = None,
         max_tokens: int = None,
         truncate: bool = True,
         **kwargs,
-    ) -> ChatResponse:
-        """
-        异步调用 LLM（AgentLoop 主路径）
-
-        Args:
-            messages: 消息列表
-            tools: 工具定义
-            temperature: 温度覆盖
-            max_tokens: 最大输出 token 覆盖（None → 用模型默认值）
-            truncate: 是否在输入超限时自动截断早期消息
-        """
+    ) -> Dict:
         if not self.api_key:
             raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
-        transport = self._ensure_transport()
 
         effective_messages = messages
         if truncate and messages:
@@ -353,6 +322,51 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 if self._thinking_budget:
                     extra_body["thinking"]["budget_tokens"] = self._thinking_budget
                 params.update(extra_body)
+
+        return params
+
+    def _ensure_transport(self) -> OpenAICompatTransport:
+        if self._transport is None:
+            self._transport = OpenAICompatTransport(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+            )
+        return self._transport
+
+    async def close(self):
+        if self._transport is not None:
+            await self._transport.aclose()
+            self._transport = None
+
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict] = None,
+        temperature: float = None,
+        max_tokens: int = None,
+        truncate: bool = True,
+        **kwargs,
+    ) -> ChatResponse:
+        """
+        异步调用 LLM
+
+        Args:
+            messages: 消息列表
+            tools: 工具定义
+            temperature: 温度覆盖
+            max_tokens: 最大输出 token 覆盖（None → 用模型默认值）
+            truncate: 是否在输入超限时自动截断早期消息
+        """
+        if not self.api_key:
+            raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
+        transport = self._ensure_transport()
+
+        params = self._build_params(
+            messages, tools, temperature, max_tokens, truncate, **kwargs
+        )
+        effective_messages = params["messages"]
+        final_max_tokens = params.get("max_tokens")
 
         req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
         tools_count = len(tools) if tools else 0
@@ -446,6 +460,147 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             self._calibrate_from_usage(parsed.usage, req_tokens)
 
         return parsed
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict] = None,
+        temperature: float = None,
+        max_tokens: int = None,
+        truncate: bool = True,
+        **kwargs,
+    ):
+        """
+        流式调用 LLM — 逐 chunk 产出
+
+        Yields:
+            dict: 每个 chunk
+                - {"type": "content", "text": str}      内容增量
+                - {"type": "reasoning", "text": str}    思考增量
+                - {"type": "tool_calls", "calls": [...]} 工具调用（最终聚合）
+                - {"type": "done", "response": ChatResponse} 最终聚合响应
+        """
+        if not self.api_key:
+            raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
+        transport = self._ensure_transport()
+
+        params = self._build_params(
+            messages, tools, temperature, max_tokens, truncate, **kwargs
+        )
+        effective_messages = params["messages"]
+
+        req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
+        logger.info(
+            "[LLM] >>> 流式调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | tools=%d",
+            self.model, len(effective_messages), req_tokens,
+            len(tools) if tools else 0,
+        )
+
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        tool_calls_map: Dict[int, dict] = {}
+        finish_reason = ""
+        usage = {}
+        model_name = ""
+
+        think_buffer = ""
+        in_think = False
+
+        try:
+            async for item in transport.chat_stream(params):
+                choices = item.get("choices") or []
+                if not choices:
+                    if item.get("usage"):
+                        usage = item.get("usage")
+                    continue
+                choice0 = choices[0] or {}
+                delta = choice0.get("delta") or {}
+                if not model_name:
+                    model_name = item.get("model", "") or model_name
+
+                delta_content = delta.get("content")
+                if delta_content:
+                    rest = delta_content
+                    while rest:
+                        if not in_think:
+                            tag = re.search(r"<think>", rest)
+                            if not tag:
+                                if rest.strip():
+                                    content_parts.append(rest)
+                                    yield {"type": "content", "text": rest}
+                                rest = ""
+                                break
+                            before = rest[:tag.start()]
+                            if before.strip():
+                                content_parts.append(before)
+                                yield {"type": "content", "text": before}
+                            rest = rest[tag.end():]
+                            in_think = True
+                        else:
+                            close = re.search(r"</think>", rest)
+                            if not close:
+                                think_buffer += rest
+                                rest = ""
+                                break
+                            think_buffer += rest[:close.start()]
+                            rest = rest[close.end():]
+                            in_think = False
+                            if think_buffer.strip():
+                                reasoning_parts.append(think_buffer.strip())
+                            think_buffer = ""
+
+                delta_reasoning = delta.get("reasoning_content")
+                if delta_reasoning:
+                    reasoning_parts.append(delta_reasoning)
+
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    entry = tool_calls_map.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if tc.get("id"):
+                        entry["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        entry["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        entry["arguments"] += fn["arguments"]
+
+                if choice0.get("finish_reason"):
+                    finish_reason = choice0.get("finish_reason")
+
+            if in_think and think_buffer.strip():
+                reasoning_parts.append(think_buffer.strip())
+
+            calls = []
+            for idx in sorted(tool_calls_map):
+                entry = tool_calls_map[idx]
+                args = {}
+                if entry["arguments"]:
+                    try:
+                        args = json.loads(entry["arguments"])
+                    except Exception:
+                        args = {"raw": entry["arguments"]}
+                calls.append(ToolCall(id=entry["id"], name=entry["name"], arguments=args))
+            if calls:
+                yield {"type": "tool_calls", "calls": calls}
+
+            response = ChatResponse(
+                content="".join(content_parts),
+                tool_calls=calls,
+                model=model_name,
+                finish_reason=finish_reason or "stop",
+                usage=usage,
+                reasoning_content="".join(reasoning_parts) or None,
+            )
+            if usage:
+                self._calibrate_from_usage(usage, req_tokens)
+            logger.info(
+                "[LLM] <<< 流式完成 | model=%s | content长度=%d | tool_calls=%d | finish_reason=%s",
+                self.model, len(response.content or ""), len(calls), response.finish_reason,
+            )
+            yield {"type": "done", "response": response}
+        except Exception as e:
+            logger.error("[LLM] <<< 流式调用失败 | model=%s | 错误类型=%s | 详情: %s", self.model, type(e).__name__, str(e))
+            raise
 
     def chat_sync(
         self,
@@ -570,137 +725,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             len(messages), len(result), input_est, new_est,
         )
         return result, True
-
-    async def chat_stream(
-        self,
-        messages: List[Dict[str, str]],
-        tools: List[Dict] = None,
-        **kwargs,
-    ):
-        """流式生成（SSE/WebSocket 实时推送用）"""
-        if not self.api_key:
-            raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
-        transport = self._ensure_transport()
-
-        effective_messages = messages
-        if messages:
-            effective_messages, _ = self._truncate_if_needed(messages, tools)
-
-        params = {
-            "model": self.model,
-            "messages": effective_messages,
-            "temperature": kwargs.pop("temperature", self.temperature),
-        }
-        explicit_max = kwargs.pop("max_tokens", None)
-        if not self._omit_max_tokens:
-            params["max_tokens"] = explicit_max or self.effective_max_tokens
-        if tools and self._model_info.supports_tools:
-            params["tools"] = tools
-        params.update(kwargs)
-
-        req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
-        tools_count = len(tools) if tools else 0
-        logger.info(
-            "[LLM] >>> 流式调用开始 | model=%s | 消息数=%d | 预估输入≈%d tokens | max_tokens=%d | tools=%d | temperature=%s",
-            self.model, len(effective_messages), req_tokens,
-            params.get("max_tokens", self.effective_max_tokens), tools_count,
-            params.get("temperature", "N/A"),
-        )
-
-        full_content = ""
-        tool_calls_acc: Dict[int, Dict] = {}
-        done_sent = False
-        saw_content_chunk = False
-        saw_tool_call_chunk = False
-        async for chunk in transport.chat_stream(params):
-            if not isinstance(chunk, dict):
-                continue
-            choices = chunk.get("choices") or []
-            if not choices:
-                if chunk.get("usage"):
-                    continue
-                continue
-            choice0 = choices[0] or {}
-            delta = choice0.get("delta") or {}
-            if not isinstance(delta, dict):
-                delta = {}
-            delta_content = delta.get("content")
-            finish_reason = choice0.get("finish_reason")
-
-            if delta_content:
-                full_content += delta_content
-                saw_content_chunk = True
-                yield {"type": "chunk", "content": delta_content, "full_content": full_content}
-                continue
-
-            delta_tool_calls = delta.get("tool_calls")
-            if delta_tool_calls:
-                saw_tool_call_chunk = True
-                for tc in delta_tool_calls:
-                    if not isinstance(tc, dict):
-                        continue
-                    idx = tc.get("index", 0)
-                    cur = tool_calls_acc.setdefault(idx, {
-                        "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
-                    })
-                    if tc.get("id"):
-                        cur["id"] = tc["id"]
-                    if tc.get("type"):
-                        cur["type"] = tc["type"]
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        cur["function"]["name"] += fn["name"]
-                    if fn.get("arguments"):
-                        cur["function"]["arguments"] += fn["arguments"]
-                continue
-
-            if not done_sent and finish_reason in ("stop", "length", "content_filter", "tool_calls"):
-                done_sent = True
-                yield {
-                    "type": "done",
-                    "full_content": full_content,
-                    "tool_calls": self._build_streamed_tool_calls(tool_calls_acc),
-                }
-                continue
-
-        if not saw_content_chunk and not saw_tool_call_chunk and not full_content:
-            logger.warning(
-                "[LLM] 流式空完成 | model=%s | req_tokens≈%d | max_tokens=%s | tools=%d",
-                self.model,
-                req_tokens,
-                params.get("max_tokens", "API自定"),
-                tools_count,
-            )
-
-        if not done_sent:
-            yield {
-                "type": "done",
-                "full_content": full_content,
-                "tool_calls": self._build_streamed_tool_calls(tool_calls_acc),
-            }
-
-    @staticmethod
-    def _build_streamed_tool_calls(acc: Dict[int, Dict]) -> List[ToolCall]:
-        result = []
-        for idx in sorted(acc.keys()):
-            cur = acc[idx]
-            fn = cur.get("function") or {}
-            args_text = fn.get("arguments", "") or ""
-            args = {}
-            if args_text:
-                try:
-                    args = json.loads(args_text)
-                except Exception:
-                    args = {"raw": args_text}
-            result.append(ToolCall(
-                id=cur.get("id", "") or "",
-                name=fn.get("name", "") or "",
-                arguments=args,
-            ))
-        return result
-
 
     async def health_check(self) -> bool:
         try:

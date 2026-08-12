@@ -27,13 +27,14 @@ def _detect_lib_path() -> Optional[str]:
     else:
         filename = "libvector_engine.so"
 
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    dll_dir = os.path.join(base, "dll", f"{system}-{arch}")
+    from app.core.util.runtime_paths import resolve_dir
+    dll_dir = resolve_dir("dll", f"{system}-{arch}")
     path = os.path.join(dll_dir, filename)
     if os.path.isfile(path):
         return path
 
-    path = os.path.join(base, "dll", filename)
+    base_dll_dir = resolve_dir("dll")
+    path = os.path.join(base_dll_dir, filename)
     if os.path.isfile(path):
         return path
 

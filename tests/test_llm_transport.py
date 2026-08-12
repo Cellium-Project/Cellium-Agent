@@ -303,8 +303,8 @@ class TestEngineIntegration(unittest.TestCase):
 
         events = asyncio.run(_collect())
         types = [e["type"] for e in events]
-        self.assertEqual(types, ["chunk", "chunk", "done"])
-        self.assertEqual(events[-1]["full_content"], "流式")
+        self.assertEqual(types, ["content", "content", "done"])
+        self.assertEqual(events[-1]["response"].content, "流式")
 
     def test_engine_stream_omits_max_tokens(self):
         captured = {}
@@ -343,7 +343,7 @@ class TestEngineIntegration(unittest.TestCase):
 
         events = asyncio.run(_collect())
         self.assertEqual(events[-1]["type"], "done")
-        self.assertEqual(events[-1]["full_content"], "")
+        self.assertEqual(events[-1]["response"].content, "")
 
     def test_engine_stream_tool_calls_accumulated(self):
         sse = (
@@ -366,7 +366,7 @@ class TestEngineIntegration(unittest.TestCase):
 
         events = asyncio.run(_collect())
         self.assertEqual(events[-1]["type"], "done")
-        tool_calls = events[-1]["tool_calls"]
+        tool_calls = events[-1]["response"].tool_calls
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0].id, "call_1")
         self.assertEqual(tool_calls[0].name, "shell_tool")

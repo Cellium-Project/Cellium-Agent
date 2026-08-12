@@ -15,7 +15,7 @@ permissions:
   pull-requests: write  
 
 env:
-  VERSION: "1.3.9.114"
+  VERSION: "1.4.1.114"
   PY_VER: "3.12.10"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -226,6 +226,7 @@ jobs:
           cp dll/windows-x86_64/vector_engine.dll release/dll/windows-x86_64/
           cp -r html release/ || true
           cp -r memory release/ || true
+          cp -r licenses release/ || true
           cp builder/CelliumAgent.exe release/
         shell: bash
 
@@ -243,6 +244,7 @@ jobs:
           esac
           cp -r html release/ || true
           cp -r memory release/ || true
+          cp -r licenses release/ || true
           cp app_icon.ico release/ || true
           cp main.py release/
         shell: bash
@@ -277,7 +279,7 @@ jobs:
           echo '#!/bin/bash' > release/start-cellium.sh
           echo 'DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> release/start-cellium.sh
           echo 'export PYTHONPATH="$DIR/libs:$PYTHONPATH"' >> release/start-cellium.sh
-          echo '$DIR/runtime/bin/python3 $DIR/main.py' >> release/start-cellium.sh
+          echo '$DIR/runtime/bin/python3 $DIR/main.py --tui' >> release/start-cellium.sh
           chmod +x release/start-cellium.sh
 
       - name: Prepare Package (Windows)

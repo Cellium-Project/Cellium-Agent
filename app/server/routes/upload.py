@@ -12,8 +12,8 @@ from typing import Optional
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
-# 使用绝对路径，避免工作目录影响
-UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "workspace", "uploads"))
+from app.core.util.runtime_paths import resolve_dir_writable
+UPLOAD_DIR = os.path.join(resolve_dir_writable("workspace"), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 文件类型分类
@@ -97,24 +97,12 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 def find_file_by_id(file_id: str) -> tuple[str, str] | None:
-    """
-    高效查找文件
-    
-    优化策略：
-    1. 先检查最近的日期目录（今天、昨天、前天）
-    2. 如果找到就返回，避免全局遍历
-    3. 如果没找到，再遍历所有日期目录
-    
-    返回：(file_path, original_name) 或 None
-    """
-    # 生成最近3天的日期目录
     recent_dates = [
         datetime.now().strftime("%Y%m%d"),
         (datetime.now() - __import__('datetime').timedelta(days=1)).strftime("%Y%m%d"),
         (datetime.now() - __import__('datetime').timedelta(days=2)).strftime("%Y%m%d"),
     ]
     
-    # 先检查最近的日期目录
     for date_dir in recent_dates:
         dir_path = os.path.join(UPLOAD_DIR, date_dir)
         if not os.path.exists(dir_path):
@@ -125,14 +113,12 @@ def find_file_by_id(file_id: str) -> tuple[str, str] | None:
                 file_path = os.path.join(dir_path, filename)
                 original_name = filename.split('_', 1)[1] if '_' in filename else filename
                 return (file_path, original_name)
-    
-    # 如果最近目录没找到，再遍历所有日期目录
+
     for date_dir in os.listdir(UPLOAD_DIR):
         dir_path = os.path.join(UPLOAD_DIR, date_dir)
         if not os.path.isdir(dir_path):
             continue
-        
-        # 跳过已经检查过的最近目录
+
         if date_dir in recent_dates:
             continue
         

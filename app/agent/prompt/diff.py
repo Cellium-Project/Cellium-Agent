@@ -88,6 +88,59 @@ class PromptDiffTracker:
 
         return response
 
+    async def chat_stream(self, llm_engine: Any, messages: List[Dict],
+                          tools: Optional[List[Dict]] = None,
+                          max_tokens: Optional[int] = None,
+                          **kwargs):
+        """流式调用 LLM，透传 chunk 事件，同时保留前缀缓存统计"""
+        start = time.perf_counter()
+        self._stats.total_calls += 1
+
+        if self._enabled and self._last_messages is not None and messages is not None:
+            try:
+                report = self._compute_diff(self._last_messages, messages, start)
+                self._stats.last_report = report
+                self._stats.history.append(report)
+                if report.divergence_reason:
+                    logger.info(
+                        "[PromptDiff] 前缀变化 | stable_until=%d/%d条 | chars=%d/%d (%d%%) | reason=%s",
+                        report.stable_until, report.total_messages,
+                        report.stable_chars, report.total_chars,
+                        round(report.char_stable_ratio * 100),
+                        report.divergence_reason[:120],
+                    )
+            except Exception as e:
+                logger.warning("[PromptDiff] 差异计算失败: %s", e)
+        else:
+            logger.info("[PromptDiff] 首次调用，跳过对比")
+
+        final_response = None
+        streamer = getattr(llm_engine, "chat_stream", None)
+        if streamer is None:
+            response = await llm_engine.chat(
+                messages=messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+            final_response = response
+            yield {"type": "content", "text": response.content or ""}
+            yield {"type": "done", "response": response}
+        else:
+            async for chunk in streamer(
+                messages=messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                **kwargs,
+            ):
+                if chunk.get("type") == "done":
+                    final_response = chunk.get("response")
+                yield chunk
+
+        if final_response is not None:
+            self._last_messages = messages
+            logger.info("[PromptDiff] 流式调用完成 | %s", self._format_stats())
+
     # ---- 内部 ----
 
     @staticmethod

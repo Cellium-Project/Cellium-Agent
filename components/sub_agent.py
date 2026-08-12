@@ -362,7 +362,28 @@ class SubAgent(BaseCell):
                 return {"error": f"{type(e).__name__}: {e}"}
             return result
 
+        def _guarded_execute_sync(tool_call, session_id=None, platform_context=None):
+            """同步版白名单执行（供 execute_sync 路径使用，保持同样的白名单隔离）"""
+            name = getattr(tool_call, "name", "")
+            if name not in allowed:
+                return {"error": f"Tool '{name}' is not allowed for this sub-agent", "allowed": sorted(allowed)}
+            inst = allowed.get(name)
+            if inst is None:
+                return {"error": f"Tool '{name}' not found in whitelist"}
+            args = getattr(tool_call, "arguments", None) or {}
+            if isinstance(args, dict):
+                args = {k: v for k, v in args.items() if k != "_intent"}
+            try:
+                if hasattr(inst, "execute_with_context"):
+                    return inst.execute_with_context(args, session_id=session_id, platform_context=platform_context)
+                if hasattr(inst, "execute"):
+                    return inst.execute(args)
+                return inst(**args)
+            except Exception as e:
+                return {"error": f"{type(e).__name__}: {e}"}
+
         te.execute = _guarded_execute
+        te.execute_sync = _guarded_execute_sync
 
         _SUBAGENTS[name] = {
             "name": name, "task": task, "tools": tools_list,

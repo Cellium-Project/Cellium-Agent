@@ -244,7 +244,8 @@ class EditTool(BaseTool):
         result = EditTransaction.apply_edit(abs_path, current_content, patch, encoding=file_encoding)
 
         if result["success"]:
-            touch_read_state(abs_path, current_content.replace('\r\n', '\n'), encoding=file_encoding)
+            new_content = result.get("content") or current_content.replace('\r\n', '\n')
+            touch_read_state(abs_path, new_content.replace('\r\n', '\n'), encoding=file_encoding)
             return {
                 "success": True,
                 "path": abs_path,

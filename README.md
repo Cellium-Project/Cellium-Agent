@@ -3,9 +3,9 @@
 <div align="center">
 
 <picture style="border-radius: 12px; overflow: hidden; display: block;">
-    <source media="(prefers-color-scheme: dark)" srcset="tests/img/logo-dark.webp" type="image/webp">
-    <source media="(prefers-color-scheme: light)" srcset="tests/img/logo.webp" type="image/webp">
-    <img src="logo.png" alt="Cellium Agent Banner" style="display: block; width: 100%; max-width: 1856px; border-radius: 12px;">
+    <source media="(prefers-color-scheme: dark)" srcset="https://agent.cellium.top/github-assets/logo-dark.webp" type="image/webp">
+    <source media="(prefers-color-scheme: light)" srcset="https://agent.cellium.top/github-assets/logo.webp" type="image/webp">
+    <img src="https://agent.cellium.top/github-assets/logo.png" alt="Cellium Agent Banner" style="display: block; width: 100%; max-width: 1856px; border-radius: 12px;">
 </picture>
 
 <div align="center">
@@ -107,6 +107,32 @@ curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/downlo
 
 > 更多安装选项见 [INSTALL.md](INSTALL.md)
 
+### pip 安装（PyPI）
+
+```bash
+pip install cellium-agent
+```
+
+安装后启动 TUI 界面：
+
+```bash
+cellium
+```
+
+![TUI 界面](https://agent.cellium.top/github-assets/tui.png)
+
+启动 Web 服务：
+
+```bash
+cellium-web
+```
+
+可选：飞书支持需要额外安装 [lark-oapi](https://pypi.org/project/lark-oapi/)：
+
+```bash
+pip install cellium-agent[lark]
+```
+
 ### 从源码运行
 
 ```bash
@@ -200,7 +226,7 @@ Cellium Agent 的核心是 **Control Loop（控制环）** 驱动的决策系统
 
 
 ### 决策环（Control Loop）工作流程
-![决策环](tests/img/1.png)
+![决策环](https://agent.cellium.top/github-assets/1.png)
 每轮循环包含 5 个阶段：
 
 1. **特征提取（Feature Extraction）**
@@ -298,7 +324,7 @@ PEOP 循环是决策环的扩展模块，实现**自适应计划-执行循环**�
 
 
 ### 自学习机制
-![自学习机制](tests/img/2.png)
+![自学习机制](https://agent.cellium.top/github-assets/2.png)
 **Policy - Bandit - Action 三层架构**：
 
 ```
@@ -430,7 +456,7 @@ Agent 通过 FeatureExtractor 实时感知运行状态，动态调整决策策�
 
 
 ### 三层记忆
-![记忆系统](tests/img/3.png)
+![记忆系统](https://agent.cellium.top/github-assets/3.png)
 | 层级 | 实现 | 说明 |
 |------|------|------|
 | 人格记忆 | personality.md | 静态人格设定文件 |
@@ -563,7 +589,7 @@ components/
 **文件保存路径**：`workspace/downloads/qq/`
 
 ### 原生览器操作组件 (web_fetch)
-![操作演示](tests/img/qq.png)
+![操作演示](https://agent.cellium.top/github-assets/qq.png)
 基于 DrissionPage 的无头浏览器组件，支持网页自动化操作：
 
 | 命令 | 功能 | 示例 |
@@ -616,7 +642,7 @@ components/
 | `skill_manager` | 卸载 Skill | `uninstall(name)` |
 
 **前端界面**：
-![skill](tests/img/4.png)
+![skill](https://agent.cellium.top/github-assets/4.png)
 - 设置页面提供 Skill 管理面板
 - 支持压缩包上传安装
 - 支持按名称、描述、分类过滤
@@ -638,7 +664,7 @@ components/
 
 ### 定时任务调度 (scheduler)
 
-![定时任务](tests/img/5.png)
+![定时任务](https://agent.cellium.top/github-assets/5.png)
 
 支持三种任务类型：
 

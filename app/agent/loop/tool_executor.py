@@ -549,22 +549,94 @@ class ToolExecutor:
 
         tool_instance = self.tools[tool_name]
 
-        def _run_tool():
-            if hasattr(tool_instance, "execute_with_context"):
-                return tool_instance.execute_with_context(arguments, session_id=session_id, platform_context=platform_context)
-            elif hasattr(tool_instance, "execute"):
-                return tool_instance.execute(arguments)
-            elif callable(tool_instance):
-                return tool_instance(**arguments)
-            return {"error": f"Tool {tool_name} is not callable"}
-
         try:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, _run_tool)
+            result = await loop.run_in_executor(
+                None, self._dispatch, tool_instance, arguments, session_id, platform_context
+            )
             return result
         except Exception as e:
             logger.error("[ToolExecutor] 工具执行失败: %s | error=%s", tool_name, e)
             return {"error": str(e)}
+
+    def execute_sync(self, tool_call, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """同步执行工具（供可强制中断的专用线程调用）
+
+        与 execute 逻辑一致，但不经 run_in_executor 包装——由调用方在线程中
+        直接运行，从而支持 PyThreadState_SetAsyncExc 强制中断。
+        """
+        tool_name = tool_call.name
+        arguments = tool_call.arguments
+
+        if isinstance(arguments, dict):
+            arguments = {k: v for k, v in arguments.items() if k != "_intent"}
+        else:
+            arguments = dict(arguments or {})
+
+        platform_context = platform_context or {}
+        tool_allowed = platform_context.get("tool_allowed")
+        if tool_allowed is False:
+            _blocked_tools = {
+                "shell", "file", "memory", "web_search", "web_fetch",
+                "napcat.add_user", "napcat.remove_user", "napcat.add_group", "napcat.remove_group",
+                "napcat.subscribe", "napcat.unsubscribe",
+                "napcat.set_bot_qq", "napcat.set_port",
+                "napcat.enable_user_whitelist", "napcat.disable_user_whitelist",
+                "napcat.enable_group_whitelist", "napcat.disable_group_whitelist",
+                "napcat.enable_at", "napcat.disable_at",
+                "napcat.enable_proactive", "napcat.disable_proactive",
+                "napcat.set_proactive_threshold", "napcat.set_proactive_interval",
+                "napcat.add_wake_word", "napcat.remove_wake_word", "napcat.list_wake_words",
+                "component.reload", "component.load", "component.unload",
+                "component.discover", "component.scan",
+            }
+            if tool_name in _blocked_tools:
+                logger.warning("[ToolExecutor] 权限不足，禁止使用工具 | session=%s | tool=%s", session_id, tool_name)
+                return {
+                    "error": "权限不足，当前会话禁止使用工具",
+                    "_tool_blocked": True,
+                    "_source": "permission_check",
+                }
+
+        try:
+            registry = get_component_tool_registry()
+            component_tools = registry.get_component_tools()
+            new_tools = {**component_tools, **self._builtin_tools}
+            if set(new_tools.keys()) != set(self.tools.keys()):
+                self.tools = new_tools
+                if self._on_tools_changed:
+                    self._on_tools_changed(self.tools)
+                logger.info("[ToolExecutor] 工具列表已更新: %d 个工具", len(self.tools))
+        except Exception as e:
+            logger.warning("[ToolExecutor] 工具刷新失败: %s", e)
+
+        logger.info(
+            "[ToolExecutor] execute_sync | name=%s | session=%s | available=%s",
+            tool_name, session_id or "N/A", list(self.tools.keys()),
+        )
+
+        if tool_name not in self.tools:
+            error_msg = f"Unknown tool: {tool_name}. Available: {list(self.tools.keys())}"
+            logger.error("[ToolExecutor] %s", error_msg)
+            return {"error": error_msg}
+
+        tool_instance = self.tools[tool_name]
+        try:
+            return self._dispatch(tool_instance, arguments, session_id, platform_context)
+        except Exception as e:
+            logger.error("[ToolExecutor] 工具执行失败: %s | error=%s", tool_name, e)
+            return {"error": str(e)}
+
+    @staticmethod
+    def _dispatch(tool_instance, arguments: Dict[str, Any], session_id: str, platform_context: Dict[str, Any]) -> Dict[str, Any]:
+        """分发工具调用到具体执行方法（同步调用）"""
+        if hasattr(tool_instance, "execute_with_context"):
+            return tool_instance.execute_with_context(arguments, session_id=session_id, platform_context=platform_context)
+        elif hasattr(tool_instance, "execute"):
+            return tool_instance.execute(arguments)
+        elif callable(tool_instance):
+            return tool_instance(**arguments)
+        return {"error": f"Tool {tool_instance} is not callable"}
 
     def track_result(self, tool_name: str, result: Dict[str, Any]) -> None:
         """追踪工具调用的成功/失败状态"""

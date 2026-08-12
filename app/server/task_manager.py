@@ -385,6 +385,15 @@ class BackgroundTaskManager:
         if info.status != TaskStatus.RUNNING:
             return False
 
+        try:
+            from app.agent.loop.agent_loop_manager import AgentLoopManager
+            mgr = AgentLoopManager.get_instance()
+            loop = mgr.get_loop_sync(session_id)
+            if loop is not None and hasattr(loop, "stop"):
+                loop.stop()
+        except Exception as e:
+            logger.warning("[TaskManager] 触发 AgentLoop 停止失败: %s", e)
+
         task.cancel()
         logger.info("[TaskManager] 任务取消请求已发送 | session=%s", session_id)
         return True

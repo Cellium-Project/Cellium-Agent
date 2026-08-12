@@ -27,7 +27,8 @@ class TelegramFiles(BaseCell):
     def __init__(self):
         super().__init__()
         # 下载目录：workspace/downloads/telegram
-        self._download_dir = Path("workspace") / "downloads" / "telegram"
+        from app.core.util.runtime_paths import resolve_dir_writable
+        self._download_dir = Path(resolve_dir_writable("workspace")) / "downloads" / "telegram"
         self._download_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_adapter(self):

@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
     fwrite(EMBEDDED_MAIN_PY, 1, EMBEDDED_MAIN_PY_LEN, f);
     fclose(f);
     
-    snprintf(cmdLine, sizeof(cmdLine), "\\"%s\\" \\"%s\\"", pythonPath, tempPyPath);
+    snprintf(cmdLine, sizeof(cmdLine), "\\"%s\\" \\"%s\\" --tui", pythonPath, tempPyPath);
     
     STARTUPINFO si = { sizeof(si) };
     PROCESS_INFORMATION pi;
@@ -77,7 +77,8 @@ def compile_exe():
         with open('icon.rc', 'w') as f:
             f.write(icon_rc)
         os.system('windres --input icon.rc --output icon.o 2>nul || echo 0 > icon.o')
-        os.system('gcc -O2 -s -o CelliumAgent.exe launcher.c icon.o -mwindows')
+        # 注意：不传 -mwindows，保证 TUI 能在终端窗口渲染
+        os.system('gcc -O2 -s -o CelliumAgent.exe launcher.c icon.o')
         print("Compiled with icon")
     else:
         os.system('gcc -O2 -s -o CelliumAgent.exe launcher.c')

@@ -3,9 +3,9 @@
 <div align="center">
 
 <picture style="border-radius: 12px; overflow: hidden; display: block;">
-    <source media="(prefers-color-scheme: dark)" srcset="tests/img/logo-dark.webp" type="image/webp">
-    <source media="(prefers-color-scheme: light)" srcset="tests/img/logo.webp" type="image/webp">
-    <img src="logo.png" alt="Cellium Agent Banner" style="display: block; width: 100%; max-width: 1856px; border-radius: 12px;">
+    <source media="(prefers-color-scheme: dark)" srcset="https://agent.cellium.top/github-assets/logo-dark.webp" type="image/webp">
+    <source media="(prefers-color-scheme: light)" srcset="https://agent.cellium.top/github-assets/logo.webp" type="image/webp">
+    <img src="https://agent.cellium.top/github-assets/logo.png" alt="Cellium Agent Banner" style="display: block; width: 100%; max-width: 1856px; border-radius: 12px;">
 </picture>
 
 <div align="center">
@@ -107,6 +107,32 @@ curl -LO https://github.com/Cellium-Project/Cellium-Agent/releases/latest/downlo
 
 > See [INSTALL.md](INSTALL.md) for more installation options
 
+### Install via pip (PyPI)
+
+```bash
+pip install cellium-agent
+```
+
+Launch the TUI interface after installation:
+
+```bash
+cellium
+```
+
+![TUI Interface](https://agent.cellium.top/github-assets/tui.png)
+
+Launch the web service:
+
+```bash
+cellium-web
+```
+
+Optional: Feishu/Lark support requires [lark-oapi](https://pypi.org/project/lark-oapi/):
+
+```bash
+pip install cellium-agent[lark]
+```
+
 ### Run from Source
 
 ```bash
@@ -198,7 +224,7 @@ The core of Cellium Agent is a **Control Loop** driven decision-making system, c
 ```
 
 ### Control Loop Workflow
-![Control Loop](tests/img/1.png)
+![Control Loop](https://agent.cellium.top/github-assets/1.png)
 Each loop contains 5 stages:
 
 1. **Feature Extraction**
@@ -296,7 +322,7 @@ Code definition: `ACTION_TYPES = ["continue", "retry", "redirect", "compress", "
 | terminate | Terminate session | Hard rule triggered: output loop and exact_repetition_count >= 5 |
 
 ### Self-Learning Mechanism
-![Self-Learning Mechanism](tests/img/2.png)
+![Self-Learning Mechanism](https://agent.cellium.top/github-assets/2.png)
 **Policy - Bandit - Action Three-Layer Architecture**:
 
 ```
@@ -427,7 +453,7 @@ Agent perceives running state in real-time through FeatureExtractor, dynamically
 5. **Dynamic HardConstraint**: Real-time generation of control commands (e.g., REDIRECT/COMPRESS/RETRY) based on state
 
 ### Three-Layer Memory
-![Memory System](tests/img/3.png)
+![Memory System](https://agent.cellium.top/github-assets/3.png)
 | Layer | Implementation | Description |
 |-------|----------------|-------------|
 | Personality | personality.md | Static personality setting file |
@@ -528,7 +554,7 @@ Supports file transfer between QQBot and local:
 **File Save Path**: `workspace/downloads/qq/`
 
 ### Native Browser Operation Component (web_fetch)
-![Operation Demo](tests/img/qq.png)
+![Operation Demo](https://agent.cellium.top/github-assets/qq.png)
 Headless browser component based on DrissionPage, supports web automation:
 
 | Command | Function | Example |
@@ -581,7 +607,7 @@ Complete Skill package management solution, supporting installation from archive
 | `skill_manager` | Uninstall Skill | `uninstall(name)` |
 
 **Frontend Interface**:
-![skill](tests/img/4.png)
+![skill](https://agent.cellium.top/github-assets/4.png)
 - Settings page provides Skill management panel
 - Supports archive upload installation
 - Supports filtering by name, description, category
@@ -602,7 +628,7 @@ components/
 
 ### Scheduled Tasks (scheduler)
 
-![Scheduled Tasks](tests/img/5.png)
+![Scheduled Tasks](https://agent.cellium.top/github-assets/5.png)
 
 Three task types are supported:
 

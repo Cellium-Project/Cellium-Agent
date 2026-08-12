@@ -30,10 +30,6 @@ export const API = {
   modelSwitch: `${API_BASE}/config/model/switch`,
   modelReloadEngine: `${API_BASE}/config/model/reload-engine`,
   modelListLocal: `${API_BASE}/config/model/list-local`,
-  modelList: `${API_BASE}/config/models`,
-  modelSave: `${API_BASE}/config/models`,
-  modelAdd: `${API_BASE}/config/model`,
-  modelDelete: (name: string) => `${API_BASE}/config/model/${name}`,
 
   // Memory
   memories: `${API_BASE}/memories`,

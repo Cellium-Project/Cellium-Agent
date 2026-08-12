@@ -115,6 +115,36 @@ class AgentLoopManager:
     def has_session(self, session_id: str) -> bool:
         return session_id in self._loops
 
+    def get_loop_sync(self, session_id: str) -> Any:
+        """同步获取已存在的 loop"""
+        meta = self._loops.get(session_id)
+        return meta.agent_loop if meta else None
+
+    def get_loop_sync_or_create(self, session_id: str) -> Any:
+        meta = self._loops.get(session_id)
+        if meta is not None:
+            meta.last_active = time.time()
+            return meta.agent_loop
+
+        if len(self._loops) >= self._max_loops:
+            oldest_session = min(self._loops.items(), key=lambda x: x[1].last_active)
+            del self._loops[oldest_session[0]]
+
+        loop = self._create_loop(session_id)
+        self._loops[session_id] = LoopMetadata(
+            session_id=session_id,
+            created_at=time.time(),
+            last_active=time.time(),
+            agent_loop=loop,
+        )
+        try:
+            from app.agent.loop.session_store import get_session_store
+            store = get_session_store()
+            store.get_or_create_session(session_id)
+        except Exception as e:
+            logger.warning(f"[AgentLoopManager] Failed to create session record: {e}")
+        return loop
+
     async def _evict_oldest(self):
         if not self._loops:
             return

@@ -506,7 +506,19 @@ export function useChat() {
       }
 
       case 'message_received': {
-        if (event.message && !streamingMessage) {
+        if (event.message) {
+          const msgContent = String(event.message);
+          const existing = useAppStore.getState().messages.some(
+            (m) => m.role === 'user' && m.content === msgContent
+          );
+          if (!existing) {
+            addMessage({
+              role: 'user',
+              content: msgContent,
+            });
+          }
+        }
+        if (!streamingMessage) {
           updateStreamingMessage({
             role: 'assistant',
             content: '',
@@ -531,7 +543,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((

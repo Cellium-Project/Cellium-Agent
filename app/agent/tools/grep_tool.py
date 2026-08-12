@@ -14,7 +14,12 @@ from .base_tool import BaseTool
 logger = logging.getLogger(__name__)
 
 # --- vendor ripgrep ---
-_VENDOR_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'vendor', 'ripgrep'))
+def _get_vendor_dir() -> str:
+    """vendor/ripgrep 资源目录：优先读打包资源（sys.prefix/cellium），
+    找不到时回退 CWD（运行时下载的场景）"""
+    from app.core.util.runtime_paths import resolve_dir
+    return resolve_dir("vendor", "ripgrep")
+
 _RG_DOWNLOAD_LOCK = threading.Lock()
 
 # pinned version — update with `pip install ripgrep-update` or manually
@@ -73,16 +78,18 @@ def _vendor_rg_path() -> Optional[str]:
     triple = _detect_platform_triple()
     if not triple:
         return None
+    # 与 _download_rg 保持一致：aarch64 linux 用 gnu 变体
+    if triple == 'aarch64-unknown-linux-musl':
+        triple = 'aarch64-unknown-linux-gnu'
     binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
-    candidate = os.path.join(_VENDOR_DIR, triple, binary)
+    vendor_dir = _get_vendor_dir()
+    candidate = os.path.join(vendor_dir, triple, binary)
     if os.path.isfile(candidate):
         return candidate
-    # flat layout: vendor/ripgrep/rg
-    flat = os.path.join(_VENDOR_DIR, binary)
+    flat = os.path.join(vendor_dir, binary)
     if os.path.isfile(flat):
         return flat
-    # vendor/ripgrep/{arch}-{os}/rg
-    for root, dirs, files in os.walk(_VENDOR_DIR):
+    for root, dirs, files in os.walk(vendor_dir):
         if binary in files and 'VERSION' not in files:
             return os.path.join(root, binary)
     return None
@@ -95,14 +102,16 @@ def _download_rg() -> Optional[str]:
         logger.warning("Cannot detect platform for ripgrep download")
         return None
 
-    # Use correct triple for Linux ARM64; CI distributes GNU variant.
     corrected = triple
     if corrected == 'aarch64-unknown-linux-musl':
         corrected = 'aarch64-unknown-linux-gnu'
 
     url = _rg_download_url(corrected)
     binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
-    target_dir = os.path.join(_VENDOR_DIR, corrected)
+    # 下载目标：写 CWD（打包的 sys.prefix/cellium 只读，不可写入）
+    from app.core.util.runtime_paths import resolve_dir_writable
+    vendor_dir = resolve_dir_writable("vendor", "ripgrep")
+    target_dir = os.path.join(vendor_dir, corrected)
 
     with _RG_DOWNLOAD_LOCK:
         # double-check after acquiring lock
@@ -159,7 +168,7 @@ def _download_rg() -> Optional[str]:
             os.replace(tmp_path, target_path)
             os.chmod(target_path, 0o755)
 
-            with open(os.path.join(_VENDOR_DIR, RG_VERSION_FILE), 'w') as f:
+            with open(os.path.join(vendor_dir, RG_VERSION_FILE), 'w') as f:
                 f.write(RG_VERSION)
 
             logger.info("ripgrep %s installed at %s", RG_VERSION, target_path)

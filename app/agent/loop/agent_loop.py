@@ -5,8 +5,10 @@ Agent 主循环
 
 import json
 import logging
+import os
 import re
 import time
+import threading
 import asyncio
 from typing import List, Dict, Any, Optional
 
@@ -127,7 +129,8 @@ class AgentLoop:
             # flash_mode=False → ControlLoop + Heuristics（完整能力）
             from app.agent.control import create_control_loop
             from app.agent.control.gene_post_session import GenePostSessionAnalyzer
-            bandit_memory_path = "data/control/bandit_stats.json"
+            from app.core.util.runtime_paths import resolve_dir_writable
+            bandit_memory_path = os.path.join(resolve_dir_writable("data"), "control", "bandit_stats.json")
             self.control_loop = create_control_loop(memory_path=bandit_memory_path)
             heuristic_thresholds = self.heuristics.config.thresholds if self.heuristics else {}
             self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100, thresholds=heuristic_thresholds)
@@ -184,11 +187,20 @@ class AgentLoop:
         self._redirect_guidance_given = False
         self._last_ctrl_signature = "" 
 
+        # 可等待的停止事件：停止时 set()，用于在工具执行等阻塞 await 期间立即中断
+        self._stop_event = None
+
     def rebuild_prompt_builder(self):
         memory_dir = getattr(self.three_layer_memory, 'memory_dir', 'memory') if self.three_layer_memory else 'memory'
         self._prompt_builder = create_default_builder(memory_dir=memory_dir, memory=self.three_layer_memory)
         self._prompt_diff_tracker = PromptDiffTracker()
         logger.info("[AgentLoop] 提示词构建器已重建")
+
+    def prompt_diff_summary(self) -> str:
+        try:
+            return self._prompt_diff_tracker.get_cache_summary()
+        except Exception:
+            return ""
 
     def _on_tools_changed(self, new_tools: Dict[str, Any]):
         """工具列表变化时的回调（由 ToolExecutor 调用）"""
@@ -283,8 +295,14 @@ class AgentLoop:
         return None
 
     def stop(self):
-        """请求停止当前推理"""
+        """请求停止当前推理（立即生效：中断进行中的工具执行/LLM 流式）"""
         self._loop_controller.request_stop()
+        # 唤醒阻塞在工具执行/流式等待中的停止事件
+        if self._stop_event is not None and not self._stop_event.is_set():
+            try:
+                self._stop_event.set()
+            except Exception:
+                pass
 
     def update_config(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None, intent_llm=None, intent_enabled=None):
         if flash_mode is not None and flash_mode != self.flash_mode:
@@ -298,7 +316,8 @@ class AgentLoop:
             elif not flash_mode and not self.control_loop and self.heuristics:
                 from app.agent.control import create_control_loop
                 from app.agent.control.gene_post_session import GenePostSessionAnalyzer
-                self.control_loop = create_control_loop(memory_path="data/control/bandit_stats.json")
+                from app.core.util.runtime_paths import resolve_dir_writable
+                self.control_loop = create_control_loop(memory_path=os.path.join(resolve_dir_writable("data"), "control", "bandit_stats.json"))
                 heuristic_thresholds = self.heuristics.config.thresholds if self.heuristics else {}
                 self._constraint_renderer = HardConstraintRenderer(max_output_tokens=100, thresholds=heuristic_thresholds)
                 self._gene_post_session_analyzer = GenePostSessionAnalyzer()
@@ -706,6 +725,10 @@ class AgentLoop:
             return info["tool_name"], info["arguments"], trace, call_id
 
         for idx, info in enumerate(tool_calls_info):
+            # 工具执行前检查停止：停止后不再执行剩余工具，返回已执行的痕迹
+            if self._loop_controller.is_stop_requested:
+                logger.info("[AgentLoop] 停止请求，跳过剩余工具执行 | 已执行 %d/%d", idx, len(tool_calls_info))
+                return
             name, arguments, trace, call_id = await execute_and_yield(info)
             yield {"type": "tool_result", "tool": name, "call_id": call_id,
                    "arguments": arguments, "result": trace["result"], "duration_ms": trace["duration_ms"]}
@@ -744,12 +767,24 @@ class AgentLoop:
         else:
             try:
                 platform_context = self._get_session_platform_context(effective_session)
-                result = await self._tool_executor.execute(
+                result = await self._execute_tool_cancellable(
                     tool_call,
                     session_id=effective_session,
-                    platform_context=platform_context
+                    platform_context=platform_context,
                 )
                 duration_ms = (time.time() - t0) * 1000
+                if result.get("_stopped_by_user"):
+                    logger.info("[AgentLoop] 工具被用户停止中断 | tool=%s", tool_name)
+                    # 停止中断：不发布 tool_call_end，直接返回停止标记
+                    if tool_call_id:
+                        effective_memory.add_tool_result(tool_call_id, {"_stopped": True, "error": "stopped_by_user"})
+                    return {
+                        "tool": tool_name,
+                        "arguments": arguments,
+                        "result": {"_stopped": True, "error": "stopped_by_user"},
+                        "duration_ms": 0,
+                        "success": False,
+                    }
                 self._event_publisher.publish_tool_call_end(
                     session_id=effective_session,
                     iteration=iteration,
@@ -787,6 +822,117 @@ class AgentLoop:
 
         logger.info("[AgentLoop] 发送 tool_result 事件 | tool=%s | duration=%dms", tool_name, round(duration_ms))
         return trace
+
+    async def _execute_tool_cancellable(
+        self,
+        tool_call,
+        session_id: str = None,
+        platform_context: Dict = None,
+    ) -> Dict:
+
+        # 执行前已停止：直接返回
+        if self._loop_controller.is_stop_requested or (self._stop_event and self._stop_event.is_set()):
+            return {"_stopped_by_user": True, "error": "stopped_by_user"}
+
+        stop_event = self._stop_event
+        if stop_event is None:
+            # 未进入 run_stream（直接执行工具）：就地创建停止事件，保证可被停止
+            stop_event = asyncio.Event()
+            self._stop_event = stop_event
+
+        result_box = {}
+        thread_ref = {}
+
+        def _run_tool_in_thread():
+            """在专用线程中同步执行工具，记录线程 ident 供强制中断"""
+            thread_ref["ident"] = threading.get_ident()
+            try:
+                result_box["result"] = self._tool_executor.execute_sync(
+                    tool_call,
+                    session_id=session_id,
+                    platform_context=platform_context,
+                )
+            except KeyboardInterrupt:
+                # 强制中断：标记为被用户停止
+                result_box["error"] = KeyboardInterrupt()
+            except BaseException as e:
+                result_box["error"] = e
+            finally:
+                result_box["done"] = True
+
+        thread = threading.Thread(target=_run_tool_in_thread, daemon=True, name="tool-exec")
+        thread.start()
+
+        stop_task = asyncio.create_task(stop_event.wait())
+        while True:
+            # 等待工具完成或停止，0.1s 轮询以便响应中断
+            done, _ = await asyncio.wait(
+                {stop_task}, timeout=0.1,
+            )
+            if result_box.get("done"):
+                break
+            if stop_task in done or self._loop_controller.is_stop_requested:
+                # 1) 直接 kill 该线程正在运行的 shell 子进程（最彻底）
+                tid = thread_ref.get("ident")
+                if tid:
+                    self._kill_shell_subprocesses(tid)
+                    # 2) 再向工具线程抛 KeyboardInterrupt 中断剩余 Python 执行
+                    self._force_interrupt_thread(tid)
+                # 等线程退出（最多 1s）。线程是 daemon，即使阻塞在 C 层
+                # 未完全退出也不阻塞流程，后台自行收尾。
+                for _ in range(10):
+                    if not thread.is_alive():
+                        break
+                    await asyncio.sleep(0.1)
+                    if thread.is_alive() and tid:
+                        self._kill_shell_subprocesses(tid)
+                        self._force_interrupt_thread(tid)
+                return {"_stopped_by_user": True, "error": "stopped_by_user"}
+
+        if "error" in result_box:
+            exc = result_box["error"]
+            if isinstance(exc, KeyboardInterrupt):
+                return {"_stopped_by_user": True, "error": "stopped_by_user"}
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        return result_box.get("result", {"error": "tool returned no result"})
+
+    def _kill_shell_subprocesses(self, thread_id: int) -> int:
+        candidates = [self.shell]
+        # 从工具注册表找 ShellTool
+        tool_shells = getattr(self, "_tool_executor", None)
+        if tool_shells is not None:
+            for tool in getattr(tool_shells, "tools", {}).values():
+                inner = getattr(tool, "shell", None)
+                if inner is not None and inner not in candidates:
+                    candidates.append(inner)
+        for cand in candidates:
+            try:
+                if cand is not None and hasattr(cand, "kill_thread_processes"):
+                    killed = cand.kill_thread_processes(thread_id)
+                    if killed:
+                        return killed
+            except Exception:
+                continue
+        return 0
+
+    @staticmethod
+    def _force_interrupt_thread(thread_id: int) -> bool:
+
+        try:
+            import ctypes
+            res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_long(thread_id),
+                ctypes.py_object(KeyboardInterrupt),
+            )
+            if res == 0 or res > 1:
+                # 无效线程 ID 或多个异常被设置，清理
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_long(thread_id), None
+                )
+                return False
+            return res == 1
+        except Exception:
+            return False
 
     def _finalize_session(
         self,
@@ -912,6 +1058,9 @@ class AgentLoop:
         effective_session = session_id or self.session_id
         start_time = time.time()
 
+        # 本轮循环的停止事件（stop() 可跨线程 set，asyncio.Event.set 线程安全）
+        self._stop_event = asyncio.Event()
+
         if effective_memory:
             effective_memory.clear_ephemeral_messages()
             removed = effective_memory.remove_gene_system_messages()
@@ -928,6 +1077,7 @@ class AgentLoop:
                 session_id=effective_session,
                 message=user_input,
             )
+            yield {"type": "message_received", "message": user_input}
             effective_memory.add_user_message(user_input)
 
             # === 1.5 会话目标更新 ===
@@ -999,7 +1149,7 @@ class AgentLoop:
                         "description": phase_msg["description"],
                     }
 
-            yield {"type": "thinking", "content": "正在思考..."}
+            yield {"type": "status", "content": "正在思考..."}
 
             # LLM 意图匹配 Gene（取代关键词匹配，减少误判）
             if self.control_loop and self._loop_state and not self._loop_state.matched_gene_type:
@@ -1036,7 +1186,7 @@ class AgentLoop:
                 is_gene_processing = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
                 if not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact():
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
-                    yield {"type": "thinking", "content": "正在压缩会话记忆..."}
+                    yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
                     await self._session_compactor.compact_now(effective_memory, session_notes)
                     self._persist_conversation(
@@ -1122,7 +1272,7 @@ class AgentLoop:
 
                     if decision.force_memory_compact and not self.flash_mode and not is_gene_processing:
                         logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
-                        yield {"type": "thinking", "content": "正在根据控制决策压缩上下文..."}
+                        yield {"type": "status", "content": "正在根据控制决策压缩上下文..."}
                         session_notes = self._get_session_notes(effective_session)
                         await self._session_compactor.compact_now(effective_memory, session_notes)
 
@@ -1297,13 +1447,128 @@ class AgentLoop:
                 tool_defs = self._get_tools_definition()
                 logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
                            iteration, len(llm_messages), len(tool_defs))
-                # 经 PromptDiffTracker 调用 LLM（自动追踪前缀缓存）
-                response = await self._prompt_diff_tracker.chat(
-                    llm_engine=self.llm,
-                    messages=llm_messages,
-                    tools=tool_defs,
-                    max_tokens=self._resolve_runtime_max_tokens(_active_constraint),
-                )
+                # 经 PromptDiffTracker 流式调用 LLM（自动追踪前缀缓存 + 逐 chunk 输出）
+                _stream_reasoning = []
+                _stream_content = []
+                _stream_tool_calls = []
+                response = None
+                # 用辅助任务包装流式调用：主循环等待队列并检查停止标志，
+                _stream_finished = asyncio.Event()
+                _stream_error = None
+                _stream_queue = asyncio.Queue()
+
+                async def _collect_stream():
+                    nonlocal response, _stream_error
+                    try:
+                        async for chunk in self._prompt_diff_tracker.chat_stream(
+                            llm_engine=self.llm,
+                            messages=llm_messages,
+                            tools=tool_defs,
+                            max_tokens=self._resolve_runtime_max_tokens(_active_constraint),
+                        ):
+                            _stream_queue.put_nowait(chunk)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        _stream_error = e
+                    finally:
+                        _stream_finished.set()
+
+                _stream_task = asyncio.create_task(_collect_stream())
+                _stop_emitted = False
+
+                # 事件驱动等待：阻塞等待新 chunk，每处理完一个 chunk 即检查停止请求，
+                # wait_for 超时（0.1s）兜底处理流结束但队列停滞的边界。
+                # 相比原 20ms 忙轮询显著降低 CPU 占用，且不会因持续流入的 chunk 饿死停止检查。
+                while True:
+                    if self._loop_controller.is_stop_requested:
+                        if not _stop_emitted:
+                            _stop_emitted = True
+                            _stream_task.cancel()
+                            try:
+                                await _stream_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            async for event in self._emit_stop_and_finalize(
+                                stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
+                                user_input=user_input,
+                                effective_session=effective_session,
+                                effective_memory=effective_memory,
+                                tool_traces=tool_traces,
+                                iteration=iteration,
+                                start_time=start_time,
+                                final_response_content=self._get_last_assistant_message(effective_memory),
+                            ):
+                                yield event
+                        return
+                    # 阻塞等待新 chunk，期间可被超时打断以周期性检查停止请求
+                    try:
+                        chunk = await asyncio.wait_for(
+                            _stream_queue.get(), timeout=0.1
+                        )
+                    except asyncio.TimeoutError:
+                        # 流已结束且队列空：退出（无 chunk 残留的异常/完成场景）
+                        if _stream_finished.is_set() and _stream_queue.empty():
+                            break
+                        continue
+                    ctype = chunk.get("type")
+                    if ctype == "content":
+                        _stream_content.append(chunk.get("text", ""))
+                        yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                    elif ctype == "tool_calls":
+                        _stream_tool_calls = chunk.get("calls", [])
+                    elif ctype == "done":
+                        response = chunk.get("response")
+                    # 每次处理 chunk 后立即检查停止，避免被持续流入的 chunk 饿死
+                    if self._loop_controller.is_stop_requested:
+                        if not _stop_emitted:
+                            _stop_emitted = True
+                            _stream_task.cancel()
+                            try:
+                                await _stream_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            async for event in self._emit_stop_and_finalize(
+                                stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
+                                user_input=user_input,
+                                effective_session=effective_session,
+                                effective_memory=effective_memory,
+                                tool_traces=tool_traces,
+                                iteration=iteration,
+                                start_time=start_time,
+                                final_response_content=self._get_last_assistant_message(effective_memory),
+                            ):
+                                yield event
+                        return
+                    if _stream_finished.is_set() and _stream_queue.empty():
+                        break
+                # 流式结束后清空队列残留（避免一次性 fallback 的 done 未被消费）
+                try:
+                    while True:
+                        chunk = _stream_queue.get_nowait()
+                        ctype = chunk.get("type")
+                        if ctype == "content":
+                            _stream_content.append(chunk.get("text", ""))
+                            yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                        elif ctype == "tool_calls":
+                            _stream_tool_calls = chunk.get("calls", [])
+                        elif ctype == "done":
+                            response = chunk.get("response")
+                except asyncio.QueueEmpty:
+                    pass
+                if _stream_error is not None:
+                    # 原 async for 语义：流式异常向上传播，由外层捕获产 error 事件
+                    raise _stream_error
+
+                # 流式未产出 done（异常降级）：用累积内容构造响应
+                if response is None:
+                    from app.agent.llm.models import ChatResponse
+                    response = ChatResponse(
+                        content="".join(_stream_content),
+                        tool_calls=_stream_tool_calls,
+                        reasoning_content="".join(_stream_reasoning) or None,
+                        finish_reason="stop",
+                    )
 
                 logger.info("[AgentLoop] 迭代 %d: LLM 返回 (tool_calls=%d, content长度=%d)",
                            iteration, len(response.tool_calls) if response.tool_calls else 0, len(response.content or ""))
@@ -1325,12 +1590,6 @@ class AgentLoop:
                             logger.info("[AgentLoop] 模型判断可直接回答，跳过工具调用")
                         else:
                             logger.info("[AgentLoop] 模型需要用户澄清")
-                        is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(response.content or "")
-                        if is_json_thinking and reasoning_text:
-                            yield {"type": "thinking", "content": reasoning_text}
-                        if after_json_text:
-                            yield {"type": "content_chunk", "content": after_json_text}
-                        # 保存消息到 memory（Flash 模式也保存，但不注入上下文）
                         effective_memory.add_assistant_message(
                             response.content or "",
                             reasoning_content=response.reasoning_content
@@ -1347,8 +1606,9 @@ class AgentLoop:
                             if decision.should_stop:
                                 logger.info("[AgentLoop] ControlLoop 决定终止循环")
 
-                        # 统一收尾
-                        content = after_json_text or reasoning_text or ""
+                        # 统一收尾（用剥离 JSON 思考后的纯文本作为最终内容）
+                        _, _, _clean_after = self._extract_text_from_thinking(response.content or "")
+                        content = _clean_after or response.content or ""
                         done_event = self._finalize_session(
                             user_input=user_input,
                             effective_session=effective_session,
@@ -1419,13 +1679,8 @@ class AgentLoop:
                             self._loop_state.gene_tool_call_count = 0
 
                     # LLM 在工具调用前输出的文本内容（interim content）
+                    # 流式已逐 chunk 产出 content_chunk，此处仅保留文本供 memory 使用
                     interim_content = (response.content or "").strip()
-                    if interim_content:
-                        is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(interim_content)
-                        if is_json_thinking and reasoning_text:
-                            yield {"type": "thinking", "content": reasoning_text}
-                        if after_json_text:
-                            yield {"type": "content_chunk", "content": after_json_text}
 
                     # 收集本轮所有工具调用信息（先收集，再批量写入 memory）
                     tool_calls_info: List[Dict[str, Any]] = []
@@ -1452,7 +1707,7 @@ class AgentLoop:
                         # 使用 tool_call.id 作为唯一标识符（确保前后端匹配）
                         call_id = original_tool_call_id or f"{tool_name}_{id(tool_call)}"
                         logger.info("[AgentLoop] 发送 tool_start 事件 | tool=%s | call_id=%s", tool_name, call_id)
-                        yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description, "call_id": call_id}
+                        yield {"type": "tool_start", "tool": tool_name, "arguments": arguments, "description": description, "call_id": call_id, "gene": is_gene_processing_round}
 
                         self._event_publisher.publish_tool_call_start(
                             session_id=effective_session,
@@ -1526,6 +1781,22 @@ class AgentLoop:
                                     self._loop_state.last_error = error_msg
                                     logger.debug("[AgentLoop] 记录工具错误 | tool=%s | error=%s", tool_name, error_msg[:50])
                         yield event
+
+                    # 工具执行后立即检查停止：停止时马上 emit 停止，不再走下一轮迭代
+                    if self._loop_controller.is_stop_requested:
+                        logger.info("[AgentLoop] 工具执行后检测到停止请求，立即中断")
+                        async for event in self._emit_stop_and_finalize(
+                            stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
+                            user_input=user_input,
+                            effective_session=effective_session,
+                            effective_memory=effective_memory,
+                            tool_traces=tool_traces,
+                            iteration=iteration,
+                            start_time=start_time,
+                            final_response_content=self._get_last_assistant_message(effective_memory),
+                        ):
+                            yield event
+                        return
 
                     if self._loop_state:
                         set_runtime_status(self._loop_state)
@@ -1670,7 +1941,7 @@ class AgentLoop:
                             response.content or "",
                             reasoning_content=response.reasoning_content
                         )
-                    yield {"type": "thinking", "content": "输出被截断，正在补充..."}
+                    yield {"type": "status", "content": "输出被截断，正在补充..."}
                     continue
 
                 # === 5.7 工具帮助检测 ===
@@ -1695,7 +1966,7 @@ class AgentLoop:
                         effective_memory.add_user_message(
                             f"[系统] 以下是可用工具的完整定义，请参考后重新执行操作：\n\n{help_text}"
                         )
-                    yield {"type": "thinking", "content": "正在分析工具定义..."}
+                    yield {"type": "status", "content": "正在分析工具定义..."}
                     continue
 
                 # === 6. 最终回复===
@@ -1704,16 +1975,12 @@ class AgentLoop:
                 is_looping, repeated_output = self._loop_controller.check_output_loop(content)
                 if is_looping:
                     logger.warning("[AgentLoop] 检测到循环重复输出")
-                    is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
+                    # 流式已逐 chunk 产出，此处仅保存 memory
                     if not self.flash_mode:
                         effective_memory.add_assistant_message(
                             content,
                             reasoning_content=response.reasoning_content
                         )
-                    if is_json_thinking and reasoning_text:
-                        yield {"type": "thinking", "content": reasoning_text}
-                    if after_json_text:
-                        yield {"type": "content_chunk", "content": after_json_text}
                     async for event in self._emit_stop_and_finalize(
                         stop_event={
                             "type": "stopped",
@@ -1757,11 +2024,7 @@ class AgentLoop:
                     content,
                     reasoning_content=response.reasoning_content
                 )
-                is_json_thinking, reasoning_text, after_json_text = self._extract_text_from_thinking(content)
-                if is_json_thinking and reasoning_text:
-                    yield {"type": "thinking", "content": reasoning_text}
-                if after_json_text:
-                    yield {"type": "content_chunk", "content": after_json_text}
+                # 流式已逐 chunk 产出 thinking/content_chunk，此处不再重复 yield
 
                 # Mechanism B: 复杂任务触发，在最终回复后由主 Agent 处理 Gene
                 if self._loop_state and getattr(self._loop_state, 'gene_creation_source', '') == "complexity":
@@ -1770,7 +2033,7 @@ class AgentLoop:
                         logger.info("[AgentLoop] Mechanism B: 触发 Gene 评估轮次")
                         self._pending_gene_prompt = gene_prompt
                         self._loop_state.gene_processing_done = True
-                        yield {"type": "thinking", "content": "正在评估是否需要创建或进化 Gene..."}
+                        yield {"type": "status", "content": "正在评估是否需要创建或进化 Gene..."}
                         continue
                     elif getattr(self._loop_state, 'gene_processing_done', False):
                         logger.info("[AgentLoop] Mechanism B: Gene 评估完成")

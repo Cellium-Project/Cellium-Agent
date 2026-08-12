@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
 
 # 下载文件保存目录
-DOWNLOAD_DIR = Path("workspace") / "downloads" / "telegram"
+def _default_download_dir():
+    from app.core.util.runtime_paths import resolve_dir_writable
+    return Path(resolve_dir_writable("workspace")) / "downloads" / "telegram"
 
 
 class TelegramAdapter(ChannelAdapter):
@@ -43,7 +45,7 @@ class TelegramAdapter(ChannelAdapter):
         self._use_rich_messages = use_rich_messages
 
         # 创建下载目录
-        self.download_dir = DOWNLOAD_DIR
+        self.download_dir = _default_download_dir()
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None

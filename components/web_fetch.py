@@ -15,7 +15,6 @@ import threading
 from typing import Dict, Any, Optional, Tuple
 
 import httpx
-from DrissionPage import ChromiumPage, ChromiumOptions
 
 from app.core.interface.base_cell import BaseCell
 from app.core.util.browser_utils import find_browser_path, get_browser_candidates
@@ -174,6 +173,7 @@ class WebFetch(BaseCell):
             force_headless: 强制指定 headless 模式（None 则使用实例设置）
         """
         import random
+        from DrissionPage import ChromiumOptions
 
         options = ChromiumOptions()
         resolved_browser_path = browser_path or self._working_browser_path or find_browser_path()
@@ -224,6 +224,7 @@ class WebFetch(BaseCell):
         return self._build_options(force_headless=force_headless)
 
     def _probe_browser(self, browser_path: str) -> Tuple[bool, Optional[str]]:
+        from DrissionPage import ChromiumPage
         page = None
         try:
             page = ChromiumPage(self._build_options(browser_path=browser_path), timeout=10)
@@ -1456,7 +1457,8 @@ class WebFetch(BaseCell):
         except Exception:
             domain = 'unknown'
 
-        workspace_dir = os.path.join("workspace", "web_fetch_screenshots")
+        from app.core.util.runtime_paths import resolve_dir_writable
+        workspace_dir = os.path.join(resolve_dir_writable("workspace"), "web_fetch_screenshots")
         os.makedirs(workspace_dir, exist_ok=True)
         timestamp = int(time.time())
         file_path = os.path.join(workspace_dir, f"{domain}_{timestamp}.png")

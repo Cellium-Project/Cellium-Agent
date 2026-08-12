@@ -212,6 +212,18 @@ class ComponentAuditor:
 
         is_exempted = cell_name in self.EXEMPTED_NAMES if cell_name else False
 
+        if is_exempted:
+            result = AuditResult(
+                passed=True,
+                component_name=cell_name or "(未知)",
+                component_type=cell_type,
+                issues=[],
+                warnings=[],
+                score=100,
+            )
+            logger.debug("[ComponentAudit] %s | 白名单组件，跳过审查", cell_name)
+            return result
+
         issues = []
         warnings = []
         score = 100  

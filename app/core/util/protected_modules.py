@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 # 路径隔离（Root Jail）配置
 # ============================================================
 
-# 允许组件访问的根目录（默认为项目目录下的 sandbox_root）
-SANDBOX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "sandbox_root"))
+def _get_sandbox_root() -> str:
+    from app.core.util.runtime_paths import resolve_dir_writable
+    return resolve_dir_writable("sandbox_root")
 
 # 路径相关的函数需要拦截
 PATH_SENSITIVE_FUNCTIONS = {
@@ -67,16 +68,16 @@ def _resolve_path(path: Any) -> str:
 
 def _translate_path(user_path: str) -> str:
     try:
-        # 确保沙箱根目录存在
-        if not os.path.exists(SANDBOX_ROOT):
-            os.makedirs(SANDBOX_ROOT, exist_ok=True)
+        sandbox_root = _get_sandbox_root()
+        if not os.path.exists(sandbox_root):
+            os.makedirs(sandbox_root, exist_ok=True)
 
         resolved = _resolve_path(user_path)
 
         resolved = resolved.replace('\\', '/')
 
         if len(resolved) >= 2 and resolved[1] == ':':
-            drive = resolved[0].upper() 
+            drive = resolved[0].upper()
             rest = resolved[2:].lstrip('/')
             relative_path = f"{drive}_/{rest}"
         elif resolved.startswith('/'):
@@ -84,7 +85,7 @@ def _translate_path(user_path: str) -> str:
         else:
             abs_path = os.path.abspath(resolved)
             abs_path_normalized = abs_path.replace('\\', '/')
-            sandbox_root_normalized = os.path.abspath(SANDBOX_ROOT).replace('\\', '/')
+            sandbox_root_normalized = os.path.abspath(sandbox_root).replace('\\', '/')
 
             if abs_path_normalized.startswith(sandbox_root_normalized):
                 return abs_path
@@ -97,12 +98,12 @@ def _translate_path(user_path: str) -> str:
         safe_parts = [p for p in parts if p and p != '.' and p != '..']
         safe_relative = os.sep.join(safe_parts)
 
-        final_path = os.path.join(SANDBOX_ROOT, safe_relative)
+        final_path = os.path.join(sandbox_root, safe_relative)
         return os.path.normpath(final_path)
 
     except Exception as e:
         logger.warning("[ProtectedModules] 路径映射失败: %s, 使用默认路径", e)
-        return SANDBOX_ROOT
+        return _get_sandbox_root()
 
 
 def _make_secure_path_func(original_func: Callable, func_name: str) -> Callable:

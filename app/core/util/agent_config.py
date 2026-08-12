@@ -59,10 +59,9 @@ class AgentConfig:
             return
         self._initialized = True
 
-        # 配置目录: 项目根目录/config/agent/
         if config_dir is None:
-            base_dir = pathlib.Path(__file__).resolve().parent.parent.parent.parent
-            self._config_dir = base_dir / "config" / "agent"
+            from app.core.util.runtime_paths import resolve_config_dir
+            self._config_dir = pathlib.Path(resolve_config_dir())
         else:
             self._config_dir = config_dir
 

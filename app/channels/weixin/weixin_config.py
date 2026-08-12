@@ -30,7 +30,7 @@ class WeixinChannelConfig(BaseChannelConfig):
 
     def _load_config(self):
         channel_cfg = self._load_yaml_config()
-        self._state_dir = channel_cfg.get("state_dir") or os.environ.get("WEIXIN_STATE_DIR", "data/weixin")
+        self._state_dir = channel_cfg.get("state_dir") or os.environ.get("WEIXIN_STATE_DIR") or self._default_state_dir()
         self._bot_agent = channel_cfg.get("bot_agent", "Cellium Agent")
         self._base_url = channel_cfg.get("base_url") or os.environ.get("WEIXIN_BASE_URL")
         self._enabled = channel_cfg.get("enabled", False)
@@ -39,8 +39,12 @@ class WeixinChannelConfig(BaseChannelConfig):
         if not channel_cfg and not self._state_dir:
             self._load_from_env()
 
+    def _default_state_dir(self) -> str:
+        from app.core.util.runtime_paths import resolve_dir_writable
+        return os.path.join(resolve_dir_writable("data"), "weixin")
+
     def _load_from_env(self):
-        self._state_dir = os.environ.get("WEIXIN_STATE_DIR", "data/weixin")
+        self._state_dir = os.environ.get("WEIXIN_STATE_DIR") or self._default_state_dir()
         self._base_url = os.environ.get("WEIXIN_BASE_URL")
         self._enabled = True
         self._auto_start = True
@@ -53,7 +57,10 @@ class WeixinChannelConfig(BaseChannelConfig):
 
     def get_state_dir(self, force_reload: bool = False) -> str:
         self.get_config(force_reload=force_reload)
-        return self._state_dir or "data/weixin"
+        from app.core.util.runtime_paths import resolve_dir_writable
+        if self._state_dir:
+            return self._state_dir if os.path.isabs(self._state_dir) else os.path.join(resolve_dir_writable("data"), self._state_dir.replace("data/", "").replace("data\\", ""))
+        return os.path.join(resolve_dir_writable("data"), "weixin")
 
     def get_bot_agent(self, force_reload: bool = False) -> str:
         self.get_config(force_reload=force_reload)

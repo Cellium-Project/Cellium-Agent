@@ -57,15 +57,21 @@ async def lifespan_context(app: FastAPI):
             webbrowser.open(f"http://{host}:{port}")
         except Exception:
             pass
-    
-    if sys.platform == "win32" or sys.platform == "darwin" or os.environ.get("DISPLAY"):
+
+    if getattr(app.state, "auto_open_browser", True) and (
+        sys.platform == "win32" or sys.platform == "darwin" or os.environ.get("DISPLAY")
+    ):
         asyncio.create_task(open_browser_delayed())
-    
+
     yield
 
 
-def create_app() -> FastAPI:
-    """创建 FastAPI 应用"""
+def create_app(auto_open_browser: bool = True) -> FastAPI:
+    """创建 FastAPI 应用
+
+    Args:
+        auto_open_browser: 启动后是否自动打开浏览器（TUI 模式传 False）
+    """
 
     from app.core.util.agent_config import get_config
     cfg = get_config()
@@ -76,6 +82,7 @@ def create_app() -> FastAPI:
         version="2.0.0",
         lifespan=lifespan_context,
     )
+    app.state.auto_open_browser = auto_open_browser
 
     cors_origins = cfg.get("server.cors_origins", ["*"])
     if isinstance(cors_origins, str):
@@ -115,7 +122,8 @@ def create_app() -> FastAPI:
     app.include_router(scheduler_router)
     app.include_router(upload_router)
 
-    html_dir = cfg.get("server.static_dir") or os.path.join(os.path.dirname(__file__), "..", "..", "html")
+    from app.core.util.runtime_paths import resolve_dir
+    html_dir = cfg.get("server.static_dir") or resolve_dir("html")
     if os.path.exists(html_dir):
         app.mount("/assets", StaticFiles(directory=os.path.join(html_dir, "assets")), name="assets")
         app.mount("/font", StaticFiles(directory=os.path.join(html_dir, "font")), name="font")

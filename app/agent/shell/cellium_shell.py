@@ -9,6 +9,7 @@ import re
 import signal
 import asyncio
 import time
+import threading
 import tempfile
 import logging
 import subprocess
@@ -265,6 +266,45 @@ class CelliumShell:
         self._shell_name: str = ""
         self._pwsh_path: Optional[str] = None
         self._init_platform_shell()
+
+        # 全局活动子进程注册表（thread_id -> [Popen, ...]）：停止时按线程 kill 子进程
+        self._active_processes: Dict[int, List] = {}
+        self._processes_lock = threading.Lock()
+
+    def _register_process(self, process) -> None:
+        """注册当前线程的活动子进程（供停止时 kill）"""
+        tid = threading.get_ident()
+        with self._processes_lock:
+            self._active_processes.setdefault(tid, []).append(process)
+
+    def _unregister_process(self, process) -> None:
+        """取消注册子进程"""
+        tid = threading.get_ident()
+        with self._processes_lock:
+            procs = self._active_processes.get(tid)
+            if procs:
+                try:
+                    procs.remove(process)
+                except ValueError:
+                    pass
+                if not procs:
+                    self._active_processes.pop(tid, None)
+
+    def kill_thread_processes(self, thread_id: int = None) -> int:
+        """kill 指定线程正在运行的子进程，返回杀掉的进程数"""
+        killed = 0
+        tid = thread_id or threading.get_ident()
+        with self._processes_lock:
+            procs = self._active_processes.pop(tid, [])
+        for proc in procs:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    killed += 1
+            except Exception:
+                pass
+        return killed
 
     def _init_platform_shell(self) -> None:
         """根据操作系统选择默认 Shell"""
@@ -566,6 +606,7 @@ class CelliumShell:
                 env=env,
                 shell=False,
             )
+            self._register_process(process)
 
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
@@ -598,11 +639,24 @@ class CelliumShell:
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
+            except KeyboardInterrupt:
+                # 用户停止：kill 子进程并向上传播中断（交由上层标记停止）
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._unregister_process(process)
 
         except FileNotFoundError:
             return {"success": False, "error": f"命令未找到: {argv[0]}"}
         except PermissionError as e:
             return {"success": False, "error": f"权限拒绝: {e}"}
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             return {"success": False, "error": f"执行失败 ({type(e).__name__}): {e}"}
 
@@ -737,6 +791,7 @@ class CelliumShell:
                 env=env,
                 shell=False,
             )
+            self._register_process(process)
 
             try:
                 if stdin_data:
@@ -775,11 +830,24 @@ class CelliumShell:
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
+            except (KeyboardInterrupt):
+                # 用户停止：kill 子进程并向上传播中断
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._unregister_process(process)
 
         except FileNotFoundError:
             return {"success": False, "error": f"命令未找到: {shell_cmd}"}
         except PermissionError as e:
             return {"success": False, "error": f"权限拒绝: {e}"}
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             return {"success": False, "error": f"执行失败 ({type(e).__name__}): {e}"}
 

@@ -16,7 +16,6 @@ import hashlib
 import threading
 from functools import lru_cache
 from typing import Optional, Any
-from DrissionPage import ChromiumPage, ChromiumOptions
 
 from app.core.interface.base_cell import BaseCell
 from app.core.util.browser_utils import find_browser_path

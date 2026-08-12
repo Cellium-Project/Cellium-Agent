@@ -47,8 +47,9 @@ class SessionStore:
 
     def __init__(self, store_path: str = None, archive_dir: str = None):
         if store_path is None:
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            store_path = os.path.join(base_dir, "memory", "sessions.json")
+            from app.core.util.runtime_paths import resolve_dir_writable
+            memory_dir = resolve_dir_writable("memory")
+            store_path = os.path.join(memory_dir, "sessions.json")
 
         self.store_path = store_path
         if archive_dir is None:

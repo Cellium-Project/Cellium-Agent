@@ -24,6 +24,7 @@ Agent 工具基类 - 借鉴 BaseCell 的 _cmd_ 命令映射模式
 import logging
 import inspect
 import re
+import typing
 from typing import Dict, Any
 
 
@@ -245,6 +246,7 @@ class BaseTool:
 
                     annotation = param.annotation
                     if annotation != inspect.Parameter.empty:
+                        origin = typing.get_origin(annotation)
                         type_map = {
                             int: "integer",
                             float: "number",
@@ -252,8 +254,9 @@ class BaseTool:
                             list: "array",
                             dict: "object",
                             str: "string",
+                            tuple: "array",
                         }
-                        param_info["type"] = type_map.get(annotation, "string")
+                        param_info["type"] = type_map.get(origin if origin in type_map else annotation, "string")
 
                     params[param_name] = param_info
 

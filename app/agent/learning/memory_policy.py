@@ -49,7 +49,8 @@ class PolicyBanditMemory:
     def __init__(self, path: str = None, policies: list = None,
                  decay_interval: int = 50, decay_factor: float = 0.99,
                  prior_alpha: float = 2.0, prior_beta: float = 2.0):
-        self.path = path or "data/learning/policy_bandit_stats.json"
+        from app.core.util.runtime_paths import resolve_dir_writable
+        self.path = path or os.path.join(resolve_dir_writable("data"), "learning", "policy_bandit_stats.json")
         self.policies = policies or ["default", "efficient", "aggressive"]
         self.decay_interval = decay_interval
         self.decay_factor = decay_factor

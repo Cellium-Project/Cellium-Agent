@@ -74,4 +74,5 @@ class EditTransaction:
             "path": file_path,
             "count": info.get("count", 0),
             "diff": diff,
+            "content": new_content,
         }

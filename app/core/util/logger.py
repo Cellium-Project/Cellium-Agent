@@ -49,6 +49,7 @@ LOG_LEVELS = {
 _loggers: dict = {}
 _file_handler: Optional[logging.Handler] = None
 _console_handler: Optional[logging.Handler] = None
+_console_enabled: bool = True  # 控制台输出开关
 
 _runtime_status: Optional["RuntimeStatus"] = None
 _status_history: List["RuntimeStatus"] = []
@@ -523,14 +524,15 @@ def setup_logger(
     logger_obj = logging.getLogger(name)
     logger_obj.setLevel(numeric_level)
 
-    # 控制台输出
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(numeric_level)
-    formatter = logging.Formatter(log_format)
-    handler.setFormatter(formatter)
+    # 控制台输出（TUI 模式下 _console_enabled=False 则跳过，避免污染界面）
+    if _console_enabled:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(numeric_level)
+        formatter = logging.Formatter(log_format)
+        handler.setFormatter(formatter)
 
-    if not logger_obj.handlers:
-        logger_obj.addHandler(handler)
+        if not logger_obj.handlers:
+            logger_obj.addHandler(handler)
 
     try:
         buf = _LogBufferHandler._instance
@@ -543,6 +545,23 @@ def setup_logger(
     _loggers[name] = logger_obj
 
     return logger_obj
+
+
+def set_console_logging(enabled: bool):
+    """动态开关控制台日志输出（TUI 模式关闭，避免日志污染界面；日志仍进缓冲区）"""
+    global _console_enabled
+    _console_enabled = bool(enabled)
+    if not enabled:
+        # 移除所有已存在的 stdout/stderr StreamHandler
+        for name in list(_loggers):
+            lg = _loggers[name]
+            for h in list(lg.handlers):
+                if isinstance(h, logging.StreamHandler):
+                    lg.removeHandler(h)
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            if isinstance(h, logging.StreamHandler):
+                root.removeHandler(h)
 
 
 def get_logger(name: str) -> logging.Logger:

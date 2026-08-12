@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cellium-agent"
+version = "1.4.1"
+description = "Cellium Agent - 桌面 AI 助手"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.140.0",
+    "uvicorn[standard]>=0.51.0",
+    "pydantic>=2.13.4",
+    "python-multipart>=0.0.32",
+    "pyyaml>=6.0.3",
+    "DrissionPage>=4.1.1.4",
+    "websockets>=11.0,<16.0",
+    "httpx>=0.28.1",
+    "textual>=8.0.0",
+]
+
+[project.optional-dependencies]
+lark = ["lark-oapi>=1.7.1"]
+
+[project.scripts]
+cellium = "main:main_tui"
+cellium-web = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.data-files]
+"cellium/html" = ["html/index.html", "html/logo.png"]
+"cellium/html/assets" = ["html/assets/*"]
+"cellium/html/font" = ["html/font/*"]
+"cellium/dll" = ["dll/.gitkeep"]
+"cellium/dll/darwin-arm64" = ["dll/darwin-arm64/libvector_engine.dylib"]
+"cellium/dll/linux-aarch64" = ["dll/linux-aarch64/libvector_engine.so"]
+"cellium/dll/linux-x86_64" = ["dll/linux-x86_64/libvector_engine.so"]
+"cellium/dll/windows-x86_64" = ["dll/windows-x86_64/vector_engine.dll"]
+"cellium/config" = ["config/settings.yaml"]
+"cellium/config/agent" = ["config/agent/agent.yaml", "config/agent/channels.yaml", "config/agent/heuristics.yaml", "config/agent/learning.yaml", "config/agent/llm.yaml", "config/agent/logging.yaml", "config/agent/memory.yaml", "config/agent/model_registry.yaml", "config/agent/routes.yaml", "config/agent/security.yaml", "config/agent/server.yaml"]
+"cellium/vendor" = ["vendor/.gitkeep"]
+"cellium/vendor/ripgrep" = ["vendor/ripgrep/.gitkeep"]
+"cellium/vendor/ripgrep/x86_64-pc-windows-msvc" = ["vendor/ripgrep/x86_64-pc-windows-msvc/rg.exe"]
+"cellium/vendor/ripgrep/aarch64-apple-darwin" = ["vendor/ripgrep/aarch64-apple-darwin/rg"]
+"cellium/vendor/ripgrep/x86_64-unknown-linux-musl" = ["vendor/ripgrep/x86_64-unknown-linux-musl/rg"]
+"cellium/vendor/ripgrep/aarch64-unknown-linux-gnu" = ["vendor/ripgrep/aarch64-unknown-linux-gnu/rg"]
+"cellium/components" = ["components/__init__.py", "components/_example_component.py", "components/component_builder.py", "components/feishu_files.py", "components/qq_files.py", "components/scheduler.py", "components/skill_installer.py", "components/skill_manager.py", "components/sub_agent.py", "components/telegram_files.py", "components/web_fetch.py", "components/web_search.py", "components/weixin_files.py"]
+"cellium/components/skills" = ["components/skills/__init__.py"]
+"cellium/memory" = ["memory/personality.md"]
+"cellium/licenses" = ["licenses/ripgrep-LICENSE"]

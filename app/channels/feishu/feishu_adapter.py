@@ -631,7 +631,8 @@ class FeishuAdapter(ChannelAdapter):
                 else:
                     filename = file_key.split("/")[-1] if "/" in file_key else f"file_{file_key[:8]}"
 
-            save_dir = Path("workspace") / sub_dir
+            from app.core.util.runtime_paths import resolve_dir_writable
+            save_dir = Path(resolve_dir_writable("workspace")) / sub_dir
             save_dir.mkdir(parents=True, exist_ok=True)
             file_path = save_dir / filename
 
