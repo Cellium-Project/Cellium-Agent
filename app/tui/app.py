@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
+import os
+
+os.environ.setdefault("TEXTUAL_COLOR_SYSTEM", "truecolor")
+
 import asyncio
 import json
 import re
-import os
 import threading
 import time
 
