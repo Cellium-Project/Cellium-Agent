@@ -277,6 +277,9 @@
     },
     "channel": {
       "title": "通道設定",
+      "showToolCards": "工具卡片",
+      "showToolCardsOn": "已開啟",
+      "showToolCardsOff": "已關閉",
       "qq": {
         "title": "QQ 機器人通道",
         "enabled": "啟用通道",

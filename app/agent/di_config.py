@@ -363,11 +363,28 @@ def setup_agent_di(
 
     _cfg.on_change("logging", _on_logging_config_change)
 
+    def _only_show_tool_cards_changed(old_val, new_val) -> bool:
+        """判断 channels 配置变化是否仅涉及 show_tool_cards（无需重连通道）"""
+        old_d = old_val or {}
+        new_d = new_val or {}
+        for platform in set(old_d) | set(new_d):
+            old_p = old_d.get(platform) or {}
+            new_p = new_d.get(platform) or {}
+            old_rest = {k: v for k, v in old_p.items() if k != "show_tool_cards"}
+            new_rest = {k: v for k, v in new_p.items() if k != "show_tool_cards"}
+            if old_rest != new_rest:
+                return False
+        return True
+
     def _on_channels_config_change(section, old_val, new_val):
         """channels 配置变更时重新加载通道配置并重连"""
         if section != "channels":
             return
         try:
+            # 仅工具卡片显示开关变化：直接生效，无需断开重连
+            if _only_show_tool_cards_changed(old_val, new_val):
+                logger.info("[AgentDI] 仅工具卡片显示配置变更，跳过通道重连")
+                return
             from app.channels.qq import QQChannelConfig
             from app.channels.telegram import TelegramChannelConfig
             from app.channels import ChannelManager

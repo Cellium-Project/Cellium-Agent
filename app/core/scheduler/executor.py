@@ -116,6 +116,7 @@ class SchedulerExecutor:
             from app.server.task_manager import get_task_manager
             from app.channels import ChannelManager
             from app.agent.loop.session_manager import get_session_manager
+            from app.messaging.message_broker import get_message_broker
             
             task_mgr = get_task_manager()
             channel_mgr = ChannelManager.get_instance()
@@ -134,10 +135,7 @@ class SchedulerExecutor:
             if not started:
                 raise RuntimeError("无法启动任务")
             
-            queue = task_mgr.get_queue(session_id)
-            if queue is None:
-                raise RuntimeError("任务队列不可用")
-            
+            queue = get_message_broker().subscribe(session_id)
             task_info = {
                 "task_id": task.task_id,
                 "task_name": task.task_name,

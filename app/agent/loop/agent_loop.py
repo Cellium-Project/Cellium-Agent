@@ -166,6 +166,7 @@ class AgentLoop:
             keep_recent_messages=session_config.get("keep_recent_messages", 10),
             max_notes_length=session_config.get("max_notes_length", 2000),
             repository=three_layer_memory.repository if three_layer_memory else None,
+            archive=three_layer_memory.archive if three_layer_memory else None,
         )
 
         # 循环控制器
@@ -639,7 +640,7 @@ class AgentLoop:
             json_str = match.group(1).strip()
             try:
                 data = json.loads(json_str)
-                if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                if isinstance(data, dict) and isinstance(data.get("reasoning"), str) and data["reasoning"].strip():
                     reasoning = data.get("reasoning", "")
                     before_json = content[:match.start()].strip()
                     after_json = content[match.end():].strip()
@@ -661,7 +662,7 @@ class AgentLoop:
                         json_str = content[brace_start:i + 1]
                         try:
                             data = json.loads(json_str)
-                            if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                            if isinstance(data, dict) and isinstance(data.get("reasoning"), str) and data["reasoning"].strip():
                                 before = content[:brace_start].strip()
                                 after = content[i + 1:].strip()
                                 combined = f"{before}\n{after}" if before and after else (before or after)
@@ -674,7 +675,7 @@ class AgentLoop:
         if content.startswith("{") and content.endswith("}"):
             try:
                 data = json.loads(content)
-                if isinstance(data, dict) and "reasoning" in data and "action" in data:
+                if isinstance(data, dict) and isinstance(data.get("reasoning"), str) and data["reasoning"].strip():
                     reasoning = data.get("reasoning", "")
                     return True, reasoning, ""
             except json.JSONDecodeError:
@@ -2162,21 +2163,26 @@ class AgentLoop:
                 logger.debug("[AgentLoop] 无内容可持久化，跳过")
                 return
 
-            # 保存本轮的完整消息（包括工具调用）
-            # 从 all_messages 中提取最后一轮的消息；
-            # 若存在压缩快照，则从快照起持久化，保留 _is_compacted_notes 标记供冷启动恢复
+            # 增量归档：压缩基准调用（user_input=="" 且含快照）从快照起保存全部（快照仅此处归档）；
+            # 普通轮次定位最后一个非快照 user 取增量，快照消息过滤
             compact_idx = next(
                 (i for i, m in enumerate(all_messages) if m.get("_is_compacted_notes")), -1
             )
-            if compact_idx >= 0:
+            if not user_input and compact_idx >= 0:
                 round_messages = all_messages[compact_idx:]
             else:
                 last_user_idx = -1
                 for i in range(len(all_messages) - 1, -1, -1):
-                    if all_messages[i].get("role") == "user":
+                    if all_messages[i].get("role") == "user" and not all_messages[i].get("_is_compacted_notes"):
                         last_user_idx = i
                         break
-                round_messages = all_messages[last_user_idx:] if last_user_idx >= 0 else all_messages
+                if last_user_idx >= 0:
+                    round_messages = all_messages[last_user_idx:]
+                elif compact_idx >= 0:
+                    round_messages = all_messages[compact_idx + 1:]
+                else:
+                    round_messages = all_messages
+                round_messages = [m for m in round_messages if not m.get("_is_compacted_notes")]
             
             source_id = self.three_layer_memory.persist_session(
                 user_input, actual_response, session_id=sid, messages=round_messages,

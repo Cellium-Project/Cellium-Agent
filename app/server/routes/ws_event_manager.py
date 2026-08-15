@@ -311,12 +311,19 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
         logger.debug("[WSManager] 无可用事件循环，跳过事件推送")
         return
 
+    current = None
     try:
-        asyncio.create_task(_do_publish())
+        current = asyncio.get_running_loop()
     except RuntimeError:
+        current = None
+
+    if current is loop:
+        try:
+            asyncio.create_task(_do_publish())
+        except RuntimeError:
+            pass
+    else:
         try:
             asyncio.run_coroutine_threadsafe(_do_publish(), loop)
         except Exception as e:
             logger.debug("[WSManager] 跨线程调度失败: %s", e)
-    except Exception as e:
-        logger.error("[WSManager] 发布事件失败: %s", e)

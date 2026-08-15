@@ -11,13 +11,19 @@ marked.setOptions({ gfm: true });
 const markdownCache = new Map<string, string>();
 const MAX_CACHE_SIZE = 100;
 
+const FENCE_NEWLINE = /^([ \t]*)(\S[^\n`]*?)[ \t]*```[^\n`]*$/gm;
+
+function normalizeMarkdown(content: string): string {
+  return content.replace(FENCE_NEWLINE, '$1$2\n\n```');
+}
+
 function safeRenderMarkdown(content: string): string {
   if (!content) return '';
   
   const cached = markdownCache.get(content);
   if (cached) return cached;
   
-  const rawHtml = marked.parse(content) as string;
+  const rawHtml = marked.parse(normalizeMarkdown(content)) as string;
   const sanitized = DOMPurify.sanitize(rawHtml);
   
   if (markdownCache.size >= MAX_CACHE_SIZE) {

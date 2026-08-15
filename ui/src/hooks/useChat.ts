@@ -188,12 +188,6 @@ export function useChat() {
   const lastEventIdBySessionRef = useRef<Record<string, number>>({});
   const isManualCloseRef = useRef(false);
   
-  // 批量处理chunk的缓冲区
-  const chunkBufferRef = useRef<{ chunks: string[]; timer: ReturnType<typeof setTimeout> | null }>({
-    chunks: [],
-    timer: null
-  });
-  
   const {
     currentSessionId,
     messages,
@@ -218,6 +212,9 @@ export function useChat() {
       stopRequested: false,
       stoppedByServer: false,
       sawDone: false,
+      // 每个连接独立的 chunk 缓冲：避免多连接（WebUI/TUI 交替发消息）
+      // 共享全局 buffer 导致 chunk 错配、消息消失
+      chunkBuffer: { chunks: [] as string[], timer: null as ReturnType<typeof setTimeout> | null },
     };
   }
 
@@ -225,7 +222,7 @@ export function useChat() {
 
   // 批量处理chunk，减少渲染次数
   const flushChunkBuffer = useCallback((ctx: StreamingContext, sessionId: string, connectionId: number) => {
-    const buffer = chunkBufferRef.current;
+    const buffer = ctx.chunkBuffer;
     if (buffer.chunks.length === 0) return;
     
     const mergedChunk = buffer.chunks.join('');
@@ -249,7 +246,7 @@ export function useChat() {
 
   // 添加chunk到缓冲区，延迟批量处理
   const addToChunkBuffer = useCallback((chunk: string, ctx: StreamingContext, sessionId: string, connectionId: number) => {
-    const buffer = chunkBufferRef.current;
+    const buffer = ctx.chunkBuffer;
     buffer.chunks.push(chunk);
     
     // 如果缓冲区没有定时器，设置一个16ms的延迟（约60fps）
@@ -427,17 +424,18 @@ export function useChat() {
         break;
       }
 
-      case 'content_chunk': {
+      case 'content_chunk':
+      case 'content': {
         const rawChunk = event.content || '';
         if (import.meta.env.DEV) {
-          console.log('[content_chunk] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
+          console.log('[content] received:', rawChunk.slice(0, 100), 'timeline length before:', ctx.timeline.length);
         }
         if (rawChunk.length > 0) {
           // 使用批量处理，减少渲染次数
           addToChunkBuffer(rawChunk, ctx, sessionId, connectionId);
         }
         if (import.meta.env.DEV) {
-          console.log('[content_chunk] timeline length:', ctx.timeline.length);
+          console.log('[content] timeline length:', ctx.timeline.length);
         }
         break;
       }
@@ -518,14 +516,26 @@ export function useChat() {
             });
           }
         }
-        if (!streamingMessage) {
-          updateStreamingMessage({
-            role: 'assistant',
-            content: '',
-            toolTraces: [],
-            timeline: [],
-          });
+        // 新一轮消息开始：重置 ctx 流式状态，避免复用上一次消息的
+        // timeline/chunkBuffer/traces（TUI/对端连续发消息时 ctx 是同一连接复用）
+        ctx.timeline = [];
+        ctx.traces = [];
+        ctx.chunkBuffer.chunks = [];
+        if (ctx.chunkBuffer.timer) {
+          clearTimeout(ctx.chunkBuffer.timer);
+          ctx.chunkBuffer.timer = null;
         }
+        ctx.finalized = false;
+        ctx.sawDone = false;
+        ctx.stoppedByServer = false;
+        ctx.stopRequested = false;
+        ctx.lastEventId = 0;
+        updateStreamingMessage({
+          role: 'assistant',
+          content: '',
+          toolTraces: [],
+          timeline: [],
+        });
         break;
       }
 
@@ -786,16 +796,39 @@ export function useChat() {
   const stopStreaming = useCallback(async () => {
     const sessionId = currentSessionId || 'default';
 
+    // 立即终止流式动画：本地落盘已生成内容，并标记运行中工具为已停止，
+    // 否则 streamingMessage 仍持有 running 工具段，loading-pulse/光标动画会继续跑
     if (streamingMessage) {
-      updateStreamingMessage({
-        ...streamingMessage,
-        content: '[正在停止...]',
+      const timeline = (streamingMessage.timeline || []).map(seg =>
+        seg.kind === 'tool' && seg.status === 'running'
+          ? { ...seg, status: 'done' as const, result: { stopped: true } }
+          : seg
+      );
+      const traces = (streamingMessage.toolTraces || []).map(tr => ({
+        ...tr,
+        result: tr.result ?? { stopped: true },
+      }));
+      const hasText = timeline.some(seg => seg.kind === 'text' && seg.content.trim());
+      const finalTimeline = hasText
+        ? timeline
+        : [...timeline, { kind: 'text' as const, content: '已停止生成' }];
+      addMessage({
+        role: 'assistant',
+        content: finalTimeline
+          .filter(s => s.kind === 'text')
+          .map(s => s.content)
+          .join('\n\n'),
+        toolTraces: traces,
+        timeline: finalTimeline,
       });
     }
+    updateStreamingMessage(null);
+    setIsStreaming(false);
+    setHasRunningTask(false);
 
     disconnectWebSocket();
     await stopTask(sessionId);
-  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage, disconnectWebSocket]);
+  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage, disconnectWebSocket, addMessage, setIsStreaming, setHasRunningTask]);
 
   // 使用 ref 跟踪 session，避免 useEffect 依赖不稳定
   const currentSessionIdRef = useRef(currentSessionId);
@@ -820,23 +853,27 @@ export function useChat() {
       const sessionId = currentSessionIdRef.current;
       if (!sessionId || hasReconnectedRef.current) return;
 
-      const hasTask = await checkTaskStatus(sessionId);
-      if (!mounted || !hasTask) return;
-
       // 标记已尝试重连，避免重复
       hasReconnectedRef.current = true;
 
       const ctx = buildStreamingContext();
       ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
 
-      updateStreamingMessage({
-        role: 'assistant',
-        content: '',
-        toolTraces: [],
-        timeline: [],
-      });
-      setIsStreaming(true);
+      const hasTask = await checkTaskStatus(sessionId);
+      if (!mounted) return;
 
+      if (hasTask) {
+        // 有运行任务：恢复流式状态
+        updateStreamingMessage({
+          role: 'assistant',
+          content: '',
+          toolTraces: [],
+          timeline: [],
+        });
+        setIsStreaming(true);
+      }
+      // 始终连接 ws 订阅当前 session：即使无任务，也能实时接收
+      // 对端（TUI/外部平台）发起的消息
       const connectionId = ++connectionIdRef.current;
       connectWebSocket(sessionId, ctx, connectionId, true);
     };
@@ -856,10 +893,6 @@ export function useChat() {
       disconnectWebSocket();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
-      }
-      if (chunkBufferRef.current.timer) {
-        clearTimeout(chunkBufferRef.current.timer);
-        chunkBufferRef.current.timer = null;
       }
     };
     // 空依赖，只在卸载时执行

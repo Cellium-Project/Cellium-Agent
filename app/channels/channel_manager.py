@@ -11,6 +11,7 @@ import time
 from typing import Dict, List, Optional, Callable, Any
 from collections import defaultdict
 from .base import ChannelAdapter, UnifiedMessage
+from app.messaging.message_broker import get_message_broker
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,14 @@ class ChannelManager:
         session_info.pending_file_notice_task = asyncio.create_task(_notice_later())
         session_info.pending_file_notice_created_at = time.time()
 
+    def _should_show_tool_cards(self, platform: str) -> bool:
+        """按配置控制该平台是否发送工具调用卡片"""
+        try:
+            from app.core.util.agent_config import get_config
+            return bool(get_config().get(f"channels.{platform}.show_tool_cards", True))
+        except Exception:
+            return True
+
     async def _consume_channel_task_queue(self, message: UnifiedMessage, session_id: str, queue: asyncio.Queue):
         sent_any = False
         pending = ""
@@ -238,6 +247,17 @@ class ChannelManager:
                     logger.warning(f"[ChannelManager] Failed to send message chunk: {e}")
 
         try:
+            sent_all = ""
+            sent_round = ""
+
+            async def flush_pending():
+                nonlocal pending, sent_all, sent_round
+                if pending.strip():
+                    await safe_send(pending)
+                    sent_all += pending
+                    sent_round += pending
+                    pending = ""
+
             while True:
                 event = await queue.get()
                 if event is None:
@@ -246,19 +266,37 @@ class ChannelManager:
                     event_type = event.get("type")
 
                     if minimal_output:
-                        if event_type == "content_chunk":
+                        if event_type in ("content_chunk", "content"):
                             chunk_content = event.get("content", "")
                             if chunk_content:
-                                await safe_send(chunk_content)
+                                pending += chunk_content
                                 sent_any = True
                         elif event_type == "done":
                             done_content = event.get("content", "")
-                            if not sent_any:
+                            await flush_pending()
+                            if done_content:
+                                if sent_all.endswith(done_content):
+                                    pass  # 已完整发送，避免重复
+                                elif done_content.startswith(sent_round) and len(done_content) > len(sent_round):
+                                    remaining = done_content[len(sent_round):]
+                                    if remaining.strip():
+                                        await safe_send(remaining)
+                                        sent_all += remaining
+                                        sent_round += remaining
+                                elif not sent_all:
+                                    await safe_send(done_content)
+                                    sent_all += done_content
+                                    sent_round += done_content
+                                else:
+                                    logger.debug("[ChannelManager] done_content 与已发送内容不一致且不完整，跳过避免重复")
+                            elif not sent_any:
                                 await safe_send(done_content or "...")
                         elif event_type == "stopped":
+                            await flush_pending()
                             await safe_send("> ⏹ **已停止**: 当前任务已终止")
                         elif event_type == "error":
                             error_msg = event.get("error", "未知错误")
+                            await flush_pending()
                             await safe_send(f"> ❌ **错误**: `{error_msg}`")
                     else:
                         if event_type == "scheduler_task_start":
@@ -269,14 +307,25 @@ class ChannelManager:
                             task_name = event.get("task_name", "未知来源")
                             task_id = event.get("task_id", "unknown")
                             await safe_send(f"🔔 **组件事件触发**: {task_name}")
+                        elif event_type == "status":
+                            await flush_pending()
+                            if self._should_show_tool_cards(message.platform):
+                                status_content = event.get("content", "")
+                                if status_content:
+                                    await safe_send(f"> 💭 **Thinking**: {status_content}")
                         elif event_type == "thinking":
                             thinking_content = event.get("content", "Thinking...")
                             if thinking_content:
                                 await safe_send(f"> 💭 **Thinking**: {thinking_content}")
                         elif event_type == "error":
                             error_msg = event.get("error", "未知错误")
+                            await flush_pending()
                             await safe_send(f"> ❌ **错误**: `{error_msg}`")
                         elif event_type == "tool_start":
+                            await flush_pending()
+                            sent_round = ""
+                            if not self._should_show_tool_cards(message.platform):
+                                continue
                             tool_name = event.get("tool", "unknown")
                             desc = event.get("description", "")
                             tool_info = f"##### 🔧 正在调用 `{tool_name}`"
@@ -284,6 +333,8 @@ class ChannelManager:
                                 tool_info += f"\n> {desc}"
                             await safe_send(tool_info)
                         elif event_type == "tool_result":
+                            if not self._should_show_tool_cards(message.platform):
+                                continue
                             tool_name = event.get("tool", "unknown")
                             result = event.get("result", {})
                             duration = event.get("duration_ms", 0)
@@ -300,21 +351,34 @@ class ChannelManager:
                                 await safe_send(f"> [{phase_msg}] {phase_desc}")
                             elif phase_msg:
                                 await safe_send(f"> [{phase_msg}]")
-                        elif event_type == "content_chunk":
+                        elif event_type in ("content_chunk", "content"):
                             chunk_content = event.get("content", "")
-                            logger.debug(f"[ChannelManager] content_chunk received | len={len(chunk_content)} | content={chunk_content[:100]}...")
-                            await safe_send(chunk_content)
-                            sent_any = True
-                            logger.debug("[ChannelManager] content_chunk sent successfully")
+                            if chunk_content:
+                                pending += chunk_content
+                                sent_any = True
                         elif event_type == "done":
                             done_content = event.get("content", "")
                             logger.debug(f"[ChannelManager] done event | sent_any={sent_any} | pending_len={len(pending)} | content_len={len(done_content)}")
-                            if sent_any and pending:
-                                await safe_send(pending)
-                                pending = ""
+                            await flush_pending()
+                            if done_content:
+                                if sent_all.endswith(done_content):
+                                    pass
+                                elif done_content.startswith(sent_round) and len(done_content) > len(sent_round):
+                                    remaining = done_content[len(sent_round):]
+                                    if remaining.strip():
+                                        await safe_send(remaining)
+                                        sent_all += remaining
+                                        sent_round += remaining
+                                elif not sent_all:
+                                    await safe_send(done_content)
+                                    sent_all += done_content
+                                    sent_round += done_content
+                                else:
+                                    logger.debug("[ChannelManager] done_content 与已发送内容不一致，跳过避免重复")
                             elif not sent_any:
                                 await safe_send(done_content or "...")
                         elif event_type == "stopped":
+                            await flush_pending()
                             await safe_send("> ⏹ **已停止**: 当前任务已终止")
                 except Exception as e:
                     logger.warning(f"[ChannelManager] Failed to handle task event {event.get('type')}: {e}")
@@ -324,6 +388,10 @@ class ChannelManager:
                 await safe_send(pending)
         finally:
             self._channel_task_consumers.pop(session_id, None)
+            try:
+                get_message_broker().unsubscribe(session_id, queue)
+            except Exception:
+                pass
             try:
                 from app.server.task_manager import get_task_manager
                 task_mgr = get_task_manager()
@@ -409,10 +477,7 @@ class ChannelManager:
         if not started:
             raise RuntimeError(f"无法启动任务，session={session_id}")
 
-        queue = task_mgr.get_queue(session_id)
-        if queue is None:
-            raise RuntimeError(f"任务队列不可用，session={session_id}")
-
+        queue = get_message_broker().subscribe(session_id)
         self._ensure_channel_task_consumer(message, session_id, queue)
 
     def _is_duplicate_message(self, message: UnifiedMessage) -> bool:

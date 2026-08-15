@@ -45,11 +45,13 @@ class ConfigTool(BaseTool):
                 "• set_qq(app_id, app_secret) — 配置 QQ 机器人\n"
                 "• set_feishu(app_id, app_secret, whitelist_users=[]) — 配置飞书\n"
                 "• enable_channel(channel_name, enabled) — 启用/禁用通道\n"
+                "• set_show_tool_cards(channel_name, enabled) — 开启/关闭通道的工具调用卡片显示\n"
                 "\n"
                 "说明：\n"
                 "- name 是 llm.yaml 中 - name: 后的标识，用于 switch_model\n"
                 "- model 是实际模型名\n"
                 "- channel_name 支持: telegram, qq, feishu\n"
+                "- set_show_tool_cards 的 enabled=true 显示 🔧 工具调用卡片，false 隐藏（仅发正文与思考卡片）\n"
             ),
         }
 
@@ -299,6 +301,7 @@ class ConfigTool(BaseTool):
                 result[platform] = {
                     "enabled": pc.get("enabled", False),
                     "configured": bool(self._channel_is_configured(platform, pc)),
+                    "show_tool_cards": pc.get("show_tool_cards", True),
                 }
 
             return {"success": True, "channels": result}
@@ -451,4 +454,34 @@ class ConfigTool(BaseTool):
             "platform": channel_name,
             "enabled": bool(enabled),
             "message": f"通道 {channel_name} 已{'启用' if enabled else '禁用'}。{self._channel_reload_hint(channel_name)}",
+        }
+
+    def _cmd_set_show_tool_cards(self, channel_name: str = "", enabled: bool = None) -> dict:
+        """开启/关闭外部通道的工具调用卡片显示（热加载，无需重连通道）
+
+        说明：
+          - enabled=true: 显示 🔧 工具调用卡片 + ✅ 耗时
+          - enabled=false: 隐藏工具卡片，仍发送正文与思考卡片
+        """
+        if channel_name not in ("telegram", "qq", "feishu"):
+            return {
+                "success": False,
+                "error": f"channel_name 仅支持: telegram, qq, feishu（收到: {channel_name}）",
+            }
+        if enabled is None:
+            return {"success": False, "error": "enabled 参数必填（true/false）"}
+
+        res = self._set_channel_config(channel_name, {"show_tool_cards": bool(enabled)})
+        if not res.get("success"):
+            return res
+
+        logger.info("[ConfigTool] set_show_tool_cards | %s | enabled=%s", channel_name, enabled)
+        return {
+            "success": True,
+            "platform": channel_name,
+            "show_tool_cards": bool(enabled),
+            "message": (
+                f"通道 {channel_name} 工具调用卡片已{'开启' if enabled else '关闭'}，"
+                "立即生效（无需重连）。关闭后仅发送正文与思考卡片。"
+            ),
         }

@@ -62,6 +62,7 @@ class SessionCompactor:
         keep_recent_messages: int = 10,
         max_notes_length: int = 2000,
         repository: "MemoryRepository" = None,
+        archive=None,
         retry_backoff_base: float = 2.0,  # 失败重试指数退避基数（秒）
     ):
         self.llm = llm_engine
@@ -75,6 +76,7 @@ class SessionCompactor:
         self._last_compact_tokens = 0  # 上次压缩后的 token 数量
         self._compact_cooldown_ratio = 0.5  # 冷却比例：token 增长 50% 后才再次触发
         self._repository = repository  # 长期记忆仓库引用
+        self._archive = archive  # 归档存储引用（压缩前补写原始消息）
 
     def track_tool_call(self):
         """追踪工具调用次数"""
@@ -216,6 +218,20 @@ class SessionCompactor:
         if not summaries:
             logger.warning("[SessionCompactor] 所有分块摘要为空，跳过压缩")
             return
+
+        # 压缩落盘前，先把将被替换的原始消息补写进归档，保证归档 = 完整原始日志
+        if self._archive and old_messages:
+            try:
+                self._archive.append_messages(
+                    session_id=notes.session_id,
+                    messages=old_messages,
+                )
+                logger.info(
+                    "[SessionCompactor] 压缩前补写归档 | session=%s | %d 条原始消息",
+                    notes.session_id, len(old_messages),
+                )
+            except Exception as e:
+                logger.warning("[SessionCompactor] 压缩前补写归档失败: %s", e)
 
         summaries = await self._recursive_reduce(summaries)
 

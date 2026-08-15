@@ -39,6 +39,46 @@ const FieldLabel: React.FC<{ label: string; desc?: string }> = ({ label, desc })
   </div>
 );
 
+// ── 通用组件：工具调用卡片开关（即时保存，热加载生效）──────
+const ShowToolCardsToggle: React.FC<{
+  config: Record<string, any>;
+  onChange: (field: string, value: any) => void;
+  platform: string;
+}> = ({ config, onChange, platform }) => {
+  const { t } = useTranslation();
+  const [saving, setSaving] = useState(false);
+
+  const toggle = async (value: boolean) => {
+    onChange('show_tool_cards', value);
+    setSaving(true);
+    try {
+      await postJSON(API.channelToolCards, { platform, show_tool_cards: value });
+    } catch {
+      onChange('show_tool_cards', !value);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="form-group">
+      <FieldLabel label={t('settings.channel.showToolCards')} />
+      <label className="toggle-switch">
+        <input
+          type="checkbox"
+          checked={config.show_tool_cards !== false}
+          disabled={saving}
+          onChange={e => toggle(e.target.checked)}
+        />
+        <span className="toggle-slider"></span>
+        <span className="toggle-label">
+          {config.show_tool_cards !== false ? t('settings.channel.showToolCardsOn') : t('settings.channel.showToolCardsOff')}
+        </span>
+      </label>
+    </div>
+  );
+};
+
 // 通用组件：保存按钮反馈
 function useSavingState() {
   const [saving, setSaving] = useState(false);
@@ -684,6 +724,8 @@ const QQChannelCard: React.FC<{
           </label>
         </div>
 
+        <ShowToolCardsToggle config={config} onChange={updateField} platform="qq" />
+
         <div className="form-group">
           <FieldLabel label={t('settings.channel.qq.connectionStatus')} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -831,6 +873,8 @@ const TelegramChannelCard: React.FC<{
           </label>
         </div>
 
+        <ShowToolCardsToggle config={config} onChange={updateField} platform="telegram" />
+
         <div className="form-group" style={{ gridColumn: 'span 2' }}>
           <FieldLabel label={t('settings.channel.telegram.botToken')} desc={t('settings.channel.telegram.botTokenDesc')} />
           <input
@@ -944,6 +988,8 @@ const FeishuChannelCard: React.FC<{
             <span className="toggle-label">{config.auto_start !== false ? t('settings.channel.feishu.autoStartOn') : t('settings.channel.feishu.autoStartOff')}</span>
           </label>
         </div>
+
+        <ShowToolCardsToggle config={config} onChange={updateField} platform="feishu" />
 
         <div className="form-group" style={{ gridColumn: 'span 2' }}>
           <FieldLabel label={t('settings.channel.feishu.appId')} />

@@ -37,6 +37,40 @@ class ChannelReloadRequest(BaseModel):
     config: Optional[Dict[str, Any]] = None
 
 
+class ChannelToolCardsRequest(BaseModel):
+    platform: str
+    show_tool_cards: bool = True
+
+
+@router.post("/tool-cards")
+async def set_show_tool_cards(req: ChannelToolCardsRequest) -> Dict[str, Any]:
+    """开关某平台是否发送工具调用卡片（热加载，无需重连通道）"""
+    from app.core.util.agent_config import get_config
+
+    platform = (req.platform or "").strip().lower()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform 不能为空")
+
+    cfg = get_config()
+    channels = cfg.get_section("channels") or {}
+    if platform not in channels:
+        raise HTTPException(status_code=404, detail=f"通道 {platform} 未配置")
+
+    try:
+        # notify=False：仅写内存+文件，不触发 channels on_change 回调，避免无谓重连
+        cfg.set(f"channels.{platform}.show_tool_cards", bool(req.show_tool_cards), persist=True, notify=False)
+    except Exception as e:
+        logger.error(f"[ChannelAPI] 更新 {platform} 工具卡片开关失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info("[ChannelAPI] 通道 %s 工具调用卡片=%s（热加载生效）", platform, req.show_tool_cards)
+    return {
+        "status": "ok",
+        "platform": platform,
+        "show_tool_cards": bool(req.show_tool_cards),
+    }
+
+
 @router.post("/reload")
 async def reload_channel(platform: str = "qq") -> Dict[str, Any]:
     """

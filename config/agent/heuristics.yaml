@@ -34,7 +34,7 @@ heuristics:
         stuck_threshold: 5
         trend_threshold: -0.3
     loop-001:
-      enabled: true
+      enabled: false
       params:
         threshold: 4
     loop-002:

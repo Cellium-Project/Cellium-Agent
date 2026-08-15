@@ -153,28 +153,29 @@ class SessionManager:
             return
 
         try:
-            messages = info.memory.messages
+            messages = info.memory.get_messages()
             if len(messages) < 1:
                 return
 
-            # 若存在压缩快照，则从快照起持久化，保留标记供冷启动恢复
+            # 增量归档：定位最后一个非快照 user 取增量，快照消息过滤
             compact_idx = next(
                 (i for i, m in enumerate(messages) if m.get("_is_compacted_notes")), -1
             )
-            if compact_idx >= 0:
-                round_messages = messages[compact_idx:]
-            else:
-                last_user_idx = -1
-                for i in range(len(messages) - 1, -1, -1):
-                    if messages[i].get("role") == "user":
-                        last_user_idx = i
-                        break
 
-                if last_user_idx == -1:
-                    return
+            last_user_idx = -1
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user" and not messages[i].get("_is_compacted_notes"):
+                    last_user_idx = i
+                    break
 
+            if last_user_idx >= 0:
                 round_messages = messages[last_user_idx:]
+            elif compact_idx >= 0:
+                round_messages = messages[compact_idx + 1:]
+            else:
+                return
 
+            round_messages = [m for m in round_messages if not m.get("_is_compacted_notes")]
             if not round_messages:
                 return
 
@@ -187,6 +188,7 @@ class SessionManager:
                 return
 
             user_msg = round_messages[0]
+            user_input = user_msg.get("content", "") if user_msg.get("role") == "user" else ""
             assistant_msg = None
             for m in round_messages:
                 if m.get("role") == "assistant":
@@ -194,7 +196,7 @@ class SessionManager:
                     break
 
             self.three_layer_memory.persist_session(
-                user_input=user_msg.get("content", ""),
+                user_input=user_input,
                 response=assistant_msg.get("content", "") if assistant_msg else "",
                 session_id=session_id,
                 messages=round_messages, 
@@ -219,78 +221,12 @@ class SessionManager:
         if not records:
             return 0
 
-        latest = records[-1]
-        latest_has_compacted = False
-        for m in latest.get("messages", []):
-            if isinstance(m, dict) and m.get("_is_compacted_notes"):
-                latest_has_compacted = True
-                break
-        if latest_has_compacted:
-            logger.info(
-                "[SessionManager] 检测到压缩快照，仅恢复压缩后状态 | session=%s",
-                session_id,
-            )
-            records = [latest]
-
         restored_count = 0
+        seen_keys = set()
 
         for rec in records:
             msgs = rec.get("messages")
-            if isinstance(msgs, list):
-                for msg in msgs:
-                    try:
-                        role = msg.get("role", "")
-                        content = msg.get("content")
-                        tool_calls = msg.get("tool_calls")
-
-                        if role == "user":
-                            memory.add_user_message(content or "")
-                            if msg.get("_is_compacted_notes"):
-                                memory.messages[-1]["_is_compacted_notes"] = True
-                            restored_count += 1
-                        elif role == "assistant":
-                            reasoning_content = msg.get("reasoning_content")
-                            if tool_calls:
-                                tool_calls_data = []
-                                for tc in tool_calls:
-                                    original_tc_id = tc.get("id", "")
-                                    args_str = tc.get("function", {}).get("arguments", "{}")
-                                    try:
-                                        arguments = json.loads(args_str)
-                                    except json.JSONDecodeError:
-                                        arguments = {"_parse_error": f"无效的 arguments JSON: {args_str[:100] if args_str else 'empty'}"}
-                                    tool_calls_data.append({
-                                        "tool_name": tc.get("function", {}).get("name", ""),
-                                        "arguments": arguments,
-                                        "tool_call_id": original_tc_id,
-                                    })
-                                memory.add_tool_calls_batch(
-                                    tool_calls_data,
-                                    content=content or None,
-                                    reasoning_content=reasoning_content,
-                                )
-                                restored_count += 1
-                            elif content:
-                                memory.add_assistant_message(
-                                    content,
-                                    reasoning_content=reasoning_content,
-                                )
-                                restored_count += 1
-                        elif role == "tool":
-                            tc_id = msg.get("tool_call_id", "")
-                            result_raw = msg.get("content", "{}")
-                            try:
-                                parsed = json.loads(result_raw)
-                                memory.add_tool_result(tc_id, parsed)
-                                restored_count += 1
-                            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                                logger.warning(
-                                    "[SessionManager] 工具结果 JSON 解析失败，跳过 | tc_id=%s | error=%s",
-                                    tc_id, e,
-                                )
-                    except (KeyError, TypeError, json.JSONDecodeError):
-                        pass
-            else:
+            if not isinstance(msgs, list):
                 user_text = rec.get("user", "")
                 asst_text = rec.get("assistant", "")
                 if user_text:
@@ -299,6 +235,22 @@ class SessionManager:
                 if asst_text:
                     memory.add_assistant_message(asst_text)
                     restored_count += 1
+                continue
+
+            has_snapshot = any(
+                isinstance(m, dict) and m.get("_is_compacted_notes") for m in msgs
+            )
+            if has_snapshot:
+                memory.clear()
+                seen_keys.clear()
+                restored_count = 0
+
+            for msg in msgs:
+                try:
+                    if self._restore_archive_message(memory, msg, seen_keys):
+                        restored_count += 1
+                except (KeyError, TypeError, json.JSONDecodeError):
+                    pass
 
         if restored_count > 0:
             logger.info(
@@ -306,6 +258,76 @@ class SessionManager:
                 session_id, restored_count,
             )
             self._cleanup_incomplete_tool_calls(memory)
+
+    @staticmethod
+    def _archive_msg_key(msg: Dict) -> tuple:
+        tool_calls = msg.get("tool_calls")
+        return (
+            msg.get("role", ""),
+            msg.get("content"),
+            msg.get("tool_call_id", ""),
+            json.dumps(tool_calls, ensure_ascii=False, sort_keys=True) if tool_calls else None,
+        )
+
+    @staticmethod
+    def _restore_archive_message(memory: 'MemoryManager', msg: Dict, seen_keys: set) -> bool:
+        role = msg.get("role", "")
+        content = msg.get("content")
+        tool_calls = msg.get("tool_calls")
+
+        key = SessionManager._archive_msg_key(msg)
+        if key in seen_keys:
+            return False
+        seen_keys.add(key)
+
+        if role == "user":
+            memory.add_user_message(content or "")
+            if msg.get("_is_compacted_notes"):
+                memory.messages[-1]["_is_compacted_notes"] = True
+            return True
+
+        if role == "assistant":
+            reasoning_content = msg.get("reasoning_content")
+            if tool_calls:
+                tool_calls_data = []
+                for tc in tool_calls:
+                    original_tc_id = tc.get("id", "")
+                    args_str = tc.get("function", {}).get("arguments", "{}")
+                    try:
+                        arguments = json.loads(args_str)
+                    except json.JSONDecodeError:
+                        arguments = {"_parse_error": f"无效的 arguments JSON: {args_str[:100] if args_str else 'empty'}"}
+                    tool_calls_data.append({
+                        "tool_name": tc.get("function", {}).get("name", ""),
+                        "arguments": arguments,
+                        "tool_call_id": original_tc_id,
+                    })
+                memory.add_tool_calls_batch(
+                    tool_calls_data,
+                    content=content or None,
+                    reasoning_content=reasoning_content,
+                )
+                return True
+            if content:
+                memory.add_assistant_message(content, reasoning_content=reasoning_content)
+                return True
+            return False
+
+        if role == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            result_raw = msg.get("content", "{}")
+            try:
+                parsed = json.loads(result_raw)
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.warning(
+                    "[SessionManager] 工具结果 JSON 解析失败，跳过 | tc_id=%s | error=%s",
+                    tc_id, e,
+                )
+                return False
+            memory.add_tool_result(tc_id, parsed)
+            return True
+
+        return False
 
     def cleanup_expired(self) -> int:
         """清理所有超时会话，返回清理数量"""

@@ -17,11 +17,8 @@ from enum import Enum
 from typing import Dict, Optional, Any, List, Tuple
 from datetime import datetime
 
-try:
-    from app.server.routes.ws_event_manager import ws_publish_event
-except ImportError:
-    ws_publish_event = None
-
+from app.messaging.message_broker import get_message_broker
+from app.messaging.stream_normalizer import StreamNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -55,21 +52,17 @@ class TaskInfo:
 class BackgroundTaskManager:
     """后台任务管理器"""
 
-    # 最大事件历史长度（防止内存溢出）
-    MAX_HISTORY_SIZE = 500
-
     # 任务超时时间（秒）- 30 分钟
     TASK_TIMEOUT = 1800
 
     def __init__(self):
+        self.broker = get_message_broker()
         self._tasks: Dict[str, asyncio.Task] = {}
-        self._queues: Dict[str, asyncio.Queue] = {}
         self._info: Dict[str, TaskInfo] = {}
-        self._event_history: Dict[str, List[dict]] = {}
         self._pending_inputs: Dict[str, str] = {}
-        self._event_counters: Dict[str, int] = {}
         self._supplement_messages: Dict[str, List[Dict[str, Any]]] = {}
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._normalizers: Dict[str, StreamNormalizer] = {}
 
     def _ensure_cleanup_task(self):
         if self._cleanup_task is None or self._cleanup_task.done():
@@ -103,72 +96,18 @@ class BackgroundTaskManager:
         return self._info.get(session_id)
 
     def get_queue(self, session_id: str) -> Optional[asyncio.Queue]:
-        """获取事件队列"""
-        return self._queues.get(session_id)
+        """获取事件队列（薄壳代理，兼容旧 API）"""
+        return self.broker.get_queue(session_id)
 
     def get_event_history(self, session_id: str, after_event_id: int = 0) -> List[dict]:
-        """获取事件历史，可按 event_id 增量过滤"""
-        history = self._event_history.get(session_id, [])
-        if after_event_id <= 0:
-            return list(history)
-        return [event for event in history if int(event.get("event_id", 0) or 0) > after_event_id]
+        """获取事件历史，可按 event_id 增量过滤（薄壳代理，兼容旧 API）"""
+        if after_event_id and after_event_id > 0:
+            return self.broker.get_event_history(session_id, after_event_id)
+        return self.broker.get_event_history(session_id)
 
     def get_latest_event_id(self, session_id: str) -> int:
-        """获取当前 session 最新事件 ID"""
-        return self._event_counters.get(session_id, 0)
-
-    def _decorate_event(self, session_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
-        """为事件补充单调递增 event_id 和 session_id"""
-        next_id = self._event_counters.get(session_id, 0) + 1
-        self._event_counters[session_id] = next_id
-        return {
-            **event,
-            "event_id": next_id,
-            "session_id": event.get("session_id") or session_id,
-        }
-
-    def _append_history(self, history: List[dict], event: Dict[str, Any]):
-        history.append(event)
-        if len(history) > self.MAX_HISTORY_SIZE:
-            history[:] = history[-self.MAX_HISTORY_SIZE:]
-
-    def _is_critical_event(self, event: Dict[str, Any]) -> bool:
-        return event.get("type") in {"tool_start", "tool_result", "done", "error", "stopped"}
-
-    def _enqueue_event(self, queue: asyncio.Queue, event: Dict[str, Any]):
-        try:
-            queue.put_nowait(event)
-            if ws_publish_event:
-                ws_publish_event("chat_event", event, session_id=event.get("session_id"))
-            return
-        except asyncio.QueueFull:
-            pass
-
-        buffered: List[Dict[str, Any]] = []
-        while True:
-            try:
-                item = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            if item is not None:
-                buffered.append(item)
-
-        if self._is_critical_event(event):
-            retained = [item for item in buffered if self._is_critical_event(item)]
-            if len(retained) >= queue.maxsize:
-                retained = retained[-(queue.maxsize - 1):] if queue.maxsize > 1 else []
-            retained.append(event)
-        else:
-            retained = [item for item in buffered if self._is_critical_event(item)]
-            room = max(queue.maxsize - len(retained), 0)
-            non_critical = [item for item in buffered if not self._is_critical_event(item)]
-            if room > 0:
-                retained.extend(non_critical[-room:])
-
-        for item in retained[-queue.maxsize:]:
-            queue.put_nowait(item)
-            if ws_publish_event:
-                ws_publish_event("chat_event", item, session_id=item.get("session_id"))
+        """获取当前 session 最新事件 ID（薄壳代理，兼容旧 API）"""
+        return self.broker.get_latest_event_id(session_id)
 
     def _apply_terminal_status(self, info: TaskInfo, event_type: Optional[str], *, error_message: Optional[str] = None):
         info.last_event_type = event_type
@@ -232,11 +171,9 @@ class BackgroundTaskManager:
             return False
 
         self._ensure_cleanup_task()
-        queue = asyncio.Queue(maxsize=100)
-        self._queues[session_id] = queue
-
-        self._event_history[session_id] = []
-        self._event_counters[session_id] = 0
+        # 保留订阅者（TUI 常驻监听器等），只重置任务状态
+        self.broker.clear_session(session_id, keep_subscribers=True)
+        queue = self.broker.ensure_queue(session_id)
         self._supplement_messages[session_id] = []
 
         from app.core.util.logger import clear_status_history, clear_runtime_status
@@ -296,36 +233,39 @@ class BackgroundTaskManager:
                 user_input=user_input,
             )
         )
-        history = self._event_history.setdefault(session_id, [])
 
         info.status = TaskStatus.RUNNING
         info.started_at = time.time()
         
         logger.info("[TaskManager] 开始执行 Agent 循环 | session=%s | input=%s", session_id, user_input[:50] if user_input else "(空)")
 
+        normalizer = self._normalizers.setdefault(session_id, StreamNormalizer())
+
         try:
             last_terminal_event: Optional[Tuple[str, Optional[str]]] = None
+            terminal_hit = False
             async for raw_event in agent_loop.run_stream(
                 user_input,
                 memory=memory,
                 session_id=session_id,
                 system_injection=system_injection,
             ):
-                event = self._decorate_event(session_id, raw_event)
-                info.last_event_id = int(event.get("event_id", 0) or 0)
-                if event.get("type") == "tool_start":
-                    info.iteration += 1
-                    logger.debug("[TaskManager] 工具调用 | session=%s | iteration=%d", session_id, info.iteration)
+                for norm in normalizer.feed(raw_event):
+                    if terminal_hit:
+                        continue
+                    self.broker.publish(session_id, norm)
+                    event = self.broker.get_event_history(session_id)[-1]
+                    info.last_event_id = int(event.get("event_id", 0) or 0)
+                    if event.get("type") == "tool_start":
+                        info.iteration += 1
+                        logger.debug("[TaskManager] 工具调用 | session=%s | iteration=%d", session_id, info.iteration)
 
-                self._append_history(history, event)
-                info.event_count = len(history)
+                    info.event_count = len(self.broker.get_event_history(session_id))
 
-                self._enqueue_event(queue, event)
-
-                if event.get("type") in ("done", "error", "stopped"):
-                    logger.info("[TaskManager] 收到完成事件 | session=%s | type=%s", session_id, event.get("type"))
-                    last_terminal_event = (event.get("type"), event.get("error") or event.get("reason"))
-                    break
+                    if event.get("type") in ("done", "error", "stopped"):
+                        logger.info("[TaskManager] 收到完成事件 | session=%s | type=%s", session_id, event.get("type"))
+                        last_terminal_event = (event.get("type"), event.get("error") or event.get("reason"))
+                        terminal_hit = True
 
             if last_terminal_event:
                 event_type, error_message = last_terminal_event
@@ -338,24 +278,31 @@ class BackgroundTaskManager:
             )
 
         except asyncio.CancelledError:
-            cancel_event = self._decorate_event(session_id, {"type": "stopped", "reason": "user_cancelled"})
-            self._append_history(history, cancel_event)
-            info.event_count = len(history)
+            self.broker.publish(session_id, {"type": "stopped", "reason": "user_cancelled"})
+            cancel_event = self.broker.get_event_history(session_id)[-1]
+            info.event_count = len(self.broker.get_event_history(session_id))
             info.last_event_id = int(cancel_event.get("event_id", 0) or 0)
             self._apply_terminal_status(info, "stopped", error_message="user_cancelled")
-            self._enqueue_event(queue, cancel_event)
             logger.info("[TaskManager] 任务已取消 | session=%s", session_id)
 
         except Exception as e:
-            error_event = self._decorate_event(session_id, {"type": "error", "error": str(e)})
-            self._append_history(history, error_event)
-            info.event_count = len(history)
+            self.broker.publish(session_id, {"type": "error", "error": str(e)})
+            error_event = self.broker.get_event_history(session_id)[-1]
+            info.event_count = len(self.broker.get_event_history(session_id))
             info.last_event_id = int(error_event.get("event_id", 0) or 0)
             self._apply_terminal_status(info, "error", error_message=str(e))
-            self._enqueue_event(queue, error_event)
             logger.error("[TaskManager] 任务出错 | session=%s | error=%s", session_id, e, exc_info=True)
 
         finally:
+            try:
+                for norm in normalizer.finish():
+                    self.broker.publish(session_id, norm)
+            except Exception:
+                pass
+            try:
+                self.broker.publish_terminal(session_id)
+            except Exception:
+                pass
             await queue.put(None)
             self._pending_inputs.pop(session_id, None)
             task_mgr = get_task_manager()
@@ -403,11 +350,10 @@ class BackgroundTaskManager:
         清理已完成的任务资源
         """
         self._tasks.pop(session_id, None)
-        self._queues.pop(session_id, None)
         self._pending_inputs.pop(session_id, None)
-        self._event_counters.pop(session_id, None)
         self._supplement_messages.pop(session_id, None)
-        self._event_history.pop(session_id, None)
+        self._normalizers.pop(session_id, None)
+        self.broker.clear_session(session_id)
         logger.debug("[TaskManager] 任务资源已清理 | session=%s", session_id)
 
     def cleanup_all_completed(self):
@@ -420,12 +366,11 @@ class BackgroundTaskManager:
 
         for session_id in to_cleanup:
             self._tasks.pop(session_id, None)
-            self._queues.pop(session_id, None)
             self._info.pop(session_id, None)
             self._pending_inputs.pop(session_id, None)
-            self._event_counters.pop(session_id, None)
             self._supplement_messages.pop(session_id, None)
-            self._event_history.pop(session_id, None)
+            self._normalizers.pop(session_id, None)
+            self.broker.clear_session(session_id)
 
         if to_cleanup:
             logger.info("[TaskManager] 清理了 %d 个已完成任务", len(to_cleanup))

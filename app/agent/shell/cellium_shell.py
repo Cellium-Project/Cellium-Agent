@@ -265,6 +265,9 @@ class CelliumShell:
         self._shell_cmd: List[str] = []
         self._shell_name: str = ""
         self._pwsh_path: Optional[str] = None
+        # 会话级环境变量：跨命令持久化（命令内 $env:NAME=value / set NAME=value
+        # 会更新此状态，后续命令可读取），初始为当前进程环境快照
+        self._session_env: Dict[str, str] = os.environ.copy()
         self._init_platform_shell()
 
         # 全局活动子进程注册表（thread_id -> [Popen, ...]）：停止时按线程 kill 子进程
@@ -490,11 +493,11 @@ class CelliumShell:
             return ("/bin/bash", ["-c"])
 
         cmd_exe_indicators = [
-            "&", "&&", "||", ">nul", "2>nul", "1>nul",
-            "2>&1", r"%\w+%", "nul", "cmd /c", "cmd.exe",
+            r">nul\b", r"2>nul\b", r"1>nul\b",
+            r"%\w+%", r"\bcmd(?:\.exe)?\s*/\s*c\b",
         ]
         for indicator in cmd_exe_indicators:
-            if indicator in cmd:
+            if re.search(indicator, cmd, re.IGNORECASE):
                 return ("cmd.exe", ["/c"])
 
         if self._pwsh_path:
@@ -533,6 +536,44 @@ class CelliumShell:
                         if os.path.isdir(new_path):
                             self._cwd = os.path.abspath(new_path)
 
+    def _track_env_assignments(self, cmd: str) -> None:
+        """从命令中提取环境变量赋值，更新会话级环境（跨命令持久化）。
+
+        支持：
+          - PowerShell: $env:NAME = "value" / $env:NAME = 'value'
+          - cmd: set NAME=value
+        仅识别"赋值"语句，读取（$env:NAME 无等号）不受影响。
+        """
+        if not cmd:
+            return
+        try:
+            # PowerShell: $env:NAME = value（值可为引号包裹，引号内允许 ; 等字符）
+            for m in re.finditer(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)", cmd):
+                name = m.group(1)
+                val = m.group(2).strip()
+                if val and val[0] in ('"', "'"):
+                    quote = val[0]
+                    end = val.find(quote, 1)
+                    if end != -1:
+                        val = val[1:end]
+                else:
+                    val = re.split(r"\s*[;&|]\s*", val, maxsplit=1)[0].strip()
+                if name and val:
+                    self._session_env[name] = val
+
+            # cmd: set NAME=value
+            for m in re.finditer(
+                r"(?:^|[;&|])\s*set\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^&\r\n]*)",
+                cmd,
+                re.IGNORECASE,
+            ):
+                name = m.group(1)
+                val = m.group(2).strip()
+                if name and val:
+                    self._session_env[name] = val
+        except Exception as e:
+            logger.debug("[Shell] 环境变量跟踪失败: %s", e)
+
     def _run_command(
         self,
         cmd: str,
@@ -550,6 +591,9 @@ class CelliumShell:
 
         effective_cmd = sec.get("modified_command", cmd)
         security_message = sec.get("message", "")
+
+        # 提取命令中的环境变量赋值并持久化到会话环境
+        self._track_env_assignments(effective_cmd)
 
         cmd_type = classify_command(effective_cmd)
         effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
@@ -593,7 +637,7 @@ class CelliumShell:
         cwd: str,
     ) -> Dict[str, Any]:
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
-        env = os.environ.copy()
+        env = self._session_env.copy()
         start_time = time.time()
 
         try:
@@ -673,7 +717,7 @@ class CelliumShell:
         process_ref = {}
         def run_in_thread():
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
-            env = os.environ.copy()
+            env = self._session_env.copy()
 
             try:
                 process = subprocess.Popen(
@@ -748,6 +792,9 @@ class CelliumShell:
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
+        # 提取命令中的环境变量赋值并持久化到会话环境
+        self._track_env_assignments(cmd)
+
         cmd_type = classify_command(cmd)
         effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
 
@@ -777,7 +824,7 @@ class CelliumShell:
                 full_cmd = patched
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
-        env = os.environ.copy()
+        env = self._session_env.copy()
 
         start_time = time.time()
 
@@ -873,7 +920,7 @@ class CelliumShell:
                 full_cmd = patched
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
-        env = os.environ.copy()
+        env = self._session_env.copy()
 
         start_time = time.time()
         stdout_lines = []
@@ -1042,7 +1089,7 @@ class CelliumShell:
                     full_cmd = patched
 
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
-            env = os.environ.copy()
+            env = self._session_env.copy()
 
             try:
                 process = subprocess.Popen(

@@ -69,9 +69,16 @@ class ThreeLayerMemory:
         session_id: str = "default",
         messages: Optional[List[Dict]] = None,
     ) -> str:
-        """统一持久化入口：归档 + 知识提取 + 结构化长期记忆写入。"""
         normalized_messages = self._normalize_messages(user_input, response, messages)
         snapshot_hash = self._snapshot_hash(normalized_messages)
+
+        try:
+            latest = self.archive.get_latest_by_session(session_id)
+            if latest and latest.get("snapshot_hash") == snapshot_hash:
+                return latest.get("id", "")
+        except Exception as e:
+            logger.debug("[ThreeLayerMemory] 归档快照去重检查失败: %s", e)
+
         source_id = self.archive.append_messages(
             session_id=session_id,
             messages=normalized_messages,

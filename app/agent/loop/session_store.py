@@ -57,6 +57,10 @@ class SessionStore:
         else:
             self.archive_dir = archive_dir
         self._cache: Optional[Dict] = None
+        self._store_mtime: float = 0.0
+        self._listeners: Dict[int, Any] = {}  # 进程内会话变更监听（id -> 回调）
+        self._listener_seq = 0
+        self._listener_lock = threading.Lock()
         self._ensure_store()
 
     @classmethod
@@ -150,7 +154,21 @@ class SessionStore:
             logger.info("[SessionStore] 从 archive 导入 %d 个会话", len(discovered))
 
     def _read_store(self) -> Dict:
-        """读取存储（优先内存缓存）"""
+        """读取存储"""
+        try:
+            mtime = os.path.getmtime(self.store_path)
+        except OSError:
+            mtime = 0.0
+
+        if self._cache is not None and mtime != self._store_mtime:
+            try:
+                with open(self.store_path, "r", encoding="utf-8") as f:
+                    self._cache = json.load(f)
+                self._store_mtime = mtime
+                self._notify_listeners()
+            except (json.JSONDecodeError, FileNotFoundError):
+                pass
+
         if self._cache is not None:
             return self._cache
         try:
@@ -159,6 +177,7 @@ class SessionStore:
         except (json.JSONDecodeError, FileNotFoundError):
             data = {"sessions": [], "last_active_session": None}
         self._cache = data
+        self._store_mtime = mtime
         return data
 
     def _write_store(self, data: Dict):
@@ -166,6 +185,47 @@ class SessionStore:
         with open(self.store_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         self._cache = data
+        try:
+            self._store_mtime = os.path.getmtime(self.store_path)
+        except OSError:
+            pass
+        self._notify_listeners("session_updated", data)
+
+    def add_listener(self, callback) -> int:
+        """注册进程内会话变更监听。返回监听器 id。"""
+        with self._listener_lock:
+            self._listener_seq += 1
+            self._listeners[self._listener_seq] = callback
+            return self._listener_seq
+
+    def remove_listener(self, listener_id: int):
+        """注销监听器"""
+        with self._listener_lock:
+            self._listeners.pop(listener_id, None)
+
+    def _notify_listeners(self, event_type: str = "session_updated", data: Any = None):
+        """通知所有监听器会话已变更"""
+        with self._listener_lock:
+            callbacks = list(self._listeners.values())
+        for cb in callbacks:
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
+    def _notify_messages_changed(self, session_id: str, message_count: int):
+        """消息数变化通知"""
+        with self._listener_lock:
+            callbacks = list(self._listeners.values())
+        for cb in callbacks:
+            try:
+                cb("messages_changed", {"session_id": session_id, "message_count": message_count})
+            except Exception:
+                pass
+
+    def notify_session_refresh(self, session_id: str, message_count: int):
+        """公开通知：会话消息内容变化但计数不变"""
+        self._notify_messages_changed(session_id, message_count)
 
     def get_or_create_session(self, session_id: str = None) -> SessionMeta:
         """
@@ -183,7 +243,6 @@ class SessionStore:
             sessions_dict = {s["session_id"]: s for s in sessions}
 
             if session_id and session_id in sessions_dict:
-                # 已存在，更新活跃时间
                 meta = sessions_dict[session_id]
                 meta["last_active"] = datetime.now().isoformat()
                 store["last_active_session"] = session_id
@@ -191,7 +250,6 @@ class SessionStore:
                 self._publish_event("session_updated", meta)
                 return SessionMeta(**meta)
 
-            # 创建新会话
             if session_id is None:
                 import uuid
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
@@ -244,6 +302,7 @@ class SessionStore:
 
     def update_message_count(self, session_id: str, delta: int = 1):
         """更新消息计数"""
+        target = None
         with self._lock:
             store = self._read_store()
             sessions = store.get("sessions", [])
@@ -251,12 +310,16 @@ class SessionStore:
             for s in sessions:
                 if s["session_id"] == session_id:
                     s["message_count"] = s.get("message_count", 0) + delta
+                    target = s["message_count"]
                     s["last_active"] = datetime.now().isoformat()
                     self._publish_event("session_updated", s)
                     break
 
             store["last_active_session"] = session_id
             self._write_store(store)
+
+        if target is not None:
+            self._notify_messages_changed(session_id, target)
 
     def set_session_title(self, session_id: str, title: str):
         """设置会话标题"""

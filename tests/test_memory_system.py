@@ -68,7 +68,7 @@ class TestThreeLayerMemory(unittest.TestCase):
         self.assertEqual(results[0]["raw"]["id"], source_id)
 
     def test_duplicate_snapshot_creates_separate_records(self):
-        """每次持久化都会创建新记录，即使内容相同。"""
+        """同一轮消息被重复持久化时应幂等去重，不产生重复归档记录。"""
         messages = [
             {"role": "user", "content": "如何查看进程？"},
             {"role": "assistant", "content": "使用 Get-Process"},
@@ -77,11 +77,11 @@ class TestThreeLayerMemory(unittest.TestCase):
         first = self.memory.persist_session("如何查看进程？", "使用 Get-Process", session_id="dup-session", messages=messages)
         second = self.memory.persist_session("如何查看进程？", "使用 Get-Process", session_id="dup-session", messages=messages)
 
-        # 每次持久化生成独立 ID
-        self.assertNotEqual(first, second)
-        # 两条记录都会被保存
+        # 幂等：同一快照返回相同 ID
+        self.assertEqual(first, second)
+        # 归档中只保留一条记录
         records = self.memory.archive.get_by_session("dup-session")
-        self.assertEqual(len(records), 2)
+        self.assertEqual(len(records), 1)
 
 
 class TestFTS5MemorySearcher(unittest.TestCase):

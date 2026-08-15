@@ -76,6 +76,12 @@ Screen {
     background-tint: transparent;
 }
 
+#chat.no-scrollbar {
+    scrollbar-gutter: auto;
+    scrollbar-color: transparent transparent;
+    scrollbar-size-vertical: 0;
+}
+
 #sidebar-bottom {
     height: auto;
     padding: 0 1;
@@ -326,7 +332,9 @@ class CelliumTUI(App):
         self._busy_frame = 0
         self._busy_status = ""
         self._busy_animation_running = False
+        self._busy_started = 0.0
         self._session_epoch = 0
+        self._last_session_ids = []
         self._history_limit = self._load_history_limit()
         self._history_loading = None
         self._current_thinking = None
@@ -362,8 +370,6 @@ class CelliumTUI(App):
         self._history_offset = 0
         self._history_has_more = False
         self._history_loading_more = False
-        self._pending_scroll_y = 0
-        self._pending_empty_max = 0
 
     def tr(self, key, *args):
         from app.tui.i18n import t
@@ -468,7 +474,10 @@ class CelliumTUI(App):
         self._apply_responsive_sidebar()
         self.set_interval(0.2, self._check_width_change)
         self._bootstrap_timer = self.set_interval(0.2, self._check_bootstrap)
+        self._register_session_listener()
         self._apply_rich_md_theme()
+        # 常驻订阅 broker：空闲时也能实时收到对端（WebUI/外部平台）发起的消息
+        self._post(self._start_broker_listener())
 
     def _set_terminal_title(self):
         title = str(self.title or self.TITLE).replace("\x1b", "").replace("\x07", "")
@@ -575,12 +584,46 @@ class CelliumTUI(App):
 
     async def _welcome(self):
         await self._load_history()
+        await self._check_model_setup()
+
+    async def _check_model_setup(self):
+        try:
+            if self._model_configured_valid():
+                if self.input:
+                    self.input.set_placeholder_aware(self.tr("input.placeholder"))
+                return
+            if self.input:
+                self.input.set_placeholder_aware(self.tr("input.no_model"))
+            await self._append_system(self.tr("model.setup_hint"), markup=True)
+            self._refresh_status()
+        except Exception:
+            pass
+
+    def _model_configured_valid(self) -> bool:
+        try:
+            from app.core.util.agent_config import get_config
+            llm = get_config().get_section("llm") or {}
+            models = llm.get("models", [])
+            current = llm.get("current_model", "")
+            if not models or not current:
+                return False
+            target = None
+            for m in models:
+                if m.get("name") == current:
+                    target = m
+                    break
+            if target is None:
+                target = models[0]
+            return bool((target.get("api_key") or "").strip())
+        except Exception:
+            return False
 
     def _start_busy_animation(self):
         if self._busy_animation_running:
             return
         self._busy_animation_running = True
         self._busy_frame = 0
+        self._busy_started = time.monotonic()
         try:
             self._busy_timer = self.set_interval(1 / 12, self._tick_busy_animation)
         except Exception:
@@ -624,14 +667,16 @@ class CelliumTUI(App):
         if self._busy:
             from app.tui.spinner import cell_spinner_text
             state = self._busy_status or self.tr("busy")
-            color = DARK_THEME.primary if self.theme == "cellium-dark" else LIGHT_THEME.primary
-            anim = cell_spinner_text(self._busy_frame, state, color)
+            theme_color = DARK_THEME.primary if self.theme == "cellium-dark" else LIGHT_THEME.primary
+            anim = cell_spinner_text(self._busy_frame, state, theme_color)
             if self.status_left:
                 self.status_left.update(
                     Text.assemble(
                         anim,
-                        f"  [dim]{self.tr('header.session')} {self.session_id} · "
-                        f"{self.tr('header.model')} {self.model_name}",
+                        Text.from_markup(
+                            f"  [dim]{self.tr('header.session')} {self.session_id} · "
+                            f"{self.tr('header.model')} {self.model_name}"
+                        ),
                     )
                 )
                 self._refresh_status_right(web)
@@ -679,9 +724,17 @@ class CelliumTUI(App):
         if hide and self.sidebar.styles.display != "none":
             self.sidebar.styles.display = "none"
             self.sidebar.display = False
+            try:
+                self.chat.set_class(True, "no-scrollbar")
+            except Exception:
+                pass
         elif not hide and self.sidebar.styles.display == "none":
             self.sidebar.styles.display = "block"
             self.sidebar.display = True
+            try:
+                self.chat.set_class(False, "no-scrollbar")
+            except Exception:
+                pass
 
     def apply_language(self):
         if self.sidebar:
@@ -690,7 +743,7 @@ class CelliumTUI(App):
             self.query_one("#btn-new-session", Button).label = self.tr("sidebar.new")
             self.query_one("#btn-settings", Button).label = self.tr("sidebar.settings")
         if self.input:
-            self.input.placeholder = ""
+            self.input.set_placeholder_aware(self.tr("input.placeholder") if self._model_configured_valid() else self.tr("input.no_model"))
         if self.hint:
             self.hint.update(self.tr("hint"))
         self._refresh_status()
@@ -716,6 +769,133 @@ class CelliumTUI(App):
 
     # ---- 会话管理 ----
 
+    async def _start_broker_listener(self):
+        """常驻订阅 broker：实时接收对端（WebUI/外部平台）发起的消息并渲染。
+
+        单订阅模型：TUI 发消息也统一经本监听器渲染（_agent_worker 不再消费）。
+        - message_received 用 _last_user_msg 去重：TUI 自己发消息已由 _agent_worker 显示
+        - 切换会话时重新订阅当前 session
+        """
+        self._last_user_msg = None
+        try:
+            from app.messaging.message_broker import get_message_broker
+            broker = get_message_broker()
+            while True:
+                current = self.session_id
+                queue = broker.subscribe(current)
+                try:
+                    while True:
+                        if self.session_id != current:
+                            break
+                        try:
+                            evt = await asyncio.wait_for(queue.get(), timeout=0.5)
+                        except asyncio.TimeoutError:
+                            continue
+                        if evt is None:
+                            break
+                        if self.session_id != current:
+                            break
+                        if self._history_stale(self._session_epoch):
+                            continue
+                        if evt.get("type") == "message_received":
+                            msg = evt.get("message") or evt.get("content") or ""
+                            if msg and str(msg) == getattr(self, "_last_user_msg", None):
+                                continue
+                            if msg:
+                                self._last_user_msg = str(msg)
+                        await self._handle_event(evt)
+                        if evt.get("type") in ("done", "error", "stopped"):
+                            self._last_local_task_end = time.monotonic()
+                finally:
+                    try:
+                        broker.unsubscribe(current, queue)
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    def _register_session_listener(self):
+        try:
+            from app.agent.loop.session_store import get_session_store
+            store = get_session_store()
+
+            self._msg_refresh_timer = None
+
+            def _on_change(event_type, data):
+                try:
+                    if threading.current_thread() is threading.main_thread():
+                        _on_change_safe(event_type, data)
+                    else:
+                        self.call_from_thread(_on_change_safe, event_type, data)
+                except Exception:
+                    pass
+
+            def _on_change_safe(event_type, data):
+                try:
+                    if event_type == "messages_changed":
+                        sid = (data or {}).get("session_id")
+                        if sid and sid == self.session_id and not self._busy:
+                            last_end = getattr(self, "_last_local_task_end", 0.0)
+                            if time.monotonic() - last_end > 1.0:
+                                self._schedule_history_refresh()
+                        return
+                    self._post(self._load_sessions())
+                except Exception:
+                    pass
+
+            self._session_listener_id = store.add_listener(_on_change)
+            self.set_interval(2.0, self._check_sessions_file_change)
+        except Exception:
+            self._session_listener_id = None
+
+    def _schedule_history_refresh(self):
+        """防抖调度聊天区刷新：300ms 内多次变化只刷新一次"""
+        try:
+            timer = getattr(self, "_msg_refresh_timer", None)
+            if timer is not None:
+                timer.reset()
+                return
+            self._msg_refresh_timer = self.set_timer(0.3, self._do_history_refresh)
+        except Exception:
+            self._post(self._load_history())
+
+    def _do_history_refresh(self):
+        self._msg_refresh_timer = None
+        try:
+            if not self._busy and not self._restoring_history:
+                last_end = getattr(self, "_last_local_task_end", 0.0)
+                if time.monotonic() - last_end <= 1.0:
+                    return
+                self._post(self._load_history())
+        except Exception:
+            pass
+
+    def _check_sessions_file_change(self):
+        try:
+            from app.agent.loop.session_store import get_session_store
+            store = get_session_store()
+            store.list_sessions(limit=1)
+        except Exception:
+            pass
+
+    def on_unmount(self):
+        try:
+            timer = getattr(self, "_msg_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
+            self._msg_refresh_timer = None
+        except Exception:
+            pass
+        try:
+            from app.agent.loop.session_store import get_session_store
+            store = get_session_store()
+            if getattr(self, "_session_listener_id", None) is not None:
+                store.remove_listener(self._session_listener_id)
+        except Exception:
+            pass
+
     async def _load_sessions(self):
         try:
             from app.agent.loop.session_store import get_session_store
@@ -723,8 +903,6 @@ class CelliumTUI(App):
             def _fetch():
                 store = get_session_store()
                 metas = store.list_sessions(limit=50)
-                # 首次进入且无任何会话：注册当前默认会话，与 WebUI 的
-                # 「无 last 会话则自动创建」行为保持一致
                 if not metas:
                     store.get_or_create_session(self.session_id)
                     metas = store.list_sessions(limit=50)
@@ -753,6 +931,10 @@ class CelliumTUI(App):
             self.workers.cancel_group(self, "history-fill")
         except Exception:
             pass
+        try:
+            self.workers.cancel_group(self, "agent")
+        except Exception:
+            pass
         self._session_epoch += 1
         from_session = self.session_id
         self.session_id = session_id
@@ -775,6 +957,7 @@ class CelliumTUI(App):
             store = get_session_store()
             meta = store.get_or_create_session()
             from_session = self.session_id
+            self._session_epoch += 1
             self.session_id = meta.session_id
             from app.agent.loop.session_manager import get_session_manager
             get_session_manager().get_or_create(self.session_id)
@@ -798,6 +981,7 @@ class CelliumTUI(App):
             store.delete_session(self.session_id)
             get_session_manager().close_session(self.session_id)
             await self._append_system(self.tr("session.deleted", self.session_id))
+            self._session_epoch += 1
             self.session_id = "default"
             self.chat.remove_children()
             self._refresh_status()
@@ -928,7 +1112,7 @@ class CelliumTUI(App):
                 else:
                     self._post(self._switch_session(arg))
             else:
-                self._post(self._append_system(self.tr("session.current", self.session_id)))
+                self._post(self._open_session_picker())
         elif cmd == "/delete":
             self.action_delete_session()
         elif cmd == "/new":
@@ -960,6 +1144,44 @@ class CelliumTUI(App):
                 self._post(self._switch_model(name))
         self.push_screen(ModelPickerScreen(models, current), callback=on_result)
 
+    async def _open_session_picker(self):
+        """/session 无参数时弹出会话选择框"""
+        try:
+            from app.agent.loop.session_store import get_session_store
+
+            def _fetch():
+                store = get_session_store()
+                metas = store.list_sessions(limit=50)
+                if not metas:
+                    store.get_or_create_session(self.session_id)
+                    metas = store.list_sessions(limit=50)
+                return metas
+
+            metas = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        except Exception as e:
+            await self._append_system(self.tr("session.list_error", e))
+            return
+
+        sessions = []
+        for meta in metas:
+            title = meta.title or meta.session_id
+            if meta.message_count:
+                title += f" ({meta.message_count})"
+            sessions.append((meta.session_id, title))
+
+        def on_result(result):
+            if isinstance(result, tuple) and result[0] == "__delete__":
+                self._post(self._delete_session_by_arg("delete " + result[1]))
+                return
+            if isinstance(result, tuple) and result[0] == "__renamed__":
+                self._post(self._load_sessions())
+                return
+            if result and result != self.session_id:
+                self._post(self._switch_session(result))
+
+        from app.tui.session_picker import SessionPickerScreen
+        self.push_screen(SessionPickerScreen(sessions, self.session_id), callback=on_result)
+
     async def _handle_model_command(self, arg):
         await self._switch_model(arg)
 
@@ -982,7 +1204,7 @@ class CelliumTUI(App):
             await self._append_system(self.tr("model.switch_failed", e))
 
     def delete_model_by_name(self, name: str):
-        """删除已配置的模型（同步从配置移除）"""
+        """删除已配置的模型"""
         try:
             from app.core.util.agent_config import get_config
             cfg = get_config()
@@ -1049,7 +1271,7 @@ class CelliumTUI(App):
             pass
 
     def action_copy_selection(self):
-        """Ctrl+Y 复制当前选区（opencode 风格快捷键）。"""
+        """Ctrl+Y 复制当前选区"""
         selection = None
         try:
             selection = self.screen.get_selected_text()
@@ -1119,13 +1341,16 @@ class CelliumTUI(App):
         self.run_worker(self._agent_worker(text), group="agent", exclusive=True)
 
     async def _agent_worker(self, text):
+        epoch = self._session_epoch
         try:
             if not self._history_ready.is_set():
                 try:
                     await asyncio.wait_for(self._history_ready.wait(), timeout=15)
                 except asyncio.TimeoutError:
                     pass
-            await self._append_user(text)
+            await self._append_user(text, force_scroll=True)
+            # 记录本端已显示的用户消息，供常驻监听器去重 message_received
+            self._last_user_msg = text
             if not self._bootstrap_ready.is_set():
                 await self._append_system(self.tr("initializing"))
                 try:
@@ -1141,44 +1366,32 @@ class CelliumTUI(App):
                     self._get_session_memory, self.session_id
                 )
 
-                queue: asyncio.Queue = asyncio.Queue()
-                stop_event = threading.Event()
-                _stream_error = None
+                from app.server.task_manager import get_task_manager
+                task_mgr = get_task_manager()
 
-                def _stream_thread():
-                    """后台线程消费 run_stream，事件放入队列（线程安全）"""
-                    nonlocal _stream_error
-                    try:
-                        async def _consume():
-                            async for evt in loop.run_stream(
-                                text, memory=memory, session_id=self.session_id
-                            ):
-                                queue.put_nowait(("event", evt))
-                        fut = asyncio.run_coroutine_threadsafe(_consume(), self._agent_loop)
-                        try:
-                            fut.result(timeout=1800)
-                        except asyncio.CancelledError:
-                            pass
-                    except Exception as e:
-                        _stream_error = e
-                        queue.put_nowait(("error", e))
-                    finally:
-                        stop_event.set()
-
-                t = threading.Thread(target=_stream_thread, daemon=True, name="tui-agent-stream")
-                t.start()
-                while not stop_event.is_set():
-                    try:
-                        kind, payload = await asyncio.wait_for(
-                            queue.get(), timeout=0.5
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    if kind == "event":
-                        await self._handle_event(payload)
-                    else:
-                        self._post(self._append_system(self.tr("error.exec", payload)))
-                await asyncio.to_thread(t.join)
+                started = await task_mgr.start_task(
+                    session_id=self.session_id,
+                    agent_loop=loop,
+                    user_input=text,
+                    memory=memory,
+                )
+                # 事件统一由常驻订阅监听器（_start_broker_listener）消费渲染，
+                # _agent_worker 只负责启动任务并等待其结束（避免双订阅竞态）。
+                if started:
+                    self._last_local_task_end = 0.0
+                    while True:
+                        if self._history_stale(epoch):
+                            break
+                        if not task_mgr.has_running_task(self.session_id):
+                            break
+                        await asyncio.sleep(0.3)
+                # 标记本端任务结束（抑制随后 update_message_count 触发的刷新）
+                self._last_local_task_end = time.monotonic()
+                self._busy = False
+                self._busy_status = ""
+                self._stop_busy_animation()
+                self._current_loop = None
+                return
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1190,12 +1403,12 @@ class CelliumTUI(App):
             self._current_loop = None
 
     def _get_agent_mgr(self):
-        """后台线程中获取 AgentLoopManager（import 重，避免阻塞主循环）"""
+        """后台线程中获取 AgentLoopManager"""
         from app.agent.loop import AgentLoopManager
         return AgentLoopManager.get_instance()
 
     async def _get_loop_in_thread(self, mgr):
-        """在后台线程获取/创建当前会话 AgentLoop（首次创建同步较慢）"""
+        """在后台线程获取/创建当前会话 AgentLoop（"""
         import asyncio as _asyncio
         loop = await _asyncio.to_thread(mgr.get_loop_sync_or_create, self.session_id)
         return loop
@@ -1204,27 +1417,37 @@ class CelliumTUI(App):
         from app.agent.loop.session_manager import get_session_manager
         return get_session_manager().get_or_create(session_id).memory
 
+    def _touch_busy(self):
+        """有输出活动时重置 spinner 计时"""
+        if self._busy_animation_running:
+            self._busy_started = time.monotonic()
+
     async def _handle_event(self, evt):
         t = evt.get("type")
         if t == "status":
             self._refresh_status()
         elif t == "message_received":
-            pass
+            # 对端（WebUI/外部平台）发起的消息：立即显示用户消息
+            msg = evt.get("message") or evt.get("content") or ""
+            if msg:
+                await self._append_user(str(msg))
         elif t == "thinking":
+            self._touch_busy()
             await self._append_thinking(evt.get("content", ""))
-        elif t == "content_chunk":
+        elif t in ("content_chunk", "content"):
+            self._touch_busy()
             await self._append_chunk(evt.get("content", ""))
         elif t == "tool_start":
+            self._touch_busy()
             await self._add_tool_card(evt)
         elif t == "tool_result":
+            self._touch_busy()
             self._update_tool_card(evt)
         elif t == "done":
-            # 先渲染最终内容再收尾，避免 done 到达时未渲染的 markdown 被清空
             await self._finalize_render()
             self._finish_response()
             self._refresh_status()
         elif t in ("stopped", "control_loop_stop", "heuristic_stop"):
-            # 停止事件：不在聊天区显示"已停止"提示，仅收尾渲染
             await self._finalize_render()
             self._finish_response()
         elif t == "error":
@@ -1245,9 +1468,12 @@ class CelliumTUI(App):
 
     # ---- 渲染辅助 ----
 
-    async def _append_user(self, content):
+    async def _append_user(self, content, force_scroll=False):
         await self.chat.mount(UserMessage(content))
-        self.chat.scroll_end(animate=False)
+        if force_scroll:
+            self.chat.force_scroll_bottom()
+        else:
+            self.chat.scroll_to_follow()
 
     async def _append_thinking(self, content):
         if not content or not content.strip():
@@ -1256,36 +1482,41 @@ class CelliumTUI(App):
             self._current_thinking = ThinkingBlock("")
             await self.chat.mount(self._current_thinking)
         self._current_thinking.append_text(content)
-        self.chat.scroll_end(animate=False)
+        self.chat.scroll_to_follow()
 
     async def _append_chunk(self, content):
+        if not content:
+            return
         if self._thought_mode:
             self._thought_raw += content
             await self._check_thought_complete()
             return
-
         self._pending_text += content
-        start = self._find_thought_start(self._pending_text)
-        
-        if start is not None:
-            pre = self._pending_text[:start]
-            self._thought_fenced = bool(re.search(r'```json\s*$', pre, re.IGNORECASE))
-            pre = re.sub(r'```json\s*$', '', pre, flags=re.IGNORECASE).strip()
-
-            if pre:
-                await self._append_text(pre)
-
-            self._thought_mode = True
-            self._thought_raw = self._pending_text[start:]
-            self._pending_text = ""
-            self._ensure_thinking_block_mount()
-            await self._check_thought_complete()
+        if self._find_thought_start(self._pending_text) is not None:
+            await self._check_pending_thought()
         else:
             await self._flush_pending_text()
 
+    async def _check_pending_thought(self):
+        start = self._find_thought_start(self._pending_text)
+        if start is None:
+            await self._flush_pending_text()
+            return
+        pre = self._pending_text[:start]
+        self._thought_fenced = bool(re.search(r'```json\s*$', pre, re.IGNORECASE))
+        pre = re.sub(r'```json\s*$', '', pre, flags=re.IGNORECASE).strip()
+
+        if pre:
+            await self._append_text(pre)
+
+        self._thought_mode = True
+        self._thought_raw = self._pending_text[start:]
+        self._pending_text = ""
+        self._ensure_thinking_block_mount()
+        await self._check_thought_complete()
+
     async def _check_thought_complete(self):
         if not self._thought_closed(self._thought_raw):
-            # 未闭合兜底：积累过大仍无闭合迹象 → 放弃思考拦截，回退为正文（防吞内容）
             if len(self._thought_raw) > 4000:
                 await self._append_text(self._thought_raw)
                 self._finish_thought()
@@ -1298,14 +1529,12 @@ class CelliumTUI(App):
         data = None
         try:
             data = json.loads(json_str)
-            # 与 WebUI 判定一致：仅当 reasoning + action 都存在才视为思考协议
             if isinstance(data, dict) and "reasoning" in data and "action" in data:
                 reasoning = str(data.get("reasoning", ""))
         except (json.JSONDecodeError, ValueError):
             data = None
 
         if data is None or not isinstance(data, dict) or "action" not in data:
-            # 非思考协议（如正文里的 JSON 字面量）→ 原样作为正文，并移除误建的空思考块
             await self._append_text(self._thought_raw)
             if self._current_thinking is not None:
                 try:
@@ -1322,7 +1551,6 @@ class CelliumTUI(App):
         rest = self._thought_raw[json_end:]
 
         rest = rest.strip()
-        # 仅剥离思考协议块自身的 ``` 闭合标记；不得剥正文代码块末尾的 ```
         if self._thought_fenced and rest.startswith("```"):
             rest = rest[3:].strip()
 
@@ -1355,6 +1583,9 @@ class CelliumTUI(App):
             if self._active_tool_card is not None:
                 self._active_tool_card.finish()
                 self._active_tool_card = None
+            if self._current_thinking is not None:
+                self._current_thinking.finish()
+                self._current_thinking = None
             self._current_response = AssistantMessage("")
             await self.chat.mount(self._current_response)
         self._current_md += text
@@ -1382,7 +1613,7 @@ class CelliumTUI(App):
             await self._current_response.update(self._current_md)
         except Exception:
             pass
-        self.chat.scroll_end(animate=False)
+        self.chat.scroll_to_follow()
 
     async def _flush_pending_text(self):
         if not self._pending_text:
@@ -1444,7 +1675,7 @@ class CelliumTUI(App):
                 self.chat.mount(self._current_thinking, before=self._current_response)
             else:
                 self.chat.mount(self._current_thinking)
-        self.chat.scroll_end(animate=False)
+        self.chat.scroll_to_follow()
 
     def _find_json_end(self, raw: str) -> int:
         depth = 0
@@ -1480,23 +1711,36 @@ class CelliumTUI(App):
         if self._current_thinking is not None:
             self._current_thinking.finish()
             self._current_thinking = None
-        self.chat.scroll_end(animate=False)
+        self.chat.scroll_to_follow()
 
     async def _add_tool_card(self, evt):
+        # 先 flush 已累积的正文（否则工具卡会吞掉前面的流式文本，
+        # 如"开始"在 tool_start 前已累积但 markdown 渲染 timer 未触发）
+        if self._current_response is not None and self._current_md:
+            await self._render_now()
         if self._current_response is not None:
             self._current_response = None
             self._current_md = ""
             self._pending_text = ""
-        # 思考协议若有未闭合残留，一并清理
         if self._thought_mode:
             self._thought_mode = False
             self._thought_raw = ""
             self._thought_fenced = False
-        # Gene 评估轮：不显示工具卡，避免出现在最终回复下方
+        # 工具调用开始时结束当前 thinking 块：后续 thinking 事件作为新块
+        if self._current_thinking is not None:
+            self._current_thinking.finish()
+            self._current_thinking = None
         if evt.get("gene"):
             return
         call_id = evt.get("call_id") or f"tc_{len(self._tool_cards)}"
-        if self._active_tool_card is None:
+        # 同一轮批量工具调用（tool_start 连续到达、尚无 tool_result）合并到同一卡；
+        # 已有完成调用说明进入下一轮，开新卡按顺序排列
+        same_round = self._active_tool_card is not None and not any(
+            c["status"] in ("success", "error") for c in self._active_tool_card._calls.values()
+        )
+        if self._active_tool_card is not None and not same_round:
+            self._active_tool_card.finish()
+        if self._active_tool_card is None or not same_round:
             self._active_tool_card = ToolCallCard()
             await self.chat.mount(self._active_tool_card)
         self._active_tool_card.add_call(
@@ -1507,28 +1751,26 @@ class CelliumTUI(App):
         )
         self._tool_cards[call_id] = self._active_tool_card
         self._tool_count += 1
-        self.chat.scroll_end(animate=False)
+        self.chat.scroll_to_follow()
 
     def _update_tool_card(self, evt):
         card = self._tool_cards.get(evt.get("call_id", ""))
         if card:
             card.update_call(evt.get("call_id", ""), evt.get("result"), evt.get("duration_ms", 0))
 
-    async def _append_system(self, content):
-        await self.chat.mount(Static(content, classes="system-msg", markup=False))
-        self.chat.scroll_end(animate=False)
+    async def _append_system(self, content, markup=False):
+        await self.chat.mount(Static(content, classes="system-msg", markup=markup))
+        self.chat.scroll_to_follow()
 
     async def _finalize_render(self):
-        """收尾前确保最终内容渲染完成，避免 done 到达时未渲染的 markdown 被清空"""
+        """收尾前确保最终内容已渲染"""
         try:
-            # 取消未触发的定时器，直接渲染
             if getattr(self, "_md_render_timer", None) is not None:
                 try:
                     self._md_render_timer.stop()
                 except Exception:
                     pass
                 self._md_render_timer = None
-            # flush 残留的待渲染文本
             if self._pending_text and not self._thought_mode:
                 await self._append_text(self._pending_text)
                 self._pending_text = ""
@@ -1567,17 +1809,22 @@ class CelliumTUI(App):
     def _history_stale(self, epoch: int) -> bool:
         return epoch != self._session_epoch
 
-    def _widget_from_spec(self, spec):
+    def _widget_from_spec(self, spec, md=None):
         kind = spec["kind"]
         if kind == "user":
             return UserMessage(spec["content"])
         if kind == "thinking":
             return ThinkingBlock(spec["content"])
         if kind == "assistant":
-            # 历史消息用 Static+RichMarkdown（单节点），避免 Textual Markdown 子组件
-            # 拖慢 mount 与失焦恢复（update_node_styles 全树重算）
             from app.tui.widgets import HistoryMarkdown
-            return HistoryMarkdown("")
+            content = spec.get("content", "") or ""
+            w = HistoryMarkdown("")
+            if md is not None:
+                w._source = content
+                w._md = md
+            else:
+                w._source = content
+            return w
         return ToolCallCard()
 
     def _post_mount(self, widget, spec):
@@ -1597,41 +1844,68 @@ class CelliumTUI(App):
         self._restoring_history = True
         self._history_offset = 0
         self._history_has_more = False
+        was_following = self.chat.following
+        prev_scroll_y = self.chat.scroll_y
         try:
             from app.tui.history_render import build_history_plan
-            self._history_loading = Static(self.tr("history.loading"), classes="system-msg", markup=False)
-            with self.batch_update():
-                await self.chat.remove_children()
-                await self.chat.mount(self._history_loading)
             hist_limit = self._history_limit
-            plan, dropped = await asyncio.get_running_loop().run_in_executor(
-                None, build_history_plan, self.session_id, hist_limit
+
+            def _build_plan_and_md():
+                from app.tui.history_render import build_history_plan
+                from app.tui.widgets import _build_rich_md
+                p, dropped = build_history_plan(self.session_id, hist_limit)
+                mds = []
+                for spec in p:
+                    if spec.get("kind") == "assistant" and spec.get("content"):
+                        try:
+                            mds.append(_build_rich_md(spec["content"]))
+                        except Exception:
+                            mds.append(None)
+                    else:
+                        mds.append(None)
+                return p, dropped, mds
+
+            plan, dropped, mds = await asyncio.get_running_loop().run_in_executor(
+                None, _build_plan_and_md
             )
             if self._history_stale(epoch):
                 return
+            with self.batch_update():
+                await self.chat.remove_children()
             self._history_has_more = dropped > 0
             if plan:
-                widgets = [self._widget_from_spec(s) for s in plan]
+                widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
                 if self._history_stale(epoch):
                     return
                 with self.batch_update():
                     await self.chat.mount(*widgets)
                     for w, s in zip(widgets, plan):
                         self._post_mount(w, s)
-                self._remove_history_loading()
+                try:
+                    self.chat.refresh(layout=True)
+                except Exception:
+                    pass
+                for _ in range(4):
+                    await asyncio.sleep(0)
+                if was_following:
+                    self.chat.force_scroll_bottom()
+                else:
+                    try:
+                        self.chat.scroll_to(
+                            y=min(prev_scroll_y, self.chat.max_scroll_y),
+                            animate=False,
+                            immediate=True,
+                        )
+                    except Exception:
+                        pass
+                self.set_timer(0.15, self._scroll_history_done)
+                self._restoring_history = False
                 self._history_ready.set()
                 self._bootstrap_ready.set()
                 self._set_terminal_title()
                 if not self._busy:
                     self.input.focus()
-                if not self._history_stale(epoch):
-                    self.run_worker(
-                        self._fill_history_markdown(epoch, widgets, plan),
-                        group="history-fill",
-                        exclusive=False,
-                    )
                 return
-            self._remove_history_loading()
             self._restoring_history = False
             self._history_ready.set()
             self._bootstrap_ready.set()
@@ -1639,70 +1913,13 @@ class CelliumTUI(App):
             if not self._busy:
                 self.input.focus()
         except Exception:
-            # 历史恢复异常静默处理，不打断界面
             if self._history_stale(epoch):
                 return
-            self._remove_history_loading()
             self._restoring_history = False
-            self.chat.scroll_end(animate=False)
-            self.set_timer(0.1, self._scroll_history_done)
-            self._history_ready.set()
-            self._bootstrap_ready.set()
-
-    async def _fill_history_markdown(self, epoch, widgets, plan, preserve_scroll=False):
-        """后台渐进填充历史 markdown 内容：从最新往旧，每批让出事件循环
-
-        preserve_scroll=True（滚动加载更多）：填充完成后保持滚动位置，
-        只修正因内容高度变化产生的偏移，不强制滚到底。
-        """
-        try:
-            from app.tui.widgets import HistoryMarkdown, _build_rich_md
-            pairs = [(w, s) for w, s in zip(widgets, plan)
-                     if isinstance(w, HistoryMarkdown) and s.get("content")]
-            if not pairs:
-                return
-            contents = [s["content"] for _w, s in pairs]
             try:
-                parsed = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: [_build_rich_md(c) for c in contents],
-                )
-            except Exception:
-                parsed = None
-            if self._history_stale(epoch):
-                return
-            if parsed is None:
-                return
-            with self.batch_update():
-                for (w, s), md in zip(pairs, parsed):
-                    w._source = s["content"]
-                    w._md = md
-                    w._visual = None
-                    try:
-                        w.refresh(layout=False)
-                    except Exception:
-                        pass
-            # 全部填完一次整体布局（逐条 layout=True 在 widget 多时数百次重算，极慢）
-            try:
-                self.chat.refresh(layout=True)
+                await self._load_history()
             except Exception:
                 pass
-            await asyncio.sleep(0)
-            if preserve_scroll:
-                if self._history_stale(epoch):
-                    return
-                try:
-                    await asyncio.sleep(0)
-                    filled_max = self.chat.max_scroll_y
-                    shift = filled_max - self._pending_empty_max
-                    self.chat.scroll_to(y=self._pending_scroll_y + shift, animate=False, immediate=True)
-                except Exception:
-                    pass
-                return
-            self.chat.scroll_end(animate=False)
-            self._restoring_history = False
-        except Exception:
-            pass
 
     def _remove_history_loading(self):
         """移除历史加载提示组件"""
@@ -1714,16 +1931,10 @@ class CelliumTUI(App):
             self._history_loading = None
 
     def _scroll_history_done(self):
-        """历史渲染稳定后直接定位到底部（不带动画，避免滚动过程感）"""
-        if self.chat:
+        if self.chat and self.chat.following:
             self.chat.scroll_end(animate=False)
 
     def _on_chat_scrolled_top(self):
-        """chat 滚动到顶时自动加载更早的历史（由 ChatScroll.watch_scroll_y 回调）
-
-        Textual 的 ScrollMessage bubble=False，App 级 on_scroll 收不到滚动，
-        因此由自定义容器 ChatScroll 在 watch_scroll_y 检测到顶后回调这里。
-        """
         if not self._history_has_more or self._history_loading_more:
             return
         if self._restoring_history or self._busy:
@@ -1734,7 +1945,6 @@ class CelliumTUI(App):
             pass
 
     async def _load_more_history(self):
-        """加载更早的历史批次，插入到顶部并保持滚动位置"""
         if self._history_loading_more or not self._history_has_more:
             return
         if self._restoring_history or self._busy:
@@ -1743,50 +1953,49 @@ class CelliumTUI(App):
         epoch = self._session_epoch
         try:
             from app.tui.history_render import build_history_plan
+            from app.tui.widgets import _build_rich_md
             limit = self._history_limit
             new_offset = self._history_offset + limit
-            plan, dropped = await asyncio.get_running_loop().run_in_executor(
-                None, build_history_plan, self.session_id, limit, new_offset
+
+            def _build_more():
+                p, dropped = build_history_plan(self.session_id, limit, new_offset)
+                mds = []
+                for spec in p:
+                    if spec.get("kind") == "assistant" and spec.get("content"):
+                        try:
+                            mds.append(_build_rich_md(spec["content"]))
+                        except Exception:
+                            mds.append(None)
+                    else:
+                        mds.append(None)
+                return p, dropped, mds
+
+            plan, dropped, mds = await asyncio.get_running_loop().run_in_executor(
+                None, _build_more
             )
             if self._history_stale(epoch):
                 return
             if not plan:
                 self._history_has_more = False
                 return
-            # 记录当前滚动位置 + 总可滚动高度（max_scroll_y 布局后更新）
+
             scroll_y = self.chat.scroll_y
             old_max = self.chat.max_scroll_y
             first_widget = next(iter(self.chat.children), None)
-            widgets = [self._widget_from_spec(s) for s in plan]
+            widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
             with self.batch_update():
                 await self.chat.mount(*widgets, before=first_widget)
                 for w, s in zip(widgets, plan):
                     self._post_mount(w, s)
-            # 等布局完成（mount 后布局异步执行），用 max_scroll_y 增量 = 新内容高度，
-            # 把滚动位置搬回原处（markdown 尚未填充，先空高度挂载）
             try:
                 for _ in range(5):
                     await asyncio.sleep(0)
-                empty_max = self.chat.max_scroll_y
-                added_height = empty_max - old_max
+                new_max = self.chat.max_scroll_y
+                added_height = new_max - old_max
                 base_scroll = scroll_y + added_height
                 self.chat.scroll_to(y=base_scroll, animate=False, immediate=True)
-                # 供填充完成后二次修正：记录基准滚动量 + 空内容时的 max_scroll_y
-                self._pending_scroll_y = base_scroll
-                self._pending_empty_max = empty_max
             except Exception:
                 pass
-            # 后台渐进填充 markdown 内容（不滚到底，保持当前阅读位置）
-            try:
-                self.workers.cancel_group(self, "history-fill")
-            except Exception:
-                pass
-            self.run_worker(
-                self._fill_history_markdown(epoch, widgets, plan, preserve_scroll=True),
-                group="history-fill",
-                exclusive=False,
-            )
-            # 总量控制：超过 2 倍 limit 时裁掉最旧 widget，offset 相应回退
             self._history_offset = await self._trim_history_widgets(new_offset)
             self._history_has_more = dropped > 0
         except Exception:
@@ -1795,17 +2004,13 @@ class CelliumTUI(App):
             self._history_loading_more = False
 
     async def _trim_history_widgets(self, new_offset: int) -> int:
-        """widget 总数超过上限时移除最旧部分，避免无限膨胀。
-
-        返回调整后的 offset（被裁掉的旧 widget 视作未加载，重新可加载）。
-        """
         try:
             max_widgets = max(200, self._history_limit * 5)
             children = list(self.chat.children)
             if len(children) <= max_widgets:
                 return new_offset
             excess = len(children) - max_widgets
-            old_widgets = children[:excess]  # 最旧的在最前
+            old_widgets = children[:excess] 
             try:
                 await self.chat.remove_children(old_widgets)
             except Exception:

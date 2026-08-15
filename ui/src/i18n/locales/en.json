@@ -278,6 +278,9 @@
     },
     "channel": {
       "title": "Channel Configuration",
+      "showToolCards": "Tool Cards",
+      "showToolCardsOn": "On",
+      "showToolCardsOff": "Off",
       "qq": {
         "title": "QQ Bot Channel",
         "enabled": "Enable Channel",

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from .models import ChatResponse, ModelInfo, ToolCall
 from .transport import OpenAICompatTransport
+from app.messaging.stream_normalizer import _THINK_PREFIXES, _think_fragment_tail
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +506,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         think_buffer = ""
         in_think = False
+        think_frag = ""  # 跨 chunk 缓存的 <think/</think 标签残片
 
         try:
             async for item in transport.chat_stream(params):
@@ -520,34 +522,53 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
                 delta_content = delta.get("content")
                 if delta_content:
+                    if think_frag:
+                        delta_content = think_frag + delta_content
+                        think_frag = ""
                     rest = delta_content
                     while rest:
                         if not in_think:
                             tag = re.search(r"<think>", rest)
-                            if not tag:
-                                if rest.strip():
-                                    content_parts.append(rest)
-                                    yield {"type": "content", "text": rest}
+                            if tag:
+                                before = rest[:tag.start()]
+                                if before:
+                                    content_parts.append(before)
+                                    yield {"type": "content", "text": before}
+                                rest = rest[tag.end():]
+                                in_think = True
+                                continue
+                            frag = _think_fragment_tail(rest)
+                            if frag:
+                                keep = rest[:-len(frag)] if frag != rest else ""
+                                if keep:
+                                    content_parts.append(keep)
+                                    yield {"type": "content", "text": keep}
+                                think_frag = frag
                                 rest = ""
                                 break
-                            before = rest[:tag.start()]
-                            if before.strip():
-                                content_parts.append(before)
-                                yield {"type": "content", "text": before}
-                            rest = rest[tag.end():]
-                            in_think = True
+                            if rest:
+                                content_parts.append(rest)
+                                yield {"type": "content", "text": rest}
+                            rest = ""
                         else:
                             close = re.search(r"</think>", rest)
-                            if not close:
-                                think_buffer += rest
+                            if close:
+                                think_buffer += rest[:close.start()]
+                                rest = rest[close.end():]
+                                in_think = False
+                                if think_buffer.strip():
+                                    reasoning_parts.append(think_buffer.strip())
+                                think_buffer = ""
+                                continue
+                            frag = _think_fragment_tail(rest)
+                            if frag:
+                                keep = rest[:-len(frag)] if frag != rest else ""
+                                think_buffer += keep
+                                think_frag = frag
                                 rest = ""
                                 break
-                            think_buffer += rest[:close.start()]
-                            rest = rest[close.end():]
-                            in_think = False
-                            if think_buffer.strip():
-                                reasoning_parts.append(think_buffer.strip())
-                            think_buffer = ""
+                            think_buffer += rest
+                            rest = ""
 
                 delta_reasoning = delta.get("reasoning_content")
                 if delta_reasoning:
@@ -569,6 +590,15 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
             if in_think and think_buffer.strip():
                 reasoning_parts.append(think_buffer.strip())
+            # 流结束时若仍有标签残片缓存：若在思考中，残片是思考内容的一部分，
+            # 拼回 think_buffer 一并处理；否则（<think> 从未完整出现）残片是
+            # 不完整的标签，直接丢弃。
+            if think_frag:
+                if in_think:
+                    think_buffer += think_frag
+                    if think_buffer.strip():
+                        reasoning_parts.append(think_buffer.strip())
+                think_frag = ""
 
             calls = []
             for idx in sorted(tool_calls_map):

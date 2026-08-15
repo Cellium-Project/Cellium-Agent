@@ -115,6 +115,32 @@ class ModelPickerScreen(ModalScreen):
             self.app.notify(self.app.tr("model.delete_protected"), severity="warning")
             return
         self.app.delete_model_by_name(name)
+        self._reload_models()
+
+    def _reload_models(self):
+        try:
+            from app.core.util.agent_config import get_config
+            llm = get_config().get_section("llm") or {}
+            models = llm.get("models", [])
+            current = llm.get("current_model", "")
+            self._models = models
+            self._current = current
+            lst = self.query_one("#model-picker-list", OptionList)
+            lst.clear_options()
+            options = []
+            for m in self._models:
+                name = m.get("name", "")
+                mark = "●" if name == current else "○"
+                desc = f"{m.get('model', '') or '-'} @ {m.get('base_url', '') or '-'}"
+                options.append(Option(f"{mark} {name}  [{desc}]", id=name))
+            options.append(Option(self.app.tr("settings.add_model"), id="__add__"))
+            lst.add_options(options)
+            for i, m in enumerate(self._models):
+                if m.get("name") == current:
+                    lst.highlighted = i
+                    break
+        except Exception:
+            pass
 
     def key_escape(self):
         self.app.pop_screen()
@@ -185,7 +211,6 @@ class ModelAddScreen(ModalScreen):
         self._step = 0
         self._saving = False
         self._initial = initial or {}
-        # 预填值在 __init__ 就确定，保证 compose/on_mount 都能读到
         self._values = {}
         if self._initial:
             self._values = {
@@ -211,7 +236,6 @@ class ModelAddScreen(ModalScreen):
             with Vertical(id="model-add-body"):
                 yield Static("", id="model-add-step")
                 yield Static("", id="model-add-label", classes="model-add-label")
-                # 构造时直接预填，避免 on_mount 时序问题
                 yield Input(value=self._current_step_value(), id="add-input")
             yield Static("", id="model-add-footer")
 
@@ -278,13 +302,15 @@ class ModelAddScreen(ModalScreen):
             app = self.app
             app.model_name = name
             app._refresh_status()
-            # 安全弹出：避免在 _save 期间用户已 Esc 关闭导致栈深度不足
             try:
-                app.pop_screen()  # 关闭添加/编辑表单
+                app.pop_screen()
             except Exception:
                 pass
             try:
-                app.pop_screen()  # 关闭选择器
+                current_screen = app.screen
+                from app.tui.model_picker import ModelPickerScreen
+                if isinstance(current_screen, ModelPickerScreen):
+                    current_screen._reload_models()
             except Exception:
                 pass
             try:

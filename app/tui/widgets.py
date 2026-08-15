@@ -16,6 +16,7 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
+from textual import on, events
 from textual.suggester import Suggester
 from textual.visual import RichVisual
 from textual.widgets import OptionList, Static, TextArea
@@ -123,16 +124,40 @@ FRAMES = "-\\|/"
 _COMMANDS = ("help", "clear", "theme", "models", "session", "new", "settings", "exit")
 
 class ChatScroll(VerticalScroll):
+    """聊天滚动容器"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._following = True
+
+    @property
+    def following(self) -> bool:
+        return self._following
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
         try:
+            self._update_following(new_value)
             if new_value <= 1 and old_value > new_value:
                 app = self.app
                 if hasattr(app, "_on_chat_scrolled_top"):
                     app._on_chat_scrolled_top()
         except Exception:
             pass
+
+    def _update_following(self, new_value: float) -> None:
+        try:
+            self._following = new_value >= self.max_scroll_y - 1.0
+        except Exception:
+            pass
+
+    def scroll_to_follow(self, animate: bool = False) -> None:
+        if self._following:
+            self.scroll_end(animate=animate)
+
+    def force_scroll_bottom(self, animate: bool = False) -> None:
+        self._following = True
+        self.scroll_end(animate=animate)
 
 
 class CommandInput(TextArea):
@@ -141,6 +166,24 @@ class CommandInput(TextArea):
         kwargs.setdefault("soft_wrap", True)
         kwargs.setdefault("tab_behavior", "focus")
         super().__init__(*args, **kwargs)
+        self._last_placeholder = ""
+
+    @on(events.Focus)
+    def _on_command_focus(self, event):
+        self._last_placeholder = self.placeholder
+        self.placeholder = ""
+
+    @on(events.Blur)
+    def _on_command_blur(self, event):
+        if self.placeholder == "" and self._last_placeholder:
+            self.placeholder = self._last_placeholder
+
+    def set_placeholder_aware(self, text: str):
+        if getattr(self, "has_focus", False):
+            self._last_placeholder = text
+            self.placeholder = ""
+        else:
+            self.placeholder = text
 
     # ---- Input 兼容层 ----
 
@@ -521,7 +564,6 @@ class _TextualStyleTable(TableElement):
 
         yield table
 
-
 class _LeftAlignHeading(Heading):
 
     def __rich_console__(
@@ -531,6 +573,30 @@ class _LeftAlignHeading(Heading):
         text.justify = "left"
         yield text
 
+_FENCE_START = re.compile(r"^[ \t]*`{3,}")
+_FENCE_MISJOIN = re.compile(
+    r"^([ \t]*(?:#{1,6}[ \t]+[^\n`]*|[^\n`][^\n`]*)[^`\s])```[^\n`]*$"
+)
+
+
+def _normalize_md(markdown: str) -> str:
+    out = []
+    in_fence = False
+    for line in markdown.split("\n"):
+        if _FENCE_START.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        m = _FENCE_MISJOIN.match(line)
+        if m:
+            out.append(m.group(1))
+            out.append(line[len(m.group(1)):])
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 def _build_rich_md(markdown: str):
     from rich.markdown import Markdown as RichMarkdown
@@ -542,8 +608,7 @@ def _build_rich_md(markdown: str):
             "heading_open": _LeftAlignHeading,
         }
 
-    return CelliumRichMarkdown(markdown)
-
+    return CelliumRichMarkdown(_normalize_md(markdown))
 
 class _SelectableRichVisual(RichVisual):
 
@@ -553,7 +618,6 @@ class _SelectableRichVisual(RichVisual):
         self._cached_strips = None
 
     def _theme_key(self):
-        """主题标识，主题切换后缓存自动失效，避免残留旧主题色"""
         try:
             theme = self._widget.app.theme
         except Exception:
@@ -563,7 +627,7 @@ class _SelectableRichVisual(RichVisual):
     def render_strips(
         self, width: int, height: int | None, style: object, options
     ) -> list:
-        key = (id(self._renderable), width, self._theme_key())
+        key = (id(self._renderable), width, height, self._theme_key())
         if options.selection is None and self._render_cache_key == key:
             return self._cached_strips
         strips = super().render_strips(width, height, style, options)
@@ -591,11 +655,6 @@ class _SelectableRichVisual(RichVisual):
 
 
 def _stylize_strip_range(strip, start: int, end: int, style) -> object:
-    """对 strip 的 [start, end) 字符范围叠加 selection 样式（反色）。
-
-    完整叠加 selection 的 color + bgcolor（CSS 中 .screen--selection
-    设为 $foreground 背景 + $background 前景 = 反色，opencode 风格）。
-    """
     segments = list(strip)
     if not segments:
         return strip
@@ -648,6 +707,11 @@ class HistoryMarkdown(Static):
 
     def render(self):
         if self._md is None:
+            if self._source:
+                try:
+                    return self._source
+                except Exception:
+                    return ""
             return ""
         if self._visual is None:
             self._visual = _SelectableRichVisual(self, self._md)
@@ -671,7 +735,7 @@ class HistoryMarkdown(Static):
         return self.update(self._source)
 
     def refresh_theme(self):
-        """主题切换后清理渲染缓存并重绘，避免残留旧主题色"""
+        """主题切换后清理渲染缓存并重绘"""
         self._visual = None
         self._md = None
         if self._source:

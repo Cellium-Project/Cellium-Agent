@@ -60,6 +60,7 @@ export type SSEEventType =
   | 'tool_start'
   | 'tool_result'
   | 'content_chunk'
+  | 'content'
   | 'done'
   | 'error'
   | 'stopped'

@@ -278,6 +278,9 @@
     },
     "channel": {
       "title": "通道配置",
+      "showToolCards": "工具卡片",
+      "showToolCardsOn": "已开启",
+      "showToolCardsOff": "已关闭",
       "qq": {
         "title": "QQ 机器人通道",
         "enabled": "启用通道",
