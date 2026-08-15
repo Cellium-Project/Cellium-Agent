@@ -8,6 +8,28 @@ version = "1.4.2.post2"
 description = "Cellium Agent - 桌面 AI 助手"
 readme = "README_en.md"
 requires-python = ">=3.12"
+authors = [
+    { name = "xiaojinao", email = "652100800@qq.com" },
+]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = [
+    "ai", "agent", "llm", "chatbot", "assistant",
+    "self-evolving", "control-loop", "bayesian", "bandit",
+    "fastapi", "memory", "scheduler", "multi-platform",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
 dependencies = [
     "fastapi>=0.140.0",
     "uvicorn[standard]>=0.51.0",
@@ -19,6 +41,13 @@ dependencies = [
     "httpx>=0.28.1",
     "textual>=8.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Cellium-Project/Cellium-Agent"
+Repository = "https://github.com/Cellium-Project/Cellium-Agent"
+Documentation = "https://github.com/Cellium-Project/Cellium-Agent/blob/main/README_en.md"
+Changelog = "https://github.com/Cellium-Project/Cellium-Agent/releases"
+Issues = "https://github.com/Cellium-Project/Cellium-Agent/issues"
 
 [project.optional-dependencies]
 lark = ["lark-oapi>=1.7.1"]
