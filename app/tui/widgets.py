@@ -254,15 +254,23 @@ class CommandInput(TextArea):
                 pass
             event.stop()
             return
-        # 输入栏展开/收起折叠项：Ctrl+E
+        # 输入栏展开/收起全部折叠项：Ctrl+E
         if event.key == "ctrl+e":
             try:
-                cards = app.query(ToolCallCard)
+                cards = list(app.query(ToolCallCard))
+                any_folded = any(
+                    cid not in card._expanded_diffs
+                    for card in cards
+                    for cid in card._foldable
+                )
                 for card in cards:
-                    if card._foldable:
-                        cid = next(iter(card._foldable))
-                        card._expand_diff(cid)
-                        break
+                    if not card._foldable:
+                        continue
+                    if any_folded:
+                        card._expanded_diffs.update(card._foldable)
+                    else:
+                        card._expanded_diffs.difference_update(card._foldable)
+                    card.update(card._build(done=card._done))
             except Exception:
                 pass
             event.stop()
@@ -1160,8 +1168,7 @@ class ToolCallCard(Static):
         if not self._foldable:
             return
         if event.key == "ctrl+e":
-            cid = next(iter(self._foldable))
-            self._expand_diff(cid)
+            self._toggle_all_folds()
             event.stop()
 
     def on_click(self, event):
@@ -1183,6 +1190,22 @@ class ToolCallCard(Static):
             self._expanded_diffs.discard(cid)
         else:
             self._expanded_diffs.add(cid)
+        self._folded_index = 0
+        self.update(self._build(done=self._done))
+        try:
+            if hasattr(self.app, "input"):
+                self.app.input.focus()
+        except Exception:
+            pass
+
+    def _toggle_all_folds(self):
+        if not self._foldable:
+            return
+        any_folded = any(cid not in self._expanded_diffs for cid in self._foldable)
+        if any_folded:
+            self._expanded_diffs.update(self._foldable)
+        else:
+            self._expanded_diffs.difference_update(self._foldable)
         self._folded_index = 0
         self.update(self._build(done=self._done))
         try:

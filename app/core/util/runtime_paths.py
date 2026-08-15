@@ -39,15 +39,56 @@ def _detect_install_mode():
     return "installed", None
 
 def _find_package_data_dir():
-    """查找 pip 安装的数据目录（sys.prefix/cellium 优先）"""
-    candidates = [os.path.join(sys.prefix, "cellium")]
+    """查找 pip 安装的数据目录（cellium/* data-files 安装根）
+
+    data-files 装到 data 前缀根的 cellium/ 下；用 __file__ 实际位置
+    上溯推导，避免 sys.prefix 与 pip 前缀不一致时找不到。
+    """
+    candidates = []
+
+    # 从 __file__ 上溯：site-packages/dist-packages 的父目录 = data 前缀根
+    here = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        base = os.path.basename(here)
+        if base in ("site-packages", "dist-packages"):
+            candidates.append(os.path.join(os.path.dirname(here), "cellium"))
+            break
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+
+    # 标准 data 前缀根（setuptools data-files 安装目标）
+    try:
+        import sysconfig
+        data = sysconfig.get_paths().get("data") or ""
+        if data:
+            candidates.append(os.path.join(data, "cellium"))
+    except Exception:
+        pass
+
+    # 兜底：sys.prefix / site-packages
+    candidates.append(os.path.join(sys.prefix, "cellium"))
     try:
         import site
         candidates += [os.path.join(p, "cellium") for p in site.getsitepackages()]
     except Exception:
         pass
+
+    # 校验候选：目录存在且含关键结构（config/agent 有 yaml），空壳跳过
+    seen = set()
     for cand in candidates:
-        if os.path.isdir(cand):
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        if not os.path.isdir(cand):
+            continue
+        cfg_agent = os.path.join(cand, "config", "agent")
+        if os.path.isdir(cfg_agent) and any(
+            f.endswith(".yaml") for f in os.listdir(cfg_agent)
+        ):
+            return cand
+        if os.path.isfile(os.path.join(cand, "html", "index.html")):
             return cand
     return None
 
@@ -86,18 +127,11 @@ def resolve_dir(*rel_parts) -> str:
             if os.path.exists(candidate):
                 return candidate
 
-    data_path = os.path.join(sys.prefix, "cellium", rel_path) if rel_path else os.path.join(sys.prefix, "cellium")
-    if os.path.exists(data_path):
-        return data_path
-
-    try:
-        import site
-        for site_path in site.getsitepackages():
-            candidate = os.path.join(site_path, "cellium", rel_path) if rel_path else os.path.join(site_path, "cellium")
-            if os.path.exists(candidate):
-                return candidate
-    except Exception:
-        pass
+    pkg_dir = _find_package_data_dir()
+    if pkg_dir:
+        data_path = os.path.join(pkg_dir, rel_path) if rel_path else pkg_dir
+        if os.path.exists(data_path):
+            return data_path
 
     cwd_path = os.path.join(os.getcwd(), rel_path) if rel_path else os.getcwd()
     os.makedirs(cwd_path, exist_ok=True)

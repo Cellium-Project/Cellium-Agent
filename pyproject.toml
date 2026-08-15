@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellium-agent"
-version = "1.4.2.post2"
+version = "1.4.2.post3"
 description = "Cellium Agent - 桌面 AI 助手"
 readme = "README_en.md"
 requires-python = ">=3.12"
@@ -55,6 +55,9 @@ lark = ["lark-oapi>=1.7.1"]
 [project.scripts]
 cellium = "main:main_tui"
 cellium-web = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
