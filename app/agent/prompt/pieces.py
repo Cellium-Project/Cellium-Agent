@@ -155,8 +155,12 @@ def get_thought_schema_piece() -> PromptPiece:
 # 日更层 — role: user，至少每天才变一次
 # ============================================================
 
-def get_context_piece() -> PromptPiece:
-    content = "<system-reminder>\n[上下文信息]\n" + f"**当前日期**: {_get_current_date()}" + "\n\nThis is just a gentle reminder - ignore if not applicable.\n</system-reminder>"
+def get_context_piece(shell_cwd: str = None) -> PromptPiece:
+    cwd = shell_cwd or os.getcwd()
+    content = "<system-reminder>\n[上下文信息]\n"
+    content += f"**当前日期**: {_get_current_date()}\n\n"
+    content += f"**当前工作目录**: `{cwd}`\n\n"
+    content += "This is just a gentle reminder - ignore if not applicable.\n</system-reminder>"
 
     return PromptPiece(
         name="context",
@@ -276,7 +280,7 @@ def get_auto_hints_piece() -> PromptPiece:
 # 工厂函数
 # ============================================================
 
-def create_default_builder(memory_dir: str = "memory", memory=None) -> "PromptBuilder":
+def create_default_builder(memory_dir: str = "memory", memory=None, shell_cwd: str = None) -> "PromptBuilder":
     from app.agent.prompt.builder import PromptBuilder
 
     builder = PromptBuilder()
@@ -288,7 +292,7 @@ def create_default_builder(memory_dir: str = "memory", memory=None) -> "PromptBu
     builder.register(get_thought_schema_piece())
 
     # daily
-    builder.register(get_context_piece())
+    builder.register(get_context_piece(shell_cwd))
 
     # session
     builder.register(get_long_term_memory_piece())

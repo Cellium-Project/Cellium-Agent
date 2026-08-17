@@ -152,7 +152,12 @@ class AgentLoop:
             logger.info("[AgentLoop] TaskSignalMatcher 已连接记忆系统")
 
         # 提示词构建（新 pieces 系统，按 stability 分层优化 KV 缓存）
-        self._prompt_builder = create_default_builder(memory_dir=memory_dir, memory=self.three_layer_memory)
+        shell_cwd = getattr(self.shell, '_cwd', None) if self.shell else None
+        self._prompt_builder = create_default_builder(
+            memory_dir=memory_dir,
+            memory=self.three_layer_memory,
+            shell_cwd=shell_cwd,
+        )
         self._prompt_diff_tracker = PromptDiffTracker()
 
         # 会话笔记压缩
@@ -193,7 +198,8 @@ class AgentLoop:
 
     def rebuild_prompt_builder(self):
         memory_dir = getattr(self.three_layer_memory, 'memory_dir', 'memory') if self.three_layer_memory else 'memory'
-        self._prompt_builder = create_default_builder(memory_dir=memory_dir, memory=self.three_layer_memory)
+        shell_cwd = getattr(self.shell, '_cwd', None) if self.shell else None
+        self._prompt_builder = create_default_builder(memory_dir=memory_dir, memory=self.three_layer_memory, shell_cwd=shell_cwd)
         self._prompt_diff_tracker = PromptDiffTracker()
         logger.info("[AgentLoop] 提示词构建器已重建")
 
@@ -259,15 +265,28 @@ class AgentLoop:
         except Exception as e:
             logger.debug("[AgentLoop] 加载记忆配置失败，使用默认值: %s", e)
 
+        notes_dir = self._mem_config.get("session_compact", {}).get("notes_dir") or f"{memory_dir}/notes"
+        if not os.path.isabs(notes_dir):
+            from app.core.util.runtime_paths import resolve_dir_writable
+            notes_dir = os.path.join(resolve_dir_writable(), notes_dir)
+        self._mem_config.setdefault("session_compact", {})["notes_dir"] = notes_dir
+
     def _get_learning_config(self) -> Dict[str, Any]:
         """获取学习模块配置"""
         try:
             from app.core.util.agent_config import get_config
             config = get_config()
-            return config.get_section("learning") or {}
+            result = config.get_section("learning") or {}
         except Exception as e:
             logger.debug("[AgentLoop] 加载学习配置失败: %s", e)
-            return {}
+            result = {}
+
+        # memory_path 若为相对路径，基于数据根解析，避免落在 CWD（pip 安装场景）
+        memory_path = result.get("memory_path")
+        if memory_path and not os.path.isabs(memory_path):
+            from app.core.util.runtime_paths import resolve_dir_writable
+            result["memory_path"] = os.path.join(resolve_dir_writable(), memory_path)
+        return result
 
     def _sync_hybrid_state(self) -> Optional[Dict[str, Any]]:
         """
