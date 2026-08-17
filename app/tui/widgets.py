@@ -270,7 +270,7 @@ class CommandInput(TextArea):
                         card._expanded_diffs.update(card._foldable)
                     else:
                         card._expanded_diffs.difference_update(card._foldable)
-                    card.update(card._build(done=card._done))
+                    card._update_card(done=card._done)
             except Exception:
                 pass
             event.stop()
@@ -863,11 +863,19 @@ class ToolCallCard(Static):
 
     def on_resize(self):
         self._diff_colors_cache = None
-        self.update(self._build(done=self._done))
+        if not getattr(self, '_updating_card', False):
+            try:
+                self.update(self._build(done=self._done))
+            except Exception:
+                pass
 
     def refresh_theme(self):
         self._diff_colors_cache = None
-        self.update(self._build(done=self._done))
+        if not getattr(self, '_updating_card', False):
+            try:
+                self.update(self._build(done=self._done))
+            except Exception:
+                pass
 
     def _start_clock(self):
         if self._timer is None and not self._done:
@@ -1172,18 +1180,62 @@ class ToolCallCard(Static):
             event.stop()
 
     def on_click(self, event):
-        if not self._folded_rows:
-            return
-        best = None
-        best_d = 10
-        for i, (y, cid) in enumerate(self._folded_rows):
-            d = abs(y - event.y)
-            if d < best_d:
-                best_d, best = d, (i, cid)
-        if best is not None and best_d <= 1:
-            self._folded_index = best[0]
-            self._expand_diff(best[1])
-            event.stop()
+        if self._foldable:
+            # 已展开状态（_folded_rows 为空）：点击收起全部
+            if not self._folded_rows and self._expanded_diffs:
+                try:
+                    self._toggle_all_folds()
+                except Exception:
+                    pass
+                event.stop()
+                return
+            # 折叠状态：点击折叠行展开
+            best = None
+            best_d = 10
+            for i, (y, cid) in enumerate(self._folded_rows):
+                try:
+                    d = abs(y - event.y)
+                except Exception:
+                    d = 999
+                if d < best_d:
+                    best_d, best = d, (i, cid)
+            if best is not None and best_d <= 1:
+                self._folded_index = best[0]
+                try:
+                    self._expand_diff(best[1])
+                except Exception:
+                    pass
+                event.stop()
+
+    def _update_card(self, done):
+        """保存 chat 滚动位置后更新卡片内容，再恢复滚动位置"""
+        self._updating_card = True
+        chat = getattr(self.app, "chat", None)
+        scroll_y = 0
+        was_following = False
+        try:
+            if chat:
+                scroll_y = chat.scroll_offset.y
+                was_following = getattr(chat, "_following", False)
+                chat._following = False
+        except Exception:
+            pass
+        try:
+            self.update(self._build(done=done))
+        except Exception:
+            pass
+        self._updating_card = False
+        if chat:
+            def _restore():
+                try:
+                    chat.scroll_offset.y = scroll_y
+                except Exception:
+                    pass
+                chat._following = was_following
+            try:
+                self.set_timer(0.08, _restore)
+            except Exception:
+                pass
 
     def _expand_diff(self, cid):
         if cid in self._expanded_diffs:
@@ -1191,12 +1243,7 @@ class ToolCallCard(Static):
         else:
             self._expanded_diffs.add(cid)
         self._folded_index = 0
-        self.update(self._build(done=self._done))
-        try:
-            if hasattr(self.app, "input"):
-                self.app.input.focus()
-        except Exception:
-            pass
+        self._update_card(done=self._done)
 
     def _toggle_all_folds(self):
         if not self._foldable:
@@ -1207,12 +1254,7 @@ class ToolCallCard(Static):
         else:
             self._expanded_diffs.difference_update(self._foldable)
         self._folded_index = 0
-        self.update(self._build(done=self._done))
-        try:
-            if hasattr(self.app, "input"):
-                self.app.input.focus()
-        except Exception:
-            pass
+        self._update_card(done=self._done)
 
 
 class StatusBar(Static):
