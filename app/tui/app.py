@@ -1604,16 +1604,19 @@ class CelliumTUI(App):
             return
         try:
             import asyncio
-            asyncio.get_running_loop().create_task(self._render_now())
+            asyncio.ensure_future(self._render_now())
         except Exception:
             pass
 
     async def _render_now(self):
         try:
-            await self._current_response.update(self._current_md)
+            resp = self._current_response
+            md = self._current_md
+            if resp is not None and md:
+                await resp.update(md)
+                self.chat.scroll_to_follow()
         except Exception:
             pass
-        self.chat.scroll_to_follow()
 
     async def _flush_pending_text(self):
         if not self._pending_text:
@@ -1775,7 +1778,15 @@ class CelliumTUI(App):
                 await self._append_text(self._pending_text)
                 self._pending_text = ""
             if self._current_response is not None and self._current_md:
-                await self._render_now()
+                try:
+                    await self._current_response.update(self._current_md)
+                except Exception:
+                    pass
+            # 恢复滚动位置到用户关注点
+            try:
+                self.chat.scroll_to_follow()
+            except Exception:
+                pass
         except Exception:
             pass
 
