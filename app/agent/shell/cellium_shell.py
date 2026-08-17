@@ -640,16 +640,17 @@ class CelliumShell:
         env = self._session_env.copy()
         start_time = time.time()
 
+        popen_kwargs = dict(
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=work_dir,
+            env=env,
+            shell=False,
+        )
+
         try:
-            process = subprocess.Popen(
-                argv,
-                stdin=None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=work_dir,
-                env=env,
-                shell=False,
-            )
+            process = subprocess.Popen(argv, **popen_kwargs)
             self._register_process(process)
 
             try:
@@ -661,6 +662,7 @@ class CelliumShell:
                 output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
 
                 result = {
+                    "success": True,
                     "output": output,
                     "exit_code": process.returncode,
                     "elapsed_ms": int(elapsed * 1000),
@@ -673,6 +675,7 @@ class CelliumShell:
                 if process.returncode != 0:
                     result["error"] = stderr_str or f"Exit code: {process.returncode}"
 
+                self._update_cwd(" ".join(argv), process.returncode, stdout_str)
                 return result
 
             except subprocess.TimeoutExpired:
@@ -719,16 +722,23 @@ class CelliumShell:
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
             env = self._session_env.copy()
 
+            popen_kwargs = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=work_dir,
+                env=env,
+                shell=False,
+            )
+            if sys.platform == "win32":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0
+                popen_kwargs["startupinfo"] = si
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
             try:
-                process = subprocess.Popen(
-                    argv,
-                    stdin=None,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=work_dir,
-                    env=env,
-                    shell=False,
-                )
+                process = subprocess.Popen(argv, **popen_kwargs)
                 process_ref['p'] = process
 
                 try:
@@ -828,16 +838,23 @@ class CelliumShell:
 
         start_time = time.time()
 
+        popen_kwargs = dict(
+            stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=work_dir,
+            env=env,
+            shell=False,
+        )
+        if sys.platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            popen_kwargs["startupinfo"] = si
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
-            process = subprocess.Popen(
-                full_cmd,
-                stdin=subprocess.PIPE if stdin_data else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=work_dir,
-                env=env,
-                shell=False,
-            )
+            process = subprocess.Popen(full_cmd, **popen_kwargs)
             self._register_process(process)
 
             try:
@@ -853,6 +870,7 @@ class CelliumShell:
                 output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
 
                 result = {
+                    "success": True,
                     "output": output,
                     "exit_code": process.returncode,
                     "elapsed_ms": int(elapsed * 1000),
@@ -926,15 +944,22 @@ class CelliumShell:
         stdout_lines = []
         stderr_lines = []
 
+        popen_kwargs = dict(
+            stdin=asyncio.subprocess.PIPE if stdin_data else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=work_dir,
+            env=env,
+        )
+        if sys.platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            popen_kwargs["startupinfo"] = si
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
-            process = await asyncio.create_subprocess_exec(
-                *full_cmd,
-                stdin=asyncio.subprocess.PIPE if stdin_data else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=work_dir,
-                env=env,
-            )
+            process = await asyncio.create_subprocess_exec(*full_cmd, **popen_kwargs)
 
             if stdin_data:
                 try:
@@ -952,6 +977,7 @@ class CelliumShell:
                     output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
 
                     result = {
+                        "success": True,
                         "output": output,
                         "exit_code": process.returncode,
                         "elapsed_ms": int(elapsed * 1000),
@@ -1018,6 +1044,7 @@ class CelliumShell:
                 output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
 
                 result = {
+                    "success": True,
                     "output": output,
                     "exit_code": process.returncode,
                     "elapsed_ms": int(elapsed * 1000),
@@ -1094,7 +1121,7 @@ class CelliumShell:
             try:
                 process = subprocess.Popen(
                     full_cmd,
-                    stdin=subprocess.PIPE if stdin_data else None,
+                    stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=work_dir,
