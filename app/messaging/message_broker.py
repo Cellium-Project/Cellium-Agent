@@ -34,11 +34,17 @@ class MessageBroker:
         return self._ws_publish
 
     def subscribe(self, session_id: str) -> asyncio.Queue:
-        """注册一个订阅队列（TUI/channel 使用），由调用方在自身 loop 中消费"""
         queue: asyncio.Queue = asyncio.Queue()
+        try:
+            loop = asyncio.get_running_loop()
+            queue._loop = loop
+            logger.debug("[Broker] 订阅创建 | session=%s | queue_loop=%s", session_id, loop)
+        except RuntimeError:
+            logger.warning("[Broker] 订阅创建时无运行中的 loop | session=%s", session_id)
         if session_id not in self._subscribers:
             self._subscribers[session_id] = set()
         self._subscribers[session_id].add(queue)
+        logger.info("[Broker] 订阅已注册 | session=%s | 订阅者数=%d", session_id, len(self._subscribers[session_id]))
         return queue
 
     def unsubscribe(self, session_id: str, queue: asyncio.Queue):
@@ -61,7 +67,6 @@ class MessageBroker:
         return queue
 
     def publish(self, session_id: str, event: Dict[str, Any]):
-        """广播到 WebUI 主队列 + 订阅队列 + ws 推送"""
         decorated = self.decorate_event(session_id, event)
         self.append_history(session_id, decorated)
 
@@ -71,8 +76,11 @@ class MessageBroker:
 
         subs = self._subscribers.get(session_id)
         if subs:
+            logger.info("[Broker] 推送到订阅 | session=%s | 订阅者数=%d | event=%s", session_id, len(subs), event.get("type"))
             for q in list(subs):
                 self._put_to_queue(q, decorated)
+        else:
+            logger.warning("[Broker] 无订阅者 | session=%s | event=%s", session_id, event.get("type"))
 
         if self._ws_publish is not None:
             try:
@@ -133,7 +141,6 @@ class MessageBroker:
         self._event_counters.pop(session_id, None)
 
     def _put_to_queue(self, queue: asyncio.Queue, event: Dict[str, Any]):
-        """跨 loop/线程安全投递：队列不属于当前 loop 时调度到其 loop"""
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -144,20 +151,25 @@ class MessageBroker:
                 target_loop = queue._get_loop()
             except (RuntimeError, AttributeError):
                 target_loop = None
+
         if current_loop is not None and target_loop is not None and current_loop is not target_loop:
             try:
                 asyncio.run_coroutine_threadsafe(queue.put(event), target_loop)
+                logger.debug("[Broker] 跨 loop 投递成功 | current=%s | target=%s", current_loop, target_loop)
             except Exception as e:
-                logger.debug("[Broker] 跨 loop 投递失败，回退 put_nowait: %s", e)
+                logger.warning("[Broker] 跨 loop 投递失败: %s | current=%s | target=%s", e, current_loop, target_loop)
                 try:
                     queue.put_nowait(event)
-                except Exception:
-                    pass
+                except Exception as e2:
+                    logger.error("[Broker] 回退 put_nowait 失败: %s", e2)
             return
         try:
             queue.put_nowait(event)
-        except Exception:
-            pass
+            qsize = queue.qsize()
+            if qsize > 50:
+                logger.warning("[Broker] 队列堆积 | qsize=%d", qsize)
+        except Exception as e:
+            logger.error("[Broker] put_nowait 失败: %s", e)
 
 
 _broker: Optional[MessageBroker] = None

@@ -492,16 +492,16 @@ def clear_logs() -> int:
 # ============================================================
 
 def _load_logging_config():
-    """从 AgentConfig 读取 logging 配置"""
     try:
         from app.core.util.agent_config import get_config
         cfg = get_config()
         return {
             "level": cfg.get("logging.level", "INFO"),
             "format": cfg.get("logging.format", "%(asctime)s [%(levelname)s] %(name)s: %(message)s"),
+            "file": cfg.get("logging.file", ""),
         }
     except Exception:
-        return {"level": "INFO", "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"}
+        return {"level": "INFO", "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s", "file": ""}
 
 
 def setup_logger(
@@ -509,7 +509,6 @@ def setup_logger(
     level: Optional[str] = None,
     log_format: Optional[str] = None
 ) -> logging.Logger:
-    """设置并获取日志器（同时安装 LogBuffer 如果已初始化）"""
     if name in _loggers:
         return _loggers[name]
 
@@ -524,7 +523,6 @@ def setup_logger(
     logger_obj = logging.getLogger(name)
     logger_obj.setLevel(numeric_level)
 
-    # 控制台输出（TUI 模式下 _console_enabled=False 则跳过，避免污染界面）
     if _console_enabled:
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(numeric_level)
@@ -533,6 +531,31 @@ def setup_logger(
 
         if not logger_obj.handlers:
             logger_obj.addHandler(handler)
+
+    log_file = config.get("file", "")
+    if log_file:
+        global _file_handler
+        try:
+            from logging.handlers import RotatingFileHandler
+            from app.core.util.runtime_paths import resolve_dir_writable
+            log_path = Path(log_file)
+            if not log_path.is_absolute():
+                log_dir = resolve_dir_writable("logs")
+                log_path = Path(log_dir) / log_path.name
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            if _file_handler is None:
+                _file_handler = RotatingFileHandler(
+                    str(log_path),
+                    maxBytes=10*1024*1024,
+                    backupCount=5,
+                    encoding="utf-8"
+                )
+                _file_handler.setLevel(numeric_level)
+                _file_handler.setFormatter(logging.Formatter(log_format))
+            if _file_handler not in logger_obj.handlers:
+                logger_obj.addHandler(_file_handler)
+        except Exception as e:
+            pass
 
     try:
         buf = _LogBufferHandler._instance

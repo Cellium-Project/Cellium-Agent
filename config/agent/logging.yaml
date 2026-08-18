@@ -5,7 +5,7 @@ logging:
   level: "INFO"
   format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
   console: true
-  file: ""
-  max_size: 5000                # 日志缓冲区大小（条目数）
+  file: "logs/cellium.log"
+  max_size: 5000
   backup_count: 5
-  client_log: false             # 前端日志（true=显示，false=隐藏）
+  client_log: false
