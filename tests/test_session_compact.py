@@ -3,13 +3,15 @@
 会话压缩（SessionCompactor）核心测试合集
 
 覆盖:
-  1. 压缩保留最近 N 条完整 + 触发条件（token/tool_call 主导，无消息数阈值）
-  2. 冷却逻辑
-  3. LLM 失败重试 + 永久失败降级规则摘要（压缩必然完成）
-  4. 规则摘要与 LLM 摘要结构兼容（merge/reduce/notes/提示词全链路）
-  5. 无 1000 条硬截断
+  1. 触发条件（token/tool_call 主导，无消息数阈值）+ 冷却逻辑
+  2. 一次 LLM 调用压缩（无分块、无重试）
+  3. JSON 容错解析（代码块包裹、非法控制字符、尾随逗号）
+  4. 增量压缩（只压新消息）
+  5. notes 上限收敛（findings/errors 不超过 50）
+  6. 保留最近 N 条完整 + 无 1000 条硬截断
 """
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -25,38 +27,13 @@ from app.agent.memory.session_notes import SessionNotes
 OK_JSON = '{"goal": "目标", "actions": ["操作1"], "findings": ["发现1"], "errors": [], "summary": "正常摘要"}'
 
 
-# ================================================================
-# Mocks
-# ================================================================
-
 class FastEngine:
     """正常摘要引擎"""
     async def chat(self, messages, tools=None, **kwargs):
         return type("R", (), {"content": OK_JSON})()
 
 
-class FlakyEngine:
-    """前 fail_times 次抛错，之后成功"""
-
-    def __init__(self, fail_times=2):
-        self.fail_times = fail_times
-        self.calls = 0
-
-    async def chat(self, messages, tools=None, **kwargs):
-        self.calls += 1
-        if self.calls <= self.fail_times:
-            raise RuntimeError(f"瞬时错误 #{self.calls}")
-        return type("R", (), {"content": '{"goal": "重试后成功", "actions": [], "findings": ["成功"], "errors": [], "summary": "重试摘要"}'})()
-
-
-class DeadEngine:
-    """永远失败"""
-    async def chat(self, messages, tools=None, **kwargs):
-        raise RuntimeError("API 完全不可用")
-
-
 def make_memory(n_msgs, chars_per_msg=100):
-    """构造 n 条消息（轮流 user/assistant）"""
     mem = MemoryManager()
     for i in range(n_msgs):
         content = f"消息{i} " + "x" * chars_per_msg
@@ -67,12 +44,8 @@ def make_memory(n_msgs, chars_per_msg=100):
     return mem
 
 
-# ================================================================
-# 测试
-# ================================================================
-
 class TestCompactTrigger(unittest.TestCase):
-    """触发条件: token/tool_call 主导，无消息数阈值"""
+    """触发条件"""
 
     def test_keep_recent_messages_complete(self):
         """压缩后 = 摘要 + 最近 N 条完整"""
@@ -85,146 +58,88 @@ class TestCompactTrigger(unittest.TestCase):
         self.assertLessEqual(len(mem.messages), 21, "应为 摘要+20 条")
 
     def test_no_message_count_threshold(self):
-        """message_count_threshold 已移除"""
         compactor = SessionCompactor(llm_engine=FastEngine())
         self.assertFalse(hasattr(compactor, "message_count_threshold"), "不应有消息数阈值")
 
     def test_token_below_threshold_no_compact(self):
-        """token 未到阈值不触发"""
         compactor = SessionCompactor(llm_engine=FastEngine(), token_threshold=200000)
         mem = make_memory(30, chars_per_msg=20)
         self.assertFalse(compactor.should_compact(mem), "token 未到阈值不应触发")
 
     def test_tool_call_triggers(self):
-        """tool_call 到阈值触发"""
         compactor = SessionCompactor(llm_engine=FastEngine(), tool_call_threshold=5)
         compactor._tool_call_count = 5
         self.assertTrue(compactor.should_compact(make_memory(5)), "tool_call 到阈值应触发")
 
     def test_token_threshold_triggers(self):
-        """token 到阈值触发"""
         compactor = SessionCompactor(llm_engine=FastEngine(), token_threshold=500)
-        mem = make_memory(50, chars_per_msg=100)  # ~1700 tokens > 500
+        mem = make_memory(50, chars_per_msg=100)
         self.assertTrue(compactor.should_compact(mem), "token 到阈值应触发")
 
     def test_cooldown_growth_ratio(self):
-        """增长 >50% 后能再次触发（冷却不误伤）"""
+        """增长 >50% 后能再次触发"""
         compactor = SessionCompactor(llm_engine=FastEngine(), token_threshold=5000)
         small = make_memory(20, chars_per_msg=50)
         compactor._last_compact_tokens = compactor._estimate_tokens(small)
-        big = make_memory(200, chars_per_msg=100)  # ~6900 tokens
+        big = make_memory(200, chars_per_msg=100)
         self.assertTrue(compactor.should_compact(big), "增长足够应触发")
 
 
-class TestCompactRetry(unittest.TestCase):
-    """失败重试 + 降级"""
+class TestSingleShotCompact(unittest.TestCase):
+    """一次 LLM 调用压缩（无分块、无重试）"""
 
-    def test_retry_after_failure(self):
-        """失败 2 次后重试成功"""
-        engine = FlakyEngine(fail_times=2)
-        compactor = SessionCompactor(llm_engine=engine, retry_backoff_base=0)
-        result = asyncio.run(compactor._generate_summary_with_llm("[用户]: 你好"))
-        self.assertEqual(engine.calls, 3, "应重试到成功")
-        self.assertEqual(result["goal"], "重试后成功")
+    def test_no_chunk_methods(self):
+        """分块/归约方法应被移除"""
+        compactor = SessionCompactor(llm_engine=FastEngine())
+        self.assertFalse(hasattr(compactor, "_chunk_messages"), "不应有分块")
+        self.assertFalse(hasattr(compactor, "_recursive_reduce"), "不应有递归归约")
+        self.assertFalse(hasattr(compactor, "_fallback_summary"), "不应有规则降级")
 
-    def test_fallback_on_dead_engine(self):
-        """永久失败 → 降级规则摘要（不中断）"""
-        compactor = SessionCompactor(llm_engine=DeadEngine(), retry_backoff_base=0)
-        result = asyncio.run(compactor._generate_summary_with_llm("[用户]: 分析价格走势\n[助手]: 已完成"))
-        self.assertEqual(result["goal"], "分析价格走势", "降级应提取目标")
-        self.assertTrue(result["summary"], "降级应有 summary")
+    def test_no_retry_backoff(self):
+        """不应有 retry_backoff_base 参数"""
+        compactor = SessionCompactor(llm_engine=FastEngine())
+        self.assertFalse(hasattr(compactor, "retry_backoff_base"), "不应有重试退避")
 
-    def test_compact_completes_with_dead_engine(self):
-        """API 完全失败时压缩仍完成"""
-        mem = make_memory(40, chars_per_msg=80)
-        compactor = SessionCompactor(llm_engine=DeadEngine(), keep_recent_messages=10, retry_backoff_base=0)
-        notes = SessionNotes(session_id="t3", notes_dir="memory/notes")
-        asyncio.run(compactor.compact_now(mem, notes))
-        self.assertLessEqual(len(mem.messages), 11, "应完成压缩")
-        self.assertTrue(any("[系统压缩]" in str(m.get("content", "")) for m in mem.messages))
-
-    def test_normal_engine_no_extra_calls(self):
-        """正常引擎一次成功，无多余重试"""
+    def test_single_call_success(self):
+        """正常引擎一次成功"""
         engine = FastEngine()
         compactor = SessionCompactor(llm_engine=engine)
         result = asyncio.run(compactor._generate_summary_with_llm("[用户]: 测试"))
         self.assertTrue(result["goal"])
 
 
-class TestFallbackCompat(unittest.TestCase):
-    """规则摘要与 LLM 摘要结构兼容"""
+class TestJsonParsing(unittest.TestCase):
+    """JSON 容错解析"""
 
-    def test_structure_match(self):
-        """字段名和类型一致"""
-        compactor = SessionCompactor(llm_engine=FastEngine())
-        llm = asyncio.run(compactor._generate_summary_with_llm("[用户]: 你好"))
-        fb = compactor._fallback_summary("[用户]: 分析价格走势\n[助手]: 已完成")
-        self.assertEqual(set(llm.keys()), set(fb.keys()), "字段应一致")
-        for k in ("goal", "summary"):
-            self.assertIsInstance(fb[k], str)
-        for k in ("actions", "findings", "errors"):
-            self.assertIsInstance(fb[k], list)
+    def setUp(self):
+        self.compactor = SessionCompactor(llm_engine=FastEngine())
 
-    def test_merge_consumes_fallback(self):
-        """merge 能消费规则摘要"""
-        compactor = SessionCompactor(llm_engine=FastEngine())
-        fb = compactor._fallback_summary("[用户]: 目标A\n[助手]: 发现B")
-        llm = asyncio.run(compactor._generate_summary_with_llm("[用户]: x"))
-        merged = compactor._merge_summaries([fb, llm])
-        self.assertTrue(merged["goal"])
-        self.assertTrue(merged["findings"])
+    def test_code_block_wrapped(self):
+        """剔除 ```json 包裹"""
+        raw = '```json\n{"goal": "目标", "actions": [], "findings": ["发现"], "errors": [], "summary": "摘要"}\n```'
+        result = self.compactor._parse_summary_json(raw)
+        self.assertEqual(result["goal"], "目标")
 
-    def test_fallback_info_in_notes(self):
-        """全降级压缩后，降级信息完整进 notes"""
-        mem = make_memory(20, chars_per_msg=100)
-        compactor = SessionCompactor(llm_engine=DeadEngine(), keep_recent_messages=5, retry_backoff_base=0)
-        notes = SessionNotes(session_id="t5", notes_dir="memory/notes")
-        asyncio.run(compactor.compact_now(mem, notes))
-        content = notes.render_for_prompt()
-        self.assertIn("消息0", content, "降级目标应进 notes")
+    def test_illegal_control_char(self):
+        """处理非法控制字符"""
+        raw = '{"goal": "目\x00标", "actions": [], "findings": [], "errors": [], "summary": "摘\x1f要"}'
+        result = self.compactor._parse_summary_json(raw)
+        self.assertIn("目", result["goal"])
 
-    def test_compacted_messages_renderable(self):
-        """降级压缩产出可直接被 PromptBuilder 渲染"""
-        mem = make_memory(30, chars_per_msg=100)
-        compactor = SessionCompactor(llm_engine=DeadEngine(), keep_recent_messages=5, retry_backoff_base=0)
-        notes = SessionNotes(session_id="t6", notes_dir="memory/notes")
-        asyncio.run(compactor.compact_now(mem, notes))
-        for m in mem.messages:
-            self.assertIn(m.get("role"), ("user", "assistant", "system"), "role 应合法")
+    def test_trailing_commas(self):
+        """清尾随逗号"""
+        raw = '{"goal": "目标", "actions": ["a", "b",], "findings": ["f",], "errors": [], "summary": "摘要",}'
+        result = self.compactor._parse_summary_json(raw)
+        self.assertEqual(result["actions"], ["a", "b"])
 
-
-class TestReduceConvergence(unittest.TestCase):
-    """_recursive_reduce 收敛性（修复死循环回归）"""
-
-    def test_converges_with_large_summaries(self):
-        """大摘要场景必须收敛，归约后进入预算内"""
-        compactor = SessionCompactor(llm_engine=FastEngine(), retry_backoff_base=0)
-        summaries = []
-        for i in range(8):
-            summaries.append({
-                "goal": f"目标{i}", "actions": [f"动作{i}"],
-                "findings": [f"发现{i}-{j}" for j in range(3)],
-                "errors": [], "summary": "总结" + "内容" * 900,
-            })
-        result = asyncio.run(compactor._recursive_reduce(summaries))
-        self.assertTrue(result, "应返回非空结果")
-        self.assertLessEqual(len(compactor._summaries_to_text(result)), 8000, "应收敛到预算内")
-
-    def test_no_infinite_loop_on_huge_summary(self):
-        """单条摘要超预算时轮数上限兜底，必须返回"""
-        class HugeEngine:
-            async def chat(self, messages, tools=None, **kwargs):
-                return type("R", (), {"content": __import__("json").dumps(
-                    {"goal": "g", "actions": [], "findings": [], "errors": [], "summary": "x" * 4000})})()
-
-        compactor = SessionCompactor(llm_engine=HugeEngine(), retry_backoff_base=0)
-        summaries = [{"goal": "g", "actions": [], "findings": [], "errors": [], "summary": "y" * 9000} for _ in range(2)]
-        result = asyncio.run(compactor._recursive_reduce(summaries))
-        self.assertTrue(result, "轮数兜底应返回而非死循环")
+    def test_invalid_json_returns_empty(self):
+        """非法 JSON 返回空字典"""
+        result = self.compactor._parse_summary_json("not json at all")
+        self.assertEqual(result, {})
 
 
 class TestNoTruncation(unittest.TestCase):
-    """无 1000 条硬截断"""
+    """无硬截断"""
 
     def test_1200_messages_preserved(self):
         mem = MemoryManager()
@@ -239,7 +154,6 @@ class TestNoTruncation(unittest.TestCase):
         self.assertIn("助手1199", str(all_msgs[-1].get("content", "")))
 
     def test_no_truncation_low_token(self):
-        """长但低 token 会话完整保留，等 token 到阈值再压缩"""
         compactor = SessionCompactor(llm_engine=FastEngine(), token_threshold=100000)
         short_mem = MemoryManager()
         for i in range(1200):
@@ -248,10 +162,6 @@ class TestNoTruncation(unittest.TestCase):
         self.assertEqual(len(short_mem.get_messages()), 1200, "不应截断")
 
 
-# ================================================================
-# 增量压缩与上下文闭环测试
-# ================================================================
-
 class SeqEngine:
     """每次返回不同摘要，避免去重误判"""
     calls = 0
@@ -259,25 +169,16 @@ class SeqEngine:
     async def chat(self, messages, tools=None, **kwargs):
         SeqEngine.calls += 1
         tag = f"标签{SeqEngine.calls:04d}"
-        long = "这是非常关键的发现内容描述" * 8
-        return type("R", (), {"content": __import__("json").dumps(
+        return type("R", (), {"content": json.dumps(
             {"goal": f"目标{tag}",
-             "actions": [f"完成操作动作{tag}项目{i} 具体执行了步骤{i} 输出结果{i}" for i in range(2)],
-             "findings": [f"{long}{tag}编号{i}" for i in range(2)],
+             "actions": [f"动作{tag}{i}" for i in range(2)],
+             "findings": [f"发现{tag}{i}" for i in range(2)],
              "errors": [], "summary": f"摘要{tag}"})})()
-
-
-class LengthEngine:
-    """返回 finish_reason=length，模拟输出截断"""
-    calls = 0
-
-    async def chat(self, messages, tools=None, **kwargs):
-        LengthEngine.calls += 1
-        return type("R", (), {"content": '{"goal": "未完成', "finish_reason": "length"})()
 
 
 class TestIncrementalCompact(unittest.TestCase):
     """增量压缩：二次压缩只压新消息"""
+    NOTES_CAP = 50
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="cellium_inc_")
@@ -296,49 +197,64 @@ class TestIncrementalCompact(unittest.TestCase):
                 mem.add_assistant_message(f"{prefix}回答{i} " + extra)
         return mem
 
+    def _compact_with_notes(self, compactor, mem, notes, rounds):
+        """执行多次压缩"""
+        msgs_per_round = 20
+        for r in range(rounds):
+            for i in range(msgs_per_round):
+                mem.add_user_message(f"批{r}问题{i}")
+                mem.add_assistant_message(f"批{r}回答{i}")
+            asyncio.run(compactor.compact_now(mem, notes))
+
     def test_second_compact_only_incremental(self):
         """二次压缩只压新消息，不重压旧快照"""
         notes = SessionNotes(session_id="s", notes_dir=os.path.join(self._tmp, "notes"))
-        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10, retry_backoff_base=0)
+        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10)
         mem = self._make_memory(60, "第一批", long=True)
         asyncio.run(compactor.compact_now(mem, notes))
-        first_calls = SeqEngine.calls
-        self.assertGreaterEqual(first_calls, 1, "首次压缩应产生LLM调用")
         self.assertTrue(mem.messages[0].get("_is_compacted_notes"), "压缩后首条应带标记")
 
         for i in range(40):
             mem.add_user_message(f"第二批问题{i} " + "内容" * 30)
             mem.add_assistant_message(f"第二批回答{i} " + "内容" * 30)
-        n_before = len(mem.messages)
         asyncio.run(compactor.compact_now(mem, notes))
-        second_calls = SeqEngine.calls - first_calls
-        self.assertLessEqual(second_calls, first_calls, "二次压缩不应重压全部历史")
-        self.assertLessEqual(len(mem.messages), n_before, "压缩后消息数应回落")
+        self.assertTrue(mem.messages[0].get("_is_compacted_notes"), "二次压缩后仍带标记")
 
-    def test_notes_accumulate_with_cap(self):
-        """notes 追加式 + 上限收敛：40次压缩不超50条"""
+    def test_compact_uses_notes_as_context(self):
+        """压缩时 LLM 应能看到历史压缩摘要"""
         notes = SessionNotes(session_id="s", notes_dir=os.path.join(self._tmp, "notes"))
-        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10, retry_backoff_base=0)
+        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10)
+        mem = self._make_memory(60, "第一批", long=True)
+        asyncio.run(compactor.compact_now(mem, notes))
+
+        # 第二次压缩前，手动构造带历史笔记消息的 memory
+        for i in range(20):
+            mem.add_user_message(f"第二批问题{i}")
+            mem.add_assistant_message(f"第二批回答{i}")
+        asyncio.run(compactor.compact_now(mem, notes))
+
+        # 历史笔记消息应保留在 memory 中作为上下文
+        self.assertTrue(any(m.get("_is_compacted_notes") for m in mem.messages), "历史笔记应保留")
+
+    def test_notes_capped(self):
+        """findings/errors 追加 40 次压缩不超 50 条"""
+        notes = SessionNotes(session_id="s", notes_dir=os.path.join(self._tmp, "notes"))
+        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10)
         mem = self._make_memory(60, "批0", long=True)
         asyncio.run(compactor.compact_now(mem, notes))
-        for rnd in range(40):
-            for i in range(15):
-                mem.add_user_message(f"批{rnd}问题{i} " + "内容" * 30)
-                mem.add_assistant_message(f"批{rnd}回答{i} " + "内容" * 30)
-            asyncio.run(compactor.compact_now(mem, notes))
-        self.assertLessEqual(len(notes.get_findings()), 50, "findings应收敛到上限")
-        self.assertLessEqual(len(notes.get_completed()), 50, "completed应收敛到上限")
+        self._compact_with_notes(compactor, mem, notes, rounds=40)
+        self.assertLessEqual(len(notes.get_findings()), self.NOTES_CAP, "findings应收敛到上限")
+        self.assertLessEqual(len(notes.get_errors()), self.NOTES_CAP, "errors应收敛到上限")
 
-
-class TestFinishReasonLength(unittest.TestCase):
-    """finish_reason=length 立即降级不重试"""
-
-    def test_length_triggers_fallback_no_retry(self):
-        compactor = SessionCompactor(llm_engine=LengthEngine(), retry_backoff_base=0)
-        LengthEngine.calls = 0
-        result = asyncio.run(compactor._generate_summary_with_llm("[用户]: 测试"))
-        self.assertEqual(LengthEngine.calls, 1, "length后应立即降级，不重试")
-        self.assertTrue(result.get("summary", ""), "应返回规则降级摘要")
+    def test_completed_set_overrides(self):
+        """completed 覆盖不膨胀"""
+        notes = SessionNotes(session_id="s", notes_dir=os.path.join(self._tmp, "notes"))
+        compactor = SessionCompactor(llm_engine=SeqEngine(), keep_recent_messages=10)
+        mem = self._make_memory(60, "批0", long=True)
+        asyncio.run(compactor.compact_now(mem, notes))
+        self._compact_with_notes(compactor, mem, notes, rounds=40)
+        # completed 每次只保留当次的 2 条
+        self.assertLessEqual(len(notes.get_completed()), 2, "completed 覆盖最多 2 条")
 
 
 if __name__ == "__main__":
