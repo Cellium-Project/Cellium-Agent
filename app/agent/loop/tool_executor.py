@@ -16,6 +16,8 @@ import re
 import string
 from typing import Any, Dict, List, Optional
 
+from app.core.util.component_tool_registry import get_component_tool_registry
+
 logger = logging.getLogger(__name__)
 
 
@@ -491,7 +493,6 @@ class ToolExecutor:
         """
         import asyncio
         from concurrent.futures import ThreadPoolExecutor
-        from app.core.util.component_tool_registry import get_component_tool_registry
 
         tool_name = tool_call.name
         arguments = tool_call.arguments

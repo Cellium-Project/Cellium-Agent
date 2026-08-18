@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 class ModelInfo:
     context_window: int
     max_output_tokens: int
-    supports_tools: bool
     supports_vision: bool = False
 
 

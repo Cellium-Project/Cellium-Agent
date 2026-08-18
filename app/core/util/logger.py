@@ -552,10 +552,19 @@ def setup_logger(
                 )
                 _file_handler.setLevel(numeric_level)
                 _file_handler.setFormatter(logging.Formatter(log_format))
-            if _file_handler not in logger_obj.handlers:
-                logger_obj.addHandler(_file_handler)
+                root_logger = logging.getLogger()
+                if _file_handler not in root_logger.handlers:
+                    root_logger.addHandler(_file_handler)
+                    root_logger.setLevel(numeric_level)
         except Exception as e:
             pass
+
+    try:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
+    except Exception:
+        pass
 
     try:
         buf = _LogBufferHandler._instance
@@ -571,20 +580,21 @@ def setup_logger(
 
 
 def set_console_logging(enabled: bool):
-    """动态开关控制台日志输出（TUI 模式关闭，避免日志污染界面；日志仍进缓冲区）"""
     global _console_enabled
     _console_enabled = bool(enabled)
     if not enabled:
-        # 移除所有已存在的 stdout/stderr StreamHandler
+        import sys
         for name in list(_loggers):
             lg = _loggers[name]
             for h in list(lg.handlers):
-                if isinstance(h, logging.StreamHandler):
-                    lg.removeHandler(h)
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    if getattr(h, 'stream', None) in (sys.stdout, sys.stderr, None):
+                        lg.removeHandler(h)
         root = logging.getLogger()
         for h in list(root.handlers):
-            if isinstance(h, logging.StreamHandler):
-                root.removeHandler(h)
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                if getattr(h, 'stream', None) in (sys.stdout, sys.stderr, None):
+                    root.removeHandler(h)
 
 
 def get_logger(name: str) -> logging.Logger:

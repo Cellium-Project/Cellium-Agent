@@ -334,6 +334,7 @@ class CelliumTUI(App):
         self._busy_animation_running = False
         self._busy_started = 0.0
         self._session_epoch = 0
+        self._app_closing = False
         self._last_session_ids = []
         self._history_limit = self._load_history_limit()
         self._history_loading = None
@@ -555,6 +556,7 @@ class CelliumTUI(App):
 
     def on_unmount(self) -> None:
         """退出时关闭常驻后台事件循环"""
+        self._app_closing = True
         loop = getattr(self, "_agent_loop", None)
         if loop is not None:
             try:
@@ -775,46 +777,79 @@ class CelliumTUI(App):
         单订阅模型：TUI 发消息也统一经本监听器渲染（_agent_worker 不再消费）。
         - message_received 用 _last_user_msg 去重：TUI 自己发消息已由 _agent_worker 显示
         - 切换会话时重新订阅当前 session
+        - 订阅/消费异常时自动重连
         """
+        import logging as _logging
+        _b_logger = _logging.getLogger(__name__)
         self._last_user_msg = None
-        try:
-            from app.messaging.message_broker import get_message_broker
-            broker = get_message_broker()
-            while True:
+        from app.messaging.message_broker import get_message_broker
+        while True:
+            current = None
+            queue = None
+            try:
+                broker = get_message_broker()
                 current = self.session_id
                 queue = broker.subscribe(current)
+                _b_logger.info("[BrokerListener] 订阅成功 | session=%s", current)
+            except Exception as e:
+                _b_logger.error("[BrokerListener] 订阅失败，重试中 | error=%s", e)
                 try:
-                    while True:
-                        if self.session_id != current:
-                            break
-                        try:
-                            evt = await asyncio.wait_for(queue.get(), timeout=0.5)
-                        except asyncio.TimeoutError:
-                            continue
-                        if evt is None:
-                            break
-                        if self.session_id != current:
-                            break
-                        if self._history_stale(self._session_epoch):
-                            continue
-                        if evt.get("type") == "message_received":
-                            msg = evt.get("message") or evt.get("content") or ""
-                            if msg and str(msg) == getattr(self, "_last_user_msg", None):
-                                continue
-                            if msg:
-                                self._last_user_msg = str(msg)
-                        await self._handle_event(evt)
-                        if evt.get("type") in ("done", "error", "stopped"):
-                            self._last_local_task_end = time.monotonic()
-                finally:
+                    await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
+                    raise
+                continue
+            _idle_ticks = 0
+            try:
+                while True:
+                    if self.session_id != current:
+                        _b_logger.info("[BrokerListener] 会话切换 | %s→%s，重新订阅", current, self.session_id)
+                        break
                     try:
-                        broker.unsubscribe(current, queue)
+                        evt = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        # 自检：订阅若被外部清理则重新订阅，防"无订阅者"失联
+                        _idle_ticks += 1
+                        if _idle_ticks >= 20:
+                            _idle_ticks = 0
+                            if not broker.is_subscribed(current, queue):
+                                _b_logger.warning("[BrokerListener] 检测到订阅已丢失，重新订阅 | session=%s", current)
+                                break
+                        continue
+                    if evt is None:
+                        _b_logger.info("[BrokerListener] 收到终止哨兵，重新订阅 | session=%s", current)
+                        break
+                    if self.session_id != current:
+                        _b_logger.info("[BrokerListener] 会话切换(b) | %s→%s", current, self.session_id)
+                        break
+                    if self._history_stale(self._session_epoch):
+                        continue
+                    if evt.get("type") == "message_received":
+                        msg = evt.get("message") or evt.get("content") or ""
+                        if msg and str(msg) == getattr(self, "_last_user_msg", None):
+                            continue
+                        if msg:
+                            self._last_user_msg = str(msg)
+                    try:
+                        await self._handle_event(evt)
+                    except Exception as e:
+                        _b_logger.error("[BrokerListener] 处理事件失败但不中断 | type=%s | error=%s", evt.get("type"), e)
+                    if evt.get("type") in ("done", "error", "stopped"):
+                        self._last_local_task_end = time.monotonic()
+            except asyncio.CancelledError:
+                _b_logger.warning("[BrokerListener] 监听器被取消，退出")
+                raise
+            except Exception as e:
+                import traceback
+                _b_logger.error(
+                    "[BrokerListener] 消费循环异常，自动重连 | error=%s\n%s",
+                    e, traceback.format_exc()
+                )
+            finally:
+                if queue is not None:
+                    try:
+                        get_message_broker().unsubscribe(current, queue)
                     except Exception:
                         pass
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
 
     def _register_session_listener(self):
         try:

@@ -151,7 +151,7 @@ class AgentLoop:
             TaskSignalMatcher.initialize(three_layer_memory.repository)
             logger.info("[AgentLoop] TaskSignalMatcher 已连接记忆系统")
 
-        # 提示词构建（新 pieces 系统，按 stability 分层优化 KV 缓存）
+        # 提示词构建
         shell_cwd = getattr(self.shell, '_cwd', None) if self.shell else None
         self._prompt_builder = create_default_builder(
             memory_dir=memory_dir,
@@ -884,30 +884,34 @@ class AgentLoop:
         thread.start()
 
         stop_task = asyncio.create_task(stop_event.wait())
-        while True:
-            # 等待工具完成或停止，0.1s 轮询以便响应中断
-            done, _ = await asyncio.wait(
-                {stop_task}, timeout=0.1,
-            )
-            if result_box.get("done"):
-                break
-            if stop_task in done or self._loop_controller.is_stop_requested:
-                # 1) 直接 kill 该线程正在运行的 shell 子进程（最彻底）
-                tid = thread_ref.get("ident")
-                if tid:
-                    self._kill_shell_subprocesses(tid)
-                    # 2) 再向工具线程抛 KeyboardInterrupt 中断剩余 Python 执行
-                    self._force_interrupt_thread(tid)
-                # 等线程退出（最多 1s）。线程是 daemon，即使阻塞在 C 层
-                # 未完全退出也不阻塞流程，后台自行收尾。
-                for _ in range(10):
-                    if not thread.is_alive():
-                        break
-                    await asyncio.sleep(0.1)
-                    if thread.is_alive() and tid:
+        try:
+            while True:
+                # 等待工具完成或停止
+                done, _ = await asyncio.wait(
+                    {stop_task}, timeout=0.1,
+                )
+                if result_box.get("done"):
+                    break
+                if stop_task in done or self._loop_controller.is_stop_requested:
+                    tid = thread_ref.get("ident")
+                    if tid:
                         self._kill_shell_subprocesses(tid)
                         self._force_interrupt_thread(tid)
-                return {"_stopped_by_user": True, "error": "stopped_by_user"}
+                    for _ in range(10):
+                        if not thread.is_alive():
+                            break
+                        await asyncio.sleep(0.1)
+                        if thread.is_alive() and tid:
+                            self._kill_shell_subprocesses(tid)
+                            self._force_interrupt_thread(tid)
+                    return {"_stopped_by_user": True, "error": "stopped_by_user"}
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+                try:
+                    await stop_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         if "error" in result_box:
             exc = result_box["error"]

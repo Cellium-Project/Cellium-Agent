@@ -171,8 +171,8 @@ class BackgroundTaskManager:
             return False
 
         self._ensure_cleanup_task()
-        # 保留订阅者（TUI 常驻监听器等），只重置任务状态
-        self.broker.clear_session(session_id, keep_subscribers=True)
+        # 重置任务状态，保留常驻订阅者
+        self.broker.clear_session(session_id)
         queue = self.broker.ensure_queue(session_id)
         self._supplement_messages[session_id] = []
 

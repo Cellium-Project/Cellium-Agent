@@ -39,12 +39,11 @@ def _load_model_registry() -> Dict[str, ModelInfo]:
             models = data.get("models", {}) or {}
             result = {}
             for name, values in models.items():
-                if isinstance(values, (list, tuple)) and len(values) >= 3:
+                if isinstance(values, (list, tuple)) and len(values) >= 2:
                     result[str(name)] = ModelInfo(
                         context_window=int(values[0]),
                         max_output_tokens=int(values[1]),
-                        supports_tools=bool(values[2]),
-                        supports_vision=bool(values[3]) if len(values) >= 4 else False,
+                        supports_vision=bool(values[2]) if len(values) >= 3 else False,
                     )
             if result:
                 logger.info("[LLM] 从 %s 加载了 %d 个模型", registry_path, len(result))
@@ -213,7 +212,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._model_info = ModelInfo(
             context_window=context_window or (detected.context_window if detected else self.DEFAULT_CONTEXT_WINDOW),
             max_output_tokens=max_tokens or (detected.max_output_tokens if detected else self.DEFAULT_MAX_OUTPUT),
-            supports_tools=(detected.supports_tools if detected else True),
             supports_vision=vision or (detected.supports_vision if detected else False),
         )
 
@@ -226,10 +224,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         max_tokens_hint = "(API自定)" if omit_max_tokens else str(self._model_info.max_output_tokens)
         logger.info(
-            "[LLM] 引擎初始化 | model=%s | ctx=%d | max_out=%s | tools=%s | url=%s | 能力来源=%s",
+            "[LLM] 引擎初始化 | model=%s | ctx=%d | max_out=%s | url=%s | 能力来源=%s",
             model, self._model_info.context_window,
-            max_tokens_hint,
-            self._model_info.supports_tools, base_url[:50],
+            max_tokens_hint, base_url[:50],
             "显式传入" if (context_window or max_tokens)
             else ("内置注册表" if detected
                   else "保守默认值(待校准)"),
@@ -295,13 +292,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if not self._omit_max_tokens:
             params["max_tokens"] = final_max_tokens
 
-        if tools and self._model_info.supports_tools:
-            params["tools"] = tools
-        elif tools and not self._model_info.supports_tools:
-            logger.warning(
-                "[LLM] 模型 %s 可能不支持 tool_use，工具定义仍将发送",
-                self.model,
-            )
+        if tools:
             params["tools"] = tools
 
         if kwargs:
@@ -935,9 +926,9 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
 
         info = engine.model_info
         logger.info(
-            "[LLMFactory] 已创建引擎 | model=%s | current_model=%s | ctx=%d out=%d tools=%s vision=%s",
+            "[LLMFactory] 已创建引擎 | model=%s | current_model=%s | ctx=%d out=%d vision=%s",
             engine.model, current_model_name, info.context_window, info.max_output_tokens,
-            info.supports_tools, info.supports_vision,
+            info.supports_vision,
         )
 
         engine._verify_deferred = False

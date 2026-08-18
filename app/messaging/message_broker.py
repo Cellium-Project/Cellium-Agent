@@ -76,7 +76,6 @@ class MessageBroker:
 
         subs = self._subscribers.get(session_id)
         if subs:
-            logger.info("[Broker] 推送到订阅 | session=%s | 订阅者数=%d | event=%s", session_id, len(subs), event.get("type"))
             for q in list(subs):
                 self._put_to_queue(q, decorated)
         else:
@@ -127,18 +126,18 @@ class MessageBroker:
         if len(history) > self.MAX_HISTORY_SIZE:
             history[:] = history[-self.MAX_HISTORY_SIZE:]
 
-    def clear_session(self, session_id: str, keep_subscribers: bool = False):
-        """清理该 session 的任务状态（历史/计数/主队列）。
-
-        Args:
-            keep_subscribers: 为 True 时保留订阅队列（任务重启不踢掉常驻订阅者，
-                如 TUI 的常驻监听器，否则 start_task 会清空其订阅导致失联）
-        """
+    def clear_session(self, session_id: str, clear_subscribers: bool = False):
+        """清理任务态数据（历史/计数/主队列），默认保留订阅者"""
         self._queues.pop(session_id, None)
-        if not keep_subscribers:
+        if clear_subscribers:
             self._subscribers.pop(session_id, None)
         self._event_history.pop(session_id, None)
         self._event_counters.pop(session_id, None)
+
+    def is_subscribed(self, session_id: str, queue: asyncio.Queue) -> bool:
+        """检测队列是否仍在该 session 订阅集合中（供订阅者自检）"""
+        subs = self._subscribers.get(session_id)
+        return subs is not None and queue in subs
 
     def _put_to_queue(self, queue: asyncio.Queue, event: Dict[str, Any]):
         try:
@@ -165,9 +164,6 @@ class MessageBroker:
             return
         try:
             queue.put_nowait(event)
-            qsize = queue.qsize()
-            if qsize > 50:
-                logger.warning("[Broker] 队列堆积 | qsize=%d", qsize)
         except Exception as e:
             logger.error("[Broker] put_nowait 失败: %s", e)
 
