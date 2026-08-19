@@ -19,7 +19,8 @@ class FileTool(BaseTool):
         "- command=fs, action=delete: delete file or directory\n"
         "- command=fs, action=exists: check if path exists\n"
         "- command=fs, action=create: create files from a dict of path->content. "
-        "REQUIRED: files must be a dict[str, str] mapping relative file paths to content\n"
+        "REQUIRED: files must be a dict[str, str] mapping file paths to content. "
+        "Parent directories are created automatically.\n"
         "- command=insight, mode=structure: view file or directory structure outline\n"
         "- command=insight, mode=symbol: search for symbol definitions\n\n"
         "Use `ls` to list directory contents. Use `glob` to find files by name pattern. "
@@ -60,9 +61,9 @@ class FileTool(BaseTool):
             return self._fs_exists(path)
 
         elif action == "create":
-            if not path or not files:
-                return {"success": False, "error": "path and files are required. Example: file(command='fs', action='create', path='/target/dir', files={'relative/path.py': 'content'})"}
-            return self._fs_create(path, files)
+            if not files:
+                return {"success": False, "error": "files is required. Example: file(command='fs', action='create', files={'D:/path/file.py': 'content'})"}
+            return self._fs_create(files)
 
         else:
             return {"success": False, "error": f"Unknown action: {action}"}
@@ -135,8 +136,7 @@ class FileTool(BaseTool):
             result["size"] = os.path.getsize(abs_path) if result["type"] == "file" else None
         return result
 
-    def _fs_create(self, base_dir: str, files: Dict[str, str]) -> Dict[str, Any]:
-        abs_base = self._resolve_path(base_dir)
+    def _fs_create(self, files: Dict[str, str]) -> Dict[str, Any]:
         if isinstance(files, str):
             try:
                 files = json.loads(files)
@@ -144,14 +144,11 @@ class FileTool(BaseTool):
                 return {"success": False, "error": f"files JSON parse failed: {e}"}
         if not isinstance(files, dict):
             return {"success": False, "error": f"files must be a dict, got {type(files).__name__}"}
-        try:
-            os.makedirs(abs_base, exist_ok=True)
-        except Exception as e:
-            return {"success": False, "error": f"Cannot create directory: {e}"}
+        
         results = []
         success_count = 0
-        for rel_path, content in files.items():
-            full_path = os.path.join(abs_base, rel_path.replace('/', os.sep).replace('\\', os.sep))
+        for file_path, content in files.items():
+            full_path = self._resolve_path(file_path.replace('/', os.sep).replace('\\', os.sep))
             try:
                 parent = os.path.dirname(full_path)
                 if parent and not os.path.exists(parent):
@@ -163,7 +160,6 @@ class FileTool(BaseTool):
                 results.append({"path": full_path, "status": "error", "error": str(e)})
         return {
             "success": success_count == len(files),
-            "base_dir": abs_base,
             "files_created": success_count,
             "total_files": len(files),
             "details": results,

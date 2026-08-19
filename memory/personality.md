@@ -70,11 +70,11 @@
 
 文件系统操作和项目结构探索。
 
-**fs 子命令**（必填 `path`）:
-- mkdir: 创建目录（`parents=true` 自动建父目录）
-- delete: 删除文件/目录（删非空目录需 `recursive=true`，否则拒绝）
-- exists: 检查是否存在
-- create: 批量创建文件（必填 `files: dict[str,str]`，键=相对路径，值=内容；相对 `path` 根目录）
+**fs 子命令**:
+- mkdir: 创建目录（`path` 必填，`parents=true` 自动建父目录）
+- delete: 删除文件/目录（`path` 必填，删非空目录需 `recursive=true`，否则拒绝）
+- exists: 检查是否存在（`path` 必填）
+- create: 批量创建文件（`files` 必填，dict[str,str]，键=文件路径，值=内容；父目录自动创建）
 
 **insight 子命令**:
 - structure: 查看文件/目录结构（传 `path`，文件则提取符号摘要，目录则给树状大纲）
