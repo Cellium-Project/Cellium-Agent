@@ -215,6 +215,32 @@ class CommandInput(TextArea):
 
     async def _on_key(self, event):
         app = self.app
+        if getattr(app, "_file_panel_active", False):
+            key = event.key
+            if key == "up":
+                app._file_panel_move(-1)
+                event.stop()
+                return
+            if key == "down":
+                app._file_panel_move(1)
+                event.stop()
+                return
+            if key in ("enter", "tab", "right"):
+                app._file_panel_accept()
+                try:
+                    event.prevent_default()
+                except Exception:
+                    pass
+                event.stop()
+                return
+            if key == "left":
+                app._file_panel_up()
+                event.stop()
+                return
+            if key == "escape":
+                app._file_panel_hide()
+                event.stop()
+                return
         if getattr(app, "_palette_active", False):
             key = event.key
             if key == "up":
@@ -307,6 +333,8 @@ class CommandInput(TextArea):
         else:
             self.insert_text_at_cursor(normalized)
             self.app._update_palette(self.value)
+        # 阻止基类 TextArea._on_paste 再次插入，避免重复粘贴
+        event.prevent_default()
         event.stop()
 
 
@@ -360,6 +388,54 @@ class CommandPalette(Vertical):
         idx = lst.highlighted
         if idx is not None and 0 <= idx < len(self._commands):
             return self._commands[idx]
+        return None
+
+
+class FilePanel(Vertical):
+    """@ 文件/文件夹选择面板"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._entries = []
+        self._list = None
+
+    def compose(self):
+        yield Static("", id="file-panel-title")
+        yield OptionList(id="file-panel-list")
+        yield Static("", id="file-panel-footer")
+
+    def on_mount(self):
+        self._list = self.query_one("#file-panel-list", OptionList)
+
+    def set_entries(self, entries, title="", footer=""):
+        """entries: list[(label, id)]，id 为该文件/目录的显示路径片段"""
+        self._entries = entries
+        lst = self._list
+        if lst is None:
+            return
+        self.query_one("#file-panel-title", Static).update(title)
+        self.query_one("#file-panel-footer", Static).update(footer)
+        lst.clear_options()
+        opts = [Option(label, id=str(entry_id)) for label, entry_id in entries]
+        lst.add_options(opts)
+        if opts:
+            lst.highlighted = 0
+
+    def move(self, delta):
+        lst = self._list
+        if not lst or not self._entries:
+            return
+        total = len(self._entries)
+        idx = (lst.highlighted or 0) + delta
+        lst.highlighted = idx % total
+
+    def current(self):
+        lst = self._list
+        if lst is None:
+            return None
+        idx = lst.highlighted
+        if idx is not None and 0 <= idx < len(self._entries):
+            return self._entries[idx]
         return None
 
 
@@ -425,6 +501,7 @@ LOGO_INDEX_B85 = (
 
 class LogoImage(Static):
     """终端 Logo"""
+    ALLOW_SELECT = False
 
     def __init__(self, width=18):
         super().__init__("")
@@ -1275,3 +1352,13 @@ class CollapsibleStatic(Static):
         if event.key == "enter" and self._on_expand:
             self._on_expand()
             event.stop()
+
+
+class Hint(Static):
+    """输入框底部提示文字，不参与文本选区"""
+    ALLOW_SELECT = False
+
+
+class NoSelectStatic(Static):
+    """不参与文本选区的 Static 基类"""
+    ALLOW_SELECT = False

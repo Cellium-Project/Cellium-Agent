@@ -3,6 +3,23 @@ import os
 
 os.environ.setdefault("TEXTUAL_COLOR_SYSTEM", "truecolor")
 
+# Patch Textual 8.2.8 selection scroll delta sign bug (https://github.com/Textualize/textual/issues/6639)
+try:
+    import textual.selection as _sel
+    import textual as _txt
+    if getattr(_txt, "__version__", "").startswith("8.2."):
+        _SelectStart = _sel.SelectStart
+        _orig_pointer_start_offset = _SelectStart.pointer_start_offset.fget
+        def _patched_pointer_start_offset(self):
+            return (
+                self.container.region.offset
+                + self.container_pointer_delta
+                - (self.container.scroll_offset - self.container_initial_scroll_offset)
+            )
+        _SelectStart.pointer_start_offset = property(_patched_pointer_start_offset)
+except Exception:
+    pass
+
 import asyncio
 import json
 import re
@@ -22,12 +39,15 @@ from app.tui.commands import match_commands
 from app.tui.widgets import (
     CommandInput,
     CommandPalette,
+    FilePanel,
     UserMessage,
     AssistantMessage,
     ThinkingBlock,
     ToolCallCard,
     LogoImage,
     ChatScroll,
+    Hint,
+    NoSelectStatic,
 )
 
 CSS = """
@@ -193,7 +213,44 @@ Screen {
     padding: 0 2;
     color: $text-muted;
     content-align: left top;
-    background: $bg-hover;
+    background: transparent;
+}
+
+#file-panel {
+    display: none;
+    height: auto;
+    max-height: 15;
+    background: transparent;
+}
+
+#file-panel-title {
+    height: 2;
+    padding: 0 2;
+    color: $primary;
+    text-style: bold;
+    content-align: left middle;
+    background: transparent;
+}
+
+#file-panel-list {
+    height: auto;
+    max-height: 10;
+    padding: 1 0;
+    border: none;
+    background: transparent;
+}
+
+#file-panel-list:focus {
+    border: none;
+    background-tint: transparent;
+}
+
+#file-panel-footer {
+    height: 2;
+    padding: 0 2;
+    color: $text-muted;
+    content-align: left top;
+    background: transparent;
 }
 
 #input {
@@ -297,6 +354,7 @@ def _theme_pref_path_impl() -> str:
 
 
 class CelliumTUI(App):
+    ENABLE_SELECT_AUTO_SCROLL = True  
     TITLE = "Cellium Agent"
     CSS = CSS
     BINDINGS = [
@@ -353,6 +411,8 @@ class CelliumTUI(App):
         self._show_thinking = True
         self._show_sidebar = True
         self._palette_active = False
+        self._file_panel_active = False
+        self._file_panel_dir = ""
         self._restoring_history = False 
 
         self.header = None
@@ -361,6 +421,7 @@ class CelliumTUI(App):
         self.session_list = None
         self.chat = None
         self.input = None
+        self.file_panel = None
         self.hint = None
         self.status_left = None
         self.status_right = None
@@ -442,7 +503,7 @@ class CelliumTUI(App):
         with Horizontal(id="body"):
             with Vertical(id="sidebar"):
                 yield LogoImage()
-                yield Static(self.tr("sidebar.title"), id="sidebar-title")
+                yield NoSelectStatic(self.tr("sidebar.title"), id="sidebar-title")
                 yield Button(self.tr("sidebar.new"), id="btn-new-session", variant="default")
                 yield OptionList(id="session-list")
                 with Vertical(id="sidebar-bottom"):
@@ -451,11 +512,12 @@ class CelliumTUI(App):
                 yield ChatScroll(id="chat")
                 with Vertical(id="footer-bar"):
                     yield CommandPalette(id="command-palette")
+                    yield FilePanel(id="file-panel")
                     yield CommandInput(id="input", placeholder="")
-                    yield Static(self.tr("hint"), id="hint")
+                    yield Hint(self.tr("hint"), id="hint")
         with Horizontal(id="status-bar"):
-            yield Static("", id="status-left")
-            yield Static("", id="status-right")
+            yield NoSelectStatic("", id="status-left")
+            yield NoSelectStatic("", id="status-right")
 
     def on_mount(self):
         self.body = self.query_one("#body", Horizontal)
@@ -463,9 +525,10 @@ class CelliumTUI(App):
         self.session_list = self.query_one("#session-list", OptionList)
         self.chat = self.query_one("#chat", VerticalScroll)
         self.input = self.query_one("#input", CommandInput)
-        self.hint = self.query_one("#hint", Static)
-        self.status_left = self.query_one("#status-left", Static)
-        self.status_right = self.query_one("#status-right", Static)
+        self.file_panel = self.query_one("#file-panel", FilePanel)
+        self.hint = self.query_one("#hint", Hint)
+        self.status_left = self.query_one("#status-left", NoSelectStatic)
+        self.status_right = self.query_one("#status-right", NoSelectStatic)
         self.input.focus()
         self._set_terminal_title()
         self._refresh_status()
@@ -768,6 +831,10 @@ class CelliumTUI(App):
                 self.input.cursor_position = len(self.input.value)
                 self._palette_hide()
                 self.input.focus()
+        if getattr(event.option_list, "id", "") == "file-panel-list" and self._file_panel_active:
+            option = getattr(event, "option", None)
+            name = getattr(option, "id", None) if option else None
+            self._file_panel_accept(name)
 
     # ---- 会话管理 ----
 
@@ -1059,6 +1126,7 @@ class CelliumTUI(App):
         text = self.input.value.strip()
         self.input.value = ""
         self._palette_hide()
+        self._file_panel_hide()
         if not text:
             return
         pending = getattr(self.input, "_paste_pending", None)
@@ -1096,6 +1164,7 @@ class CelliumTUI(App):
                 self._palette_active = True
                 return
         self._palette_hide()
+        self._refresh_file_panel(value)
 
     def _palette_move(self, delta: int):
         if not self._palette_active:
@@ -1123,6 +1192,177 @@ class CelliumTUI(App):
         self._palette_active = False
         try:
             self.query_one("#command-palette", CommandPalette).styles.display = "none"
+        except Exception:
+            pass
+
+    # ---- @ 文件/文件夹选择 ----
+
+    def _file_panel_base(self):
+        try:
+            from app.core.di.container import get_container
+            from app.agent.shell.cellium_shell import CelliumShell
+            container = get_container()
+            if container.has(CelliumShell):
+                shell = container.resolve(CelliumShell)
+                cwd = getattr(shell, "_cwd", None)
+                if cwd and os.path.isdir(cwd):
+                    return os.path.abspath(cwd)
+        except Exception:
+            pass
+        try:
+            from app.core.util.agent_config import get_config
+        except Exception:
+            return os.path.abspath(os.getcwd())
+        try:
+            agent = get_config().get_section("agent") or {}
+            cwd = agent.get("shell_cwd", "")
+            if cwd:
+                if not os.path.isabs(cwd):
+                    cwd = os.path.join(get_config().config_root, cwd)
+                if os.path.isdir(cwd):
+                    return os.path.abspath(cwd)
+        except Exception:
+            pass
+        try:
+            return os.path.abspath(get_config().config_root)
+        except Exception:
+            return os.path.abspath(os.getcwd())
+
+    def _file_panel_token_pos(self, value):
+        idx = -1
+        for i in range(len(value)):
+            if value[i] == "@" and (i == 0 or value[i - 1].isspace()):
+                idx = i
+        return idx
+
+    def _file_panel_token(self, value):
+        idx = self._file_panel_token_pos(value)
+        if idx < 0:
+            return None
+        tok = ""
+        for ch in value[idx + 1:]:
+            if ch.isspace():
+                break
+            tok += ch
+        return tok
+
+    def _replace_file_token(self, replace, keep_at=True):
+        value = self.input.value
+        idx = self._file_panel_token_pos(value)
+        if idx < 0:
+            return
+        j = idx + 1
+        while j < len(value) and not value[j].isspace():
+            j += 1
+        if keep_at:
+            # 保留 @：@rel
+            new_value = value[:idx + 1] + replace + value[j:]
+        else:
+            # 去掉 @：直接拼路径
+            new_value = value[:idx] + replace + value[j:]
+        self.input.value = new_value
+        self.input.cursor_position = len(self.input.value)
+
+    def _refresh_file_panel(self, value):
+        token = self._file_panel_token(value)
+        if token is None:
+            self._file_panel_hide()
+            return
+        base = self._file_panel_base()
+        if not token:
+            listing_dir, prefix = base, ""
+        elif token.endswith("/") or token.endswith("\\"):
+            d = os.path.join(base, token.rstrip("/\\"))
+            if os.path.isdir(d):
+                listing_dir, prefix = d, ""
+            else:
+                self._file_panel_hide()
+                return
+        else:
+            parts = [p for p in token.replace("\\", "/").split("/") if p]
+            candidate = os.path.join(base, *parts)
+            if os.path.isdir(candidate):
+                listing_dir, prefix = candidate, ""
+            else:
+                listing_dir = os.path.join(base, *parts[:-1])
+                prefix = parts[-1] if parts else ""
+        self._file_panel_dir = listing_dir
+        self._show_file_panel(listing_dir, prefix)
+
+    def _show_file_panel(self, directory, prefix):
+        try:
+            names = sorted(os.listdir(directory), key=str.lower)
+        except Exception:
+            self._file_panel_hide()
+            return
+        dirs, files = [], []
+        for n in names:
+            if prefix and not n.lower().startswith(prefix.lower()):
+                continue
+            if os.path.isdir(os.path.join(directory, n)):
+                dirs.append(n)
+            else:
+                files.append(n)
+        entries = [("[dim]..[/]", "..")] if os.path.normpath(directory) != os.path.normpath(self._file_panel_base()) else []
+        for d in dirs:
+            entries.append((f"[cyan]/[/][bold]{d}[/]", d))
+        for f in files:
+            entries.append((f"    {f}", f))
+        if not entries:
+            self._file_panel_hide()
+            return
+        rel = os.path.relpath(directory, self._file_panel_base()).replace("\\", "/")
+        title = f"@  {rel if rel != '.' else '.'}/"
+        footer = "Enter 进入/插入 · ← 上级 · Esc 关闭"
+        self.file_panel.set_entries(entries, title, footer)
+        self.file_panel.styles.display = "block"
+        self._file_panel_active = True
+
+    def _file_panel_move(self, delta):
+        if not self._file_panel_active:
+            return
+        try:
+            self.file_panel.move(delta)
+        except Exception:
+            pass
+
+    def _file_panel_accept(self, name=None):
+        if not self._file_panel_active:
+            return
+        if name is None:
+            entry = self.file_panel.current()
+            if not entry:
+                return
+            name = entry[1]
+        if name == "..":
+            self._file_panel_up()
+            return
+        full = os.path.join(self._file_panel_dir, name)
+        if os.path.isdir(full):
+            rel = os.path.relpath(full, self._file_panel_base()).replace("\\", "/")
+            self._replace_file_token(rel + "/")
+            self._refresh_file_panel(self.input.value)
+        else:
+            rel = os.path.relpath(full, self._file_panel_base()).replace("\\", "/")
+            self._replace_file_token(rel + " ", keep_at=False)
+            self._file_panel_hide()
+            self.input.focus()
+
+    def _file_panel_up(self):
+        parent = os.path.dirname(self._file_panel_dir)
+        if os.path.normpath(parent) == os.path.normpath(self._file_panel_dir):
+            return
+        rel = os.path.relpath(parent, self._file_panel_base()).replace("\\", "/")
+        if rel == ".":
+            rel = ""
+        self._replace_file_token(rel + ("/" if rel else ""))
+        self._refresh_file_panel(self.input.value)
+
+    def _file_panel_hide(self):
+        self._file_panel_active = False
+        self._file_panel_dir = ""
+        try:
+            self.file_panel.styles.display = "none"
         except Exception:
             pass
 
@@ -1299,11 +1539,12 @@ class CelliumTUI(App):
             self.copy_to_clipboard(selection)
             self.screen.clear_selection()
             return
-        try:
-            if self.input is not None:
+        # 只有输入框有焦点时才 fallback 到复制输入框，避免干扰聊天选区
+        if self.input is not None and self.input.has_focus:
+            try:
                 self.input.action_copy()
-        except SkipAction:
-            pass
+            except SkipAction:
+                pass
 
     def action_copy_selection(self):
         """Ctrl+Y 复制当前选区"""
