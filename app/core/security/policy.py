@@ -175,10 +175,6 @@ class SecurityPolicy:
         # Windows
         (r'remove-item\s+-recurse\s+[A-Za-z]:\\(?:Windows|Program Files|ProgramData)', RiskLevel.CRITICAL, "禁止删除Windows系统目录"),
         (r'rmdir\s+/s\s+[A-Za-z]:\\', RiskLevel.CRITICAL, "禁止删除Windows盘符根目录"),
-
-        # ═══ Python/脚本内联执行 ═══
-        (r'\bpython(?:3)?\s+-c\s+["\']', RiskLevel.MEDIUM, "Python内联代码执行"),
-        (r'\bperl\s+-e\s+["\']', RiskLevel.MEDIUM, "Perl内联代码执行"),
     ]
 
     # 安全白名单（常用安全命令）
