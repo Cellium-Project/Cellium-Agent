@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # 常量定义
 # =============================================================================
 
-DEFAULT_TIMEOUT_SECONDS = 60
+DEFAULT_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 HARD_TIMEOUT_SECONDS = 300
 PREVIEW_SIZE_BYTES = 500
@@ -424,17 +424,17 @@ class CelliumShell:
         command: Union[str, Dict[str, Any]] = "",
     ) -> Dict[str, Any]:
         if isinstance(command, dict):
-            argv = command.get("argv")
-            if argv and isinstance(argv, list):
-                logger.info("[Shell] execute(argv) | argv=%s", argv[:5])
+            cmd_value = command.get("cmd", command.get("command", ""))
+            if isinstance(cmd_value, list):
+                logger.info("[Shell] execute(array) | cmd=%s", cmd_value[:5])
                 return self._run_argv(
-                    argv,
+                    cmd_value,
                     timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
                     run_in_background=command.get("run_in_background", False),
                     cwd=command.get("cwd", self._cwd),
                 )
-            cmd_str = command.get("command", "")
-            logger.info("[Shell] execute(dict) | command=%s", cmd_str[:200] if cmd_str else "(空)")
+            cmd_str = cmd_value
+            logger.info("[Shell] execute(string) | cmd=%s", cmd_str[:200] if cmd_str else "(空)")
             return self._run_command(
                 cmd_str,
                 timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
@@ -453,17 +453,17 @@ class CelliumShell:
         command: Union[str, Dict[str, Any]] = "",
     ) -> Dict[str, Any]:
         if isinstance(command, dict):
-            argv = command.get("argv")
-            if argv and isinstance(argv, list):
-                logger.info("[Shell] execute_async(argv) | argv=%s", argv[:5])
+            cmd_value = command.get("cmd", command.get("command", ""))
+            if isinstance(cmd_value, list):
+                logger.info("[Shell] execute_async(array) | cmd=%s", cmd_value[:5])
                 return self._run_argv(
-                    argv,
+                    cmd_value,
                     timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
                     run_in_background=command.get("run_in_background", False),
                     cwd=command.get("cwd", self._cwd),
                 )
-            cmd_str = command.get("command", "")
-            logger.info("[Shell] execute_async(dict) | command=%s", cmd_str[:200] if cmd_str else "(空)")
+            cmd_str = cmd_value
+            logger.info("[Shell] execute_async(string) | cmd=%s", cmd_str[:200] if cmd_str else "(空)")
             return await self._run_command_async(
                 cmd_str,
                 timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
@@ -596,7 +596,7 @@ class CelliumShell:
         self._track_env_assignments(effective_cmd)
 
         cmd_type = classify_command(effective_cmd)
-        effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
+        effective_timeout = timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
         if run_in_background:
             result = self._run_background(effective_cmd, effective_timeout, cwd)
@@ -623,7 +623,7 @@ class CelliumShell:
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
-        effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
+        effective_timeout = timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
         if run_in_background:
             return self._run_background_argv(argv, effective_timeout, cwd)
@@ -741,31 +741,36 @@ class CelliumShell:
                 process = subprocess.Popen(argv, **popen_kwargs)
                 process_ref['p'] = process
 
-                try:
-                    stdout, stderr = process.communicate(timeout=timeout)
-                    stdout_str = decode_output(stdout)
-                    stderr_str = decode_output(stderr)
+                with open(output_file, "w", encoding="utf-8") as f:
+                    start_time = time.time()
+                    while True:
+                        if timeout and (time.time() - start_time) > timeout:
+                            process.kill()
+                            process.wait()
+                            f.write(f"\n--- TIMEOUT ({timeout}s) ---\n")
+                            return {
+                                "task_id": task_id,
+                                "output_file": output_file,
+                                "error": "timeout",
+                            }
 
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(stdout_str)
-                        if stderr_str:
-                            f.write("\n--- STDERR ---\n")
-                            f.write(stderr_str)
+                        stdout_line = process.stdout.readline()
+                        if stdout_line:
+                            f.write(decode_output(stdout_line))
+                            f.flush()
+
+                        stderr_line = process.stderr.readline()
+                        if stderr_line:
+                            f.write(decode_output(stderr_line))
+                            f.flush()
+
+                        if not stdout_line and not stderr_line and process.poll() is not None:
+                            break
 
                     return {
                         "task_id": task_id,
                         "output_file": output_file,
                         "exit_code": process.returncode,
-                    }
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(f"Command timed out after {timeout} seconds")
-                    return {
-                        "task_id": task_id,
-                        "output_file": output_file,
-                        "error": "timeout",
                     }
             except Exception as e:
                 with open(output_file, "w", encoding="utf-8") as f:
@@ -777,7 +782,7 @@ class CelliumShell:
                 }
 
         future = self._get_executor().submit(run_in_thread)
-        self._background_tasks[task_id] = {"future": future, "process_ref": process_ref}
+        self._background_tasks[task_id] = {"future": future, "process_ref": process_ref, "output_file": output_file}
 
         return {
             "status": "background_started",
@@ -806,7 +811,7 @@ class CelliumShell:
         self._track_env_assignments(cmd)
 
         cmd_type = classify_command(cmd)
-        effective_timeout = min(timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS), HARD_TIMEOUT_SECONDS)
+        effective_timeout = timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
         if run_in_background:
             return self._run_background(cmd, effective_timeout, cwd)
@@ -1130,34 +1135,40 @@ class CelliumShell:
                 )
                 process_ref['p'] = process
 
-                try:
-                    if stdin_data:
-                        stdout, stderr = process.communicate(input=stdin_data, timeout=timeout)
-                    else:
-                        stdout, stderr = process.communicate(timeout=timeout)
-                    stdout_str = decode_output(stdout)
-                    stderr_str = decode_output(stderr)
+                if stdin_data:
+                    process.stdin.write(stdin_data)
+                    process.stdin.close()
 
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(stdout_str)
-                        if stderr_str:
-                            f.write("\n--- STDERR ---\n")
-                            f.write(stderr_str)
+                with open(output_file, "w", encoding="utf-8") as f:
+                    start_time = time.time()
+                    while True:
+                        if timeout and (time.time() - start_time) > timeout:
+                            process.kill()
+                            process.wait()
+                            f.write(f"\n--- TIMEOUT ({timeout}s) ---\n")
+                            return {
+                                "task_id": task_id,
+                                "output_file": output_file,
+                                "error": "timeout",
+                            }
+
+                        stdout_line = process.stdout.readline()
+                        if stdout_line:
+                            f.write(decode_output(stdout_line))
+                            f.flush()
+
+                        stderr_line = process.stderr.readline()
+                        if stderr_line:
+                            f.write(decode_output(stderr_line))
+                            f.flush()
+
+                        if not stdout_line and not stderr_line and process.poll() is not None:
+                            break
 
                     return {
                         "task_id": task_id,
                         "output_file": output_file,
                         "exit_code": process.returncode,
-                    }
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(f"Command timed out after {timeout} seconds")
-                    return {
-                        "task_id": task_id,
-                        "output_file": output_file,
-                        "error": "timeout",
                     }
             except Exception as e:
                 with open(output_file, "w", encoding="utf-8") as f:
@@ -1169,7 +1180,7 @@ class CelliumShell:
                 }
 
         future = self._get_executor().submit(run_in_thread)
-        self._background_tasks[task_id] = {"future": future, "process_ref": process_ref}
+        self._background_tasks[task_id] = {"future": future, "process_ref": process_ref, "output_file": output_file}
 
         return {
             "status": "background_started",
@@ -1199,7 +1210,21 @@ class CelliumShell:
 
     def list_background_tasks(self) -> list:
         """列出所有后台任务"""
-        return list(self._background_tasks.keys())
+        tasks = []
+        for task_id, task in self._background_tasks.items():
+            proc = task["process_ref"].get("p")
+            future = task.get("future")
+            is_running = proc and proc.poll() is None
+            is_done = future and future.done() if future else False
+
+            tasks.append({
+                "task_id": task_id,
+                "status": "running" if is_running else ("finished" if is_done else "unknown"),
+                "output_file": task.get("output_file"),
+                "exit_code": proc.returncode if proc and not is_running else None,
+                "pid": proc.pid if proc else None,
+            })
+        return tasks
 
     def get_background_result(self, task_id: str, timeout: float = 0) -> Optional[Dict]:
         """获取后台任务结果（同步模式）"""

@@ -10,7 +10,7 @@ security:
   - chmod 777 /
   - ':(){ :|:& };:'
   permission_level: standard
-  command_timeout: 30
+  command_timeout: 120
   shell_hard_timeout: 60
   max_output_bytes: 8192
   section: security

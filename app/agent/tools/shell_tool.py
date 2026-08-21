@@ -77,12 +77,9 @@ class ShellTool(BaseTool):
 
         base_desc = (
             "执行系统命令。\n\n"
-            "**优先使用 argv 参数**：\n"
-            "- 执行 Python/脚本命令时，用 `argv=[\"python\", \"-c\", \"code\"]` 而非 `cmd`\n"
-            "- argv 直接传给进程，无 shell 解析，避免引号/换行问题\n"
-            "- 示例: `{\"command\": \"run\", \"argv\": [\"python\", \"-c\", \"print(1+1)\"]}`\n\n"
-            "**使用 cmd 的情况**：\n"
-            "- 需要 pipe (`|`)、`&&`、`||`、重定向 (`>`)、wildcard (`*`)\n"
+            "**cmd 参数**：字符串或参数数组\n"
+            "- 数组直接传给进程，无 shell 解析，适合 Python/脚本和复杂参数\n"
+            "- 字符串经 shell 解析，适合 pipe (`|`)、`&&`、`||`、重定向 (`>`)、wildcard (`*`)\n"
             "- Windows: PowerShell 语法 | Linux/Mac: bash 语法\n\n"
             "| 子命令 | 用途 | 参数 |\n"
             "|--------|------|------|\n"
@@ -128,13 +125,11 @@ class ShellTool(BaseTool):
                             "description": "子命令：run/list/output/kill",
                         },
                         "cmd": {
-                            "type": "string",
-                            "description": "[run] shell 命令字符串（经 shell 解析）",
-                        },
-                        "argv": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "[run] 命令参数列表（直接执行，不经 shell。优先使用）",
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
+                            "description": "[run] 命令：字符串经 shell 执行，数组直接执行",
                         },
                         "background": {
                             "type": "boolean",
@@ -143,6 +138,10 @@ class ShellTool(BaseTool):
                         "task_id": {
                             "type": "string",
                             "description": "[output/kill] 任务 ID",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "[run] 超时秒数（可选，默认120秒）",
                         },
                     },
                     "required": ["command"],
@@ -155,46 +154,27 @@ class ShellTool(BaseTool):
     # ================================================================
 
     def _cmd_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        argv = args.get("argv")
         cmd = args.get("cmd", "")
         background = args.get("background", False)
+        timeout = args.get("timeout")
 
         if not self.shell:
             return {"success": False, "error": "Shell 未初始化"}
-
-        if argv and isinstance(argv, list):
-            cmd_str = " ".join(argv)
-
-            try:
-                logger.info("[ShellTool] run(argv) | argv=%s | background=%s", argv[:5], background)
-                result = self.shell.execute({
-                    "argv": argv,
-                    "run_in_background": background,
-                })
-
-                if background and result.get("status") == "background_started":
-                    return {
-                        "success": True,
-                        "task_id": result.get("task_id"),
-                        "output_file": result.get("output_file"),
-                        "message": f"后台任务已启动，ID: {result.get('task_id')}",
-                    }
-
-                return result
-
-            except Exception as e:
-                logger.error("[ShellTool] run(argv) 失败 | error=%s", str(e))
-                return {"success": False, "error": f"执行失败: {str(e)}"}
-
-        if not cmd or not cmd.strip():
-            return {"success": False, "error": "缺少 cmd 或 argv 参数"}
+        if not cmd or (isinstance(cmd, str) and not cmd.strip()):
+            return {"success": False, "error": "缺少 cmd 参数"}
+        if not isinstance(cmd, (str, list)) or (isinstance(cmd, list) and not cmd):
+            return {"success": False, "error": "cmd 必须是非空字符串或参数数组"}
 
         try:
-            logger.info("[ShellTool] run | cmd=%s | background=%s", cmd[:100], background)
-            result = self.shell.execute({
-                "command": cmd,
+            label = " ".join(cmd[:5]) if isinstance(cmd, list) else cmd[:100]
+            logger.info("[ShellTool] run | cmd=%s | background=%s | timeout=%s", label, background, timeout)
+            payload: Dict[str, Any] = {
+                "cmd": cmd,
                 "run_in_background": background,
-            })
+            }
+            if timeout:
+                payload["timeout"] = timeout
+            result = self.shell.execute(payload)
 
             if background and result.get("status") == "background_started":
                 return {
@@ -246,29 +226,36 @@ class ShellTool(BaseTool):
             return {"success": False, "error": "Shell 未初始化"}
 
         try:
-            result = self.shell.get_background_result(task_id, timeout=0)
-            if result is None:
-                # 尝试读取输出文件
-                output_file = args.get("output_file")
-                if output_file:
-                    import os
-                    if os.path.exists(output_file):
-                        with open(output_file, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        return {
-                            "success": True,
-                            "task_id": task_id,
-                            "output": content,
-                            "running": True,
-                        }
-                return {"success": False, "error": f"任务不存在或已完成: {task_id}"}
+            bg_tasks = getattr(self.shell, "_background_tasks", {})
+            task = bg_tasks.get(task_id)
+
+            if not task:
+                return {"success": False, "error": f"任务不存在: {task_id}"}
+
+            output_file = task.get("output_file")
+            if not output_file or not os.path.exists(output_file):
+                return {
+                    "success": True,
+                    "task_id": task_id,
+                    "output": "",
+                    "running": True,
+                    "message": "任务刚启动，暂无输出",
+                }
+
+            with open(output_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            proc = task["process_ref"].get("p")
+            future = task.get("future")
+            is_running = proc and proc.poll() is None
+            is_done = future and future.done() if future else False
 
             return {
                 "success": True,
                 "task_id": task_id,
-                "output": result.get("output_file"),
-                "exit_code": result.get("exit_code"),
-                "done": True,
+                "output": content,
+                "running": is_running,
+                "exit_code": proc.returncode if not is_running else None,
             }
         except Exception as e:
             logger.error("[ShellTool] output 失败 | error=%s", str(e))

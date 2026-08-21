@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from .models import ChatResponse, ModelInfo, ToolCall
 from .transport import OpenAICompatTransport
+from .anthropic_transport import AnthropicTransport
 from app.messaging.stream_normalizer import _THINK_PREFIXES, _think_fragment_tail
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         thinking: bool = False,
         thinking_budget: int = None,
         vision: bool = False,
+        provider: str = "openai",
         **kwargs,
     ):
         self.api_key = api_key
@@ -199,6 +201,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
+        self.provider = self._detect_provider(provider, self.base_url, model)
+        self.base_url = self._normalize_base_url(self.base_url, self.provider)
         self._extra_client_args = kwargs
         self._verify_model = verify_model
         self._verify_deferred = False
@@ -317,13 +321,52 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         return params
 
-    def _ensure_transport(self) -> OpenAICompatTransport:
+    @staticmethod
+    def _detect_provider(provider: str, base_url: str, model: str) -> str:
+        provider = (provider or "openai").lower()
+        if provider == "anthropic":
+            return "anthropic"
+        
+        url_lower = (base_url or "").lower()
+        if "/anthropic" in url_lower or "/v1/messages" in url_lower:
+            return "anthropic"
+        
+        model_lower = (model or "").lower()
+        if model_lower.startswith("claude"):
+            return "anthropic"
+        
+        return "openai"
+    
+    @staticmethod
+    def _normalize_base_url(base_url: str, provider: str) -> str:
+        url = (base_url or "").rstrip("/")
+        
+        if provider == "anthropic":
+            if url.endswith("/v1/messages"):
+                url = url.rsplit("/v1/messages", 1)[0]
+            elif url.endswith("/messages"):
+                url = url.rsplit("/messages", 1)[0]
+            return url
+        
+        if url.endswith("/chat/completions"):
+            url = url.rsplit("/chat/completions", 1)[0]
+        
+        return url
+
+    def _ensure_transport(self):
         if self._transport is None:
-            self._transport = OpenAICompatTransport(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout,
-            )
+            if self.provider == "anthropic":
+                self._transport = AnthropicTransport(
+                    api_key=self.api_key,
+                    base_url=self.base_url or "https://api.anthropic.com",
+                    timeout=self.timeout,
+                )
+            else:
+                self._transport = OpenAICompatTransport(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=self.timeout,
+                )
         return self._transport
 
     async def close(self):
@@ -488,6 +531,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             len(tools) if tools else 0,
         )
 
+        if self.provider == "anthropic":
+            async for result in self._chat_stream_anthropic(transport, params, req_tokens):
+                yield result
+            return
+
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
         tool_calls_map: Dict[int, dict] = {}
@@ -497,7 +545,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         think_buffer = ""
         in_think = False
-        think_frag = ""  # 跨 chunk 缓存的 <think/</think 标签残片
+        think_frag = ""
 
         try:
             async for item in transport.chat_stream(params):
@@ -590,6 +638,83 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                     if think_buffer.strip():
                         reasoning_parts.append(think_buffer.strip())
                 think_frag = ""
+
+            calls = []
+            for idx in sorted(tool_calls_map):
+                entry = tool_calls_map[idx]
+                args = {}
+                if entry["arguments"]:
+                    try:
+                        args = json.loads(entry["arguments"])
+                    except Exception:
+                        args = {"raw": entry["arguments"]}
+                calls.append(ToolCall(id=entry["id"], name=entry["name"], arguments=args))
+            if calls:
+                yield {"type": "tool_calls", "calls": calls}
+
+            response = ChatResponse(
+                content="".join(content_parts),
+                tool_calls=calls,
+                model=model_name,
+                finish_reason=finish_reason or "stop",
+                usage=usage,
+                reasoning_content="".join(reasoning_parts) or None,
+            )
+            if usage:
+                self._calibrate_from_usage(usage, req_tokens)
+            logger.info(
+                "[LLM] <<< 流式完成 | model=%s | content长度=%d | tool_calls=%d | finish_reason=%s",
+                self.model, len(response.content or ""), len(calls), response.finish_reason,
+            )
+            yield {"type": "done", "response": response}
+        except Exception as e:
+            logger.error("[LLM] <<< 流式调用失败 | model=%s | 错误类型=%s | 详情: %s", self.model, type(e).__name__, str(e))
+            raise
+
+    async def _chat_stream_anthropic(self, transport, params, req_tokens):
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        tool_calls_map: Dict[int, dict] = {}
+        usage = {}
+        model_name = ""
+        finish_reason = ""
+
+        try:
+            async for item in transport.chat_stream(params):
+                evt_type = item.get("type")
+                
+                if evt_type == "message_start":
+                    msg = item.get("message") or {}
+                    model_name = msg.get("model", "")
+                elif evt_type == "message_delta":
+                    finish_reason = item.get("delta", {}).get("stop_reason", "")
+                    u = item.get("usage") or {}
+                    if u:
+                        usage = {
+                            "prompt_tokens": u.get("input_tokens", 0),
+                            "completion_tokens": u.get("output_tokens", 0),
+                            "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0),
+                        }
+                elif evt_type == "content_block_start":
+                    block = item.get("content_block") or {}
+                    if block.get("type") == "tool_use":
+                        idx = item.get("index", 0)
+                        tool_calls_map.setdefault(idx, {
+                            "id": block.get("id", "") or "",
+                            "name": block.get("name", "") or "",
+                            "arguments": "",
+                        })
+                elif evt_type == "content_block_delta":
+                    delta = item.get("delta") or {}
+                    dtype = delta.get("type")
+                    if dtype == "text_delta":
+                        text = delta.get("text", "")
+                        content_parts.append(text)
+                        yield {"type": "content", "text": text}
+                    elif dtype == "thinking_delta":
+                        text = delta.get("thinking", "")
+                        reasoning_parts.append(text)
+                        yield {"type": "reasoning", "text": text}
 
             calls = []
             for idx in sorted(tool_calls_map):
@@ -871,7 +996,73 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
 
     provider = config_dict.get("provider", "openai").lower()
 
-    if provider in ("openai", "stepfun", "deepseek", "custom"):
+    if provider == "anthropic":
+        models = config_dict.get("models", [])
+        current_model_name = config_dict.get("current_model", "")
+
+        model_config = None
+        for m in models:
+            if m.get("name") == current_model_name:
+                model_config = m
+                break
+
+        if not model_config:
+            if models:
+                model_config = models[0]
+                current_model_name = models[0].get("name", "default")
+                logger.warning("[LLMFactory] 未找到模型 '%s'，使用第一个模型: %s",
+                               config_dict.get("current_model", ""), current_model_name)
+            else:
+                raise ValueError(f"未找到当前模型配置: {current_model_name}，且 models 列表为空")
+
+        api_key = model_config.get("api_key", "")
+        base_url = model_config.get("base_url", "https://api.anthropic.com")
+        model_name = model_config.get("model", "claude-sonnet-4-20250514")
+        if not model_name:
+            logger.warning("[LLMFactory] 模型名称为空，自动回退到 claude-sonnet-4-20250514")
+            model_name = "claude-sonnet-4-20250514"
+        if not base_url:
+            logger.warning("[LLMFactory] API 地址为空，自动回退到 https://api.anthropic.com")
+            base_url = "https://api.anthropic.com"
+        api_key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+        logger.info("[LLMFactory] 使用 Anthropic 模型配置 | name=%s | api_key=%s | base_url=%s",
+                    current_model_name, api_key_preview, base_url)
+
+        thinking_config = config_dict.get("thinking", {})
+        thinking_enabled = thinking_config.get("enabled", False)
+        thinking_budget = thinking_config.get("budget_tokens")
+
+        model_vision = bool(model_config.get("vision", False))
+
+        engine = OpenAICompatibleEngine(
+            api_key=api_key,
+            base_url=base_url,
+            model=model_name,
+            temperature=float(model_config.get("temperature", 0.7)),
+            max_tokens=int(model_config.get("max_tokens", 0)) or None,
+            timeout=int(model_config.get("timeout", 120)),
+            context_window=int(model_config.get("context_window", 0)) or None,
+            verify_model=True,
+            omit_max_tokens=bool(model_config.get("omit_max_tokens", False)),
+            thinking=thinking_enabled,
+            thinking_budget=thinking_budget,
+            vision=model_vision,
+            provider="anthropic",
+        )
+
+        info = engine.model_info
+        logger.info(
+            "[LLMFactory] 已创建 Anthropic 引擎 | model=%s | current_model=%s | ctx=%d out=%d vision=%s",
+            engine.model, current_model_name, info.context_window, info.max_output_tokens,
+            info.supports_vision,
+        )
+
+        engine._verify_deferred = False
+        _get_model_registry()
+        logger.info("[LLMFactory] Anthropic 引擎已创建")
+        return engine
+
+    elif provider in ("openai", "stepfun", "deepseek", "custom"):
         models = config_dict.get("models", [])
         current_model_name = config_dict.get("current_model", "")
 

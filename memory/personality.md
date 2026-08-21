@@ -83,19 +83,32 @@
 ### §1.5 shell 工具核心约束
 
 **决策原则**:
-- 执行 Python/脚本命令 → 用 `argv`
-- 需要 pipe/&&/>/wildcard → 用 `cmd`
+- `cmd` 数组 → 直接执行，适合 Python/脚本和复杂参数
+- `cmd` 字符串 → 经 shell 解析，适合 pipe/&&/>/wildcard
+- 长时间运行 → 设置 `timeout` 或 `background=true`
 
-**argv vs cmd**:
-| 参数 | 适用场景 | 示例 |
+**cmd 参数**:
+| 形式 | 适用场景 | 示例 |
 |------|----------|------|
-| `argv` | Python、git、单命令 | `["python", "-c", "print(1)"]` |
-| `cmd` | pipe、&&、重定向 | `"python a.py \| grep ok"` |
+| 数组 | Python、git、单命令 | `{"cmd": ["python", "-c", "print(1)"]}` |
+| 字符串 | pipe、&&、重定向 | `{"cmd": "python a.py \| grep ok"}` |
+| `timeout` | 超时控制（秒） | `timeout: 300` |
+| `background` | 后台运行（不阻塞） | `background: true` |
+
+**后台任务管理**:
+| 子命令 | 用途 | 返回 |
+|--------|------|------|
+| `run(background=true)` | 启动后台任务 | `task_id` |
+| `list` | 列出所有后台任务 | 任务列表（含状态、PID） |
+| `output(task_id)` | 查看任务输出 | `output`（内容）+ `running`（状态） |
+| `kill(task_id)` | 终止后台任务 | 成功/失败 |
 
 **铁律**:
-- 执行 Python 代码必须用 `argv`，禁止用 `cmd="python -c ..."`
-- `argv` 无引号解析问题，多行脚本直接写
-- 只有 shell 特性（pipe/&&/>/*）才用 `cmd`
+- Python 代码使用 `cmd` 数组，禁止把复杂代码放入 shell 字符串
+- `cmd` 数组无引号解析问题，多行脚本直接写
+- 只有 shell 特性（pipe/&&/>/*）才用 `cmd` 字符串
+- 长任务设 `timeout` 或后台运行（`background=true`）
+- 后台任务可随时用 `output(task_id)` 查看进度
 
 ### §1.6 ls 工具
 

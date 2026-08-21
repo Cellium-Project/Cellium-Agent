@@ -277,13 +277,14 @@ class ToolDescriptionGenerator:
             return intent.strip()
 
         if tool_name == "shell":
-            cmd = (arguments.get("cmd") or "").strip()
-            argv = arguments.get("argv")
-            if argv and isinstance(argv, list) and len(argv) > 0:
-                cmd = " ".join(argv)
+            cmd_value = arguments.get("cmd", "")
+            if isinstance(cmd_value, list):
+                cmd = " ".join(cmd_value)
+            else:
+                cmd = (cmd_value or "").strip()
             sub_cmd = (arguments.get("command") or "").strip()
             if sub_cmd == "run" and cmd:
-                return cls.describe_shell_command(cmd)
+                return cls.describe_shell_command(cmd, cmd_value if isinstance(cmd_value, list) else None)
             elif sub_cmd == "run":
                 return "正在执行命令"
             elif sub_cmd == "list":
@@ -295,7 +296,7 @@ class ToolDescriptionGenerator:
                 task_id = arguments.get("task_id", "")
                 return f"正在终止任务：{task_id}"
             elif cmd:
-                return cls.describe_shell_command(cmd)
+                return cls.describe_shell_command(cmd, cmd_value if isinstance(cmd_value, list) else None)
             return "正在执行 shell 命令"
 
         context = cls.extract_context(tool_name, arguments)
@@ -311,15 +312,62 @@ class ToolDescriptionGenerator:
         return cls.render_template(templates["_default"], context)
 
     @staticmethod
-    def describe_shell_command(cmd: str) -> str:
-        """解析 shell 命令并生成中文描述"""
+    def describe_shell_command(cmd: str, argv: list = None) -> str:
+        """解析 shell 命令并生成中文描述
+        
+        Args:
+            cmd: 命令字符串
+            argv: 命令参数数组（如果提供，优先使用数组判断）
+        """
+        if argv and isinstance(argv, list) and len(argv) > 0:
+            first_arg = argv[0].lower() if argv[0] else ""
+            if first_arg in ("python", "python3", "py"):
+                if any("install" in (arg or "").lower() for arg in argv):
+                    pkg = argv[-1] if len(argv) > 2 and argv[-1] and not argv[-1].startswith("-") else ""
+                    return f"正在安装 Python 包：{pkg}" if pkg else "正在安装 Python 包"
+                if any(arg in argv for arg in ["--version", "-V"]):
+                    return "正在查看 Python 版本"
+                script = next((arg for arg in argv[1:] if arg and arg.endswith(".py")), "")
+                if script:
+                    return f"正在运行脚本：{os.path.basename(script)}"
+                return "正在执行 Python 命令"
+            
+            if first_arg == "git" and len(argv) > 1:
+                git_actions = {
+                    'clone': '克隆代码仓库', 'pull': '拉取最新代码', 'push': '推送代码到远程',
+                    'commit': '提交代码更改', 'add': '暂存文件', 'status': '查看 Git 状态',
+                    'log': '查看提交历史', 'diff': '查看代码差异', 'branch': '管理分支',
+                    'checkout': '切换分支/版本', 'init': '初始化仓库', 'merge': '合并分支',
+                }
+                git_cmd = argv[1].lower()
+                action = git_actions.get(git_cmd, f"执行 Git {git_cmd}")
+                return f"正在{action}"
+            
+            if first_arg in ("npm", "yarn", "pnpm"):
+                return "正在执行 Node.js 包管理命令"
+            
+            text_cmds = {
+                'grep': '搜索文本内容', 'egrep': '搜索文本内容', 'fgrep': '搜索固定字符串',
+                'sed': '处理文本', 'awk': '处理文本数据', 'find': '查找文件',
+                'head': '查看文件开头', 'tail': '查看文件末尾', 'sort': '排序文本',
+                'echo': '输出文本', 'cat': '查看文件内容', 'ls': '查看目录内容',
+                'dir': '查看目录内容',
+            }
+            if first_arg in text_cmds:
+                return f"正在{text_cmds[first_arg]}"
+            
+            return f"正在执行：{first_arg}"
+        
         cmd_lower = cmd.lower().strip()
+        first_cmd = cmd.split()[0] if cmd.split() else ""
+        first_cmd_lower = first_cmd.lower()
 
-        # ── 文件/目录操作 ──
-        write_match = re.search(r'(?:>|Out-File|Set-Content|Add-Content)[^"\']*(["\']?)([^"\'>]+?)(\1)\s*$', cmd)
+        write_match = re.search(r'(?:>\s*|Out-File\s+|Set-Content\s+|Add-Content\s+)(["\']?)([^\s"\'>]+?)(\1)\s*$', cmd)
         if write_match:
-            filename = os.path.basename(write_match.group(2))
-            return f"正在写入文件：{filename}"
+            filename = write_match.group(2)
+            if filename and not filename.isdigit() and len(filename) > 1:
+                filename = os.path.basename(filename)
+                return f"正在写入文件：{filename}"
 
         if re.search(r'(?:New-Item|mkdir|md |ni |touch)', cmd_lower):
             name_match = re.search(r'[-"]?\s*(?:Path\s*[= ]|Name\s*[= ])?(\w[\w.\-/\\\]*\.\w+|\w[\w.\-/\\]*)', cmd, re.IGNORECASE)
@@ -353,6 +401,17 @@ class ToolDescriptionGenerator:
 
         if re.search(r'(?:env|systeminfo|ver |hostname|whoami)', cmd_lower):
             return "正在查看系统信息"
+
+        # ── 进程管理命令 ──
+        proc_cmds = {
+            'nohup': '后台运行命令', 'screen': '创建终端会话',
+            'tmux': '创建终端复用会话', 'jobs': '查看后台任务',
+            'fg': '将后台任务调至前台', 'bg': '将任务放入后台',
+            'nice': '设置进程优先级', 'renice': '调整进程优先级',
+            'watch': '周期性执行命令', 'at': '定时执行任务',
+        }
+        if first_cmd_lower in proc_cmds:
+            return f"正在{proc_cmds[first_cmd_lower]}"
 
         # ── Python 执行 ──
         if re.search(r'^python\s|python3\s|py\s|pip\s|pip3\s', cmd_lower):
@@ -405,8 +464,6 @@ class ToolDescriptionGenerator:
             'echo': '输出文本',
             'printf': '格式化输出',
         }
-        first_cmd = cmd.split()[0] if cmd.split() else ""
-        first_cmd_lower = first_cmd.lower()
         if first_cmd_lower in text_cmds:
             file_match = re.search(r'\s+(\S+)\s*$', cmd)
             if file_match:
@@ -453,6 +510,85 @@ class ToolDescriptionGenerator:
         }
         if first_cmd_lower in sys_cmds:
             return f"正在{sys_cmds[first_cmd_lower]}"
+
+        # ── Docker 命令 ──
+        if first_cmd_lower == 'docker' and len(cmd.split()) > 1:
+            docker_actions = {
+                'ps': '查看容器列表', 'images': '查看镜像列表', 'build': '构建镜像',
+                'run': '运行容器', 'exec': '在容器中执行命令', 'stop': '停止容器',
+                'start': '启动容器', 'restart': '重启容器', 'rm': '删除容器',
+                'rmi': '删除镜像', 'pull': '拉取镜像', 'push': '推送镜像',
+                'logs': '查看容器日志', 'inspect': '检查容器详情', 'compose': '管理多容器应用',
+            }
+            docker_cmd = cmd.split()[1].lower() if len(cmd.split()) > 1 else ""
+            action = docker_actions.get(docker_cmd, f"Docker {docker_cmd}")
+            return f"正在{action}"
+
+        # ── 数据库命令 ──
+        db_cmds = {
+            'mysql': '操作 MySQL 数据库', 'psql': '操作 PostgreSQL 数据库',
+            'mongo': '操作 MongoDB 数据库', 'redis-cli': '操作 Redis 数据库',
+            'sqlite3': '操作 SQLite 数据库', 'sqlplus': '操作 Oracle 数据库',
+        }
+        if first_cmd_lower in db_cmds:
+            return f"正在{db_cmds[first_cmd_lower]}"
+
+        # ── 编译构建命令 ──
+        build_cmds = {
+            'make': '构建项目', 'cmake': '配置构建环境', 'gcc': '编译 C 代码',
+            'g++': '编译 C++ 代码', 'javac': '编译 Java 代码', 'mvn': '构建 Maven 项目',
+            'gradle': '构建 Gradle 项目', 'cargo': '构建 Rust 项目', 'go': '构建 Go 项目',
+        }
+        if first_cmd_lower in build_cmds:
+            return f"正在{build_cmds[first_cmd_lower]}"
+
+        # ── 服务管理命令 ──
+        service_cmds = {
+            'systemctl': '管理系统服务', 'service': '管理系统服务',
+            'chkconfig': '配置服务启动项', 'sc': '管理 Windows 服务',
+        }
+        if first_cmd_lower in service_cmds:
+            return f"正在{service_cmds[first_cmd_lower]}"
+
+        # ── 用户管理命令 ──
+        user_cmds = {
+            'useradd': '创建用户', 'userdel': '删除用户', 'usermod': '修改用户',
+            'passwd': '修改密码', 'groupadd': '创建用户组', 'groupdel': '删除用户组',
+            'chage': '修改用户密码策略', 'id': '查看用户信息', 'who': '查看登录用户',
+            'w': '查看登录用户详情', 'last': '查看登录历史',
+        }
+        if first_cmd_lower in user_cmds:
+            return f"正在{user_cmds[first_cmd_lower]}"
+
+        # ── SSH 相关命令 ──
+        ssh_cmds = {
+            'ssh': '建立 SSH 连接', 'scp': '通过 SSH 传输文件',
+            'rsync': '同步文件/目录', 'sftp': '通过 SFTP 传输文件',
+            'ssh-keygen': '生成 SSH 密钥', 'ssh-copy-id': '复制 SSH 公钥',
+        }
+        if first_cmd_lower in ssh_cmds:
+            return f"正在{ssh_cmds[first_cmd_lower]}"
+
+        # ── 磁盘管理命令 ──
+        disk_cmds = {
+            'fdisk': '磁盘分区', 'parted': '磁盘分区', 'mkfs': '格式化文件系统',
+            'mount': '挂载文件系统', 'umount': '卸载文件系统', 'fsck': '检查文件系统',
+            'dd': '磁盘复制/转换', 'lsblk': '查看块设备', 'blkid': '查看块设备属性',
+        }
+        if first_cmd_lower in disk_cmds:
+            return f"正在{disk_cmds[first_cmd_lower]}"
+
+        # ── 系统包管理命令 ──
+        pkg_cmds = {
+            'apt': '管理 Debian 软件包', 'apt-get': '管理 Debian 软件包',
+            'yum': '管理 RPM 软件包', 'dnf': '管理 Fedora 软件包',
+            'pacman': '管理 Arch 软件包', 'brew': '管理 Homebrew 软件包',
+            'choco': '管理 Chocolatey 软件包', 'scoop': '管理 Scoop 软件包',
+            'zypper': '管理 openSUSE 软件包', 'apk': '管理 Alpine 软件包',
+        }
+        if first_cmd_lower in pkg_cmds:
+            action = "安装" if "install" in cmd_lower else "更新" if "update" in cmd_lower else "管理"
+            return f"正在{action}系统软件包"
 
         # ── 带管道的命令 ──
         if '|' in cmd:
