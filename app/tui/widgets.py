@@ -782,7 +782,7 @@ class HistoryMarkdown(Static):
             try:
                 self._md = _build_rich_md(markdown)
             except Exception:
-                self._md = None
+                pass
             self._visual = None
         self.refresh(layout=True)
         return AwaitComplete.nothing()
@@ -792,11 +792,6 @@ class HistoryMarkdown(Static):
 
     def render(self):
         if self._md is None:
-            if self._source:
-                try:
-                    return self._source
-                except Exception:
-                    return ""
             return ""
         if self._visual is None:
             self._visual = _SelectableRichVisual(self, self._md)
@@ -852,8 +847,12 @@ class ThinkingBlock(Static):
         self._buf = text
         self._frame = 0
         self._timer = None
+        self._hist_mode = bool(text)
 
     def on_mount(self):
+        if self._hist_mode:
+            self._refresh()
+            return
         self._start_clock()
         self._refresh()
 
@@ -871,8 +870,7 @@ class ThinkingBlock(Static):
 
     def _tick(self):
         self._frame += 1
-        if not self._buf:
-            self._refresh()
+        self._refresh()
 
     def append_text(self, text):
         self._buf += text
@@ -906,18 +904,117 @@ class ThinkingBlock(Static):
         from rich.text import Text
         tr = self.app.tr if self.app else (lambda k, *a: k)
         label = tr("thinking")
+        running = self._timer is not None
+        spinner = FRAMES[self._frame % len(FRAMES)]
         if display:
-            t = Text(f"{label}: ", style="bold")
+            prefix = f"{spinner} " if running else ""
+            t = Text(f"{prefix}{label}: ", style="bold")
             t.append(display)
             self.update(t)
         else:
-            spinner = FRAMES[self._frame % len(FRAMES)]
             t = Text(f"{label} {spinner} ", style="bold")
             t.append(tr("thinking.in_progress"))
             self.update(t)
 
 
 _hunk_re = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+class ReasoningBlock(Static):
+    """LLM 原生 reasoning_content 流式展示组件
+
+    - 思考中：spinner + 实时耗时
+    - 内容到达：实时流式显示
+    - 思考结束：显示总耗时，绿色定格
+    """
+
+    def __init__(self, duration_ms: float = 0.0, start_time: float = 0.0, reasoning_text: str = ""):
+        super().__init__("")
+        self.add_class("reasoning-block")
+        self._buf = reasoning_text
+        self._frame = 0
+        self._timer = None
+        self._finished = duration_ms > 0 or bool(reasoning_text)
+        self._expanded = False
+        self._start_time = start_time if start_time > 0 else time.time()
+        self._duration = duration_ms / 1000.0 if duration_ms > 0 else 0.0
+        self._preset_duration_ms = duration_ms
+
+    def on_mount(self):
+        if self._finished:
+            self._refresh()
+            return
+        self._start_animation()
+        self._refresh()
+
+    def on_unmount(self):
+        self._stop_animation()
+
+    def _start_animation(self):
+        if self._timer is None and not self._finished:
+            self._timer = self.set_interval(1 / 10, self._tick)
+
+    def _stop_animation(self):
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _tick(self):
+        self._frame += 1
+        self._refresh()
+
+    def append_text(self, text: str):
+        self._buf += text
+        self._refresh()
+
+    def finish(self, duration: float = 0.0):
+        self._finished = True
+        if duration > 0:
+            self._duration = duration
+        elif self._preset_duration_ms > 0:
+            self._duration = self._preset_duration_ms / 1000.0
+        else:
+            self._duration = time.time() - self._start_time
+        self._stop_animation()
+        self._refresh()
+
+    def can_focus(self):
+        return True
+
+    def on_click(self, event):
+        self._expanded = not self._expanded
+        self._refresh()
+        event.stop()
+
+    def on_key(self, event):
+        if event.key == "enter":
+            self._expanded = not self._expanded
+            self._refresh()
+            event.stop()
+
+    def _elapsed_str(self) -> str:
+        elapsed = self._duration if self._finished else (time.time() - self._start_time)
+        if elapsed >= 1:
+            return f"{elapsed:.1f}s"
+        return f"{int(elapsed * 1000)}ms"
+
+    def _refresh(self):
+        from rich.text import Text
+        tr = self.app.tr if self.app else (lambda k, *a: k)
+        spinner = FRAMES[self._frame % len(FRAMES)]
+        tail = self._buf.rstrip().split("\n")[-1] if self._buf else ""
+
+        if self._finished:
+            t = Text(tr("reasoning.completed"), style="bold green")
+            t.append(f" · {self._elapsed_str()}", style="dim")
+            self.update(t)
+            return
+
+        t = Text(f"{spinner} {tr('reasoning.title')}", style="bold cyan")
+        t.append(f" · {self._elapsed_str()}", style="dim")
+        if tail:
+            t.append(f" {tail}", style="dim white")
+        self.update(t)
 
 
 class ToolCallCard(Static):
@@ -934,9 +1031,10 @@ class ToolCallCard(Static):
         self._folded_rows = []
         self._folded_index = 0
         self._diff_colors_cache = None
+        self._last_blink = -1
 
     def on_mount(self):
-        self._start_clock()
+        pass
 
     def on_resize(self):
         self._diff_colors_cache = None
@@ -954,15 +1052,6 @@ class ToolCallCard(Static):
             except Exception:
                 pass
 
-    def _start_clock(self):
-        if self._timer is None and not self._done:
-            self._timer = self.set_interval(1 / 15, self._tick)
-
-    def _stop_clock(self):
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
-
     def add_call(self, call_id, tool, description="", arguments=None):
         if call_id in self._calls:
             return
@@ -975,7 +1064,6 @@ class ToolCallCard(Static):
             "duration": None,
         }
         self._order.append(call_id)
-        self._start_clock()
         self._tick()
 
     def update_call(self, call_id, result, duration_ms):
@@ -989,14 +1077,12 @@ class ToolCallCard(Static):
         self._tick()
 
     def finish(self):
-        self._stop_clock()
         self._done = True
         self._frame = 0
         self.update(self._build(done=True))
         self.remove_class("pending")
 
     def _tick(self):
-        self._frame += 1
         if not self._done:
             self.update(self._build(done=False))
 
@@ -1073,7 +1159,8 @@ class ToolCallCard(Static):
                 self._pad_row(t, code_bg)
             else:
                 if c["status"] == "pending":
-                    style = "dim" if self._frame % 2 == 0 else "bold dark_cyan"
+                    blink = getattr(self.app, '_global_blink_counter', 0) if self.app else 0
+                    style = "dim" if blink % 2 == 0 else "bold dark_cyan"
                     t.append("● ", style=style)
                 elif c["status"] == "success":
                     t.append("● ", style="green")

@@ -62,12 +62,12 @@ class TestReadEditWorkflow:
         finally:
             os.remove(f)
 
-    def test_edit_without_read_fails(self):
+    def test_edit_without_read_works(self):
         f = make_temp_file("test content\n")
         try:
             r = self.et._cmd_edit(file_path=f, old_string="test", new_string="TEST")
-            assert not r["success"]
-            assert "read" in r.get("error", "").lower()
+            assert r["success"]
+            assert "TEST" in r.get("diff", "") or r.get("count") == 1
         finally:
             os.remove(f)
 

@@ -43,7 +43,7 @@ class MemoryManager:
             "timestamp": datetime.now().isoformat()
         })
 
-    def add_assistant_message(self, content: str, reasoning_content: str = None):
+    def add_assistant_message(self, content: str, reasoning_content: str = None, reasoning_duration_ms: int = 0):
         msg = {
             "role": "assistant",
             "content": content,
@@ -51,6 +51,8 @@ class MemoryManager:
         }
         if reasoning_content:
             msg["reasoning_content"] = reasoning_content
+        if reasoning_duration_ms > 0:
+            msg["reasoning_duration_ms"] = reasoning_duration_ms
         self.messages.append(msg)
 
     def add_system_message(self, content: str):
@@ -85,6 +87,7 @@ class MemoryManager:
         tool_calls_data: List[Dict],
         content: str = None,
         reasoning_content: str = None,
+        reasoning_duration_ms: int = 0,
     ) -> List[str]:
         tool_calls = []
         tool_call_ids = []
@@ -117,6 +120,8 @@ class MemoryManager:
         }
         if reasoning_content:
             msg["reasoning_content"] = reasoning_content
+        if reasoning_duration_ms > 0:
+            msg["reasoning_duration_ms"] = reasoning_duration_ms
         self.messages.append(msg)
 
         logger.debug(
@@ -300,7 +305,7 @@ class MemoryManager:
         # DeepSeek API 要求：如果对话中有 reasoning_content，所有 assistant 消息都必须有这个字段
         if has_reasoning_content:
             for msg in fixed:
-                if msg.get("role") == "assistant" and "reasoning_content" not in msg:
+                if msg.get("role") == "assistant" and not msg.get("reasoning_content"):
                     msg["reasoning_content"] = ""
 
         return fixed

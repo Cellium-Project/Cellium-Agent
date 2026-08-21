@@ -1473,6 +1473,8 @@ class AgentLoop:
                            iteration, len(llm_messages), len(tool_defs))
                 # 经 PromptDiffTracker 流式调用 LLM（自动追踪前缀缓存 + 逐 chunk 输出）
                 _stream_reasoning = []
+                _stream_reasoning_start = None
+                _stream_reasoning_end = None
                 _stream_content = []
                 _stream_tool_calls = []
                 response = None
@@ -1539,6 +1541,12 @@ class AgentLoop:
                     if ctype == "content":
                         _stream_content.append(chunk.get("text", ""))
                         yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                    elif ctype == "reasoning":
+                        if _stream_reasoning_start is None:
+                            _stream_reasoning_start = chunk.get("start_time") or time.time()
+                        _stream_reasoning_end = time.time()
+                        _stream_reasoning.append(chunk.get("text", ""))
+                        yield {"type": "reasoning", "content": chunk.get("text", ""), "start_time": _stream_reasoning_start}
                     elif ctype == "tool_calls":
                         _stream_tool_calls = chunk.get("calls", [])
                     elif ctype == "done":
@@ -1574,6 +1582,12 @@ class AgentLoop:
                         if ctype == "content":
                             _stream_content.append(chunk.get("text", ""))
                             yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                        elif ctype == "reasoning":
+                            if _stream_reasoning_start is None:
+                                _stream_reasoning_start = chunk.get("start_time") or time.time()
+                            _stream_reasoning_end = time.time()
+                            _stream_reasoning.append(chunk.get("text", ""))
+                            yield {"type": "reasoning", "content": chunk.get("text", "")}
                         elif ctype == "tool_calls":
                             _stream_tool_calls = chunk.get("calls", [])
                         elif ctype == "done":
@@ -1760,10 +1774,14 @@ class AgentLoop:
                         ]
                         # 保存 tool_calls 到 memory（Flash 模式也保存）
                         content_for_memory = interim_content if interim_content else None
+                        reasoning_duration_ms = 0
+                        if _stream_reasoning_start and _stream_reasoning_end and response.reasoning_content:
+                            reasoning_duration_ms = round((_stream_reasoning_end - _stream_reasoning_start) * 1000)
                         tool_call_ids = effective_memory.add_tool_calls_batch(
                             tool_calls_data,
                             content=content_for_memory,
                             reasoning_content=response.reasoning_content,
+                            reasoning_duration_ms=reasoning_duration_ms,
                         )
                         # 更新 tool_calls_info 中的 tool_call_id 为实际写入的 ID
                         for idx, info in enumerate(tool_calls_info):
@@ -2044,9 +2062,13 @@ class AgentLoop:
                     )
 
                 # 保存消息到 memory（Flash 模式也保存，但不注入上下文）
+                reasoning_duration_ms = 0
+                if _stream_reasoning_start and _stream_reasoning_end and response.reasoning_content:
+                    reasoning_duration_ms = round((_stream_reasoning_end - _stream_reasoning_start) * 1000)
                 effective_memory.add_assistant_message(
                     content,
-                    reasoning_content=response.reasoning_content
+                    reasoning_content=response.reasoning_content,
+                    reasoning_duration_ms=reasoning_duration_ms,
                 )
                 # 流式已逐 chunk 产出 thinking/content_chunk，此处不再重复 yield
 

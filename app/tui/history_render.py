@@ -3,6 +3,63 @@ import json
 import os
 import re
 
+
+def _is_incomplete_thought_fragment(content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    if re.match(r"^```json\b", text, re.IGNORECASE):
+        if '"reasoning"' in text and '"action"' in text:
+            return True
+        return "```" not in text[7:]
+    if re.match(r'^\{\s*"reasoning\b', text):
+        depth = 0
+        in_string = False
+        escaped = False
+        for ch in text:
+            if escaped:
+                escaped = False
+            elif ch == "\\" and in_string:
+                escaped = True
+            elif ch == '"':
+                in_string = not in_string
+            elif not in_string and ch == "{":
+                depth += 1
+            elif not in_string and ch == "}":
+                depth -= 1
+        return depth > 0
+    return False
+
+
+def _is_thought_protocol_block(content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    if not (text.startswith("```") or text.startswith("{")):
+        return False
+    if "```" in text:
+        return text.lstrip().lower().startswith("```json") and '"reasoning"' in text
+    return re.match(r'^\{\s*"reasoning\b', text) is not None
+
+
+def _extract_protocol_reasoning(content: str) -> str:
+    text = (content or "").strip()
+    m = re.search(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    payload = m.group(1) if m else text
+    try:
+        data = json.loads(payload)
+    except Exception:
+        match = re.search(r'"reasoning"\s*:\s*"((?:\\.|[^"\\])*)"', payload, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return ""
+    if isinstance(data, dict):
+        r = data.get("reasoning")
+        if isinstance(r, str):
+            return r.strip()
+    return ""
+
+
 def _split_inline_json(content: str) -> list:
     result = []
     brace_start = content.find("{")
@@ -151,14 +208,27 @@ def build_assistant_timeline(msg: dict, raw_messages: list, index: int) -> dict:
     tool_calls = msg.get("tool_calls")
     timeline = []
 
+    rc = msg.get("reasoning_content")
+    if isinstance(rc, str) and rc.strip():
+        timeline.append({"kind": "reasoning", "content": rc.strip(), "duration_ms": msg.get("reasoning_duration_ms", 0)})
+
     if tool_calls:
         tc_map = {}
         if content:
-            for seg in split_content_with_thinking(content):
-                if seg["type"] == "thinking":
-                    timeline.append({"kind": "thinking", "content": seg["content"]})
-                else:
-                    timeline.append({"kind": "text", "content": seg["content"]})
+            if _is_thought_protocol_block(content):
+                reasoning = _extract_protocol_reasoning(content)
+                if reasoning:
+                    timeline.append({"kind": "thinking", "content": reasoning})
+            else:
+                for seg in split_content_with_thinking(content):
+                    if seg["type"] == "thinking":
+                        timeline.append({"kind": "thinking", "content": seg["content"]})
+                    else:
+                        timeline.append({"kind": "text", "content": seg["content"]})
+        else:
+            rc_fb = msg.get("reasoning_content")
+            if isinstance(rc_fb, str) and rc_fb.strip():
+                timeline.append({"kind": "thinking", "content": rc_fb.strip()})
 
         for tc in tool_calls:
             tc_id = tc.get("id", "")
@@ -190,7 +260,7 @@ def build_assistant_timeline(msg: dict, raw_messages: list, index: int) -> dict:
             else:
                 j += 1
 
-        for tc_info in tc_map.values():
+        for tc_id, tc_info in tc_map.items():
             args = tc_info["arguments"]
             result = tc_info.get("result")
             duration_ms = 0
@@ -202,20 +272,12 @@ def build_assistant_timeline(msg: dict, raw_messages: list, index: int) -> dict:
                     duration_ms = 0
             timeline.append({
                 "kind": "tool",
+                "call_id": tc_id,
                 "tool": tc_info["tool"],
                 "arguments": args,
                 "result": result,
                 "duration_ms": duration_ms,
             })
-
-        if j < len(raw_messages) and raw_messages[j].get("role") == "assistant":
-            sub = raw_messages[j]
-            if not sub.get("tool_calls") and sub.get("content"):
-                final = sub.get("content") or ""
-                for seg in split_content_with_thinking(final):
-                    if seg["type"] == "text":
-                        timeline.append({"kind": "text", "content": seg["content"]})
-                j += 1
 
         return {"content": content or "", "timeline": timeline, "end_index": j}
 
@@ -258,28 +320,37 @@ def build_history_plan(session_id: str, limit: int = 100, offset: int = 0) -> tu
                 continue
             built = build_assistant_timeline(m, messages, i)
             i = built["end_index"]
-            text_parts = []
-            card = None
+            tool_card = None
             for seg in built["timeline"]:
                 kind = seg["kind"]
                 if kind == "thinking":
+                    if tool_card is not None:
+                        plan.append(tool_card)
+                        tool_card = None
                     plan.append({"kind": "thinking", "content": seg["content"]})
+                elif kind == "reasoning":
+                    if tool_card is not None:
+                        plan.append(tool_card)
+                        tool_card = None
+                    plan.append({"kind": "reasoning", "content": seg["content"], "duration_ms": seg.get("duration_ms", 0)})
                 elif kind == "tool":
-                    if card is None:
-                        card = {"kind": "tool", "calls": []}
-                        plan.append(card)
-                    card["calls"].append({
+                    if tool_card is None:
+                        tool_card = {"kind": "tool", "calls": []}
+                    tool_card["calls"].append({
                         "tool": seg["tool"],
                         "arguments": seg.get("arguments", {}),
                         "result": seg.get("result"),
                         "duration_ms": seg.get("duration_ms", 0),
                     })
                 else:
-                    c = seg.get("content")
+                    if tool_card is not None:
+                        plan.append(tool_card)
+                        tool_card = None
+                    c = seg.get("content", "")
                     if c and c.strip():
-                        text_parts.append(c)
-            if text_parts:
-                plan.append({"kind": "assistant", "content": "\n\n".join(text_parts)})
+                        plan.append({"kind": "assistant", "content": c})
+            if tool_card is not None:
+                plan.append(tool_card)
         else:
             i += 1
     return plan, dropped

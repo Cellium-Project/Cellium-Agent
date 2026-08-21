@@ -243,6 +243,35 @@ class TestEngineIntegration(unittest.TestCase):
         )
         return engine
 
+    def test_engine_stream_think_tags_incremental(self):
+        sse = (
+            'data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"content":"<think>"},"finish_reason":null}]}\n\n'
+            'data: {"id":"2","model":"m","choices":[{"index":0,"delta":{"content":"先"},"finish_reason":null}]}\n\n'
+            'data: {"id":"3","model":"m","choices":[{"index":0,"delta":{"content":"思考"},"finish_reason":null}]}\n\n'
+            'data: {"id":"4","model":"m","choices":[{"index":0,"delta":{"content":"</think>正"},"finish_reason":null}]}\n\n'
+            'data: {"id":"5","model":"m","choices":[{"index":0,"delta":{"content":"文"},"finish_reason":null}]}\n\n'
+            'data: {"id":"6","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        def handler(request):
+            return httpx.Response(200, content=sse.encode(), headers={"Content-Type": "text/event-stream"})
+
+        engine = self._make_engine()
+        engine._transport = _mock_async_transport(handler)
+
+        async def _collect():
+            return [e async for e in engine.chat_stream([{"role": "user", "content": "hi"}])]
+
+        events = asyncio.run(_collect())
+        types = [e["type"] for e in events]
+        self.assertEqual(types, [
+            "reasoning", "reasoning", "reasoning", "content", "content", "done",
+        ])
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["response"].content, "正文")
+        self.assertEqual(events[-1]["response"].reasoning_content, "先思考")
+
     def test_engine_chat_params(self):
         captured = {}
 

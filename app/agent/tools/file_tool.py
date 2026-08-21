@@ -153,7 +153,15 @@ class FileTool(BaseTool):
                 parent = os.path.dirname(full_path)
                 if parent and not os.path.exists(parent):
                     os.makedirs(parent, exist_ok=True)
-                self._atomic_write(full_path, content or "")
+                if isinstance(content, dict):
+                    text = content.get("content")
+                    if text is None:
+                        text = json.dumps(content, ensure_ascii=False, indent=2)
+                    else:
+                        text = str(text)
+                else:
+                    text = content or ""
+                self._atomic_write(full_path, str(text))
                 success_count += 1
                 results.append({"path": full_path, "status": "ok"})
             except Exception as e:

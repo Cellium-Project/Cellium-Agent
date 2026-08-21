@@ -43,6 +43,7 @@ from app.tui.widgets import (
     UserMessage,
     AssistantMessage,
     ThinkingBlock,
+    ReasoningBlock,
     ToolCallCard,
     LogoImage,
     ChatScroll,
@@ -391,12 +392,15 @@ class CelliumTUI(App):
         self._busy_status = ""
         self._busy_animation_running = False
         self._busy_started = 0.0
+        self._global_blink_counter = 0
+        self._global_blink_timer = None
         self._session_epoch = 0
         self._app_closing = False
         self._last_session_ids = []
         self._history_limit = self._load_history_limit()
         self._history_loading = None
         self._current_thinking = None
+        self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
         self._thought_mode = False    # 是否处于 JSON 思考协议解析中
@@ -540,6 +544,8 @@ class CelliumTUI(App):
         self._bootstrap_timer = self.set_interval(0.2, self._check_bootstrap)
         self._register_session_listener()
         self._apply_rich_md_theme()
+        # 全局 blink timer，所有 spinner 共享
+        self._global_blink_timer = self.set_interval(0.5, self._tick_global_blink)
         # 常驻订阅 broker：空闲时也能实时收到对端（WebUI/外部平台）发起的消息
         self._post(self._start_broker_listener())
 
@@ -710,6 +716,12 @@ class CelliumTUI(App):
     def _tick_busy_animation(self):
         self._busy_frame += 1
         self._refresh_status()
+
+    def _tick_global_blink(self):
+        self._global_blink_counter += 1
+        for w in self.chat.query("ToolCallCard"):
+            if not w._done:
+                w._tick()
 
     def _refresh_status(self):
         web = ""
@@ -1041,6 +1053,7 @@ class CelliumTUI(App):
         from_session = self.session_id
         self.session_id = session_id
         self._current_thinking = None
+        self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
         self._thought_mode = False
@@ -1710,11 +1723,38 @@ class CelliumTUI(App):
         elif t == "thinking":
             self._touch_busy()
             await self._append_thinking(evt.get("content", ""))
+        elif t == "thinking_start":
+            self._touch_busy()
+            if self._current_thinking is None:
+                self._current_thinking = ThinkingBlock("")
+                await self.chat.mount(self._current_thinking)
+        elif t == "thinking_streaming":
+            self._touch_busy()
+            await self._stream_thinking(
+                evt.get("content", ""),
+                final=bool(evt.get("final", False)),
+            )
+        elif t == "reasoning":
+            self._touch_busy()
+            if self._current_reasoning is None:
+                if self._current_response is not None:
+                    self._current_response = None
+                    self._current_md = ""
+                self._current_reasoning = ReasoningBlock(start_time=evt.get("start_time", 0))
+                await self.chat.mount(self._current_reasoning)
+            self._current_reasoning.append_text(evt.get("content", ""))
+            self.chat.scroll_to_follow()
         elif t in ("content_chunk", "content"):
             self._touch_busy()
+            if self._current_reasoning is not None:
+                self._current_reasoning.finish()
+                self._current_reasoning = None
             await self._append_chunk(evt.get("content", ""))
         elif t == "tool_start":
             self._touch_busy()
+            if self._current_reasoning is not None:
+                self._current_reasoning.finish()
+                self._current_reasoning = None
             await self._add_tool_card(evt)
         elif t == "tool_result":
             self._touch_busy()
@@ -1758,6 +1798,23 @@ class CelliumTUI(App):
             self._current_thinking = ThinkingBlock("")
             await self.chat.mount(self._current_thinking)
         self._current_thinking.append_text(content)
+        self.chat.scroll_to_follow()
+
+    async def _stream_thinking(self, content, final=False):
+        """thinking_streaming：协议 reasoning 流式事件。
+
+        final=False: 流式早期占位，覆写 buf；
+        final=True:  闭合最终值，重置 buf 后写入避免重复累加。
+        """
+        if not content:
+            return
+        if self._current_thinking is None:
+            self._current_thinking = ThinkingBlock("")
+            await self.chat.mount(self._current_thinking)
+        if final:
+            self._current_thinking._buf = ""
+        self._current_thinking._buf = content
+        self._current_thinking._refresh()
         self.chat.scroll_to_follow()
 
     async def _append_chunk(self, content):
@@ -1853,15 +1910,18 @@ class CelliumTUI(App):
         import re as _re
         text = _re.sub(r'\n{3,}', '\n\n', text)
         if self._current_response is None:
-            text = text.lstrip()
-            if not text:
-                return
             if self._active_tool_card is not None:
                 self._active_tool_card.finish()
                 self._active_tool_card = None
             if self._current_thinking is not None:
                 self._current_thinking.finish()
                 self._current_thinking = None
+            if self._current_reasoning is not None:
+                self._current_reasoning.finish()
+                self._current_reasoning = None
+            text = text.lstrip()
+            if not text:
+                return
             self._current_response = AssistantMessage("")
             await self.chat.mount(self._current_response)
         self._current_md += text
@@ -1876,7 +1936,11 @@ class CelliumTUI(App):
     def _do_md_render(self):
         self._md_render_timer = None
         resp = self._current_response
-        if resp is None or not self._current_md:
+        md = self._current_md
+        if resp is None or not md:
+            return
+        if md.count("```") % 2 != 0:
+            self._schedule_md_render()
             return
         try:
             import asyncio
@@ -2069,7 +2133,10 @@ class CelliumTUI(App):
     def _finish_response(self):
         if self._current_thinking is not None:
             self._current_thinking.finish()
+        if self._current_reasoning is not None:
+            self._current_reasoning.finish()
         self._current_thinking = None
+        self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
         self._thought_mode = False
@@ -2083,6 +2150,7 @@ class CelliumTUI(App):
     def _clear_chat(self):
         self.chat.remove_children()
         self._current_thinking = None
+        self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
         self._thought_mode = False
@@ -2102,6 +2170,11 @@ class CelliumTUI(App):
             return UserMessage(spec["content"])
         if kind == "thinking":
             return ThinkingBlock(spec["content"])
+        if kind == "reasoning":
+            return ReasoningBlock(
+                duration_ms=spec.get("duration_ms", 0),
+                reasoning_text=spec.get("content", ""),
+            )
         if kind == "assistant":
             from app.tui.widgets import HistoryMarkdown
             content = spec.get("content", "") or ""
@@ -2112,6 +2185,14 @@ class CelliumTUI(App):
             else:
                 w._source = content
             return w
+        if kind == "tool":
+            card = ToolCallCard()
+            for idx, call in enumerate(spec.get("calls", [])):
+                cid = f"hist_{self._tool_count}_{idx}"
+                card.add_call(cid, tool=call["tool"], arguments=call.get("arguments", {}))
+                card.update_call(cid, call.get("result"), call.get("duration_ms", 0))
+                self._tool_count += 1
+            return card
         return ToolCallCard()
 
     def _post_mount(self, widget, spec):
@@ -2123,6 +2204,8 @@ class CelliumTUI(App):
                 self._tool_count += 1
             widget.finish()
         elif isinstance(widget, ThinkingBlock):
+            widget.finish()
+        elif isinstance(widget, ReasoningBlock):
             widget.finish()
 
     async def _load_history(self):

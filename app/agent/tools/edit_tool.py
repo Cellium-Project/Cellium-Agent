@@ -4,7 +4,6 @@ import os
 import logging
 
 from .base_tool import BaseTool
-from .file_cache import get_read_state, touch_read_state
 
 logger = logging.getLogger(__name__)
 
@@ -165,36 +164,10 @@ class EditTool(BaseTool):
         if not os.path.exists(abs_path):
             return {"success": False, "error": f"File not found: {abs_path}"}
 
-        read_state = get_read_state(abs_path)
-        if read_state is None:
-            return {"success": False, "error": "File has not been read yet. Use the Read tool first before editing."}
-        cached_encoding = read_state.get("encoding") if read_state else None
-        if cached_encoding:
-            file_encoding = cached_encoding
-        else:
-            try:
-                file_encoding = self._detect_encoding(abs_path)
-            except Exception:
-                file_encoding = "utf-8"
-
-        if read_state:
-            try:
-                current_mtime = os.path.getmtime(abs_path)
-            except OSError:
-                return {"success": False, "error": "Cannot access file mtime"}
-
-            if current_mtime > read_state["timestamp"]:
-                is_full = read_state.get("offset") is None and read_state.get("limit") is None
-                if is_full:
-                    try:
-                        with open(abs_path, 'r', encoding=file_encoding, errors='replace') as f:
-                            file_content = f.read()
-                        if read_state["content"] != file_content.replace('\r\n', '\n'):
-                            return {"success": False, "error": "File has been modified since read. Read it again before editing."}
-                    except Exception:
-                        return {"success": False, "error": "Cannot re-verify file content"}
-                else:
-                    return {"success": False, "error": "File timestamp changed since partial read. Read the full file first."}
+        try:
+            file_encoding = self._detect_encoding(abs_path)
+        except Exception:
+            file_encoding = "utf-8"
 
         try:
             with open(abs_path, 'r', encoding=file_encoding, errors='replace') as f:
@@ -213,7 +186,21 @@ class EditTool(BaseTool):
 
         matched, matches, used_normalize = _find_match_with_tolerance(file_content, old_string)
         if matches == 0:
-            return {"success": False, "error": "old_string not found in file. Make sure it matches exactly, including whitespace and indentation."}
+            hints = []
+            if "\\n" in old_string and "\n" in old_string:
+                pass
+            elif "\\n" in old_string:
+                hints.append("传入的字面 \\n 与文件真换行冲突，请直接用真 \\n")
+            if _strip_trailing_whitespace(old_string) != old_string:
+                hints.append("末尾空白不匹配，确认 tab/空格")
+            if not any(ch in old_string for ch in "\n") and len(old_string) > 80:
+                hints.append("old_string 单行过长，建议包含换行做上下文")
+            hint_text = "; ".join(hints) if hints else "请检查空白/换行/引号是否与文件一致"
+            return {
+                "success": False,
+                "error": "old_string not found in file. " + hint_text,
+                "hint": hint_text,
+            }
 
         old_string = matched
 
@@ -244,8 +231,6 @@ class EditTool(BaseTool):
         result = EditTransaction.apply_edit(abs_path, current_content, patch, encoding=file_encoding)
 
         if result["success"]:
-            new_content = result.get("content") or current_content.replace('\r\n', '\n')
-            touch_read_state(abs_path, new_content.replace('\r\n', '\n'), encoding=file_encoding)
             return {
                 "success": True,
                 "path": abs_path,

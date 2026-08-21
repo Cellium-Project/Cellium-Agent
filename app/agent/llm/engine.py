@@ -543,9 +543,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         usage = {}
         model_name = ""
 
-        think_buffer = ""
         in_think = False
         think_frag = ""
+        _reasoning_start_sent = False
 
         try:
             async for item in transport.chat_stream(params):
@@ -575,6 +575,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                                     yield {"type": "content", "text": before}
                                 rest = rest[tag.end():]
                                 in_think = True
+                                # 立即触发原生思考动画（青色 spinner + 实时耗时）
+                                yield {"type": "reasoning", "text": "", "start_time": time.time()}
                                 continue
                             frag = _think_fragment_tail(rest)
                             if frag:
@@ -592,26 +594,35 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                         else:
                             close = re.search(r"</think>", rest)
                             if close:
-                                think_buffer += rest[:close.start()]
+                                chunk_text = rest[:close.start()]
+                                if chunk_text:
+                                    reasoning_parts.append(chunk_text)
+                                    yield {"type": "reasoning", "text": chunk_text}
                                 rest = rest[close.end():]
                                 in_think = False
-                                if think_buffer.strip():
-                                    reasoning_parts.append(think_buffer.strip())
-                                think_buffer = ""
                                 continue
                             frag = _think_fragment_tail(rest)
                             if frag:
                                 keep = rest[:-len(frag)] if frag != rest else ""
-                                think_buffer += keep
+                                if keep:
+                                    reasoning_parts.append(keep)
+                                    yield {"type": "reasoning", "text": keep}
                                 think_frag = frag
                                 rest = ""
                                 break
-                            think_buffer += rest
+                            if rest:
+                                reasoning_parts.append(rest)
+                                yield {"type": "reasoning", "text": rest}
                             rest = ""
 
                 delta_reasoning = delta.get("reasoning_content")
                 if delta_reasoning:
                     reasoning_parts.append(delta_reasoning)
+                    chunk = {"type": "reasoning", "text": delta_reasoning}
+                    if not _reasoning_start_sent:
+                        chunk["start_time"] = time.time()
+                        _reasoning_start_sent = True
+                    yield chunk
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
@@ -627,17 +638,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 if choice0.get("finish_reason"):
                     finish_reason = choice0.get("finish_reason")
 
-            if in_think and think_buffer.strip():
-                reasoning_parts.append(think_buffer.strip())
-            # 流结束时若仍有标签残片缓存：若在思考中，残片是思考内容的一部分，
-            # 拼回 think_buffer 一并处理；否则（<think> 从未完整出现）残片是
-            # 不完整的标签，直接丢弃。
-            if think_frag:
-                if in_think:
-                    think_buffer += think_frag
-                    if think_buffer.strip():
-                        reasoning_parts.append(think_buffer.strip())
-                think_frag = ""
+            if in_think and think_frag:
+                reasoning_parts.append(think_frag)
+            think_frag = ""
 
             calls = []
             for idx in sorted(tool_calls_map):

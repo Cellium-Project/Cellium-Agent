@@ -34,30 +34,29 @@ class ParsedThought:
 
 
 THOUGHT_SCHEMA = """
-在调用工具前先输出以下 JSON 思考块（填空即可）：
+在调用工具前先输出以下 JSON 计划块（单行紧凑，不要用 ```json 围栏）：
 
-```json
-{
-  "reasoning": "<思考>",
-  "plan": [{"tool": "工具名", "purpose": "目的", "expected_result": "预期结果"}],
-  "action": "tool_call",
-  "confidence": 0.8
-}
-```
+{"reasoning": "<思考>", "plan": [{"tool": "工具名", "purpose": "目的", "expected_result": "预期结果"}], "action": "tool_call", "confidence": 0.8}
 
 字段说明：
-- reasoning: 思考过程（必填）
-- plan: 步骤列表（tool + purpose + expected_result），2-5 步
+- reasoning: 思考过程（必填，字符串，不能含未转义引号）
+- plan: 步骤列表，每项含 tool / purpose / expected_result
 - action: tool_call | direct_response | clarify
-- confidence: 置信度 0-1
+- confidence: 置信度 0-1（数字，不能加引号）
+
+格式要求：
+- 必须是合法 JSON；引号、逗号、括号必须成对；
+- 不要用 ```json 等 markdown 围栏包裹；
+- 字符串内不要嵌套未转义的双引号；
+- 数值不要加引号。
 """
 
 
 class ThoughtParser:
     
     JSON_PATTERN = re.compile(r'```json\s*([\s\S]*?)\s*```', re.IGNORECASE)
-    THOUGHT_BLOCK_PATTERN = re.compile(
-        r'(?:💭|思考|THOUGHT)[:：]?\s*([\s\S]*?)(?=```json|$)',
+    THINK_BLOCK_PATTERN = re.compile(
+        r'(?:思考|THOUGHT)[:：]?\s*([\s\S]*?)(?=```json|$)',
         re.IGNORECASE
     )
     

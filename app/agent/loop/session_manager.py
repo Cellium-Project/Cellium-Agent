@@ -288,6 +288,7 @@ class SessionManager:
 
         if role == "assistant":
             reasoning_content = msg.get("reasoning_content")
+            reasoning_duration_ms = msg.get("reasoning_duration_ms", 0)
             if tool_calls:
                 tool_calls_data = []
                 for tc in tool_calls:
@@ -306,10 +307,11 @@ class SessionManager:
                     tool_calls_data,
                     content=content or None,
                     reasoning_content=reasoning_content,
+                    reasoning_duration_ms=reasoning_duration_ms,
                 )
                 return True
             if content:
-                memory.add_assistant_message(content, reasoning_content=reasoning_content)
+                memory.add_assistant_message(content, reasoning_content=reasoning_content, reasoning_duration_ms=reasoning_duration_ms)
                 return True
             return False
 
