@@ -176,6 +176,10 @@ class SettingsScreen(Screen):
         self.app.pop_screen()
 
     def action_save_channel(self):
+        idx = self.nav.highlighted if self.nav.highlighted is not None else 0
+        tab_id = self.nav._options[idx].id if idx < len(self.nav._options) else "appearance"
+        if tab_id != "channel":
+            return
         self._save_channel_settings()
 
     def _save_channel_settings(self):
