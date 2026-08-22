@@ -254,6 +254,9 @@ class QQAdapter(ChannelAdapter):
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._running = False
         self._connect_lock = asyncio.Lock()
+        self._shutting_down = False
+        self._login_task: Optional[asyncio.Task] = None
+        self._connect_lock_logged = False
 
         self._session: Optional[SessionState] = None
         if app_id:
@@ -300,6 +303,10 @@ class QQAdapter(ChannelAdapter):
         import time
         client = self._get_connect_client()
         for attempt in range(2):
+            if self._shutting_down:
+                logger.info("[QQAdapter] 检测到关闭信号，取消登录流程")
+                return
+            
             start = await client.login_qr_start()
             qrcode_url = start.get("qrcode_url", "")
             task_id = start.get("task_id", "")
@@ -312,6 +319,10 @@ class QQAdapter(ChannelAdapter):
 
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
+                if self._shutting_down:
+                    logger.info("[QQAdapter] 检测到关闭信号，取消登录流程")
+                    return
+                
                 result = await client.login_qr_poll(task_id, key)
                 status = result.get("status", "waiting")
 
@@ -603,20 +614,28 @@ class QQAdapter(ChannelAdapter):
     async def connect(self):
         if self._running:
             return
+        self._shutting_down = False
         if not self.app_id or not self.app_secret:
-            await self._login_with_qr()
+            self._login_task = asyncio.create_task(self._login_with_qr())
+            await self._login_task
+            if self._shutting_down:
+                logger.info("[QQAdapter] 检测到关闭信号，取消连接")
+                return
             if not self.app_id or not self.app_secret:
                 from ..base import NonRetryableError
                 raise NonRetryableError("QQ 通道未配置凭证，请先扫码登录")
         if self._connect_lock.locked():
-            logger.info("[QQAdapter] 连接已在进行中，跳过此次调用")
+            if not self._connect_lock_logged:
+                logger.debug("[QQAdapter] 连接已在进行中，跳过此次调用")
+                self._connect_lock_logged = True
             return
         async with self._connect_lock:
+            self._connect_lock_logged = False
             while self._running:
                 await asyncio.sleep(0.1)
             self._running = True
             while True:
-                if not self._running:
+                if not self._running or self._shutting_down:
                     break
                 need_reconnect = False
                 try:
@@ -725,7 +744,18 @@ class QQAdapter(ChannelAdapter):
                     continue
 
     async def disconnect(self):
+        self._shutting_down = True
         self._running = False
+        
+        # 等待登录任务完成
+        if self._login_task and not self._login_task.done():
+            try:
+                await asyncio.wait_for(self._login_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                self._login_task.cancel()
+            except Exception as e:
+                logger.debug(f"[QQAdapter] 等待登录任务完成时出错: {e}")
+        
         if self._ws:
             await self._ws.close()
         if self._heartbeat_task:

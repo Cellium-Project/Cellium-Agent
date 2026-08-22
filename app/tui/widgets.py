@@ -215,6 +215,20 @@ class CommandInput(TextArea):
 
     async def _on_key(self, event):
         app = self.app
+        if event.key == "backspace":
+            marker_end = getattr(self, "_paste_marker_end", None)
+            if marker_end is not None and self.text:
+                cursor_idx = self.document.get_index_from_location(self.cursor_location)
+                if cursor_idx <= marker_end and cursor_idx > 0:
+                    self.text = ""
+                    self._paste_pending = None
+                    self._paste_marker_end = None
+                    try:
+                        event.prevent_default()
+                    except Exception:
+                        pass
+                    event.stop()
+                    return
         if getattr(app, "_file_panel_active", False):
             key = event.key
             if key == "up":
@@ -329,7 +343,13 @@ class CommandInput(TextArea):
         if line_count >= 3 or len(normalized) > 150:
             self._paste_pending = normalized
             marker = f"[Pasted ~{line_count} lines]"
-            self.value = marker
+            cursor = self.cursor_location
+            idx = self.document.get_index_from_location(cursor)
+            before = self.text[:idx]
+            after = self.text[idx:]
+            self.text = before + marker + after
+            self.move_cursor(self.document.get_location_from_index(idx + len(marker)), select=False)
+            self._paste_marker_end = idx + len(marker)
         else:
             self.insert_text_at_cursor(normalized)
             self.app._update_palette(self.value)

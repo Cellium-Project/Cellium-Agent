@@ -340,6 +340,22 @@ Screen > .screen--selection {
     color: $background;
     background: $foreground 100%;
 }
+
+Toast {
+    align-horizontal: right;
+    align-vertical: top;
+    margin: 1 2 0 0;
+    layer: overlay;
+}
+
+ToastRack {
+    align-horizontal: right;
+    align-vertical: top;
+    dock: top;
+    height: auto;
+    width: 1fr;
+    layout: vertical;
+}
 """
 
 _THEME_PREF_FILE = None
@@ -1148,6 +1164,7 @@ class CelliumTUI(App):
             if marker in text:
                 text = text.replace(marker, pending)
             self.input._paste_pending = None
+            self.input._paste_marker_end = None
         if text.startswith("/"):
             self._handle_command(text)
         else:
