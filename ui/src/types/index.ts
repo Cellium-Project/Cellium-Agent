@@ -31,7 +31,7 @@ export interface ToolTrace {
 
 export type TimelineSegment =
   | { kind: 'text'; content: string }
-  | { kind: 'thinking'; content: string }  
+  | { kind: 'thinking'; content: string }
   | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error'; call_id?: string };  // ★ 唯一标识符
 
 export interface Message {
@@ -57,6 +57,8 @@ export interface HistoryResponse {
 // SSE Event Types
 export type SSEEventType =
   | 'thinking'
+  | 'thinking_streaming'
+  | 'reasoning'
   | 'tool_start'
   | 'tool_result'
   | 'content_chunk'

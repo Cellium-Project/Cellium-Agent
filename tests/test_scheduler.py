@@ -477,6 +477,123 @@ class TestCellToolAdapterContext:
         assert task.platform_context == platform_ctx
 
 
+class TestSchedulerExecutor:
+    """SchedulerExecutor 测试"""
+
+    def setup_method(self):
+        SchedulerManager._instance = None
+        SchedulerManager._initialized = False
+
+    @pytest.mark.asyncio
+    async def test_execute_via_websocket_routes_through_task_manager(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.core.scheduler.executor import SchedulerExecutor
+        from app.server.task_manager import TaskStatus
+
+        executor = SchedulerExecutor()
+        executor._manager = MagicMock()
+        executor._loop_manager = AsyncMock()
+
+        mock_task_info = MagicMock()
+        mock_task_info.status.value = "completed"
+        mock_task_info.error_message = None
+
+        mock_task_mgr = MagicMock()
+        mock_task_mgr.start_task = AsyncMock(return_value=True)
+        mock_task_mgr.has_running_task = MagicMock(side_effect=[True, False])
+        mock_task_mgr.get_task_info = MagicMock(return_value=mock_task_info)
+
+        mock_session_info = MagicMock()
+        mock_session_info.memory = MagicMock()
+
+        mock_lock = AsyncMock()
+        executor._loop_manager.get_lock = AsyncMock(return_value=mock_lock)
+
+        task = MagicMock()
+        task.task_id = "t001"
+        task.task_name = "test_task"
+        task.prompt = "test prompt"
+        task.triggered_at = "2024-01-01T00:00:00"
+        task.run_count = 1
+
+        with patch("app.server.task_manager.get_task_manager", return_value=mock_task_mgr), \
+             patch("app.agent.loop.session_manager.get_session_manager") as mock_session_mgr:
+            mock_session_mgr.return_value.get_or_create.return_value = mock_session_info
+
+            result = await executor._execute_via_websocket(task, "test_session", MagicMock())
+
+        assert result is True
+        mock_task_mgr.start_task.assert_called_once()
+        call_kwargs = mock_task_mgr.start_task.call_args
+        assert call_kwargs.kwargs["session_id"] == "test_session"
+        assert call_kwargs.kwargs["user_input"].startswith("[定时任务触发]")
+        assert call_kwargs.kwargs["memory"] is mock_session_info.memory
+        executor._manager.mark_completed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_via_websocket_start_fails_marks_failed(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.core.scheduler.executor import SchedulerExecutor
+
+        executor = SchedulerExecutor()
+        executor._manager = MagicMock()
+        executor._loop_manager = AsyncMock()
+
+        mock_task_mgr = MagicMock()
+        mock_task_mgr.start_task = AsyncMock(return_value=False)
+
+        mock_session_info = MagicMock()
+        mock_session_info.memory = MagicMock()
+
+        mock_lock = AsyncMock()
+        executor._loop_manager.get_lock = AsyncMock(return_value=mock_lock)
+
+        task = MagicMock()
+        task.task_id = "t002"
+        task.task_name = "busy_task"
+
+        with patch("app.server.task_manager.get_task_manager", return_value=mock_task_mgr), \
+             patch("app.agent.loop.session_manager.get_session_manager") as mock_session_mgr:
+            mock_session_mgr.return_value.get_or_create.return_value = mock_session_info
+
+            result = await executor._execute_via_websocket(task, "test_session", MagicMock())
+
+        assert result is False
+        executor._manager.mark_failed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_via_websocket_error_marks_failed(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.core.scheduler.executor import SchedulerExecutor
+
+        executor = SchedulerExecutor()
+        executor._manager = MagicMock()
+        executor._loop_manager = AsyncMock()
+
+        mock_task_mgr = MagicMock()
+        mock_task_mgr.start_task = AsyncMock(side_effect=RuntimeError("boom"))
+
+        mock_session_info = MagicMock()
+        mock_session_info.memory = MagicMock()
+
+        mock_lock = AsyncMock()
+        executor._loop_manager.get_lock = AsyncMock(return_value=mock_lock)
+
+        task = MagicMock()
+        task.task_id = "t003"
+        task.task_name = "fail_task"
+
+        with patch("app.server.task_manager.get_task_manager", return_value=mock_task_mgr), \
+             patch("app.agent.loop.session_manager.get_session_manager") as mock_session_mgr:
+            mock_session_mgr.return_value.get_or_create.return_value = mock_session_info
+
+            result = await executor._execute_via_websocket(task, "test_session", MagicMock())
+
+        assert result is False
+        executor._manager.mark_failed.assert_called_once()
+        assert "boom" in executor._manager.mark_failed.call_args[0][1]
+
+
 class TestNextRunCalculation:
     """下次执行时间计算测试"""
 

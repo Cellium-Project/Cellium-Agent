@@ -251,6 +251,24 @@ class Scheduler(BaseCell):
             return {"error": f"任务不存在: {task_id}"}
 
         import asyncio
-        asyncio.create_task(self._manager._trigger_task(task))
+        coro = self._manager._trigger_task(task)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            loop.create_task(coro)
+        else:
+            try:
+                from app.server.routes.ws_event_manager import WSConnectionManager
+                main_loop = WSConnectionManager.get_main_loop()
+            except Exception:
+                main_loop = None
+
+            if main_loop and main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, main_loop)
+            else:
+                return {"error": "无法调度执行，无可用事件循环"}
 
         return {"success": True, "message": f"已立即执行任务: {task.name}"}

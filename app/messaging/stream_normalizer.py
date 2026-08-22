@@ -103,10 +103,14 @@ class StreamNormalizer:
             self._inline_frag = ""
         if self._json_mode:
             raw = self._json_buffer
+            already_streamed = getattr(self, "_thinking_started", False)
             self._json_mode = False
             self._json_buffer = ""
             if raw:
-                results.extend(self._emit_json_block(self._json_inner(raw), raw))
+                # 流中已通过 _early_reasoning_event 产出过思考卡片，
+                # 收尾时无需重复 emit（否则会与卡片重复或泄漏原始 JSON）。
+                if not already_streamed:
+                    results.extend(self._emit_json_block(self._json_inner(raw), raw))
             self._json_fenced = False
             self._json_fence_opener = ""
         return results
@@ -267,7 +271,7 @@ class StreamNormalizer:
             return None
         if not getattr(self, "_thinking_started", False):
             self._thinking_started = True
-            return {"type": "reasoning", "content": "", "start": True}
+            return {"type": "thinking_start", "content": ""}
         m = re.search(r'"reasoning"\s*:\s*"([\s\S]*?)"(?:\s*[,}]|\s*$)', raw)
         if m:
             value = m.group(1)
@@ -282,7 +286,7 @@ class StreamNormalizer:
         if value == getattr(self, "_last_early_reasoning", None):
             return None
         self._last_early_reasoning = value
-        return {"type": "reasoning", "content": value, "final": False}
+        return {"type": "thinking_streaming", "content": value, "final": False}
 
     def _json_inner(self, raw: str) -> str:
         """从围栏原文中提取 JSON 文本（未闭合收尾用）"""
@@ -293,6 +297,7 @@ class StreamNormalizer:
         return raw.strip()
 
     def _emit_json_block(self, inner: str, raw: str) -> List[dict]:
+        """JSON reasoning 块 → thinking_streaming 事件（ThinkingBlock）"""
         data = None
         try:
             data = json.loads(inner)
@@ -301,7 +306,7 @@ class StreamNormalizer:
         if isinstance(data, dict):
             reasoning = data.get("reasoning")
             if isinstance(reasoning, str) and reasoning.strip():
-                return [{"type": "reasoning", "content": reasoning.strip(), "final": True}]
+                return [{"type": "thinking_streaming", "content": reasoning.strip(), "final": True}]
         m = re.search(r'"reasoning"\s*:\s*"((?:\\.|[^"\\])*)"', raw, re.DOTALL)
         if m:
             value = m.group(1)
@@ -311,10 +316,10 @@ class StreamNormalizer:
                 value = value.replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
             if value.strip():
                 self._last_early_reasoning = value
-                return [{"type": "reasoning", "content": value.strip(), "final": True}]
+                return [{"type": "thinking_streaming", "content": value.strip(), "final": True}]
         cached = getattr(self, "_last_early_reasoning", None)
         if cached:
-            return [{"type": "reasoning", "content": cached, "final": True}]
+            return [{"type": "thinking_streaming", "content": cached, "final": True}]
         return [{"type": "content", "content": raw}]
 
     @staticmethod

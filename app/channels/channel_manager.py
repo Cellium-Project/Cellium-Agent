@@ -317,6 +317,21 @@ class ChannelManager:
                             thinking_content = event.get("content", "Thinking...")
                             if thinking_content:
                                 await safe_send(f"> 💭 **Thinking**: {thinking_content}")
+                        elif event_type in ("thinking_start", "reasoning"):
+                            pass
+                        elif event_type == "thinking_streaming":
+                            thinking_content = event.get("content", "")
+                            if not thinking_content:
+                                continue
+                            t = thinking_content.strip()
+                            if t in ("…", ""):
+                                continue
+                            last = getattr(self, "_last_thinking_sent", "")
+                            # 已发相同内容，或新内容只是旧内容的前缀/旧内容是新内容前缀：跳过避免重复
+                            if last and (t == last or t.startswith(last) or last.startswith(t)):
+                                continue
+                            self._last_thinking_sent = t
+                            await safe_send(f"> 💭 **Thinking**: {thinking_content}")
                         elif event_type == "error":
                             error_msg = event.get("error", "未知错误")
                             await flush_pending()

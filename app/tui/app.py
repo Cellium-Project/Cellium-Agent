@@ -2214,11 +2214,6 @@ class CelliumTUI(App):
 
     def _post_mount(self, widget, spec):
         if isinstance(widget, ToolCallCard):
-            for idx, call in enumerate(spec["calls"]):
-                cid = f"hist_{self._tool_count}_{idx}"
-                widget.add_call(cid, tool=call["tool"], arguments=call.get("arguments", {}))
-                widget.update_call(cid, call.get("result"), call.get("duration_ms", 0))
-                self._tool_count += 1
             widget.finish()
         elif isinstance(widget, ThinkingBlock):
             widget.finish()

@@ -313,24 +313,36 @@ export function useChat() {
     }
     switch (event.type) {
       case 'thinking':
+      case 'thinking_streaming': {
         // 只显示来自 LLM reasoning 的 thinking，过滤系统默认消息
         const content = event.content || '';
         const isSystemDefault = ['正在思考...', '正在压缩会话记忆...', '正在根据控制决策压缩上下文...', 
                                   '分析结果中...', '输出被截断，正在补充...', '正在分析工具定义...']
                                   .includes(content);
         if (!isSystemDefault && content.trim()) {
-          const thinkingSeg: TimelineSegment = {
-            kind: 'thinking',
-            content: content,
-          };
-          ctx.timeline.push(thinkingSeg);
+          // thinking_streaming 是增量更新，替换最后一个 thinking 段
+          if (event.type === 'thinking_streaming' && ctx.timeline.length > 0) {
+            const last = ctx.timeline[ctx.timeline.length - 1];
+            if (last.kind === 'thinking') {
+              last.content = content;
+            } else {
+              ctx.timeline.push({ kind: 'thinking', content });
+            }
+          } else {
+            ctx.timeline.push({ kind: 'thinking', content });
+          }
           updateStreamingMessage({
             role: 'assistant',
-            content: '', // thinking 不直接显示在消息内容中
+            content: '',
             toolTraces: ctx.traces,
             timeline: [...ctx.timeline],
           });
         }
+        break;
+      }
+
+      case 'reasoning':
+        // reasoning（LLM 原生 o1/o3）不显示，忽略
         break;
 
       case 'tool_start': {

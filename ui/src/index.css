@@ -1437,6 +1437,15 @@ body {
     overflow-y: auto;
 }
 
+.reasoning-card {
+    margin-bottom: 8px;
+}
+
+.reasoning-label {
+    background: var(--accent-info-light, rgba(59, 130, 246, 0.1));
+    color: var(--accent-info, #3b82f6);
+}
+
 
 /* =========================================
    设置页面及新增 UI 元素的样式 (匹配原配色)

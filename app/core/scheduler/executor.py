@@ -6,7 +6,7 @@ SchedulerExecutor - 定时任务执行器（全局单例）
   1. 从 SchedulerManager 获取任务
   2. 通过 AgentLoopManager 获取正确的 session AgentLoop
   3. 使用 per-session 锁保证并发安全
-  4. 调用 AgentLoop.run_scheduler_task 执行任务
+  4. 统一走 TaskManager + MessageBroker 执行任务
 """
 
 import asyncio
@@ -153,26 +153,43 @@ class SchedulerExecutor:
             return False
 
     async def _execute_via_websocket(self, task, session_id: str, agent_loop) -> bool:
-        """通过 WebSocket 执行定时任务"""
+        from app.server.task_manager import get_task_manager
+        from app.agent.loop.session_manager import get_session_manager
+
+        task_mgr = get_task_manager()
+        session_info = get_session_manager().get_or_create(session_id)
+        scheduler_context = self._build_scheduler_context(task)
+
         try:
             lock = await self._loop_manager.get_lock(session_id)
             async with lock:
-                result = await agent_loop.run_scheduler_task({
+                started = await task_mgr.start_task(
+                    session_id=session_id,
+                    agent_loop=agent_loop,
+                    user_input=scheduler_context,
+                    memory=session_info.memory,
+                )
+                if not started:
+                    raise RuntimeError("无法启动任务")
+
+                while task_mgr.has_running_task(session_id):
+                    await asyncio.sleep(0.5)
+
+                info = task_mgr.get_task_info(session_id)
+                result = {
+                    "success": info.status.value != "error" if info else True,
                     "task_id": task.task_id,
                     "task_name": task.task_name,
-                    "prompt": task.prompt,
-                    "triggered_at": task.triggered_at,
-                    "run_count": task.run_count,
-                }, session_id=session_id)
+                }
+                if info and info.error_message:
+                    result["error"] = info.error_message
 
             self._manager.mark_completed(task.task_id, result)
-            logger.debug(f"[SchedulerExecutor] 任务完成: {task.task_name}")
             return True
-            
+
         except Exception as e:
             error_msg = str(e)
             if "session_busy:" in error_msg:
-                logger.debug(f"[SchedulerExecutor] 任务 {task.task_name} 等待 session 空闲")
                 self._manager.requeue_task(task)
                 return False
             logger.error(f"[SchedulerExecutor] 任务执行失败: {e}")
