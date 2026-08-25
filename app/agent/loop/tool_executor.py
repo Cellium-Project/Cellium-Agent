@@ -295,6 +295,23 @@ class ToolDescriptionGenerator:
             elif sub_cmd == "kill":
                 task_id = arguments.get("task_id", "")
                 return f"正在终止任务：{task_id}"
+            elif sub_cmd == "session":
+                action = (arguments.get("action") or "").strip().lower()
+                if action == "start":
+                    return f"正在启动持久会话：{cmd}" if cmd else "正在启动持久会话"
+                elif action == "send":
+                    sid = arguments.get("session_id", "")
+                    txt = (arguments.get("text") or "")[:40]
+                    return f"正在向会话 {sid} 发送：{txt}"
+                elif action == "output":
+                    sid = arguments.get("session_id", "")
+                    return f"正在读取会话 {sid} 输出"
+                elif action == "close":
+                    sid = arguments.get("session_id", "")
+                    return f"正在关闭会话 {sid}"
+                elif action == "list":
+                    return "正在查看持久会话列表"
+                return "正在操作持久会话"
             elif cmd:
                 return cls.describe_shell_command(cmd, cmd_value if isinstance(cmd_value, list) else None)
             return "正在执行 shell 命令"

@@ -300,7 +300,7 @@ class ModelAddScreen(ModalScreen):
         try:
             await asyncio.to_thread(self._persist, name, base_url, model_id, api_key)
             app = self.app
-            app.model_name = name
+            app.model_name = app._current_model_name()
             app._refresh_status()
             try:
                 app.pop_screen()
@@ -318,6 +318,7 @@ class ModelAddScreen(ModalScreen):
                 await reload_llm_engine()
             except Exception as _reload_err:
                 app.notify(app.tr("model.reload_failed", _reload_err), severity="warning")
+            app._update_model_placeholder()
             msg = app.tr("model.edited", name) if editing else app.tr("model.added", name)
             await app._append_system(msg)
         except Exception as e:

@@ -74,7 +74,7 @@
 - mkdir: 创建目录（`path` 必填，`parents=true` 自动建父目录）
 - delete: 删除文件/目录（`path` 必填，删非空目录需 `recursive=true`，否则拒绝）
 - exists: 检查是否存在（`path` 必填）
-- create: 批量创建文件（`files` 必填，dict[str,str]，键=文件路径，值=内容；父目录自动创建）
+- create: 批量创建文件（`files` 必填，**JSON 对象**，键=文件路径，值=内容；父目录自动创建）
 
 **insight 子命令**:
 - structure: 查看文件/目录结构（传 `path`，文件则提取符号摘要，目录则给树状大纲）
@@ -85,7 +85,7 @@
 **决策原则**:
 - `cmd` 数组 → 直接执行，适合 Python/脚本和复杂参数
 - `cmd` 字符串 → 经 shell 解析，适合 pipe/&&/>/wildcard
-- 长时间运行 → 设置 `timeout` 或 `background=true`
+- **默认用 `session`**（同时支持后台运行和中途喂输入）；只有输出预计巨大需完整查看时才用 `background=true`
 
 **cmd 参数**:
 | 形式 | 适用场景 | 示例 |
@@ -103,12 +103,30 @@
 | `output(task_id)` | 查看任务输出 | `output`（内容）+ `running`（状态） |
 | `kill(task_id)` | 终止后台任务 | 成功/失败 |
 
+**持久会话（session）**: 默认的执行方式。进程常驻，支持多次 send/output 推进；不需要输入的任务也可用它（start → output(wait) → close）。
+| 子命令 | 用途 |
+|--------|------|
+| `session start cmd="ssh user@host"` 或 `cmd="python -i"` | 启动持久会话，返回 `session_id` |
+| `session send session_id text="ls -la"` | 向会话写入一行输入 |
+| `session output session_id wait=5` | 读取新输出；`wait=N` 阻塞最多 N 秒等命令结果，避免空读 |
+| `session close session_id` | 结束会话（用毕必关；上限 4 个，退出后 120s 自动回收） |
+| `session list` | 列出所有会话 |
+
+**多轮交互流程**: `start` → `send(指令)` → `output(wait=5~30)` 读结果 → 据结果再 `send` → … → `close`。需要等命令执行结输出时 `output` 必须带 `wait`。
+
+**独立终端窗口（窗口模式）**: 仅当显式传 `window=true` 时才在独立终端窗口运行（真实 TTY，输密码/全屏）。默认窗口模式**不自动触发**。
+
+**伪终端（pty，Linux/macOS）**: `ssh host` 交互、sftp、vim 等必须真实 TTY 的命令，在 Linux/macOS 下 `session start` **自动以伪终端（pty）运行**——agent 完全控制：`session send "密码"` 喂密码/命令、`session output wait=N` 读输出，无需窗口。Windows 无原生 pty，这些命令需显式 `window=true` 或用 `ssh host 'cmd'` 一次性形式。
+
+**后台任务（仅大输出用）**: `background=true` 时 stdout 落盘、可无限回溯查看完整输出（session 缓冲上限 500 行，超出会截断）。
+
 **铁律**:
 - Python 代码使用 `cmd` 数组，禁止把复杂代码放入 shell 字符串
 - `cmd` 数组无引号解析问题，多行脚本直接写
 - 只有 shell 特性（pipe/&&/>/*）才用 `cmd` 字符串
-- 长任务设 `timeout` 或后台运行（`background=true`）
-- 后台任务可随时用 `output(task_id)` 查看进度
+- **执行命令默认用 `session`**：需要交互就 `send`，只跑任务就 `start → output(wait) → close`
+- 输出预计巨大（>几百行）且需完整查看时才用 `background=true` 落盘
+- `session` 用毕必 `close`，避免常驻占内存
 
 ### §1.6 ls 工具
 

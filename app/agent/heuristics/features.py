@@ -65,6 +65,17 @@ def get_call_signature(call: Dict) -> str:
                 return f"shell:run:argv:{cmd_str}"
             cmd = args.get("cmd", "")[:60]
             return f"shell:run:{cmd}"
+        if command == "session":
+            action = args.get("action", "")
+            sid = args.get("session_id", "")[:8]
+            if action == "send":
+                text = args.get("text", "")
+                h = _content_hash(text, 6)
+                return f"shell:session:{action}:{sid}:{h}"
+            if action in ("start",):
+                start_cmd = str(args.get("cmd", ""))[:30]
+                return f"shell:session:{action}:{start_cmd}"
+            return f"shell:session:{action}:{sid}"
         return f"shell:{command}"
 
     if tool_name == "memory":
@@ -326,6 +337,10 @@ class FeatureExtractor:
         if isinstance(result, dict):
             if result.get("error"):
                 return False  
+            # shell session 结果：send 有 sent、start 有 session_id、output 有 output/alive
+            # 这些都属于有效结果，不视为空
+            if "sent" in result or "session_id" in result or "alive" in result:
+                return False
             if result.get("output") and str(result.get("output")).strip():
                 return False
             if result.get("content") and str(result.get("content")).strip():

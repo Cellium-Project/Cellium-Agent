@@ -687,14 +687,22 @@ _FENCE_MISJOIN = re.compile(
 def _normalize_md(markdown: str) -> str:
     out = []
     in_fence = False
+    blank_run = 0
     for line in markdown.split("\n"):
         if _FENCE_START.match(line):
             in_fence = not in_fence
             out.append(line)
+            blank_run = 0
             continue
         if in_fence:
             out.append(line)
             continue
+        if not line.strip():
+            blank_run += 1
+            if blank_run > 1:
+                continue
+        else:
+            blank_run = 0
         m = _FENCE_MISJOIN.match(line)
         if m:
             out.append(m.group(1))
@@ -938,6 +946,20 @@ class ThinkingBlock(Static):
 
 
 _hunk_re = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+_ANSI_ESC_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b[PX^_][^\x1b]*\x1b\\"
+    r"|\x1b[0-9A-Za-z]"
+)
+
+
+def _strip_ansi(text):
+    if not text or "\x1b" not in text:
+        return text
+    return _ANSI_ESC_RE.sub("", text)
 
 
 class ReasoningBlock(Static):
@@ -1251,8 +1273,13 @@ class ToolCallCard(Static):
         cmd = args.get("command") or ""
         if not cmd and isinstance(args.get("argv"), list):
             cmd = " ".join(str(a) for a in args["argv"])
+        if not cmd:
+            action = (args.get("action") or "").strip()
+            if action:
+                cmd = f"session {action}"
         result = c["result"] if isinstance(c["result"], dict) else {}
         output = result.get("output") or ""
+        output = _strip_ansi(output)
         exit_code = result.get("exit_code")
         elapsed = result.get("elapsed_ms") or c.get("duration") or 0
         t.append("\n")

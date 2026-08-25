@@ -469,7 +469,12 @@ class CelliumTUI(App):
     def _current_model_name(self):
         try:
             from app.core.util.agent_config import get_config
-            return get_config().get("llm.current_model", "")
+            llm = get_config().get_section("llm") or {}
+            models = llm.get("models", [])
+            current = llm.get("current_model", "")
+            if current:
+                return current
+            return models[0].get("name", "") if models else ""
         except Exception:
             return ""
 
@@ -673,14 +678,20 @@ class CelliumTUI(App):
         await self._load_history()
         await self._check_model_setup()
 
+    def _update_model_placeholder(self):
+        try:
+            if self.input:
+                self.input.set_placeholder_aware(
+                    self.tr("input.placeholder") if self._model_configured_valid() else self.tr("input.no_model")
+                )
+        except Exception:
+            pass
+
     async def _check_model_setup(self):
         try:
+            self._update_model_placeholder()
             if self._model_configured_valid():
-                if self.input:
-                    self.input.set_placeholder_aware(self.tr("input.placeholder"))
                 return
-            if self.input:
-                self.input.set_placeholder_aware(self.tr("input.no_model"))
             await self._append_system(self.tr("model.setup_hint"), markup=True)
             self._refresh_status()
         except Exception:
@@ -691,16 +702,10 @@ class CelliumTUI(App):
             from app.core.util.agent_config import get_config
             llm = get_config().get_section("llm") or {}
             models = llm.get("models", [])
-            current = llm.get("current_model", "")
-            if not models or not current:
+            if not models:
                 return False
-            target = None
-            for m in models:
-                if m.get("name") == current:
-                    target = m
-                    break
-            if target is None:
-                target = models[0]
+            current = llm.get("current_model", "")
+            target = next((m for m in models if m.get("name") == current), None) or models[0]
             return bool((target.get("api_key") or "").strip())
         except Exception:
             return False
@@ -835,8 +840,7 @@ class CelliumTUI(App):
         if self.sidebar:
             self.query_one("#btn-new-session", Button).label = self.tr("sidebar.new")
             self.query_one("#btn-settings", Button).label = self.tr("sidebar.settings")
-        if self.input:
-            self.input.set_placeholder_aware(self.tr("input.placeholder") if self._model_configured_valid() else self.tr("input.no_model"))
+        self._update_model_placeholder()
         if self.hint:
             self.hint.update(self.tr("hint"))
         self._refresh_status()
@@ -1922,10 +1926,8 @@ class CelliumTUI(App):
         return val
 
     async def _append_text(self, text):
-        if not text or not text.strip():
+        if not text:
             return
-        import re as _re
-        text = _re.sub(r'\n{3,}', '\n\n', text)
         if self._current_response is None:
             if self._active_tool_card is not None:
                 self._active_tool_card.finish()

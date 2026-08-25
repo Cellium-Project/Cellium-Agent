@@ -265,7 +265,7 @@ class PatchApplier:
         diff_lines = list(difflib.unified_diff(
             old_lines, new_lines,
             fromfile='before', tofile='after',
-            lineterm=''
+            lineterm='\n'
         ))
         return ''.join(diff_lines)
 

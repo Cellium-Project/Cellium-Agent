@@ -18,6 +18,7 @@ from typing import Dict, Any, Optional, Callable, Union, List, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ DEFAULT_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 HARD_TIMEOUT_SECONDS = 300
 PREVIEW_SIZE_BYTES = 500
+SESSION_MAX = 4
+SESSION_BUFFER_LINES = 500
+SESSION_REAP_IDLE = 120
 
 _WRITE_INDICATORS = [
     r"rm\s+-rf", r"rmdir\s+/s", r"del\s+/[fq]", r"remove-item\s+-recurse",
@@ -83,16 +87,248 @@ class ExecResult:
         return self.code != 0 or self.interrupted or self.timed_out or self.error is not None
 
 
+class ShellSession:
+    """持久命令会话：保持进程存活，支持多次 send 输入 / 读取增量输出"""
+
+    def __init__(self, session_id: str, argv: List[str], cwd: str, env: Dict[str, str],
+             window: bool = False, pty: bool = False):
+        self.session_id = session_id
+        self.argv = list(argv)
+        self._window = window
+        self._pty = pty
+        if sys.platform != "win32" and pty:
+            import pty as _pty
+            import termios
+            import tty
+            self._pty_master, slave = _pty.openpty()
+            try:
+                settings = termios.tcgetattr(slave)
+            except Exception:
+                settings = None
+            if settings is not None:
+                settings[3] = settings[3] & ~termios.ECHO 
+                try:
+                    termios.tcsetattr(slave, termios.TCSANOW, settings)
+                except Exception:
+                    pass
+            self._proc = subprocess.Popen(
+                argv,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=cwd,
+                env=env,
+                close_fds=True,
+            )
+            os.close(slave)
+            self._lines = []
+            self._consumed = 0
+            self.exit_time: Optional[float] = None
+            self._closed = False
+            self._reader = threading.Thread(target=self._drain_pty, daemon=True, name=f"pty-{session_id}")
+            self._reader.start()
+            return
+        if sys.platform == "win32" and window:
+            # 独立控制台窗口：进程拥有真实 TTY（ssh 密码/全屏编辑器可用）
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = getattr(subprocess, "SW_SHOWNORMAL", 1)
+            self._proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                startupinfo=si,
+            )
+            self._lines = []
+            self._consumed = 0
+            self.exit_time: Optional[float] = None
+            self._closed = False
+            return
+        start_info = None
+        creation_flags = 0
+        if sys.platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            start_info = si
+            # DETACHED_PROCESS：进程独立于任何控制台，避免 Windows 为其伴生 conhost.exe
+            creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0)
+            creation_flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self._proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            env=env,
+            text=True,
+            bufsize=1,
+            creationflags=creation_flags,
+            startupinfo=start_info,
+        )
+        self._lock = threading.Lock()
+        self._lines: List[str] = []
+        self._consumed = 0
+        self.exit_time: Optional[float] = None
+        self._closed = False
+        self._reader = threading.Thread(target=self._drain, daemon=True, name=f"ses-{session_id}")
+        self._reader.start()
+
+    def _drain(self):
+        try:
+            for line in iter(self._proc.stdout.readline, ""):
+                with self._lock:
+                    self._lines.append(line)
+                    excess = len(self._lines) - SESSION_BUFFER_LINES
+                    if excess > 0:
+                        del self._lines[:excess]
+                        self._consumed = max(0, self._consumed - excess)
+                        self._dropped = getattr(self, "_dropped", 0) + excess
+        except Exception:
+            pass
+        finally:
+            if self.exit_time is None:
+                self.exit_time = time.time()
+
+    def _drain_pty(self):
+        """读取 PTY master 输出（按块读，避免行缓冲堵住）"""
+        try:
+            while True:
+                chunk = os.read(self._pty_master, 4096)
+                if not chunk:
+                    break
+                with self._lock:
+                    self._lines.append(chunk)
+                    total = sum(len(l) for l in self._lines)
+                    while total > 65536:
+                        removed = self._lines.pop(0)
+                        total -= len(removed)
+                        self._consumed = max(0, self._consumed - len(removed))
+        except OSError:
+            pass
+        except Exception:
+            pass
+        finally:
+            if self.exit_time is None:
+                self.exit_time = time.time()
+
+    def send(self, text: str) -> bool:
+        if self._closed:
+            return False
+        if self._window:
+            return False
+        if self._pty:
+            try:
+                payload = text if text.endswith("\n") else text + "\n"
+                os.write(self._pty_master, payload.encode("utf-8", errors="replace"))
+                return True
+            except Exception:
+                return False
+        try:
+            payload = text if text.endswith("\n") else text + "\n"
+            if "\n" in text.rstrip("\n") and not payload.endswith("\n\n"):
+                payload = payload.rstrip("\n") + "\n\n"
+            self._proc.stdin.write(payload)
+            self._proc.stdin.flush()
+            return True
+        except Exception:
+            return False
+
+    def output(self, new_only: bool = False) -> str:
+        if self._window:
+            return ""
+        if self._pty:
+            # PTY 输出为原始字节块，按"自上次读取以来"返回并消费
+            if new_only:
+                with self._lock:
+                    data = "".join(self._lines)
+                    self._lines.clear()
+                return data
+            with self._lock:
+                return "".join(self._lines)
+        with self._lock:
+            start = self._consumed if new_only else 0
+            data = "".join(self._lines[start:])
+            if new_only:
+                self._consumed = len(self._lines)
+        dropped = getattr(self, "_dropped", 0)
+        if dropped:
+            data = f"\n…(会话输出超过缓冲上限，已丢弃最旧的 {dropped} 行。如需完整输出，请改用 background 任务落盘查看)\n" + data
+        self._note_exit()
+        return data
+
+    def wait_for_output(self, timeout: float = 5.0) -> str:
+        """阻塞等待新输出，最多 timeout 秒；进程退出时立即返回剩余输出"""
+        if self._window:
+            return ""
+        if self._pty:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                with self._lock:
+                    has_new = bool(self._lines)
+                if has_new or not self.is_alive():
+                    break
+                time.sleep(0.05)
+            return self.output(new_only=True)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._lock:
+                has_new = len(self._lines) > self._consumed
+            if has_new or not self.is_alive():
+                break
+            time.sleep(0.05)
+        return self.output(new_only=True)
+
+    def _note_exit(self):
+        if self.exit_time is None and self._proc.poll() is not None:
+            self.exit_time = time.time()
+
+    def is_alive(self) -> bool:
+        self._note_exit()
+        return not self._closed and self._proc.poll() is None
+
+    def exit_code(self) -> Optional[int]:
+        self._note_exit()
+        if self._closed:
+            return None
+        return self._proc.poll()
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._proc.poll() is None:
+                self._proc.terminate()
+                self._proc.wait(timeout=3)
+        except Exception:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+        if getattr(self, "_pty", False):
+            try:
+                os.close(self._pty_master)
+            except Exception:
+                pass
+        for stream in (getattr(self._proc, "stdin", None),
+                       getattr(self._proc, "stdout", None),
+                       getattr(self._proc, "stderr", None)):
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+
 # =============================================================================
 # 辅助函数
 # =============================================================================
 
 def check_dangerous_command(command: str) -> Optional[str]:
-    """检查危险命令，返回警告信息或 None
-
-    注意：此函数使用 SecurityPolicy 进行检测。
-    如果 SecurityPolicy 不可用，返回 None（由调用者处理降级）。
-    """
+    """检查危险命令，返回警告信息或 None"""
     try:
         from app.core.security.policy import SecurityPolicy
         policy = SecurityPolicy()
@@ -120,6 +356,128 @@ def classify_command(command: str) -> CommandType:
         return CommandType.READ
 
     return CommandType.UNKNOWN
+
+
+_INTERACTIVE_PROGRAMS = {
+    "ssh", "sftp", "telnet", "ftp", "vim", "vi", "nvim", "nano",
+    "less", "more", "top", "htop", "mosh", "tsh",
+    "mysql", "psql", "redis-cli", "sqlite3",
+}
+
+_SSH_OPT_WITH_VALUE = {
+    "-b", "-c", "-D", "-E", "-e", "-F", "-i", "-J", "-l", "-L",
+    "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w", "-g",
+}
+
+_SSH_QUERY_ONLY = {"-V", "-G", "-Q"}
+_SSH_CTRL_CMDS = {"check", "exit", "stop", "forward", "cancel"}
+
+
+def _ssh_interactive(argv: List[str]) -> bool:
+    """ssh: 仅有目标主机（无远程命令）为交互式会话。
+    -V/-G/-Q 查询选项、-O 控制指令只打印信息/执行查询即退出，视为非交互。
+    """
+    args = argv[1:]
+    positionals = []
+    query_like = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            positionals.extend(args[i + 1:])
+            break
+        if a.startswith("-") and a != "-":
+            if "=" in a:
+                opt, val = a.split("=", 1)
+                if opt in _SSH_QUERY_ONLY:
+                    query_like = True
+                elif opt == "-O" and val in _SSH_CTRL_CMDS:
+                    query_like = True
+            elif a in _SSH_QUERY_ONLY:
+                query_like = True
+            elif a == "-O" and i + 1 < len(args) and args[i + 1] in _SSH_CTRL_CMDS:
+                query_like = True
+                i += 1
+            elif a in _SSH_OPT_WITH_VALUE and i + 1 < len(args):
+                i += 1
+        else:
+            positionals.append(a)
+        i += 1
+    if query_like:
+        return False
+    return len(positionals) <= 1
+
+
+def _is_interactive_argv(argv) -> bool:
+    if not argv or not isinstance(argv, (list, tuple)):
+        return False
+    base = os.path.basename(str(argv[0])).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base == "ssh":
+        return _ssh_interactive(list(argv))
+    if base in _INTERACTIVE_PROGRAMS:
+        return True
+    if base in ("bash", "sh", "zsh"):
+        return "-c" not in argv and not any(a for a in argv[1:] if a and not a.startswith("-"))
+    if base in ("python", "python3", "ipython", "node"):
+        return not any(a for a in argv[1:] if a and not a.startswith("-"))
+    return False
+
+
+def _strip_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] in ("'", '"') and token[-1] == token[0]:
+        return token[1:-1]
+    return token
+
+
+_TERMINAL_PROGRAMS = {
+    "sftp", "telnet", "ftp", "vim", "vi", "nvim", "nano",
+    "top", "htop", "mosh",
+}
+
+
+def _needs_terminal(argv) -> bool:
+    if not argv or not isinstance(argv, (list, tuple)):
+        return False
+    base = os.path.basename(str(argv[0])).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base == "ssh":
+        return _ssh_interactive(list(argv))
+    return base in _TERMINAL_PROGRAMS
+
+
+def _split_cmd_argv(cmd: str) -> List[str]:
+    """按 shell 规则拆分命令 token，并去掉参数上的包裹引号"""
+    try:
+        import shlex
+        if os.name == "nt":
+            parts = shlex.split(cmd, posix=False)
+        else:
+            parts = shlex.split(cmd, posix=True)
+    except Exception:
+        parts = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', cmd)
+    return [_strip_quotes(p) for p in parts]
+
+
+def _is_interactive_cmd(cmd: str) -> bool:
+    if not cmd or not cmd.strip():
+        return False
+    return _is_interactive_argv(_split_cmd_argv(cmd))
+
+
+def _resolve_interactive_argv(cmd: str) -> Optional[List[str]]:
+    if not cmd or not cmd.strip():
+        return None
+    if any(ch in cmd for ch in "$`;|&><()"):
+        return None
+    parts = _split_cmd_argv(cmd)
+    if not parts:
+        return None
+    if not os.path.exists(parts[0]) and shutil.which(parts[0]) is None:
+        return None
+    return parts
 
 
 def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> tuple:
@@ -249,6 +607,7 @@ class CelliumShell:
         self._executor = None
         self._max_workers = max(8, (os.cpu_count() or 4))
         self._background_tasks: Dict[str, Any] = {}
+        self._sessions: Dict[str, ShellSession] = {}
         self._cwd = initial_cwd if initial_cwd and os.path.isdir(initial_cwd) else os.getcwd()
         self.security = security_policy
 
@@ -275,7 +634,7 @@ class CelliumShell:
         self._processes_lock = threading.Lock()
 
     def _register_process(self, process) -> None:
-        """注册当前线程的活动子进程（供停止时 kill）"""
+        """注册当前线程的活动子进程"""
         tid = threading.get_ident()
         with self._processes_lock:
             self._active_processes.setdefault(tid, []).append(process)
@@ -505,6 +864,38 @@ class CelliumShell:
 
         return ("cmd.exe", ["/c"])
 
+    def resolve_session_argv(self, cmd: str) -> List[str]:
+        """将命令解析为会话可启动的 argv。
+
+        session 是逐条 send 输入的 REPL 语义，命令本身应为"程序+参数"而非
+        shell 脚本，故直接解析为程序 argv（首程序存在时），避免 shell 包装层
+        （pwsh/bash）不等子进程退出导致会话假死。仅首程序不存在时回退包装。
+        """
+        direct = _resolve_interactive_argv(cmd)
+        if direct:
+            return direct
+        parts = _split_cmd_argv(cmd)
+        if not parts:
+            shell_cmd, shell_args = self._resolve_shell(cmd)
+            return [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+        first = parts[0]
+        first_lower = os.path.basename(first).lower()
+        # Windows shell 内建命令 / .bat .cmd：交由 shell 包装执行（dir/md/type/echo 等）
+        if self._platform == "win32" and (
+            first_lower.endswith((".bat", ".cmd"))
+            or first_lower in (
+                "dir", "cd", "echo", "type", "copy", "del", "ren", "move",
+                "md", "rd", "cls", "date", "time", "ver", "set", "path",
+                "title", "color", "prompt", "vol", "label", "more", "find",
+            )
+        ):
+            shell_cmd, shell_args = self._resolve_shell(cmd)
+            return [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+        if os.path.exists(first) or shutil.which(first) is not None:
+            return parts
+        shell_cmd, shell_args = self._resolve_shell(cmd)
+        return [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+
     @property
     def cwd(self) -> str:
         """获取当前工作目录"""
@@ -537,7 +928,7 @@ class CelliumShell:
                             self._cwd = os.path.abspath(new_path)
 
     def _track_env_assignments(self, cmd: str) -> None:
-        """从命令中提取环境变量赋值，更新会话级环境（跨命令持久化）。
+        """从命令中提取环境变量赋值，更新会话级环境。
 
         支持：
           - PowerShell: $env:NAME = "value" / $env:NAME = 'value'
@@ -598,7 +989,15 @@ class CelliumShell:
         cmd_type = classify_command(effective_cmd)
         effective_timeout = timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
-        if run_in_background:
+        if self._platform == "win32" and not run_in_background and _is_interactive_cmd(effective_cmd):
+            direct = _resolve_interactive_argv(effective_cmd)
+            if direct:
+                result = self._execute_interactive(direct, cwd)
+            else:
+                shell_cmd, shell_args = self._resolve_shell(effective_cmd)
+                full_cmd = [shell_cmd] + shell_args + [effective_cmd] if shell_args else [shell_cmd, effective_cmd]
+                result = self._execute_interactive(full_cmd, cwd)
+        elif run_in_background:
             result = self._run_background(effective_cmd, effective_timeout, cwd)
         else:
             result = self._execute_sync(effective_cmd, effective_timeout, cwd, cmd_type)
@@ -625,10 +1024,62 @@ class CelliumShell:
 
         effective_timeout = timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
+        if self._platform == "win32" and not run_in_background and _is_interactive_argv(argv):
+            return self._execute_interactive(argv, cwd)
+
         if run_in_background:
             return self._run_background_argv(argv, effective_timeout, cwd)
 
         return self._execute_argv_sync(argv, effective_timeout, cwd)
+
+    def _execute_interactive(self, argv: List[str], cwd: str = None) -> Dict[str, Any]:
+        """在独立控制台窗口中运行交互式命令，避免其 TTY/ANSI 输出破坏 TUI 终端"""
+        work_dir = cwd if cwd and os.path.isdir(cwd) else self._cwd
+        env = self._session_env.copy()
+
+        popen_kwargs = dict(
+            cwd=work_dir,
+            env=env,
+            shell=False,
+        )
+        if self._platform == "win32":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = getattr(subprocess, "SW_SHOWNORMAL", 1)
+            popen_kwargs["startupinfo"] = si
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+
+        start_time = time.time()
+        try:
+            process = subprocess.Popen(argv, **popen_kwargs)
+            self._register_process(process)
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._unregister_process(process)
+            elapsed = int((time.time() - start_time) * 1000)
+            code = process.returncode
+            return {
+                "success": code == 0,
+                "output": f"\n[交互式命令在独立控制台窗口中运行]\n退出码: {code}",
+                "exit_code": code,
+                "elapsed_ms": elapsed,
+                "interactive": True,
+            }
+        except FileNotFoundError:
+            return {"success": False, "error": f"命令未找到: {argv[0]}"}
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            return {"success": False, "error": f"执行失败 ({type(e).__name__}): {e}"}
 
     def _execute_argv_sync(
         self,
@@ -1267,6 +1718,131 @@ class CelliumShell:
             return {"success": False, "error": str(e)}
 
     # ================================================================
+    #  持久会话管理（ssh 复用 / REPL 二次交互）
+    # ================================================================
+
+    def start_session(self, argv: List[str], cwd: str = None, window: bool = False,
+                  pty: bool = False) -> Dict[str, Any]:
+        self._reap_sessions()
+        if len(self._sessions) >= SESSION_MAX:
+            return {"success": False, "error": f"会话数已达上限({SESSION_MAX})，请先关闭不用的会话"}
+        work_dir = cwd if cwd and os.path.isdir(cwd) else self._cwd
+        sid = f"ses_{uuid4().hex[:8]}"
+        try:
+            sess = ShellSession(sid, argv, work_dir, self._session_env.copy(), window=window, pty=pty)
+        except Exception as e:
+            return {"success": False, "error": f"会话启动失败: {e}"}
+        self._sessions[sid] = sess
+        mode = "window" if window else ("pty" if pty else "pipe")
+        if window:
+            return {
+                "success": True,
+                "session_id": sid,
+                "argv": argv,
+                "cmd": " ".join(argv),
+                "mode": mode,
+                "tip": "命令已在独立终端窗口运行（需密码/全屏交互），请在窗口中操作；用 session list 查状态、session close <id> 结束",
+            }
+        if pty:
+            return {
+                "success": True,
+                "session_id": sid,
+                "argv": argv,
+                "cmd": " ".join(argv),
+                "mode": mode,
+                "tip": "命令以伪终端运行，可用 session send 喂输入（如密码）、session output 读输出",
+            }
+        return {
+            "success": True,
+            "session_id": sid,
+            "argv": argv,
+            "cmd": " ".join(argv),
+            "mode": mode,
+            "tip": "后续用 shell session send <id> <text> 写入、shell session output <id> 读取输出",
+        }
+
+    def session_send(self, session_id: str, text: str) -> Dict[str, Any]:
+        if not text or not text.strip():
+            return {"success": False, "error": "缺少要发送的文本"}
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return {"success": False, "error": f"会话不存在: {session_id}，可用 shell session list 查看"}
+        if not sess.is_alive():
+            self._sessions.pop(session_id, None)
+            return {"success": False, "error": f"会话已退出: {session_id}"}
+        if not sess.send(text):
+            return {"success": False, "error": f"写入失败，会话可能已退出: {session_id}"}
+        return {"success": True, "session_id": session_id, "sent": text}
+
+    def session_output(self, session_id: str, new_only: bool = True, wait: float = 0) -> Dict[str, Any]:
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return {"success": False, "error": f"会话不存在: {session_id}"}
+        if getattr(sess, "_window", False):
+            # 独立窗口会话：输出在窗口内，仅报告状态
+            return {
+                "success": True,
+                "session_id": session_id,
+                "output": "",
+                "alive": sess.is_alive(),
+                "exit_code": sess.exit_code(),
+                "mode": "window",
+                "note": "该会话在独立终端窗口运行，请检查窗口内容",
+            }
+        if not sess.is_alive() and not sess.output(new_only=False):
+            self._sessions.pop(session_id, None)
+            return {"success": False, "error": f"会话已退出: {session_id}"}
+        if wait and wait > 0 and sess.is_alive():
+            data = sess.wait_for_output(timeout=wait)
+        else:
+            data = sess.output(new_only=new_only)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "output": data,
+            "alive": sess.is_alive(),
+            "exit_code": sess.exit_code(),
+            "new_only": bool(new_only),
+            "wait": wait,
+        }
+
+    def close_session(self, session_id: str) -> Dict[str, Any]:
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return {"success": False, "error": f"会话不存在: {session_id}"}
+        sess.close()
+        self._sessions.pop(session_id, None)
+        return {"success": True, "session_id": session_id, "closed": True}
+
+    def list_sessions(self) -> Dict[str, Any]:
+        self._reap_sessions()
+        items = []
+        for sid, sess in self._sessions.items():
+            mode = "window" if getattr(sess, "_window", False) else (
+                "pty" if getattr(sess, "_pty", False) else "pipe")
+            items.append({
+                "session_id": sid,
+                "cmd": " ".join(sess.argv),
+                "alive": sess.is_alive(),
+                "mode": mode,
+            })
+        return {"success": True, "sessions": items, "count": len(items)}
+
+    def _reap_sessions(self):
+        now = time.time()
+        for sid in list(self._sessions.keys()):
+            sess = self._sessions[sid]
+            if sess.is_alive():
+                continue
+            exit_time = getattr(sess, "exit_time", None)
+            if exit_time is not None and now - exit_time >= SESSION_REAP_IDLE:
+                try:
+                    sess.close()
+                except Exception:
+                    pass
+                self._sessions.pop(sid, None)
+
+    # ================================================================
     #  生命周期管理
     # ================================================================
 
@@ -1274,6 +1850,12 @@ class CelliumShell:
         """清理资源"""
         for task_id in list(self._background_tasks.keys()):
             self.kill_background_task(task_id)
+        for sid in list(self._sessions.keys()):
+            try:
+                self._sessions[sid].close()
+            except Exception:
+                pass
+        self._sessions.clear()
         if self._executor is not None:
             self._executor.shutdown(wait=False)
             self._executor = None

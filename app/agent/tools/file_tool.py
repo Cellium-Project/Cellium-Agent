@@ -18,14 +18,79 @@ class FileTool(BaseTool):
         "- command=fs, action=mkdir: create directory\n"
         "- command=fs, action=delete: delete file or directory\n"
         "- command=fs, action=exists: check if path exists\n"
-        "- command=fs, action=create: create files from a dict of path->content. "
-        "REQUIRED: files must be a dict[str, str] mapping file paths to content. "
-        "Parent directories are created automatically.\n"
+        "- command=fs, action=create: create files from files param. "
+        "files MUST be a JSON object mapping file paths to content, e.g. "
+        '{"path/a.py": "print(1)", "path/b.txt": "line1\\nline2"}. '
+        "Multi-line content: use real newlines (the JSON string may contain \\n escape or actual line breaks). "
+        "Do NOT wrap values in <...>, do NOT embed markdown code fences. "
+        "For large files or content with many quotes, prefer shell/session writing instead.\n"
         "- command=insight, mode=structure: view file or directory structure outline\n"
         "- command=insight, mode=symbol: search for symbol definitions\n\n"
         "Use `ls` to list directory contents. Use `glob` to find files by name pattern. "
         "Use `fs` for create/delete/mkdir/exists operations."
     )
+
+    @property
+    def definition(self) -> Dict:
+        """LLM function calling 定义 — files 明确为 JSON 对象键值映射"""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.tool_name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "enum": ["fs", "insight"],
+                            "description": "要执行的子命令",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["mkdir", "delete", "exists", "create"],
+                            "description": "[fs] 动作",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["structure", "symbol"],
+                            "description": "[insight] 模式",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "[fs/insight] 文件或目录路径",
+                        },
+                        "recursive": {
+                            "type": "boolean",
+                            "description": "[fs delete] 是否递归删除目录",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "[insight symbol] 符号名子串",
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "[insight symbol] 可选文件名过滤",
+                        },
+                        "ext": {
+                            "type": "string",
+                            "description": "[insight symbol] 可选扩展名，默认 .py",
+                        },
+                        "files": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": (
+                                "[fs create] 必填。JSON 对象，键=文件路径，值=文件内容。"
+                                "例：{\"a.py\": \"print(1)\", \"b.txt\": \"line1\\nline2\"}。"
+                                "多行内容用真实换行或 \\n 转义；禁止用 <...> 包裹、禁止混入 markdown 代码围栏；"
+                                "大文件/含大量引号的内容改用 shell 或 session 写入。"
+                            ),
+                        },
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
 
     def __init__(self, allowed_roots=None):
         super().__init__()

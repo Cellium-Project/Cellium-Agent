@@ -2,8 +2,9 @@
 
 import logging
 import os
-import sys
 import pathlib
+import shutil
+import sys
 from typing import Dict, Any, List
 
 from .base_tool import BaseTool
@@ -86,8 +87,15 @@ class ShellTool(BaseTool):
             "| `run` | 执行命令 | `argv`(优先) 或 `cmd` |\n"
             "| `list` | 列出后台任务 | - |\n"
             "| `output` | 获取任务输出 | `task_id` |\n"
-            "| `kill` | 终止后台任务 | `task_id` |\n\n"
-            "**铁律**: 长运行服务必须 `background=true`"
+            "| `kill` | 终止后台任务 | `task_id` |\n"
+            "| `session` | 持久会话（ssh/REPL 二次交互） | `action`/`session_id`/`text` |\n\n"
+            "**session 子命令**（用于 ssh 长连接复用、psql/mysql/python 等逐条交互）：\n"
+            "- `action=start` `cmd=\"ssh user@host\"` → 启动持久会话，返回 session_id\n"
+            "- `action=send` `session_id` + `text=\"ls -la\"` → 向会话写入一行输入\n"
+            "- `action=output` `session_id` → 读取自上次读取以来的新输出\n"
+            "- `action=close` `session_id` → 结束会话\n"
+            "- `action=list` → 列出所有会话\n"
+            "**铁律**: 长运行服务必须 `background=true`；需要持续交互（本地解释器或远程 ssh）用 `session`。"
         )
 
         if env_info["is_embedded"] == "true":
@@ -121,15 +129,36 @@ class ShellTool(BaseTool):
                     "properties": {
                         "command": {
                             "type": "string",
-                            "enum": ["run", "list", "output", "kill"],
-                            "description": "子命令：run/list/output/kill",
+                            "enum": ["run", "list", "output", "kill", "session"],
+                            "description": "子命令：run/list/output/kill/session",
                         },
                         "cmd": {
                             "oneOf": [
                                 {"type": "string"},
                                 {"type": "array", "items": {"type": "string"}},
                             ],
-                            "description": "[run] 命令：字符串经 shell 执行，数组直接执行",
+                            "description": "[run] 命令：字符串经 shell 执行，数组直接执行；[session] start 的启动命令",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["start", "send", "output", "close", "list"],
+                            "description": "[session] 会话动作：start/send/output/close/list",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "[session] 会话 ID（start 返回）",
+                        },
+                        "window": {
+                            "type": "boolean",
+                            "description": "[session start] 可选：强制在独立终端窗口运行（默认：ssh 交互/sftp/vim 等需真实 TTY 的命令自动用窗口）",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "[session send] 要写入会话的文本（一行）",
+                        },
+                        "wait": {
+                            "type": "number",
+                            "description": "[session output] 可选：阻塞等待新输出的秒数（如 send 后需要等命令结果时传 5~30）。不传则立即返回当前新输出",
                         },
                         "background": {
                             "type": "boolean",
@@ -288,6 +317,86 @@ class ShellTool(BaseTool):
             logger.error("[ShellTool] kill 失败 | error=%s", str(e))
             return {"success": False, "error": f"终止失败: {str(e)}"}
 
+    def _cmd_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        持久会话管理（ssh 长连接复用 / REPL 二次交互）
+
+        参数：
+          - action: start / send / output / close / list
+          - cmd:    [start] 启动命令（字符串）
+          - session_id: [send/output/close] 会话 ID
+          - text:   [send] 要写入的文本
+        """
+        if not self.shell:
+            return {"success": False, "error": "Shell 未初始化"}
+
+        action = (args.get("action") or "").strip().lower()
+        if not action:
+            return {"success": False, "error": "缺少 action 参数（start/send/output/close/list）"}
+
+        try:
+            if action == "start":
+                cmd = args.get("cmd", "")
+                if not cmd or not str(cmd).strip():
+                    return {"success": False, "error": "缺少启动命令 cmd"}
+                raw_cmd = str(cmd).strip()
+                sec = self.shell._check_security(raw_cmd)
+                if not sec["allowed"]:
+                    return {"success": False, "error": f"安全拦截: {sec['reason']}"}
+                from app.agent.shell.cellium_shell import _split_cmd_argv
+                if not any(ch in raw_cmd for ch in "$`;|&><()"):
+                    tokens = _split_cmd_argv(raw_cmd)
+                    if tokens:
+                        first = tokens[0]
+                        first_lower = os.path.basename(first).lower()
+                        is_builtin = self.shell._platform == "win32" and (
+                            first_lower.endswith((".bat", ".cmd"))
+                            or first_lower in (
+                                "dir", "cd", "echo", "type", "copy", "del", "ren",
+                                "move", "md", "rd", "cls", "more", "find", "set",
+                            )
+                        )
+                        if not is_builtin and not os.path.exists(first) and shutil.which(first) is None:
+                            return {"success": False, "error": f"程序不存在: {first}"}
+                argv = self.shell.resolve_session_argv(raw_cmd)
+                from app.agent.shell.cellium_shell import _needs_terminal
+                window = bool(args.get("window", False))
+                pty = False
+                if self.shell._platform != "win32" and _needs_terminal(argv):
+                    # Linux/macOS：需要 TTY 的命令（ssh 交互/vim/sftp）用伪终端，agent 可喂密码/读输出，无需窗口
+                    pty = True
+                return self.shell.start_session(argv, cwd=args.get("cwd"), window=window, pty=pty)
+            elif action == "send":
+                sid = (args.get("session_id") or "").strip()
+                text = args.get("text", "")
+                if not sid:
+                    return {"success": False, "error": "缺少 session_id"}
+                return self.shell.session_send(sid, str(text))
+            elif action == "output":
+                sid = (args.get("session_id") or "").strip()
+                if not sid:
+                    return {"success": False, "error": "缺少 session_id"}
+                new_only = bool(args.get("new_only", True))
+                if isinstance(args.get("new_only"), str):
+                    new_only = str(args["new_only"]).lower() in ("1", "true", "yes")
+                wait = args.get("wait", 0)
+                try:
+                    wait = float(wait) if wait else 0
+                except (TypeError, ValueError):
+                    wait = 0
+                return self.shell.session_output(sid, new_only=new_only, wait=wait)
+            elif action == "close":
+                sid = (args.get("session_id") or "").strip()
+                if not sid:
+                    return {"success": False, "error": "缺少 session_id"}
+                return self.shell.close_session(sid)
+            elif action == "list":
+                return self.shell.list_sessions()
+            return {"success": False, "error": f"未知 action: {action}（start/send/output/close/list）"}
+        except Exception as e:
+            logger.error("[ShellTool] session 失败 | error=%s", str(e))
+            return {"success": False, "error": f"会话操作失败: {str(e)}"}
+
     # ================================================================
     #  兼容旧接口
     # ================================================================
@@ -312,7 +421,7 @@ class ShellTool(BaseTool):
             if not sub_cmd and (command.get("cmd") or command.get("argv")):
                 sub_cmd = "run"
 
-            if sub_cmd and sub_cmd not in ("run", "list", "output", "kill"):
+            if sub_cmd and sub_cmd not in ("run", "list", "output", "kill", "session"):
                 return self._cmd_run({
                     "cmd": command.get("command", ""),
                     "background": command.get("run_in_background", False),
@@ -326,7 +435,9 @@ class ShellTool(BaseTool):
                 return self._cmd_output(command)
             elif sub_cmd == "kill":
                 return self._cmd_kill(command)
+            elif sub_cmd == "session":
+                return self._cmd_session(command)
             else:
-                return {"success": False, "error": f"未知子命令: {sub_cmd}，可用: run, list, output, kill"}
+                return {"success": False, "error": f"未知子命令: {sub_cmd}，可用: run, list, output, kill, session"}
 
         return {"success": False, "error": "未提供有效的 command 参数"}
