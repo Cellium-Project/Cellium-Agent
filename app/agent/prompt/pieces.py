@@ -157,14 +157,19 @@ def get_thought_schema_piece() -> PromptPiece:
 
 def get_context_piece(shell_cwd: str = None) -> PromptPiece:
     cwd = shell_cwd or os.getcwd()
-    content = "<system-reminder>\n[上下文信息]\n"
-    content += f"**当前日期**: {_get_current_date()}\n\n"
-    content += f"**当前工作目录**: `{cwd}`\n\n"
-    content += "This is just a gentle reminder - ignore if not applicable.\n</system-reminder>"
+
+    def _render(ctx: dict = None) -> str:
+        return (
+            "<system-reminder>\n[上下文信息]\n"
+            f"**当前日期**: {_get_current_date()}\n\n"
+            f"**当前工作目录**: `{cwd}`\n\n"
+            "This is just a gentle reminder - ignore if not applicable.\n"
+            "</system-reminder>"
+        )
 
     return PromptPiece(
         name="context",
-        content=content,
+        renderer=_render,
         stability="daily",
         priority=550,
     )
