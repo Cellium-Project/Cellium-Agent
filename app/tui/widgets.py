@@ -810,7 +810,8 @@ class HistoryMarkdown(Static):
             try:
                 self._md = _build_rich_md(markdown)
             except Exception:
-                pass
+                from rich.text import Text
+                self._md = Text(markdown)
             self._visual = None
         self.refresh(layout=True)
         return AwaitComplete.nothing()

@@ -225,10 +225,6 @@ def build_assistant_timeline(msg: dict, raw_messages: list, index: int) -> dict:
                         timeline.append({"kind": "thinking", "content": seg["content"]})
                     else:
                         timeline.append({"kind": "text", "content": seg["content"]})
-        else:
-            rc_fb = msg.get("reasoning_content")
-            if isinstance(rc_fb, str) and rc_fb.strip():
-                timeline.append({"kind": "thinking", "content": rc_fb.strip()})
 
         for tc in tool_calls:
             tc_id = tc.get("id", "")

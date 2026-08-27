@@ -3,6 +3,7 @@
 CelliumShell — 跨平台命令执行器（Windows / macOS / Linux）
 """
 
+import base64
 import os
 import sys
 import re
@@ -21,6 +22,45 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+
+SIGKILL_TIMEOUT_MS = 200
+
+
+def _kill_tree(proc) -> None:
+    pid = getattr(proc, "pid", None)
+    if not pid:
+        proc.kill()
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/pid", str(pid), "/f", "/t"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            proc.kill()
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except Exception:
+        proc.kill()
+        return
+    try:
+        if isinstance(proc, asyncio.subprocess.Process):
+            deadline = time.time() + SIGKILL_TIMEOUT_MS / 1000
+            while time.time() < deadline and proc.returncode is None:
+                time.sleep(SIGKILL_TIMEOUT_MS / 1000 / 10)
+            if proc.returncode is None:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+        else:
+            try:
+                proc.wait(timeout=SIGKILL_TIMEOUT_MS / 1000)
+            except Exception:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception:
+        proc.kill()
 
 
 # =============================================================================
@@ -152,8 +192,9 @@ class ShellSession:
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
             start_info = si
-            # DETACHED_PROCESS：进程独立于任何控制台，避免 Windows 为其伴生 conhost.exe
-            creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0)
+            # CREATE_NEW_PROCESS_GROUP：保留有效 stdin/stdout 管道并驻留，不弹可见窗口
+            # 避免 DETACHED_PROCESS 导致进程立即退出、stdin 写入报 OSError 22
+            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creation_flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._proc = subprocess.Popen(
             argv,
@@ -192,7 +233,7 @@ class ShellSession:
                 self.exit_time = time.time()
 
     def _drain_pty(self):
-        """读取 PTY master 输出（按块读，避免行缓冲堵住）"""
+        """读取 PTY master 输出"""
         try:
             while True:
                 chunk = os.read(self._pty_master, 4096)
@@ -239,7 +280,6 @@ class ShellSession:
         if self._window:
             return ""
         if self._pty:
-            # PTY 输出为原始字节块，按"自上次读取以来"返回并消费
             if new_only:
                 with self._lock:
                     data = "".join(self._lines)
@@ -259,7 +299,6 @@ class ShellSession:
         return data
 
     def wait_for_output(self, timeout: float = 5.0) -> str:
-        """阻塞等待新输出，最多 timeout 秒；进程退出时立即返回剩余输出"""
         if self._window:
             return ""
         if self._pty:
@@ -300,11 +339,11 @@ class ShellSession:
         self._closed = True
         try:
             if self._proc.poll() is None:
-                self._proc.terminate()
-                self._proc.wait(timeout=3)
+                _kill_tree(self._proc)
+            self._proc.wait(timeout=3)
         except Exception:
             try:
-                self._proc.kill()
+                _kill_tree(self._proc)
             except Exception:
                 pass
         if getattr(self, "_pty", False):
@@ -328,7 +367,6 @@ class ShellSession:
 # =============================================================================
 
 def check_dangerous_command(command: str) -> Optional[str]:
-    """检查危险命令，返回警告信息或 None"""
     try:
         from app.core.security.policy import SecurityPolicy
         policy = SecurityPolicy()
@@ -341,7 +379,6 @@ def check_dangerous_command(command: str) -> Optional[str]:
 
 
 def classify_command(command: str) -> CommandType:
-    """分类命令为只读或写入"""
     cmd = command.strip()
 
     for pattern in _WRITE_INDICATORS:
@@ -357,7 +394,6 @@ def classify_command(command: str) -> CommandType:
 
     return CommandType.UNKNOWN
 
-
 _INTERACTIVE_PROGRAMS = {
     "ssh", "sftp", "telnet", "ftp", "vim", "vi", "nvim", "nano",
     "less", "more", "top", "htop", "mosh", "tsh",
@@ -372,11 +408,7 @@ _SSH_OPT_WITH_VALUE = {
 _SSH_QUERY_ONLY = {"-V", "-G", "-Q"}
 _SSH_CTRL_CMDS = {"check", "exit", "stop", "forward", "cancel"}
 
-
 def _ssh_interactive(argv: List[str]) -> bool:
-    """ssh: 仅有目标主机（无远程命令）为交互式会话。
-    -V/-G/-Q 查询选项、-O 控制指令只打印信息/执行查询即退出，视为非交互。
-    """
     args = argv[1:]
     positionals = []
     query_like = False
@@ -407,7 +439,6 @@ def _ssh_interactive(argv: List[str]) -> bool:
         return False
     return len(positionals) <= 1
 
-
 def _is_interactive_argv(argv) -> bool:
     if not argv or not isinstance(argv, (list, tuple)):
         return False
@@ -430,12 +461,10 @@ def _strip_quotes(token: str) -> str:
         return token[1:-1]
     return token
 
-
 _TERMINAL_PROGRAMS = {
     "sftp", "telnet", "ftp", "vim", "vi", "nvim", "nano",
     "top", "htop", "mosh",
 }
-
 
 def _needs_terminal(argv) -> bool:
     if not argv or not isinstance(argv, (list, tuple)):
@@ -447,9 +476,7 @@ def _needs_terminal(argv) -> bool:
         return _ssh_interactive(list(argv))
     return base in _TERMINAL_PROGRAMS
 
-
 def _split_cmd_argv(cmd: str) -> List[str]:
-    """按 shell 规则拆分命令 token，并去掉参数上的包裹引号"""
     try:
         import shlex
         if os.name == "nt":
@@ -466,7 +493,6 @@ def _is_interactive_cmd(cmd: str) -> bool:
         return False
     return _is_interactive_argv(_split_cmd_argv(cmd))
 
-
 def _resolve_interactive_argv(cmd: str) -> Optional[List[str]]:
     if not cmd or not cmd.strip():
         return None
@@ -479,31 +505,46 @@ def _resolve_interactive_argv(cmd: str) -> Optional[List[str]]:
         return None
     return parts
 
-
 def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> tuple:
-    """截断输出，返回 (截断后的输出, 是否被截断)"""
-    if len(output.encode('utf-8')) <= max_bytes:
+    data = output.encode('utf-8')
+    if len(data) <= max_bytes:
         return output, False
 
-    truncated = output.encode('utf-8')[:max_bytes].decode('utf-8', errors='ignore')
-    return truncated + f"\n... (truncated, exceeded {max_bytes} bytes)", True
-
+    tail = data[-max_bytes:]
+    cut = len(tail)
+    while cut > 0 and (tail[cut - 1] & 0xC0) == 0x80:
+        cut -= 1
+    truncated = tail[:cut].decode('utf-8', errors='ignore')
+    return f"... (truncated, exceeded {max_bytes} bytes)\n" + truncated, True
 
 def decode_output(data: bytes) -> str:
-    """解码命令输出，自动检测编码"""
     if not data:
         return ""
-    try:
-        return data.decode('utf-8')
-    except UnicodeDecodeError:
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
         try:
-            return data.decode('gbk')
+            return data.decode("utf-16")
         except UnicodeDecodeError:
-            return data.decode('cp936', errors='replace')
-
+            pass
+    if data.startswith(b"\xef\xbb\xbf"):
+        try:
+            return data[3:].decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("gbk")
+    except (UnicodeDecodeError, LookupError):
+        pass
+    try:
+        return data.decode("cp936")
+    except (UnicodeDecodeError, LookupError):
+        pass
+    return data.decode("utf-8", errors="replace")
 
 def format_duration(seconds: float) -> str:
-    """格式化时长"""
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
@@ -511,13 +552,45 @@ def format_duration(seconds: float) -> str:
     else:
         return f"{seconds/3600:.1f}h"
 
-
 def format_size(size_bytes: int) -> str:
     for unit in ["B", "KB", "MB", "GB"]:
         if size_bytes < 1024:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f} TB"
+
+def _read_ps_value(text: str) -> Optional[str]:
+    if not text:
+        return None
+    s = text.lstrip()
+    if not s:
+        return None
+    if s[0] == '"':
+        out = []
+        i = 1
+        while i < len(s):
+            ch = s[i]
+            if ch == "`" and i + 1 < len(s):
+                out.append(s[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                return "".join(out)
+            out.append(ch)
+            i += 1
+        return None
+    if s[0] == "'":
+        end = s.find("'", 1)
+        if end == -1:
+            return None
+        return s[1:end]
+    if s[0] == "$":
+        m = re.match(r"\$([A-Za-z_][A-Za-z0-9_:]*|\?)", s)
+        if m:
+            return s[m.start():m.end()]
+        return None
+    m = re.match(r"\S+", s)
+    return m.group(0) if m else None
 
 
 def _patch_python_c_for_stdin(argv: List[str]) -> Tuple[List[str], Optional[bytes]]:
@@ -537,6 +610,50 @@ def _patch_python_c_for_stdin(argv: List[str]) -> Tuple[List[str], Optional[byte
 
     return argv, None
 
+_PWSH_UTF8_PREFIX = (
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+    "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; "
+    "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+    "chcp 65001 > $null; "
+)
+
+
+def _strip_pwsh_encapsulation(cmd: str) -> str:
+    """若命令本身已是 powershell/pwsh -Command <script>，剥离外层前缀，避免二次嵌套。
+
+    返回内层 script；非此类形式返回原 cmd。
+    """
+    m = re.match(
+        r'^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-[^"\s].*\s+)*-Command\s+(.+)$',
+        cmd,
+        re.IGNORECASE,
+    )
+    if not m:
+        return cmd
+    s = m.group(1).strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1].replace(r'\"', '"')
+    return s
+
+
+def _pwsh_encoded_args(cmd: str) -> List[str]:
+    inner = _strip_pwsh_encapsulation(cmd)
+    raw = (_PWSH_UTF8_PREFIX + inner).encode("utf-16le")
+    b64 = base64.b64encode(raw).decode("ascii")
+    return ["-NoProfile", "-NonInteractive", "-EncodedCommand", b64]
+
+
+def _wrap_pwsh_utf8(full_cmd: List[str]) -> List[str]:
+    if len(full_cmd) >= 2 and "-Command" in full_cmd:
+        i = full_cmd.index("-Command")
+        if i + 1 < len(full_cmd):
+            full_cmd[i + 1] = _PWSH_UTF8_PREFIX + full_cmd[i + 1]
+    return full_cmd
+
+
+def _build_pwsh_cmd(shell_cmd: str, cmd: str) -> List[str]:
+    return [shell_cmd] + _pwsh_encoded_args(cmd)
+
 
 # =============================================================================
 # Shell 工具类
@@ -555,15 +672,6 @@ class CelliumShell:
 
         # 异步模式
         result = await tool.execute_async({"command": "ls -la"})
-
-    改进点：
-        1. 智能Shell选择（PowerShell cmdlet自动路由）
-        2. 危险命令检测与拦截
-        3. 命令分类（只读/写入/未知）
-        4. 工作目录跟踪（cd命令）
-        5. 输出截断与编码自动检测
-        6. 后台任务管理
-        7. 流式输出回调
     """
 
     # 降级兜底黑名单（SecurityPolicy 不可用时使用）
@@ -624,12 +732,8 @@ class CelliumShell:
         self._shell_cmd: List[str] = []
         self._shell_name: str = ""
         self._pwsh_path: Optional[str] = None
-        # 会话级环境变量：跨命令持久化（命令内 $env:NAME=value / set NAME=value
-        # 会更新此状态，后续命令可读取），初始为当前进程环境快照
         self._session_env: Dict[str, str] = os.environ.copy()
         self._init_platform_shell()
-
-        # 全局活动子进程注册表（thread_id -> [Popen, ...]）：停止时按线程 kill 子进程
         self._active_processes: Dict[int, List] = {}
         self._processes_lock = threading.Lock()
 
@@ -661,7 +765,7 @@ class CelliumShell:
         for proc in procs:
             try:
                 if proc.poll() is None:
-                    proc.kill()
+                    _kill_tree(proc)
                     proc.wait(timeout=5)
                     killed += 1
             except Exception:
@@ -838,22 +942,14 @@ class CelliumShell:
         return {"success": False, "error": "未提供有效的 command 参数"}
 
     def _resolve_shell(self, cmd: str) -> Tuple[str, List[str]]:
-        """
-        根据命令内容自动选择 Shell
-
-        Windows:
-            - 有 PowerShell 可用时，默认使用 PowerShell（与 description 声明一致）
-            - 检测到 cmd.exe 专属语法（如 &、&&、||、>nul）时用 cmd.exe
-            - 无 PowerShell 时回退到 cmd.exe
-        Linux/Mac:
-            - 用 bash
-        """
         if self._platform != "win32":
             return ("/bin/bash", ["-c"])
 
         cmd_exe_indicators = [
             r">nul\b", r"2>nul\b", r"1>nul\b",
             r"%\w+%", r"\bcmd(?:\.exe)?\s*/\s*c\b",
+            r"^\s*exit\s+\d+\b",
+            r"^\s*(?:false|true)\s*$",
         ]
         for indicator in cmd_exe_indicators:
             if re.search(indicator, cmd, re.IGNORECASE):
@@ -865,22 +961,21 @@ class CelliumShell:
         return ("cmd.exe", ["/c"])
 
     def resolve_session_argv(self, cmd: str) -> List[str]:
-        """将命令解析为会话可启动的 argv。
-
-        session 是逐条 send 输入的 REPL 语义，命令本身应为"程序+参数"而非
-        shell 脚本，故直接解析为程序 argv（首程序存在时），避免 shell 包装层
-        （pwsh/bash）不等子进程退出导致会话假死。仅首程序不存在时回退包装。
-        """
+        parts = _split_cmd_argv(cmd)
+        if parts:
+            base = os.path.basename(parts[0]).lower()
+            if base in ("pwsh", "powershell", "pwsh.exe", "powershell.exe"):
+                if not any(a.lower() in ("-noexit", "-command", "-file", "-encodedcommand") for a in parts[1:]):
+                    parts.append("-NoExit")
+                return parts
         direct = _resolve_interactive_argv(cmd)
         if direct:
             return direct
-        parts = _split_cmd_argv(cmd)
         if not parts:
             shell_cmd, shell_args = self._resolve_shell(cmd)
             return [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
         first = parts[0]
         first_lower = os.path.basename(first).lower()
-        # Windows shell 内建命令 / .bat .cmd：交由 shell 包装执行（dir/md/type/echo 等）
         if self._platform == "win32" and (
             first_lower.endswith((".bat", ".cmd"))
             or first_lower in (
@@ -928,31 +1023,16 @@ class CelliumShell:
                             self._cwd = os.path.abspath(new_path)
 
     def _track_env_assignments(self, cmd: str) -> None:
-        """从命令中提取环境变量赋值，更新会话级环境。
-
-        支持：
-          - PowerShell: $env:NAME = "value" / $env:NAME = 'value'
-          - cmd: set NAME=value
-        仅识别"赋值"语句，读取（$env:NAME 无等号）不受影响。
-        """
         if not cmd:
             return
         try:
-            # PowerShell: $env:NAME = value（值可为引号包裹，引号内允许 ; 等字符）
-            for m in re.finditer(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)", cmd):
+            for m in re.finditer(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*", cmd):
                 name = m.group(1)
-                val = m.group(2).strip()
-                if val and val[0] in ('"', "'"):
-                    quote = val[0]
-                    end = val.find(quote, 1)
-                    if end != -1:
-                        val = val[1:end]
-                else:
-                    val = re.split(r"\s*[;&|]\s*", val, maxsplit=1)[0].strip()
-                if name and val:
+                rest = cmd[m.end():]
+                val = _read_ps_value(rest)
+                if name and val is not None and val != "":
                     self._session_env[name] = val
 
-            # cmd: set NAME=value
             for m in re.finditer(
                 r"(?:^|[;&|])\s*set\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^&\r\n]*)",
                 cmd,
@@ -981,9 +1061,13 @@ class CelliumShell:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
         effective_cmd = sec.get("modified_command", cmd)
+        low_eff = effective_cmd.strip().lower()
+        if low_eff == "false":
+            effective_cmd = "exit 1"
+        elif low_eff == "true":
+            effective_cmd = "exit 0"
         security_message = sec.get("message", "")
 
-        # 提取命令中的环境变量赋值并持久化到会话环境
         self._track_env_assignments(effective_cmd)
 
         cmd_type = classify_command(effective_cmd)
@@ -1058,7 +1142,7 @@ class CelliumShell:
             except KeyboardInterrupt:
                 try:
                     if process.poll() is None:
-                        process.kill()
+                        _kill_tree(process)
                         process.wait(timeout=3)
                 except Exception:
                     pass
@@ -1099,6 +1183,8 @@ class CelliumShell:
             env=env,
             shell=False,
         )
+        if sys.platform != "win32":
+            popen_kwargs["start_new_session"] = True
 
         try:
             process = subprocess.Popen(argv, **popen_kwargs)
@@ -1130,7 +1216,7 @@ class CelliumShell:
                 return result
 
             except subprocess.TimeoutExpired:
-                process.kill()
+                _kill_tree(process)
                 process.wait()
                 return {
                     "error": f"命令超时（{timeout}秒）",
@@ -1141,7 +1227,7 @@ class CelliumShell:
                 # 用户停止：kill 子进程并向上传播中断（交由上层标记停止）
                 try:
                     if process.poll() is None:
-                        process.kill()
+                        _kill_tree(process)
                         process.wait(timeout=3)
                 except Exception:
                     pass
@@ -1187,6 +1273,8 @@ class CelliumShell:
                 si.wShowWindow = 0
                 popen_kwargs["startupinfo"] = si
                 popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            else:
+                popen_kwargs["start_new_session"] = True
 
             try:
                 process = subprocess.Popen(argv, **popen_kwargs)
@@ -1196,7 +1284,7 @@ class CelliumShell:
                     start_time = time.time()
                     while True:
                         if timeout and (time.time() - start_time) > timeout:
-                            process.kill()
+                            _kill_tree(process)
                             process.wait()
                             f.write(f"\n--- TIMEOUT ({timeout}s) ---\n")
                             return {
@@ -1258,7 +1346,12 @@ class CelliumShell:
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
 
-        # 提取命令中的环境变量赋值并持久化到会话环境
+        low_eff = cmd.strip().lower()
+        if low_eff == "false":
+            cmd = "exit 1"
+        elif low_eff == "true":
+            cmd = "exit 0"
+
         self._track_env_assignments(cmd)
 
         cmd_type = classify_command(cmd)
@@ -1277,17 +1370,33 @@ class CelliumShell:
         cmd_type: CommandType,
     ) -> Dict[str, Any]:
         shell_cmd, shell_args = self._resolve_shell(cmd)
-
         if self._platform == "win32" and "powershell" not in shell_cmd.lower():
-            full_cmd = [shell_cmd] + shell_args + [cmd]
+            inner = cmd
+            m = re.match(r'^\s*cmd(?:\.exe)?\s*/\s*c\s+(.+)$', inner, re.IGNORECASE)
+            if m:
+                inner = m.group(1).strip()
+                if len(inner) >= 2 and inner[0] == '"' and inner[-1] == '"':
+                    inner = inner[1:-1].replace(r'\"', '"')
+            full_cmd = [shell_cmd] + shell_args + [inner]
+            stdin_data = None
+        elif self._platform == "win32" and self._shell_name == "powershell":
+            stripped = cmd.strip()
+            if stripped.lower().startswith("python ") or stripped.lower().startswith("python.exe "):
+                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+                patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+                if stdin_data:
+                    full_cmd = patched
+                full_cmd = _wrap_pwsh_utf8(full_cmd)
+            else:
+                full_cmd = _build_pwsh_cmd(shell_cmd, cmd)
+                stdin_data = None
         else:
-            full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
-
-        stdin_data = None
-        if self._platform == "win32" and self._shell_name == "powershell":
-            patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
-            if stdin_data:
-                full_cmd = patched
+            shell_cmd, shell_args = self._resolve_shell(cmd)
+            if self._platform == "win32" and "powershell" not in shell_cmd.lower():
+                full_cmd = [shell_cmd] + shell_args + [cmd]
+            else:
+                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+            stdin_data = None
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
         env = self._session_env.copy()
@@ -1308,6 +1417,8 @@ class CelliumShell:
             si.wShowWindow = 0
             popen_kwargs["startupinfo"] = si
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            popen_kwargs["start_new_session"] = True
 
         try:
             process = subprocess.Popen(full_cmd, **popen_kwargs)
@@ -1322,6 +1433,17 @@ class CelliumShell:
 
                 stdout_str = decode_output(stdout).strip()
                 stderr_str = decode_output(stderr).strip()
+                if shell_cmd and shell_cmd.lower().endswith("cmd.exe"):
+                    stdout_str = re.sub(
+                        r"(?i)^\s*Microsoft Windows\s*\[版本[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                        "",
+                        stdout_str,
+                    ).strip()
+                    stdout_str = re.sub(
+                        r"(?i)^Microsoft Windows\s*\[Version[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                        "",
+                        stdout_str,
+                    ).strip()
 
                 output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
 
@@ -1344,7 +1466,7 @@ class CelliumShell:
                 return result
 
             except subprocess.TimeoutExpired:
-                process.kill()
+                _kill_tree(process)
                 process.wait()
                 return {
                     "error": f"命令超时（{timeout}秒）",
@@ -1355,7 +1477,7 @@ class CelliumShell:
                 # 用户停止：kill 子进程并向上传播中断
                 try:
                     if process.poll() is None:
-                        process.kill()
+                        _kill_tree(process)
                         process.wait(timeout=3)
                 except Exception:
                     pass
@@ -1381,17 +1503,38 @@ class CelliumShell:
         on_progress: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         shell_cmd, shell_args = self._resolve_shell(cmd)
-
         if self._platform == "win32" and "powershell" not in shell_cmd.lower():
-            full_cmd = [shell_cmd] + shell_args + [cmd]
+            inner = cmd
+            m = re.match(r'^\s*cmd(?:\.exe)?\s*/\s*c\s+(.+)$', inner, re.IGNORECASE)
+            if m:
+                inner = m.group(1).strip()
+                if len(inner) >= 2 and inner[0] == '"' and inner[-1] == '"':
+                    inner = inner[1:-1].replace(r'\"', '"')
+            full_cmd = [shell_cmd] + shell_args + [inner]
+            stdin_data = None
+        elif self._platform == "win32" and self._shell_name == "powershell":
+            stripped = cmd.strip()
+            if stripped.lower().startswith("python ") or stripped.lower().startswith("python.exe "):
+                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+                patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+                if stdin_data:
+                    full_cmd = patched
+                full_cmd = _wrap_pwsh_utf8(full_cmd)
+            else:
+                full_cmd = _build_pwsh_cmd(shell_cmd, cmd)
+                stdin_data = None
         else:
-            full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
-
-        stdin_data = None
-        if self._platform == "win32" and self._shell_name == "powershell":
-            patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
-            if stdin_data:
-                full_cmd = patched
+            shell_cmd, shell_args = self._resolve_shell(cmd)
+            if self._platform == "win32" and "powershell" not in shell_cmd.lower():
+                full_cmd = [shell_cmd] + shell_args + [cmd]
+            else:
+                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+            stdin_data = None
+            if self._platform == "win32" and self._shell_name == "powershell":
+                patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+                if stdin_data:
+                    full_cmd = patched
+                full_cmd = _wrap_pwsh_utf8(full_cmd)
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
         env = self._session_env.copy()
@@ -1413,6 +1556,8 @@ class CelliumShell:
             si.wShowWindow = 0
             popen_kwargs["startupinfo"] = si
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            popen_kwargs["start_new_session"] = True
 
         try:
             process = await asyncio.create_subprocess_exec(*full_cmd, **popen_kwargs)
@@ -1449,7 +1594,7 @@ class CelliumShell:
                     return result
 
                 except asyncio.TimeoutError:
-                    process.kill()
+                    _kill_tree(process)
                     await process.wait()
                     return {
                         "error": f"命令超时（{timeout}秒）",
@@ -1496,6 +1641,17 @@ class CelliumShell:
 
                 stdout_str = "".join(stdout_lines).strip()
                 stderr_str = "".join(stderr_lines).strip()
+                if shell_cmd and shell_cmd.lower().endswith("cmd.exe"):
+                    stdout_str = re.sub(
+                        r"(?i)^\s*Microsoft Windows\s*\[版本[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                        "",
+                        stdout_str,
+                    ).strip()
+                    stdout_str = re.sub(
+                        r"(?i)^Microsoft Windows\s*\[Version[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                        "",
+                        stdout_str,
+                    ).strip()
 
                 output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
 
@@ -1530,7 +1686,7 @@ class CelliumShell:
                     await asyncio.wait_for(process.wait(), timeout=5)
                 except Exception:
                     logger.debug("[Shell] 等待进程退出超时，强制终止")
-                    process.kill()
+                    _kill_tree(process)
                     await process.wait()
 
                 return {
@@ -1559,17 +1715,29 @@ class CelliumShell:
         process_ref = {}
         def run_in_thread():
             shell_cmd, shell_args = self._resolve_shell(cmd)
-
             if self._platform == "win32" and "powershell" not in shell_cmd.lower():
-                full_cmd = [shell_cmd] + shell_args + [cmd]
+                inner = cmd
+                m = re.match(r'^\s*cmd(?:\.exe)?\s*/\s*c\s+(.+)$', inner, re.IGNORECASE)
+                if m:
+                    inner = m.group(1).strip()
+                    if len(inner) >= 2 and inner[0] == '"' and inner[-1] == '"':
+                        inner = inner[1:-1].replace(r'\"', '"')
+                full_cmd = [shell_cmd] + shell_args + [inner]
+                stdin_data = None
+            elif self._platform == "win32" and self._shell_name == "powershell":
+                stripped = cmd.strip()
+                if stripped.lower().startswith("python ") or stripped.lower().startswith("python.exe "):
+                    full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+                    patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
+                    if stdin_data:
+                        full_cmd = patched
+                    full_cmd = _wrap_pwsh_utf8(full_cmd)
+                else:
+                    full_cmd = _build_pwsh_cmd(shell_cmd, cmd)
+                    stdin_data = None
             else:
                 full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
-
-            stdin_data = None
-            if self._platform == "win32" and self._shell_name == "powershell":
-                patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
-                if stdin_data:
-                    full_cmd = patched
+                stdin_data = None
 
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
             env = self._session_env.copy()
@@ -1583,6 +1751,7 @@ class CelliumShell:
                     cwd=work_dir,
                     env=env,
                     shell=False,
+                    start_new_session=True if self._platform != "win32" else False,
                 )
                 process_ref['p'] = process
 
@@ -1594,7 +1763,7 @@ class CelliumShell:
                     start_time = time.time()
                     while True:
                         if timeout and (time.time() - start_time) > timeout:
-                            process.kill()
+                            _kill_tree(process)
                             process.wait()
                             f.write(f"\n--- TIMEOUT ({timeout}s) ---\n")
                             return {
@@ -1648,7 +1817,7 @@ class CelliumShell:
         proc = task["process_ref"].get("p")
         if proc and proc.poll() is None:
             try:
-                proc.kill()
+                _kill_tree(proc)
                 proc.wait(timeout=5)
             except Exception:
                 pass
@@ -1678,7 +1847,6 @@ class CelliumShell:
         return tasks
 
     def get_background_result(self, task_id: str, timeout: float = 0) -> Optional[Dict]:
-        """获取后台任务结果（同步模式）"""
         if task_id not in self._background_tasks:
             return None
 
@@ -1718,7 +1886,7 @@ class CelliumShell:
             return {"success": False, "error": str(e)}
 
     # ================================================================
-    #  持久会话管理（ssh 复用 / REPL 二次交互）
+    #  持久会话管理
     # ================================================================
 
     def start_session(self, argv: List[str], cwd: str = None, window: bool = False,
@@ -1779,7 +1947,6 @@ class CelliumShell:
         if sess is None:
             return {"success": False, "error": f"会话不存在: {session_id}"}
         if getattr(sess, "_window", False):
-            # 独立窗口会话：输出在窗口内，仅报告状态
             return {
                 "success": True,
                 "session_id": session_id,
@@ -1863,7 +2030,6 @@ class CelliumShell:
     def close(self):
         """关闭"""
         self.terminate()
-
 
 # =============================================================================
 # 兼容性别名

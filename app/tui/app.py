@@ -22,6 +22,7 @@ except Exception:
 
 import asyncio
 import json
+import logging
 import re
 import threading
 import time
@@ -36,6 +37,7 @@ from rich.text import Text
 
 from app.tui.theme import register_cellium_themes, LIGHT_THEME, DARK_THEME
 from app.tui.commands import match_commands
+from app.tui.md_buffer import MarkdownBuffer
 from app.tui.widgets import (
     CommandInput,
     CommandPalette,
@@ -419,6 +421,7 @@ class CelliumTUI(App):
         self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
+        self._md_buffer = MarkdownBuffer()
         self._thought_mode = False    # 是否处于 JSON 思考协议解析中
         self._thought_raw = ""        # 思考协议原始 JSON 累积
         self._thought_fenced = False  # 思考协议是否被 ```json 代码块包裹
@@ -1761,6 +1764,7 @@ class CelliumTUI(App):
                 if self._current_response is not None:
                     self._current_response = None
                     self._current_md = ""
+                    self._md_buffer.reset()
                 self._current_reasoning = ReasoningBlock(start_time=evt.get("start_time", 0))
                 await self.chat.mount(self._current_reasoning)
             self._current_reasoning.append_text(evt.get("content", ""))
@@ -1798,6 +1802,7 @@ class CelliumTUI(App):
             if self._current_response is not None:
                 self._current_response = None
                 self._current_md = ""
+                self._md_buffer.reset()
             if content:
                 preview = content if len(content) <= 60 else content[:60] + "…"
                 await self._append_system(self.tr("supplement.injected", preview))
@@ -1943,7 +1948,8 @@ class CelliumTUI(App):
                 return
             self._current_response = AssistantMessage("")
             await self.chat.mount(self._current_response)
-        self._current_md += text
+        self._md_buffer.append(text)
+        self._current_md = self._md_buffer.get_content()
         await self._schedule_md_render()
 
     async def _schedule_md_render(self):
@@ -1955,17 +1961,17 @@ class CelliumTUI(App):
     def _do_md_render(self):
         self._md_render_timer = None
         resp = self._current_response
-        md = self._current_md
-        if resp is None or not md:
+        if resp is None or not self._md_buffer.has_changed():
             return
-        if md.count("```") % 2 != 0:
+        if not self._md_buffer.is_complete():
             self._schedule_md_render()
             return
         try:
             import asyncio
             asyncio.ensure_future(self._render_now())
-        except Exception:
-            pass
+            self._md_buffer.mark_rendered()
+        except Exception as e:
+            logging.warning(f"Failed to schedule markdown render: {e}")
 
     async def _render_now(self):
         try:
@@ -1974,8 +1980,8 @@ class CelliumTUI(App):
             if resp is not None and md:
                 await resp.update(md)
                 self.chat.scroll_to_follow()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to render markdown: {e}")
 
     async def _flush_pending_text(self):
         if not self._pending_text:
@@ -2018,17 +2024,25 @@ class CelliumTUI(App):
         return rest in ('"', '')
 
     def _find_thought_start(self, text):
-        """定位 JSON 思考协议开始位置：支持两种格式
+        """定位 JSON 思考协议开始位置：仅匹配文本开头
 
+        支持两种格式：
         1. 直接 JSON: {"reasoning": ...}
         2. 代码块包裹: ```json\n{"reasoning": ...}\n```
-        """
-        m = re.search(r'```json\s*\n?\s*(\{\s*"reasoning)', text, re.IGNORECASE)
-        if m:
-            return m.start(1)
 
-        m = re.search(r'\{\s*"reasoning', text)
-        return m.start() if m else None
+        收紧为文本开头，避免 content_chunk 流式中夹杂的任意 JSON 片段误命中。
+        """
+        stripped = text.lstrip()
+        offset = len(text) - len(stripped)
+
+        m = re.match(r'```json\s*\n?\s*(\{\s*"reasoning)', stripped, re.IGNORECASE)
+        if m:
+            return offset + m.start(1)
+
+        if m := re.match(r'\{\s*"reasoning"\s*:', stripped):
+            return offset + m.start()
+
+        return None
 
     def _ensure_thinking_block_mount(self):
         if self._current_thinking is None:
@@ -2083,6 +2097,7 @@ class CelliumTUI(App):
         if self._current_response is not None:
             self._current_response = None
             self._current_md = ""
+            self._md_buffer.reset()
             self._pending_text = ""
         if self._thought_mode:
             self._thought_mode = False
@@ -2158,6 +2173,7 @@ class CelliumTUI(App):
         self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
+        self._md_buffer.reset()
         self._thought_mode = False
         self._thought_raw = ""
         self._thought_fenced = False
@@ -2172,6 +2188,7 @@ class CelliumTUI(App):
         self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
+        self._md_buffer.reset()
         self._thought_mode = False
         self._thought_raw = ""
         self._thought_fenced = False
