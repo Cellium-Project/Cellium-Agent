@@ -312,6 +312,12 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
             effort_level = self._reasoning_effort or "high"
             params[reasoning_param] = effort_level
+
+            if self._thinking_budget:
+                thinking_obj = {"type": "enabled"}
+                if self._thinking_budget:
+                    thinking_obj["budget_tokens"] = self._thinking_budget
+                params["thinking"] = thinking_obj
             logger.info("[LLM] 思考模式 | model=%s | %s=%s", self.model, reasoning_param, effort_level)
 
         return params
