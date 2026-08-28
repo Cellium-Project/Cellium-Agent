@@ -174,8 +174,7 @@ class AgentConfig:
             "server": {"host": "0.0.0.0", "port": 18000,
                        "cors": {"enabled": True, "allow_origins": ["*"]}},
             "llm": {"provider": "openai",
-                    "openai": {"model": "gpt-4o", "temperature": 0.7},
-                    "streaming": {"enabled": True}},
+                    "openai": {"model": "gpt-4o", "temperature": 0.7}},
             "agent": {
                 "max_iterations": 10,
                 "enforce_iteration_limit": False,  # 默认不限制迭代次数

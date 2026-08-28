@@ -337,6 +337,8 @@ class FeatureExtractor:
         if isinstance(result, dict):
             if result.get("error"):
                 return False  
+            if result.get("success") is True:
+                return False
             # shell session 结果：send 有 sent、start 有 session_id、output 有 output/alive
             # 这些都属于有效结果，不视为空
             if "sent" in result or "session_id" in result or "alive" in result:
@@ -400,7 +402,6 @@ class FeatureExtractor:
         return failures
 
     def _is_strategy_repeating(self, calls: List[Dict]) -> bool:
-        # 至少 3 次调用且签名全相同才算策略重复，2 次同签名不误判
         if len(calls) < 3:
             return False
 
@@ -482,16 +483,6 @@ class FeatureExtractor:
         current_progress: float,
         iteration: int,
     ) -> Tuple[float, float, float]:
-        """
-        计算抗噪声的进度趋势
-
-        方法：EMA 平滑 + 线性回归置信度
-        - EMA 平滑：消除单次波动
-        - 回归 R²：判断趋势是否可信
-
-        Returns:
-            (原始趋势, 平滑后的趋势, 趋势置信度)
-        """
         self._progress_history.append(current_progress)
 
         window = 10
@@ -515,12 +506,6 @@ class FeatureExtractor:
 
 
     def _calc_trend_confidence(self) -> float:
-        """
-        线性回归 R² 计算趋势置信度
-
-        R² 接近 1：趋势明显且可信
-        R² 接近 0：数据噪声大，趋势不可信
-        """
         history = self._progress_history
         n = len(history)
         if n < 3:
@@ -546,18 +531,6 @@ class FeatureExtractor:
         return max(0.0, min(1.0, r_squared))
 
     def _detect_plateau(self, features: DerivedFeatures) -> bool:
-        """
-        检测是否处于高原期（plateau）
-
-        Plateau 特征：
-        1. progress_trend ≈ 0（不升不降）
-        2. 但 stuck_iterations 较短（刚进入停滞）
-        3. 结果质量没有明显下降
-
-        区分：
-        - Plateau：正常的中期调整，应继续观察
-        - 真停滞：长时间无进展 + 结果质量差
-        """
         # 条件1：趋势接近水平
         is_flat = abs(features.progress_trend) < 0.03 and abs(features.progress_trend_raw) < 0.05
 
@@ -574,24 +547,14 @@ class FeatureExtractor:
 
 
     def _detect_exact_repetition(self, outputs: List[str]) -> int:
-        """
-        检测 LLM 输出的一字不差重复
-
-        用户核心需求：
-          - 只有模型连续输出 5 次以上完全相同的内容，才认为陷入循环
-          - 这是 terminate 的唯一触发条件
-
-        Args:
-            outputs: 最近的 LLM 输出列表
-
-        Returns:
-            连续完全相同的输出次数（0 表示无重复或数据不足）
-        """
         if not outputs or len(outputs) < 2:
             return 0
 
-        # 从最新开始向前检测
+        # 从最新开始向前检测；纯空白输出（如工具调用前的"\n\n"）不算内容
         latest = outputs[-1]
+        if not latest or not latest.strip():
+            return 0
+
         count = 1
 
         for i in range(len(outputs) - 2, -1, -1):

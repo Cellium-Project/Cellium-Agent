@@ -164,7 +164,6 @@
       "description": "Add multiple model configurations, then select the current model after saving.",
       "currentModel": "Current Model",
       "currentModelDesc": "Select the current model to use",
-      "inferenceSettings": "Inference Settings",
       "addModel": "Add Model",
       "editModel": "Edit Model",
       "deleteModel": "Delete Model",
@@ -196,7 +195,15 @@
       "saveAndReload": "Save Config & Reload Engine",
       "save": "Save",
       "saved": "Saved and reloaded",
-      "notSet": "Not set"
+      "notSet": "Not set",
+      "ccFetchTitle": "Quick add",
+      "ccDesc": "Enter API Key to fetch available models and add with one click.",
+      "ccFetch": "Fetch models",
+      "ccNeedApiKey": "Please enter API Key",
+      "ccEmpty": "No models returned",
+      "ccAlreadyAdded": "Model {{name}} already exists",
+      "chooseProvider": "Choose provider",
+      "customProvider": "Custom"
     },
     "agent": {
       "title": "Agent Behavior Configuration",

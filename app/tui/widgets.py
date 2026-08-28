@@ -729,6 +729,8 @@ class _SelectableRichVisual(RichVisual):
         super().__init__(widget, md)
         self._render_cache_key = None
         self._cached_strips = None
+        self._styled_cache = {}
+        self._styled_cache_style = None
 
     def _theme_key(self):
         try:
@@ -737,25 +739,49 @@ class _SelectableRichVisual(RichVisual):
             return ""
         return theme if isinstance(theme, str) else str(theme)
 
+    def _content_hash(self):
+        try:
+            r = self._renderable
+            src = getattr(r, "markup", None)
+            if isinstance(src, str):
+                return hash((src, len(src)))
+        except Exception:
+            pass
+        try:
+            return id(self._renderable)
+        except Exception:
+            return 0
+
     def render_strips(
         self, width: int, height: int | None, style: object, options
     ) -> list:
-        key = (id(self._renderable), width, height, self._theme_key())
-        if options.selection is None and self._render_cache_key == key:
-            return self._cached_strips
-        strips = super().render_strips(width, height, style, options)
-        strips = [
-            strip.apply_offsets(0, y) for y, strip in enumerate(strips)
-        ]
+        cache_key = (self._content_hash(), width, height, self._theme_key())
+
+        if self._render_cache_key == cache_key and self._cached_strips is not None:
+            base_strips = self._cached_strips
+        else:
+            base_strips = super().render_strips(width, height, style, options)
+            base_strips = [
+                strip.apply_offsets(0, y) for y, strip in enumerate(base_strips)
+            ]
+            self._render_cache_key = cache_key
+            self._cached_strips = base_strips
+            self._styled_cache = {}
+
         if options.selection is None:
-            self._render_cache_key = key
-            self._cached_strips = strips
-            return strips
+            return base_strips
+
         selection = options.selection
         selection_style = options.selection_style
         get_span = selection.get_span
+        sel_rich = getattr(selection_style, "rich_style", selection_style)
+        if self._styled_cache and self._styled_cache_style != sel_rich:
+            self._styled_cache = {}
+            self._styled_cache_style = sel_rich
+        sel_key = sel_rich
+        styled_cache = self._styled_cache
         result = []
-        for y, strip in enumerate(strips):
+        for y, strip in enumerate(base_strips):
             span = get_span(y)
             if span is None:
                 result.append(strip)
@@ -763,32 +789,70 @@ class _SelectableRichVisual(RichVisual):
             start, end = span
             if end == -1:
                 end = strip.cell_length
-            result.append(_stylize_strip_range(strip, start, end, selection_style))
+            cache_key = (sel_key, y, start, end)
+            styled = styled_cache.get(cache_key)
+            if styled is None:
+                if len(styled_cache) > 2048:
+                    styled_cache.clear()
+                styled = _stylize_strip_range(strip, start, end, sel_rich)
+                styled_cache[cache_key] = styled
+            result.append(styled)
         return result
 
+def _cells_to_chars(text: str, cell_offset: int) -> int:
+    from rich.cells import cell_len
+    if cell_offset <= 0:
+        return 0
+    total_cells = cell_len(text)
+    if cell_offset >= total_cells:
+        return len(text)
+    pos = 0
+    for i, ch in enumerate(text):
+        ch_cells = cell_len(ch)
+        if pos + ch_cells > cell_offset:
+            return i
+        pos += ch_cells
+        if pos >= cell_offset:
+            return i + 1
+    return len(text)
 
 def _stylize_strip_range(strip, start: int, end: int, style) -> object:
-    segments = list(strip)
-    if not segments:
-        return strip
     from textual.strip import Strip
+    from rich.cells import cell_len
     sel_rich = getattr(style, "rich_style", style)
+    segments = list(strip)
+
+    if not segments:
+        if end == -1 or end > 0:
+            return Strip([Segment(" ", sel_rich)], max(1, strip.cell_length))
+        return strip
+
     output = []
-    x = 0
+    x = 0  
     for text, seg_style, control in segments:
-        seg_end = x + len(text)
+        seg_cells = cell_len(text) if text else 0
+        seg_chars = len(text)
+
+        if seg_cells == 0:
+            output.append(Segment(text, seg_style, control))
+            x += seg_cells
+            continue
+
+        seg_end = x + seg_cells
         if seg_end <= start or x >= end:
             output.append(Segment(text, seg_style, control))
         else:
-            sel_start = max(start, x)
-            sel_end = min(end, seg_end)
-            if sel_start > x:
-                output.append(Segment(text[: sel_start - x], seg_style, control))
-            if sel_end > sel_start:
+            sel_cell_start = max(start, x)
+            sel_cell_end = min(end, seg_end)
+            char_pre = _cells_to_chars(text, sel_cell_start - x) if sel_cell_start > x else 0
+            char_mid_end = _cells_to_chars(text, sel_cell_end - x)
+            if char_pre > 0:
+                output.append(Segment(text[:char_pre], seg_style, control))
+            if char_mid_end > char_pre:
                 merged = (seg_style or Style()) + sel_rich
-                output.append(Segment(text[sel_start - x : sel_end - x], merged, control))
-            if sel_end < seg_end:
-                output.append(Segment(text[sel_end - x :], seg_style, control))
+                output.append(Segment(text[char_pre:char_mid_end], merged, control))
+            if char_mid_end < seg_chars:
+                output.append(Segment(text[char_mid_end:], seg_style, control))
         x = seg_end
     return Strip(output, strip.cell_length)
 
@@ -803,7 +867,7 @@ class HistoryMarkdown(Static):
         if text:
             self._md = _build_rich_md(text)
 
-    def update(self, markdown=""):
+    def update(self, markdown="", layout=True):
         from textual.await_complete import AwaitComplete
         if markdown:
             self._source = markdown
@@ -813,7 +877,7 @@ class HistoryMarkdown(Static):
                 from rich.text import Text
                 self._md = Text(markdown)
             self._visual = None
-        self.refresh(layout=True)
+        self.refresh(layout=layout)
         return AwaitComplete.nothing()
 
     def set_content(self, text):
@@ -840,11 +904,9 @@ class HistoryMarkdown(Static):
             return None
 
     def append(self, markdown):
-        # 历史消息只读，不支持流式追加
         return self.update(self._source)
 
     def refresh_theme(self):
-        """主题切换后清理渲染缓存并重绘"""
         self._visual = None
         self._md = None
         if self._source:
@@ -858,17 +920,10 @@ class HistoryMarkdown(Static):
 class AssistantMessage(HistoryMarkdown):
 
     def append(self, markdown):
-        # 流式追加：以完整当前文本重建渲染
         return self.update(markdown)
 
 
 class ThinkingBlock(Static):
-    """思考块 — 流式展示 + 思考中 spinner
-
-    - 思考中：spinner + "正在思考"
-    - 内容到达：实时显示 reasoning
-    - 思考结束：停止动画
-    """
 
     def __init__(self, text=""):
         super().__init__("")
@@ -906,12 +961,10 @@ class ThinkingBlock(Static):
         self._refresh()
 
     def finish(self):
-        """思考结束：停止动画，定格最终内容"""
         self._stop_clock()
         self._refresh()
 
     def _display_text(self):
-        """JSON thinking 只显示 reasoning 字段，避免暴露原始协议格式"""
         text = self._buf.strip()
         if not text:
             return ""

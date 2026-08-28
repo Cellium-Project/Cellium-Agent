@@ -220,6 +220,8 @@ class OpenAICompatTransport:
                 reasoning_content = None
                 if message.get("reasoning_content"):
                     reasoning_content = message.get("reasoning_content")
+                elif message.get("reasoning"):
+                    reasoning_content = message.get("reasoning")
                 elif content:
                     think_match = re.search(r"<think>\s*(.*?)\s*</think>", content, re.DOTALL)
                     if think_match:

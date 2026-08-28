@@ -20,21 +20,25 @@ class AnthropicTransport:
         api_key: str = "",
         base_url: str = "https://api.anthropic.com",
         timeout: int = 120,
+        extra_headers: Optional[Dict[str, str]] = None,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._extra_headers = extra_headers or {}
         self._async_client: Optional[httpx.AsyncClient] = None
         self._sync_client: Optional[httpx.Client] = None
         self._async_client_loop: object = None
 
     @property
     def _headers(self) -> Dict[str, str]:
-        return {
+        h = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
+        h.update(self._extra_headers)
+        return h
 
     def _ensure_async_client(self) -> httpx.AsyncClient:
         import asyncio

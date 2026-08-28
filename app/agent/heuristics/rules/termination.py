@@ -233,6 +233,8 @@ class EmptyResultChainRule(BaseRule):
                 return True
             if result.get("success") is True:
                 return False
+            if "sent" in result or "session_id" in result or "alive" in result:
+                return False
             output = result.get("output", "")
             if isinstance(output, str) and output.strip():
                 return False

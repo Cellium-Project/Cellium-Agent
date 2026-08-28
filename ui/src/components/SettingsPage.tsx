@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../stores/appStore';
 import { API, fetchJSON, postJSON, putJSON } from '../utils/api';
@@ -186,11 +187,47 @@ const ModelSettings: React.FC = () => {
     await postJSON(API.modelReloadEngine, {});
   });
 
+  const [ccApiKey, setCcApiKey] = useState('');
+  const [ccFetching, setCcFetching] = useState(false);
+  const [ccError, setCcError] = useState('');
+  const [ccModels, setCcModels] = useState<any[]>([]);
+  const [showProviderPicker, setShowProviderPicker] = useState(false);
+  const [showCcPicker, setShowCcPicker] = useState(false);
+  const [providerPickerClosing, setProviderPickerClosing] = useState(false);
+  const [ccPickerClosing, setCcPickerClosing] = useState(false);
+  const commandcodeBaseUrl = 'https://api.commandcode.ai/provider/v1';
+  const fetchCcModels = async () => {
+    if (!ccApiKey.trim()) { setCcError(t('settings.model.ccNeedApiKey', 'Please enter API Key')); return; }
+    setCcFetching(true); setCcError(''); setCcModels([]);
+    try {
+      const res = await postJSON<{ models: any[] }>(API.providerModels, { provider_id: 'commandcode', api_key: ccApiKey.trim() });
+      const list = res?.models || [];
+      if (list.length === 0) setCcError(t('settings.model.ccEmpty', 'No models returned'));
+      setCcModels(list);
+    } catch (e: any) { setCcError(e?.message || 'Fetch failed'); } finally { setCcFetching(false); }
+  };
+  const addCcModel = (m: any) => {
+    const mid = m.id || m.model || '';
+    const short = mid.split('/').pop() || mid;
+    const name = `commandcode-${short}`;
+    if ((config.models || []).some((x: any) => x.name === name)) { setCcError(t('settings.model.ccAlreadyAdded', `Model ${name} already exists`)); return; }
+    setConfig((prev: any) => ({ ...prev, models: [...(prev.models || []), { name, api_key: ccApiKey.trim(), base_url: commandcodeBaseUrl, model: mid, temperature: 0.7, timeout: 120 }], current_model: prev.current_model || name }));
+    closeCcPicker();
+  };
+  const openProviderPicker = () => setShowProviderPicker(true);
+  const closeProviderPicker = () => { setProviderPickerClosing(true); setTimeout(() => { setShowProviderPicker(false); setProviderPickerClosing(false); }, 150); };
+  const closeCcPicker = () => { setCcPickerClosing(true); setTimeout(() => { setShowCcPicker(false); setCcPickerClosing(false); setCcError(''); setCcModels([]); }, 150); };
+  const pickProvider = (id: string) => {
+    closeProviderPicker();
+    setTimeout(() => {
+      if (id === 'commandcode') { setCcError(''); setCcModels([]); setShowCcPicker(true); }
+      else addModel();
+    }, 160);
+  };
+
   const models = config.models || [];
   const currentModelName = config.current_model || '';
   const displayModelName = currentModelName || (models[0]?.name || '');
-  const streaming = config.streaming || {};
-  const thinking = config.thinking || {};
 
   return (
     <div className="settings-panel">
@@ -224,47 +261,67 @@ const ModelSettings: React.FC = () => {
           <div className="settings-section">
             <div className="settings-card">
               <div className="settings-card-header">
-                <div className="settings-card-title">{t('settings.model.inferenceSettings')}</div>
-              </div>
-              <div className="settings-card-grid">
-                <div className="form-group">
-                  <FieldLabel label={t('settings.model.streaming')} />
-                  <label className="toggle-switch">
-                    <input type="checkbox" checked={!!streaming.enabled} onChange={e => updateField('streaming.enabled', e.target.checked)} />
-                    <span className="toggle-slider"></span>
-                    <span className="toggle-label">{streaming.enabled ? t('settings.model.streamingEnabled') : t('settings.model.streamingDisabled')}</span>
-                  </label>
-                </div>
-                <div className="form-group">
-                  <FieldLabel label={t('settings.model.thinking')} />
-                  <label className="toggle-switch">
-                    <input type="checkbox" checked={!!thinking.enabled} onChange={e => updateField('thinking.enabled', e.target.checked)} />
-                    <span className="toggle-slider"></span>
-                    <span className="toggle-label">{thinking.enabled ? t('settings.model.thinkingEnabled') : t('settings.model.thinkingDisabled')}</span>
-                  </label>
-                </div>
-                <div className={`form-group thinking-budget ${thinking.enabled ? 'visible' : 'hidden'}`}>
-                  <FieldLabel label={t('settings.model.thinkingBudget')} />
-                  <input
-                    type="number"
-                    value={thinking.budget_tokens || 10000}
-                    onChange={e => updateField('thinking.budget_tokens', parseInt(e.target.value) || 10000)}
-                    min={1000}
-                    max={200000}
-                    step={1000}
-                  />
-                  <span className="input-hint">Token</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="settings-section">
-            <div className="settings-card">
-              <div className="settings-card-header">
                 <div className="settings-card-title">{t('settings.model.modelList')}</div>
-                <button className="btn-small" onClick={addModel}>+ {t('settings.model.addModel')}</button>
+                <button className="btn-small" onClick={openProviderPicker}>+ {t('settings.model.addModel')}</button>
               </div>
+              {(showProviderPicker || showCcPicker) && createPortal(
+                <>
+                  {showProviderPicker && (
+                    <div className={`skill-detail-modal ${providerPickerClosing ? 'closing' : ''}`}>
+                      <div className="modal-overlay" onClick={closeProviderPicker} />
+                      <div className="modal-content" style={{ maxWidth: 420 }}>
+                        <div className="modal-header">
+                          <h3>{t('settings.model.chooseProvider', 'Choose provider')}</h3>
+                          <button className="btn-close" onClick={closeProviderPicker}><Icons.X size={18} /></button>
+                        </div>
+                        <div className="modal-body">
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <button className="btn-primary" style={{ justifyContent: 'center', padding: '14px', fontSize: 14 }} onClick={() => pickProvider('commandcode')}>Command Code</button>
+                            <button className="btn-secondary" style={{ justifyContent: 'center', padding: '14px', fontSize: 14 }} onClick={() => pickProvider('custom')}>{t('settings.model.customProvider', 'Custom')}</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {showCcPicker && (
+                    <div className={`skill-detail-modal ${ccPickerClosing ? 'closing' : ''}`}>
+                      <div className="modal-overlay" onClick={closeCcPicker} />
+                      <div className="modal-content" style={{ maxWidth: 520 }}>
+                        <div className="modal-header">
+                          <h3>Command Code</h3>
+                          <button className="btn-close" onClick={closeCcPicker}><Icons.X size={18} /></button>
+                        </div>
+                        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t('settings.model.ccDesc', 'Enter API Key to fetch available models, pick one to add.')}</div>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+                            <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                              <FieldLabel label="API Key" />
+                              <input type="password" value={ccApiKey} onChange={e => setCcApiKey(e.target.value)} placeholder="sk-..." onKeyDown={e => { if (e.key === 'Enter') fetchCcModels(); }} />
+                            </div>
+                            <button className="btn-primary" onClick={fetchCcModels} disabled={ccFetching} style={{ whiteSpace: 'nowrap' }}>{ccFetching ? t('common.loading') : t('settings.model.ccFetch', 'Fetch models')}</button>
+                          </div>
+                          {ccError && <div className="settings-desc" style={{ color: 'var(--text-error)' }}>{ccError}</div>}
+                          {ccModels.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
+                              {ccModels.map((m: any) => {
+                                const mid2 = m.id || m.model || '';
+                                const label = m.name || mid2;
+                                return (
+                                  <div key={mid2} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', border: '1px solid var(--border-primary)', borderRadius: 8, background: 'var(--bg-tertiary)' }}>
+                                    <span style={{ fontSize: 13 }}>{label}</span>
+                                    <button className="btn-small" onClick={() => addCcModel(m)}>{t('common.add')}</button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>,
+                document.body
+              )}
 
               {models.length === 0 && (
                 <div className="empty-state">

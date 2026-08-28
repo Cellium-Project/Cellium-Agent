@@ -87,7 +87,7 @@ class ModelPickerScreen(ModalScreen):
 
     def on_option_list_option_selected(self, event):
         if event.option.id == "__add__":
-            self.app.push_screen(ModelAddScreen())
+            self.app.push_screen(ProviderPickerScreen())
             return
         name = event.option.id
         if name == self._current:
@@ -96,7 +96,6 @@ class ModelPickerScreen(ModalScreen):
         self.dismiss(name)
 
     def key_e(self):
-        """编辑选中的模型"""
         name = self._selected_model()
         if not name or name == "__add__":
             self.app.notify(self.app.tr("model.not_found", name or ""), severity="warning")
@@ -107,7 +106,6 @@ class ModelPickerScreen(ModalScreen):
         self.app.push_screen(ModelAddScreen(initial=model))
 
     def key_d(self):
-        """删除选中的模型"""
         name = self._selected_model()
         if not name or name == "__add__":
             return
@@ -147,6 +145,290 @@ class ModelPickerScreen(ModalScreen):
 
     async def _on_switch_ok(self):
         pass
+
+
+class ProviderPickerScreen(ModalScreen):
+
+    CSS = """
+    ProviderPickerScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.6);
+    }
+    #provider-picker-panel {
+        width: 44;
+        max-width: 80%;
+        height: auto;
+        background: $surface;
+    }
+    #provider-picker-title {
+        height: 3;
+        padding: 0 2;
+        color: $primary;
+        text-style: bold;
+        content-align: left middle;
+        background: $panel;
+    }
+    #provider-picker-list {
+        height: auto;
+        max-height: 12;
+        padding: 1 0;
+        border: none;
+        background: $surface;
+    }
+    #provider-picker-list:focus { border: none; background-tint: transparent; }
+    #provider-picker-footer {
+        height: 1;
+        padding: 0 2;
+        color: $text-muted;
+        background: $bg-hover;
+    }
+    """
+
+    def compose(self):
+        with Vertical(id="provider-picker-panel"):
+            yield Static(self.app.tr("model.provider_title"), id="provider-picker-title")
+            yield OptionList(id="provider-picker-list")
+            yield Static(self.app.tr("model.provider_footer"), id="provider-picker-footer")
+
+    def on_mount(self):
+        lst = self.query_one("#provider-picker-list", OptionList)
+        opts = []
+        try:
+            from app.agent.llm.providers import list_providers
+            for p in list_providers():
+                opts.append(Option(p.get_provider_name(), id=p.get_provider_id()))
+        except Exception:
+            pass
+        opts.append(Option(self.app.tr("model.provider_custom"), id="__custom__"))
+        lst.add_options(opts)
+        lst.highlighted = 0
+        lst.focus()
+        self.query_one("#provider-picker-title", Static).update(self.app.tr("model.provider_title"))
+        self.query_one("#provider-picker-footer", Static).update(self.app.tr("model.provider_footer"))
+
+    def on_option_list_option_selected(self, event):
+        pid = event.option.id
+        if pid == "__custom__":
+            self.app.push_screen(ModelAddScreen())
+        else:
+            self.app.push_screen(CommandCodeAddScreen(provider_id=pid))
+
+    def key_escape(self):
+        self.app.pop_screen()
+
+
+class CommandCodeAddScreen(ModalScreen):
+
+    CSS = """
+    CommandCodeAddScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.6);
+    }
+    #cc-panel {
+        width: 54;
+        max-width: 85%;
+        height: auto;
+        background: $surface;
+    }
+    #cc-title {
+        height: 3;
+        padding: 0 2;
+        color: $primary;
+        text-style: bold;
+        content-align: left middle;
+        background: $panel;
+    }
+    #cc-body {
+        height: auto;
+        padding: 1 2;
+    }
+    #cc-hint {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    #cc-input { margin: 0 0 1 0; }
+    #cc-status {
+        height: auto;
+        color: $warning;
+        margin-bottom: 1;
+    }
+    #cc-list {
+        height: auto;
+        max-height: 14;
+        padding: 1 0;
+        border: none;
+        background: $surface;
+    }
+    #cc-list:focus { border: none; background-tint: transparent; }
+    #cc-footer {
+        height: 1;
+        padding: 0 2;
+        color: $text-muted;
+        background: $bg-hover;
+    }
+    """
+
+    def __init__(self, provider_id: str = "commandcode", initial: dict = None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._provider_id = provider_id
+        self._initial = initial or {}
+        self._phase = "api_key"
+        self._models: list = []
+        self._saving = False
+        self._fetching = False
+        self._api_key = self._initial.get("api_key", "")
+
+    def compose(self):
+        with Vertical(id="cc-panel"):
+            yield Static("", id="cc-title")
+            with Vertical(id="cc-body"):
+                yield Static("", id="cc-hint")
+                yield Input(value=self._api_key, password=True, placeholder="sk-...", id="cc-input")
+                yield Static("", id="cc-status")
+                yield OptionList(id="cc-list")
+            yield Static("", id="cc-footer")
+
+    def on_mount(self):
+        title = self.app.tr("model.cc_title") if not self._initial else self.app.tr("model.edit_title")
+        self.query_one("#cc-title", Static).update(title)
+        self.query_one("#cc-hint", Static).update(self.app.tr("model.cc_hint"))
+        self.query_one("#cc-footer", Static).update(self.app.tr("model.cc_footer_input"))
+        self.query_one("#cc-list", OptionList).display = False
+        self.query_one("#cc-input", Input).focus()
+
+    def _provider(self):
+        try:
+            from app.agent.llm.providers import get_provider
+            return get_provider(self._provider_id)
+        except Exception:
+            return None
+
+    def on_input_submitted(self, event):
+        if self._phase == "api_key":
+            self._on_api_key_enter()
+
+    def _on_api_key_enter(self):
+        if self._fetching:
+            return
+        api_key = (self.query_one("#cc-input", Input).value or "").strip()
+        if not api_key:
+            self.app.notify(self.app.tr("model.cc_no_api_key"), severity="warning")
+            return
+        self._api_key = api_key
+        asyncio.create_task(self._fetch_models())
+
+    async def _fetch_models(self):
+        if self._fetching:
+            return
+        self._fetching = True
+        inp = self.query_one("#cc-input", Input)
+        inp.disabled = True
+        status = self.query_one("#cc-status", Static)
+        status.update(self.app.tr("model.cc_fetching"))
+        try:
+            provider = self._provider()
+            if not provider:
+                status.update(self.app.tr("model.cc_fetch_failed", "provider not found"))
+                return
+            models = await provider.fetch_models(self._api_key)
+            if not models:
+                status.update(self.app.tr("model.cc_fetch_failed", "empty list"))
+                return
+            self._models = models
+            self._phase = "pick_model"
+            inp.display = False
+            status.update(self.app.tr("model.cc_select_model"))
+            self.query_one("#cc-hint", Static).update(self.app.tr("model.cc_select_hint"))
+            self.query_one("#cc-footer", Static).update(self.app.tr("model.cc_footer_pick"))
+            lst = self.query_one("#cc-list", OptionList)
+            lst.display = True
+            lst.clear_options()
+            opts = []
+            for m in models:
+                label = m.get("name") or m.get("id", "")
+                mid = m.get("id", "")
+                opts.append(Option(label, id=mid))
+            lst.add_options(opts)
+            lst.highlighted = 0
+            lst.focus()
+        except Exception as e:
+            msg = str(e)
+            if "401" in msg or "Unauthorized" in msg:
+                msg = "API Key invalid"
+            status.update(self.app.tr("model.cc_fetch_failed", msg[:80]))
+            inp.disabled = False
+            inp.focus()
+        finally:
+            self._fetching = False
+
+    def on_option_list_option_selected(self, event):
+        if self._phase != "pick_model":
+            return
+        model_id = event.option.id
+        model_name = ""
+        for m in self._models:
+            if m.get("id") == model_id:
+                model_name = m.get("name", "")
+                break
+        asyncio.create_task(self._save(model_id, model_name))
+
+    async def _save(self, model_id: str, model_name: str = ""):
+        if self._saving:
+            return
+        self._saving = True
+        try:
+            provider = self._provider()
+            cfg = provider.create_model_config(self._api_key, model_id, model_name) if provider else {}
+            name = cfg.get("name", f"{self._provider_id}-{model_id.split('/')[-1]}")
+            editing = bool(self._initial.get("name"))
+            if editing:
+                name = self._initial.get("name", name)
+                cfg["name"] = name
+            await asyncio.to_thread(self._persist, name, cfg)
+            app = self.app
+            app.model_name = app._current_model_name()
+            app._refresh_status()
+            try:
+                app.pop_screen()
+                app.pop_screen()
+            except Exception:
+                pass
+            try:
+                cur = app.screen
+                if isinstance(cur, ModelPickerScreen):
+                    cur._reload_models()
+            except Exception:
+                pass
+            try:
+                from app.server.routes.config import reload_llm_engine
+                await reload_llm_engine()
+            except Exception as e:
+                app.notify(app.tr("model.reload_failed", e), severity="warning")
+            app._update_model_placeholder()
+            key = "model.edited" if editing else "model.added"
+            await app._append_system(app.tr(key, name))
+        except Exception as e:
+            self.app.notify(self.app.tr("model.edit_failed" if self._initial else "settings.model.save_failed", e), severity="error")
+        finally:
+            self._saving = False
+
+    def _persist(self, name, cfg):
+        from app.server.routes.config import _sync_model_to_llm_config
+        _sync_model_to_llm_config(name, cfg, add=True)
+
+    def key_escape(self):
+        if self._phase == "pick_model":
+            self._phase = "api_key"
+            self.query_one("#cc-input", Input).display = True
+            self.query_one("#cc-input", Input).disabled = False
+            self.query_one("#cc-input", Input).focus()
+            self.query_one("#cc-list", OptionList).display = False
+            self.query_one("#cc-hint", Static).update(self.app.tr("model.cc_hint"))
+            self.query_one("#cc-footer", Static).update(self.app.tr("model.cc_footer_input"))
+            self.query_one("#cc-status", Static).update("")
+        else:
+            self.app.pop_screen()
 
 class ModelAddScreen(ModalScreen):
 

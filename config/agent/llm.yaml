@@ -15,11 +15,6 @@
 llm:
   section: llm
   provider: openai            # 服务商类型: openai / ollama / custom
-  streaming:
-    enabled: true             # 是否启用流式输出
-  thinking:
-    enabled: false            # 是否启用思考模式（推理模型专用）
-    budget_tokens: 1000       # 思考 token 预算上限
   models:                     # 模型列表，可添加多个模型
   - name: model-1             # 模型唯一标识（WebUI 中显示的名字，不可重复）
     api_key: ${LLM_MODELS_API_KEY}        # API Key（建议用环境变量，避免明文）

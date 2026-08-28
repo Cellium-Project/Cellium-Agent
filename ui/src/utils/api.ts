@@ -30,6 +30,8 @@ export const API = {
   modelSwitch: `${API_BASE}/config/model/switch`,
   modelReloadEngine: `${API_BASE}/config/model/reload-engine`,
   modelListLocal: `${API_BASE}/config/model/list-local`,
+  llmProviders: `${API_BASE}/config/providers`,
+  providerModels: `${API_BASE}/config/provider/models`,
 
   // Memory
   memories: `${API_BASE}/memories`,

@@ -17,6 +17,14 @@ try:
                 - (self.container.scroll_offset - self.container_initial_scroll_offset)
             )
         _SelectStart.pointer_start_offset = property(_patched_pointer_start_offset)
+
+        import textual.screen as _screen_mod
+        def _patched_watch_selections(self_screen, old_selections, selections):
+            for widget in old_selections.keys() | selections.keys():
+                if old_selections.get(widget) == selections.get(widget):
+                    continue
+                widget.selection_updated(selections.get(widget, None))
+        _screen_mod.Screen._watch_selections = _patched_watch_selections
 except Exception:
     pass
 
@@ -1955,8 +1963,43 @@ class CelliumTUI(App):
     async def _schedule_md_render(self):
         if getattr(self, "_md_render_timer", None) is not None:
             return
+        if self._is_user_selecting():
+            self._pending_render_after_select = True
+            return
         timer = self.set_timer(0.05, self._do_md_render)
         self._md_render_timer = timer
+
+    def _is_user_selecting(self) -> bool:
+        try:
+            selections = getattr(self.screen, "selections", None)
+            if not selections:
+                return False
+            for sel in selections.values():
+                if sel is None:
+                    continue
+                try:
+                    start, end = sel
+                except (TypeError, ValueError):
+                    continue
+                if start is not None and end is not None and start != end:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def on_mouse_up(self, event) -> None:
+        try:
+            if getattr(self, "_pending_render_after_select", False):
+                self._pending_render_after_select = False
+                old = getattr(self, "_md_render_timer", None)
+                if old is not None:
+                    try:
+                        old.stop()
+                    except Exception:
+                        pass
+                self._md_render_timer = self.set_timer(0.05, self._do_md_render)
+        except Exception:
+            pass
 
     def _do_md_render(self):
         self._md_render_timer = None
@@ -1975,10 +2018,13 @@ class CelliumTUI(App):
 
     async def _render_now(self):
         try:
+            if self._is_user_selecting():
+                self._pending_render_after_select = True
+                return
             resp = self._current_response
             md = self._current_md
             if resp is not None and md:
-                await resp.update(md)
+                await resp.update(md, layout=False)
                 self.chat.scroll_to_follow()
         except Exception as e:
             logging.warning(f"Failed to render markdown: {e}")
@@ -1992,12 +2038,6 @@ class CelliumTUI(App):
         self._pending_text = ""
 
     def _is_thought_prefix(self, text: str) -> bool:
-        """判断文本尾部是否可能是 JSON 思考协议开头的部分片段
-
-        支持两种格式:
-        1. 直接 JSON: '{', '{ ', '{ "r', '{ "reasoning' 等
-        2. 代码块包裹: '```json', '```json\n{' 等（支持流式切碎的任意前缀）
-        """
         m = re.search(r'```([a-z]*)\s*$', text, re.IGNORECASE)
         if m and "json".startswith(m.group(1)):
             return True
@@ -2024,14 +2064,6 @@ class CelliumTUI(App):
         return rest in ('"', '')
 
     def _find_thought_start(self, text):
-        """定位 JSON 思考协议开始位置：仅匹配文本开头
-
-        支持两种格式：
-        1. 直接 JSON: {"reasoning": ...}
-        2. 代码块包裹: ```json\n{"reasoning": ...}\n```
-
-        收紧为文本开头，避免 content_chunk 流式中夹杂的任意 JSON 片段误命中。
-        """
         stripped = text.lstrip()
         offset = len(text) - len(stripped)
 
@@ -2090,8 +2122,6 @@ class CelliumTUI(App):
         self.chat.scroll_to_follow()
 
     async def _add_tool_card(self, evt):
-        # 先 flush 已累积的正文（否则工具卡会吞掉前面的流式文本，
-        # 如"开始"在 tool_start 前已累积但 markdown 渲染 timer 未触发）
         if self._current_response is not None and self._current_md:
             await self._render_now()
         if self._current_response is not None:
@@ -2103,15 +2133,12 @@ class CelliumTUI(App):
             self._thought_mode = False
             self._thought_raw = ""
             self._thought_fenced = False
-        # 工具调用开始时结束当前 thinking 块：后续 thinking 事件作为新块
         if self._current_thinking is not None:
             self._current_thinking.finish()
             self._current_thinking = None
         if evt.get("gene"):
             return
         call_id = evt.get("call_id") or f"tc_{len(self._tool_cards)}"
-        # 同一轮批量工具调用（tool_start 连续到达、尚无 tool_result）合并到同一卡；
-        # 已有完成调用说明进入下一轮，开新卡按顺序排列
         same_round = self._active_tool_card is not None and not any(
             c["status"] in ("success", "error") for c in self._active_tool_card._calls.values()
         )
@@ -2156,7 +2183,6 @@ class CelliumTUI(App):
                     await self._current_response.update(self._current_md)
                 except Exception:
                     pass
-            # 恢复滚动位置到用户关注点
             try:
                 self.chat.scroll_to_follow()
             except Exception:

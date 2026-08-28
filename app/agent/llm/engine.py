@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from .models import ChatResponse, ModelInfo, ToolCall
 from .transport import OpenAICompatTransport
 from .anthropic_transport import AnthropicTransport
+from .providers import detect_provider
 from app.messaging.stream_normalizer import _THINK_PREFIXES, _think_fragment_tail
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._omit_max_tokens = omit_max_tokens
         self._thinking = thinking
         self._thinking_budget = thinking_budget
+        self._reasoning_effort = kwargs.get("reasoning_effort", "high")
 
         detected = _match_model(model)
 
@@ -225,6 +227,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._explicit_max_tokens = max_tokens
 
         self._transport: Optional[OpenAICompatTransport] = None
+        self._provider_adapter = detect_provider(self.base_url)
 
         max_tokens_hint = "(API自定)" if omit_max_tokens else str(self._model_info.max_output_tokens)
         logger.info(
@@ -303,21 +306,13 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             params.update(kwargs)
 
         if self._thinking:
-            model_lower = self.model.lower()
-            if any(m in model_lower for m in ["o1", "o3", "o4"]):
-                extra_body = {"thinking": {"type": "enabled"}}
-                if self._thinking_budget:
-                    extra_body["thinking"]["budget_tokens"] = self._thinking_budget
-                params.update(extra_body)
-                logger.info("[LLM] 思考模式 | model=%s | type=OpenAI-o系列 | budget=%s", self.model, self._thinking_budget or "默认")
-            elif "deepseek" in model_lower and "reasoner" in model_lower:
-                logger.info("[LLM] 思考模式 | model=%s | type=DeepSeek-Reasoner", self.model)
-            else:
-                logger.info("[LLM] 思考模式 | model=%s | type=第三方模型(传递thinking参数) | budget=%s", self.model, self._thinking_budget or "默认")
-                extra_body = {"thinking": {"type": "enabled"}}
-                if self._thinking_budget:
-                    extra_body["thinking"]["budget_tokens"] = self._thinking_budget
-                params.update(extra_body)
+            reasoning_param = "reasoning_effort"
+            if self._provider_adapter:
+                reasoning_param = self._provider_adapter.get_reasoning_param_name()
+
+            effort_level = self._reasoning_effort or "high"
+            params[reasoning_param] = effort_level
+            logger.info("[LLM] 思考模式 | model=%s | %s=%s", self.model, reasoning_param, effort_level)
 
         return params
 
@@ -356,10 +351,22 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     def _ensure_transport(self):
         if self._transport is None:
             if self.provider == "anthropic":
+                anthropic_base = ""
+                extra_h = None
+                if self._provider_adapter:
+                    anthropic_base = self._provider_adapter.get_anthropic_base_url()
+                    if anthropic_base:
+                        extra_h = {
+                            "x-api-key": "",
+                            "authorization": f"Bearer {self.api_key}",
+                        }
+                if not anthropic_base:
+                    anthropic_base = self.base_url or "https://api.anthropic.com"
                 self._transport = AnthropicTransport(
                     api_key=self.api_key,
-                    base_url=self.base_url or "https://api.anthropic.com",
+                    base_url=anthropic_base,
                     timeout=self.timeout,
+                    extra_headers=extra_h,
                 )
             else:
                 self._transport = OpenAICompatTransport(
@@ -615,7 +622,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                                 yield {"type": "reasoning", "text": rest}
                             rest = ""
 
-                delta_reasoning = delta.get("reasoning_content")
+                delta_reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 if delta_reasoning:
                     reasoning_parts.append(delta_reasoning)
                     chunk = {"type": "reasoning", "text": delta_reasoning}
@@ -1031,9 +1038,11 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         logger.info("[LLMFactory] 使用 Anthropic 模型配置 | name=%s | api_key=%s | base_url=%s",
                     current_model_name, api_key_preview, base_url)
 
-        thinking_config = config_dict.get("thinking", {})
-        thinking_enabled = thinking_config.get("enabled", False)
-        thinking_budget = thinking_config.get("budget_tokens")
+        model_thinking = model_config.get("thinking", {})
+        if not model_thinking:
+            model_thinking = config_dict.get("thinking", {})
+        thinking_enabled = model_thinking.get("enabled", False)
+        thinking_budget = model_thinking.get("budget_tokens")
 
         model_vision = bool(model_config.get("vision", False))
 
@@ -1052,6 +1061,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             vision=model_vision,
             provider="anthropic",
         )
+        if model_thinking.get("reasoning_effort"):
+            engine._reasoning_effort = model_thinking["reasoning_effort"]
 
         info = engine.model_info
         logger.info(
@@ -1097,9 +1108,11 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         logger.info("[LLMFactory] 使用模型配置 | name=%s | api_key=%s | base_url=%s",
                     current_model_name, api_key_preview, base_url)
 
-        thinking_config = config_dict.get("thinking", {})
-        thinking_enabled = thinking_config.get("enabled", False)
-        thinking_budget = thinking_config.get("budget_tokens")
+        model_thinking = model_config.get("thinking", {})
+        if not model_thinking:
+            model_thinking = config_dict.get("thinking", {})
+        thinking_enabled = model_thinking.get("enabled", False)
+        thinking_budget = model_thinking.get("budget_tokens")
 
         model_vision = bool(model_config.get("vision", False))
 
@@ -1117,6 +1130,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             thinking_budget=thinking_budget,
             vision=model_vision,
         )
+        if model_thinking.get("reasoning_effort"):
+            engine._reasoning_effort = model_thinking["reasoning_effort"]
 
         info = engine.model_info
         logger.info(

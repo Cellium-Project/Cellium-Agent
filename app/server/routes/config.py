@@ -89,6 +89,37 @@ async def get_all_config():
     # 脱敏处理
     return _sanitize(raw)
 
+@router.get("/providers")
+async def list_llm_providers():
+    from app.agent.llm.providers import list_provider_infos
+    return {"providers": list_provider_infos()}
+
+
+class ProviderModelsRequest(BaseModel):
+    provider_id: str
+    api_key: str
+
+
+@router.post("/provider/models")
+async def fetch_provider_models(body: ProviderModelsRequest):
+    from app.agent.llm.providers import get_provider
+    provider = get_provider(body.provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail=f"未知厂商: {body.provider_id}")
+    if not body.api_key or not body.api_key.strip():
+        raise HTTPException(status_code=400, detail="请提供 api_key")
+    try:
+        models = await provider.fetch_models(body.api_key.strip())
+        return {"models": models}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("[ConfigAPI] 拉取厂商模型失败 %s: %s", body.provider_id, e, exc_info=True)
+        msg = str(e)
+        if hasattr(e, "response") and getattr(e.response, "status_code", None) == 401:
+            raise HTTPException(status_code=401, detail="API Key 无效或已过期")
+        raise HTTPException(status_code=502, detail=f"拉取模型失败: {msg}")
+
+
 @router.get("/{section}")
 async def get_section(section: str):
     """获取指定配置段"""
