@@ -195,12 +195,21 @@ const ModelSettings: React.FC = () => {
   const [showCcPicker, setShowCcPicker] = useState(false);
   const [providerPickerClosing, setProviderPickerClosing] = useState(false);
   const [ccPickerClosing, setCcPickerClosing] = useState(false);
-  const commandcodeBaseUrl = 'https://api.commandcode.ai/provider/v1';
+  const [activeProvider, setActiveProvider] = useState<string>('commandcode');
+  const [providers, setProviders] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetchJSON<{ providers: any[] }>(API.llmProviders).then(d => {
+      setProviders(d?.providers || []);
+    }).catch(() => {});
+  }, []);
+
+  const closeCcPicker = () => { setCcPickerClosing(true); setTimeout(() => { setShowCcPicker(false); setCcPickerClosing(false); setCcError(''); setCcModels([]); }, 150); };
   const fetchCcModels = async () => {
     if (!ccApiKey.trim()) { setCcError(t('settings.model.ccNeedApiKey', 'Please enter API Key')); return; }
     setCcFetching(true); setCcError(''); setCcModels([]);
     try {
-      const res = await postJSON<{ models: any[] }>(API.providerModels, { provider_id: 'commandcode', api_key: ccApiKey.trim() });
+      const res = await postJSON<{ models: any[] }>(API.providerModels, { provider_id: activeProvider, api_key: ccApiKey.trim() });
       const list = res?.models || [];
       if (list.length === 0) setCcError(t('settings.model.ccEmpty', 'No models returned'));
       setCcModels(list);
@@ -209,19 +218,20 @@ const ModelSettings: React.FC = () => {
   const addCcModel = (m: any) => {
     const mid = m.id || m.model || '';
     const short = mid.split('/').pop() || mid;
-    const name = `commandcode-${short}`;
+    const name = `${activeProvider}-${short}`;
     if ((config.models || []).some((x: any) => x.name === name)) { setCcError(t('settings.model.ccAlreadyAdded', `Model ${name} already exists`)); return; }
-    setConfig((prev: any) => ({ ...prev, models: [...(prev.models || []), { name, api_key: ccApiKey.trim(), base_url: commandcodeBaseUrl, model: mid, temperature: 0.7, timeout: 120 }], current_model: prev.current_model || name }));
+    const meta = providers.find((p: any) => p.id === activeProvider) || {};
+    const baseUrl = meta.chat_base_url || meta.base_url || '';
+    setConfig((prev: any) => ({ ...prev, models: [...(prev.models || []), { name, api_key: ccApiKey.trim(), base_url: baseUrl, model: mid, temperature: 0.7, timeout: 120 }], current_model: prev.current_model || name }));
     closeCcPicker();
   };
   const openProviderPicker = () => setShowProviderPicker(true);
   const closeProviderPicker = () => { setProviderPickerClosing(true); setTimeout(() => { setShowProviderPicker(false); setProviderPickerClosing(false); }, 150); };
-  const closeCcPicker = () => { setCcPickerClosing(true); setTimeout(() => { setShowCcPicker(false); setCcPickerClosing(false); setCcError(''); setCcModels([]); }, 150); };
   const pickProvider = (id: string) => {
     closeProviderPicker();
     setTimeout(() => {
-      if (id === 'commandcode') { setCcError(''); setCcModels([]); setShowCcPicker(true); }
-      else addModel();
+      if (id === 'custom') { addModel(); }
+      else { setActiveProvider(id); setCcError(''); setCcModels([]); setShowCcPicker(true); }
     }, 160);
   };
 
@@ -276,7 +286,9 @@ const ModelSettings: React.FC = () => {
                         </div>
                         <div className="modal-body">
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                            <button className="btn-primary" style={{ justifyContent: 'center', padding: '14px', fontSize: 14 }} onClick={() => pickProvider('commandcode')}>Command Code</button>
+                            {providers.map((p: any) => (
+                              <button key={p.id} className="btn-primary" style={{ justifyContent: 'center', padding: '14px', fontSize: 14 }} onClick={() => pickProvider(p.id)}>{p.name || p.id}</button>
+                            ))}
                             <button className="btn-secondary" style={{ justifyContent: 'center', padding: '14px', fontSize: 14 }} onClick={() => pickProvider('custom')}>{t('settings.model.customProvider', 'Custom')}</button>
                           </div>
                         </div>
@@ -288,7 +300,7 @@ const ModelSettings: React.FC = () => {
                       <div className="modal-overlay" onClick={closeCcPicker} />
                       <div className="modal-content" style={{ maxWidth: 520 }}>
                         <div className="modal-header">
-                          <h3>Command Code</h3>
+                          <h3>{(providers.find((p: any) => p.id === activeProvider) || {}).name || activeProvider}</h3>
                           <button className="btn-close" onClick={closeCcPicker}><Icons.X size={18} /></button>
                         </div>
                         <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

@@ -290,9 +290,11 @@ class CommandCodeAddScreen(ModalScreen):
             yield Static("", id="cc-footer")
 
     def on_mount(self):
-        title = self.app.tr("model.cc_title") if not self._initial else self.app.tr("model.edit_title")
+        provider = self._provider()
+        pname = provider.get_provider_name() if provider else "Provider"
+        title = self.app.tr("model.edit_title") if self._initial else self.app.tr("model.cc_title_fmt", pname)
         self.query_one("#cc-title", Static).update(title)
-        self.query_one("#cc-hint", Static).update(self.app.tr("model.cc_hint"))
+        self.query_one("#cc-hint", Static).update(self.app.tr("model.cc_hint_fmt", pname))
         self.query_one("#cc-footer", Static).update(self.app.tr("model.cc_footer_input"))
         self.query_one("#cc-list", OptionList).display = False
         self.query_one("#cc-input", Input).focus()

@@ -1966,7 +1966,9 @@ class CelliumTUI(App):
         if self._is_user_selecting():
             self._pending_render_after_select = True
             return
-        timer = self.set_timer(0.05, self._do_md_render)
+        length = len(self._md_buffer.get_content())
+        delay = min(0.05 + length / 20000.0, 0.20)
+        timer = self.set_timer(delay, self._do_md_render)
         self._md_render_timer = timer
 
     def _is_user_selecting(self) -> bool:
@@ -2007,8 +2009,10 @@ class CelliumTUI(App):
         if resp is None or not self._md_buffer.has_changed():
             return
         if not self._md_buffer.is_complete():
-            self._schedule_md_render()
-            return
+            self._md_buffer.note_waiting()
+            if not self._md_buffer.should_force_render():
+                self._schedule_md_render()
+                return
         try:
             import asyncio
             asyncio.ensure_future(self._render_now())
@@ -2024,7 +2028,7 @@ class CelliumTUI(App):
             resp = self._current_response
             md = self._current_md
             if resp is not None and md:
-                await resp.update(md, layout=False)
+                await resp.update(md)
                 self.chat.scroll_to_follow()
         except Exception as e:
             logging.warning(f"Failed to render markdown: {e}")

@@ -10,6 +10,7 @@ from .base import BaseProvider
 logger = logging.getLogger(__name__)
 
 _PROVIDERS: Dict[str, BaseProvider] = {}
+_ORDER = ["commandcode", "opencode", "minimax"]
 
 
 def _discover_providers():
@@ -41,7 +42,10 @@ def get_provider(provider_id: str) -> Optional[BaseProvider]:
 
 
 def list_providers() -> List[BaseProvider]:
-    return list(_PROVIDERS.values())
+    def sort_key(p: BaseProvider) -> int:
+        pid = p.get_provider_id()
+        return _ORDER.index(pid) if pid in _ORDER else len(_ORDER)
+    return sorted(_PROVIDERS.values(), key=sort_key)
 
 
 def detect_provider(base_url: str) -> Optional[BaseProvider]:
@@ -65,6 +69,7 @@ def get_provider_info(provider_id: str) -> Optional[Dict]:
         "models_endpoint": p.get_models_endpoint(),
         "chat_endpoint": p.get_chat_endpoint(),
         "reasoning_param": p.get_reasoning_param_name(),
+        "chat_base_url": p.get_chat_base_url(),
     }
 
 
@@ -77,6 +82,7 @@ def list_provider_infos() -> List[Dict]:
             "models_endpoint": p.get_models_endpoint(),
             "chat_endpoint": p.get_chat_endpoint(),
             "reasoning_param": p.get_reasoning_param_name(),
+            "chat_base_url": p.get_chat_base_url(),
         }
-        for p in _PROVIDERS.values()
+        for p in list_providers()
     ]

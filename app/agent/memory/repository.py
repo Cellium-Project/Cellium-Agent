@@ -16,6 +16,7 @@ import os
 import re
 import sqlite3
 import struct
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -70,7 +71,7 @@ class MemoryRepository:
         self._init_vector_db()
         self._query_embedding_cache: Dict[str, List[float]] = {}
         self._query_cache_max_size = 100
-        self._api_embedding_cache: Dict[str, List[float]] = {}
+        self._api_embedding_cache: "OrderedDict[str, array.array]" = OrderedDict()
         self._api_cache_max_size = 1000
         self._register_config_callback()
         self._backfill_from_index()
@@ -1470,7 +1471,8 @@ class MemoryRepository:
     def _call_embedding_api(self, text: str) -> List[float]:
         cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()
         if cache_key in self._api_embedding_cache:
-            return self._api_embedding_cache[cache_key]
+            self._api_embedding_cache.move_to_end(cache_key)
+            return list(self._api_embedding_cache[cache_key])
 
         try:
             import httpx
@@ -1497,8 +1499,10 @@ class MemoryRepository:
                 self._save_catalog()
                 logger.info("[MemoryRepository] 自动检测到 embedding 维度: %d (模型: %s)", detected_dim, model)
 
-            if len(self._api_embedding_cache) < self._api_cache_max_size:
-                self._api_embedding_cache[cache_key] = embedding
+            self._api_embedding_cache[cache_key] = array.array('f', embedding)
+            self._api_embedding_cache.move_to_end(cache_key)
+            while len(self._api_embedding_cache) > self._api_cache_max_size:
+                self._api_embedding_cache.popitem(last=False)
             return embedding
         except Exception as e:
             logger.debug("[MemoryRepository] Embedding API 调用失败: %s", e)
