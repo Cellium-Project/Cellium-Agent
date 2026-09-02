@@ -877,8 +877,23 @@ class HistoryMarkdown(Static):
                 from rich.text import Text
                 self._md = Text(markdown)
             self._visual = None
+        if layout and self._is_selecting():
+            layout = False
         self.refresh(layout=layout)
         return AwaitComplete.nothing()
+
+    def _is_selecting(self) -> bool:
+        try:
+            selections = getattr(self.screen, "selections", None)
+            if not selections:
+                return False
+            sel = selections.get(self)
+            if sel is None:
+                return False
+            start, end = sel
+            return start is not None and end is not None and start != end
+        except Exception:
+            return False
 
     def set_content(self, text):
         return self.update(text or "")
@@ -892,16 +907,29 @@ class HistoryMarkdown(Static):
 
     def get_selection(self, selection) -> tuple[str, str] | None:
         try:
-            from textual.visual import Visual as _V
-            from textual.geometry import Region
             if self._md is None or self.size.height <= 0:
                 return None
+            src = self._source or ""
+            if not src:
+                return None
+            if selection.start is None and selection.end is None:
+                return src, "\n"
+            from textual.visual import Visual as _V
             v = self._render()
             strips = _V.to_strips(self, v, self.size.width, None, self.visual_style)
-            text = "\n".join(strip.text for strip in strips)
-            return selection.extract(text), "\n"
+            rendered = "\n".join(strip.text for strip in strips)
+            lines = rendered.split("\n")
+            src_lines = src.split("\n")
+            sy = min(selection.start.y, len(lines) - 1) if selection.start else 0
+            ey = min(selection.end.y, len(lines) - 1) if selection.end else len(lines) - 1
+            sy = min(sy, len(src_lines) - 1)
+            ey = min(ey, len(src_lines) - 1)
+            if sy == ey:
+                return src_lines[sy], "\n"
+            result = "\n".join(src_lines[sy:ey + 1])
+            return result, "\n"
         except Exception:
-            return None
+            return self._source or "", "\n"
 
     def append(self, markdown):
         return self.update(self._source)

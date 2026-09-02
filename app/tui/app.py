@@ -1584,12 +1584,28 @@ class CelliumTUI(App):
             self.copy_to_clipboard(selection)
             self.screen.clear_selection()
             return
-        # 只有输入框有焦点时才 fallback 到复制输入框，避免干扰聊天选区
+        raw = self._last_assistant_source()
+        if raw:
+            self.copy_to_clipboard(raw)
+            self.screen.clear_selection()
+            return
         if self.input is not None and self.input.has_focus:
             try:
                 self.input.action_copy()
             except SkipAction:
                 pass
+
+    def _last_assistant_source(self) -> str:
+        try:
+            from app.tui.widgets import AssistantMessage
+            for child in reversed(self.chat.children):
+                if isinstance(child, AssistantMessage):
+                    src = getattr(child, "_source", None)
+                    if src:
+                        return src
+        except Exception:
+            pass
+        return ""
 
     def action_copy_selection(self):
         """Ctrl+Y 复制当前选区"""
@@ -1961,15 +1977,11 @@ class CelliumTUI(App):
         await self._schedule_md_render()
 
     async def _schedule_md_render(self):
-        if getattr(self, "_md_render_timer", None) is not None:
-            return
         if self._is_user_selecting():
             self._pending_render_after_select = True
             return
-        length = len(self._md_buffer.get_content())
-        delay = min(0.05 + length / 20000.0, 0.20)
-        timer = self.set_timer(delay, self._do_md_render)
-        self._md_render_timer = timer
+        import asyncio
+        asyncio.ensure_future(self._render_now(force_layout=True))
 
     def _is_user_selecting(self) -> bool:
         try:
@@ -2008,27 +2020,24 @@ class CelliumTUI(App):
         resp = self._current_response
         if resp is None or not self._md_buffer.has_changed():
             return
-        if not self._md_buffer.is_complete():
-            self._md_buffer.note_waiting()
-            if not self._md_buffer.should_force_render():
-                self._schedule_md_render()
-                return
+        prev = getattr(self, "_md_layout_len", 0)
+        cur = len(self._md_buffer.get_content())
+        force = (cur - prev) > 300 or prev == 0
+        if force:
+            self._md_layout_len = cur
         try:
             import asyncio
-            asyncio.ensure_future(self._render_now())
+            asyncio.ensure_future(self._render_now(force_layout=force))
             self._md_buffer.mark_rendered()
         except Exception as e:
             logging.warning(f"Failed to schedule markdown render: {e}")
 
-    async def _render_now(self):
+    async def _render_now(self, force_layout=False):
         try:
-            if self._is_user_selecting():
-                self._pending_render_after_select = True
-                return
             resp = self._current_response
             md = self._current_md
             if resp is not None and md:
-                await resp.update(md)
+                await resp.update(md, layout=force_layout)
                 self.chat.scroll_to_follow()
         except Exception as e:
             logging.warning(f"Failed to render markdown: {e}")
@@ -2184,7 +2193,8 @@ class CelliumTUI(App):
                 self._pending_text = ""
             if self._current_response is not None and self._current_md:
                 try:
-                    await self._current_response.update(self._current_md)
+                    await self._current_response.update(self._current_md, layout=True)
+                    self._md_layout_len = len(self._current_md)
                 except Exception:
                     pass
             try:
