@@ -122,12 +122,18 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _estimate_messages_tokens(messages: List[Dict]) -> int:
-    """估算消息列表总 token 数（含格式开销）"""
+    """估算消息列表总 token 数"""
     total = 0
     for msg in messages:
         content = msg.get("content", "")
         role = msg.get("role", "")
         total += _estimate_tokens(content) + 4
+        
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                fn = tc.get("function", {})
+                total += _estimate_tokens(fn.get("name", "")) + _estimate_tokens(fn.get("arguments", "")) + 4
+    
     total = int(total * 1.1)
     return max(total, 10)
 
@@ -184,7 +190,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self,
         api_key: str = "",
         base_url: str = "https://api.openai.com/v1",
-        model: str = "gpt-4o",
+        model: str = "gpt-5.5",
         temperature: float = 0.7,
         max_tokens: int = None,      
         timeout: int = 60,
@@ -222,7 +228,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
 
         self._calibrated = False
-        self._actual_token_ratio = None  
+        self._actual_token_ratio = None
+        self._last_prompt_tokens = 0  # 上一次 API 返回的实际 prompt tokens
 
         self._explicit_max_tokens = max_tokens
 
@@ -243,13 +250,18 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     def model_info(self) -> ModelInfo:
         return self._model_info
 
+    def get_last_prompt_tokens(self) -> int:
+        return self._last_prompt_tokens
+
+    def reset_last_prompt_tokens(self):
+        self._last_prompt_tokens = 0
+
     @property
     def context_window(self) -> int:
         return self._model_info.context_window
 
     @property
     def effective_max_tokens(self) -> int:
-        """实际生效的 max_tokens（考虑上下文剩余空间）"""
         return self._model_info.max_output_tokens
 
     def estimate_tokens_calibrated(self, messages: List[Dict], tools: List = None) -> int:
@@ -506,6 +518,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         if parsed.usage:
             self._calibrate_from_usage(parsed.usage, req_tokens)
+        elif req_tokens > 0:
+            self._last_prompt_tokens = req_tokens
 
         return parsed
 
@@ -678,6 +692,12 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             )
             if usage:
                 self._calibrate_from_usage(usage, req_tokens)
+            else:
+                # API 未返回 usage 时，用校准后的估算值兜底
+                if self._actual_token_ratio and self._actual_token_ratio > 0:
+                    self._last_prompt_tokens = int(req_tokens * self._actual_token_ratio)
+                elif req_tokens > 0:
+                    self._last_prompt_tokens = req_tokens
             logger.info(
                 "[LLM] <<< 流式完成 | model=%s | content长度=%d | tool_calls=%d | finish_reason=%s",
                 self.model, len(response.content or ""), len(calls), response.finish_reason,
@@ -755,6 +775,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             )
             if usage:
                 self._calibrate_from_usage(usage, req_tokens)
+            else:
+                if self._actual_token_ratio and self._actual_token_ratio > 0:
+                    self._last_prompt_tokens = int(req_tokens * self._actual_token_ratio)
+                elif req_tokens > 0:
+                    self._last_prompt_tokens = req_tokens
             logger.info(
                 "[LLM] <<< 流式完成 | model=%s | content长度=%d | tool_calls=%d | finish_reason=%s",
                 self.model, len(response.content or ""), len(calls), response.finish_reason,
@@ -971,10 +996,13 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             return True  
 
     def _calibrate_from_usage(self, actual_usage: Dict, estimated_input: int):
+        prompt_tokens = actual_usage.get("prompt_tokens", 0)
+        if prompt_tokens > 0:
+            self._last_prompt_tokens = prompt_tokens
+
         if self._calibrated:
             return
 
-        prompt_tokens = actual_usage.get("prompt_tokens", 0)
         if prompt_tokens <= 0 or estimated_input <= 0:
             return
 
@@ -1122,7 +1150,18 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
 
         model_vision = bool(model_config.get("vision", False))
 
-        engine = OpenAICompatibleEngine(
+        engine_cls = OpenAICompatibleEngine
+        engine_kwargs = {}
+        if "opencode.ai" in base_url:
+            try:
+                from app.agent.llm.providers.opencode.engine import OpenCodeEngine
+                engine_cls = OpenCodeEngine
+                if model_config.get("session_id"):
+                    engine_kwargs["session_id"] = model_config["session_id"]
+            except ImportError:
+                pass
+
+        engine = engine_cls(
             api_key=api_key,
             base_url=base_url,
             model=model_name,
@@ -1135,6 +1174,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
             vision=model_vision,
+            **engine_kwargs,
         )
         if model_thinking.get("reasoning_effort"):
             engine._reasoning_effort = model_thinking["reasoning_effort"]

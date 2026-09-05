@@ -32,14 +32,18 @@ class ArchiveStore:
         normalized_messages = messages or []
 
         session_keys = self._get_session_keys(session_id)
+        is_snapshot = any(
+            isinstance(m, dict) and m.get("_is_compacted_notes") for m in normalized_messages
+        )
         fresh_messages = []
         for m in normalized_messages:
-            if not isinstance(m, dict):
-                fresh_messages.append(m)
-                continue
-            key = self._message_key(m)
-            if key not in session_keys:
+            if isinstance(m, dict):
+                key = self._message_key(m)
+                if key in session_keys and not is_snapshot:
+                    continue
                 session_keys.add(key)
+                fresh_messages.append(m)
+            else:
                 fresh_messages.append(m)
 
         if not fresh_messages:
@@ -124,7 +128,7 @@ class ArchiveStore:
         )
 
     def _get_session_keys(self, session_id: str) -> set:
-        """获取该 session 已归档消息 key 集合（进程内缓存，首次全量扫描）"""
+        """获取该 session 已归档消息 key 集合"""
         keys = self._session_keys.get(session_id)
         if keys is not None:
             return keys

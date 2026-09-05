@@ -80,7 +80,7 @@ class EvaluationContext:
     tool_call_history: List[Dict] = field(default_factory=list)
     available_tools: List[str] = field(default_factory=list)
     total_tokens_used: int = 0
-    token_budget: int = 10000000
+    token_budget: int = 1000000
     elapsed_ms: int = 0
     user_input: str = ""
     last_tool_result: Optional[Dict] = None

@@ -133,8 +133,10 @@ class SessionNotes:
 
             # 短内容：检查是否一个包含另一个
             if len(new_normalized) <= 20 or len(existing_normalized) <= 20:
-                shorter = min(new_normalized, existing_normalized, key=len)
-                longer = max(new_normalized, existing_normalized, key=len)
+                if len(new_normalized) <= len(existing_normalized):
+                    shorter, longer = new_normalized, existing_normalized
+                else:
+                    shorter, longer = existing_normalized, new_normalized
                 if longer.startswith(shorter.rstrip()) or shorter in longer:
                     return True
             else:

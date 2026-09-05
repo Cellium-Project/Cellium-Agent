@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import httpx
+import uuid
 from typing import Dict, List
 
 from ..base import BaseProvider
@@ -64,5 +65,6 @@ class OpenCodeProvider(BaseProvider):
             "timeout": DEFAULT_TIMEOUT,
             "vision": False,
             "thinking": self.get_default_thinking(),
+            "session_id": uuid.uuid4().hex,
         }
         return cfg

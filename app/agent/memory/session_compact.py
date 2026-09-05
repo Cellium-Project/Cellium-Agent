@@ -88,7 +88,7 @@ class SessionCompactor:
                     self._tool_call_count, growth_ratio * 100
                 )
 
-        if not cooldown_blocked and self._tool_call_count >= self.tool_call_threshold:
+        if self._tool_call_count >= self.tool_call_threshold:
             logger.info("[SessionCompactor] 工具调用触发压缩 | tool_calls=%d", self._tool_call_count)
             return True
 
@@ -103,6 +103,10 @@ class SessionCompactor:
         return False
 
     def _estimate_tokens(self, memory: "MemoryManager") -> int:
+        if self.llm and hasattr(self.llm, "get_last_prompt_tokens"):
+            actual = self.llm.get_last_prompt_tokens()
+            if actual > 0:
+                return actual
         from app.agent.llm.engine import _estimate_messages_tokens
         return _estimate_messages_tokens(memory.messages)
 
@@ -169,7 +173,10 @@ class SessionCompactor:
         for finding in summary_data.get("findings", []):
             notes.add_finding(finding)
         for error in summary_data.get("errors", []):
-            notes.add_error(error, resolution=None)
+            if isinstance(error, dict):
+                notes.add_error(str(error.get("error", "")), resolution=str(error.get("resolution", "")) or None)
+            else:
+                notes.add_error(str(error), resolution=None)
         if len(notes.get_findings()) > 50:
             notes._content["findings"] = notes.get_findings()[-50:]
         if len(notes.get_errors()) > 50:
@@ -180,6 +187,9 @@ class SessionCompactor:
             self._persist_notes_to_long_term(notes, summary_data)
 
         self._replace_old_messages(memory, notes, summary_data.get("summary", ""))
+
+        if self.llm and hasattr(self.llm, "reset_last_prompt_tokens"):
+            self.llm.reset_last_prompt_tokens()
         self._last_compact_tokens = self._estimate_tokens(memory)
 
         logger.info(

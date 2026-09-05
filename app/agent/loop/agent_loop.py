@@ -1175,7 +1175,7 @@ class AgentLoop:
 
             yield {"type": "status", "content": "正在思考..."}
 
-            # LLM 意图匹配 Gene（取代关键词匹配，减少误判）
+            # LLM 意图匹配 Gene
             if self.control_loop and self._loop_state and not self._loop_state.matched_gene_type:
                 gene_match = await self._llm_match_gene(user_input)
                 if gene_match:
@@ -1184,6 +1184,8 @@ class AgentLoop:
                     logger.info("[AgentLoop] Gene 已通过 LLM 匹配 | task_type=%s", gene_match["task_type"])
 
             self._tool_call_count_in_round = 0
+            self._tool_help_given = False
+            self._empty_final_retried = False
 
             while True:
                 # === 检查并注入补充消息 ===
@@ -1471,6 +1473,18 @@ class AgentLoop:
                 tool_defs = self._get_tools_definition()
                 logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
                            iteration, len(llm_messages), len(tool_defs))
+
+                if not self.flash_mode and not is_gene_processing:
+                    if self._session_compactor.should_compact(effective_memory):
+                        logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
+                        yield {"type": "status", "content": "正在压缩会话记忆..."}
+                        session_notes = self._get_session_notes(effective_session)
+                        await self._session_compactor.compact_now(effective_memory, session_notes)
+                        llm_messages = self._prompt_builder.build(context)
+                        self._persist_conversation(
+                            user_input="", response_content=None,
+                            session_id=effective_session, memory=effective_memory,
+                        )
                 # 经 PromptDiffTracker 流式调用 LLM（自动追踪前缀缓存 + 逐 chunk 输出）
                 _stream_reasoning = []
                 _stream_reasoning_start = None
@@ -1697,7 +1711,18 @@ class AgentLoop:
                     has_tool_calls=bool(response.tool_calls),
                 )
 
-                # === 5. 处理工具调用 ===
+                # === 5. 输出截断检测（提前到工具执行前，防止截断的 tool_calls 带残缺参数被执行） ===
+                if hasattr(response, 'finish_reason') and response.finish_reason == "length":
+                    logger.info("[AgentLoop] 输出被截断 (finish_reason=length)，继续迭代补充...")
+                    if not self.flash_mode:
+                        effective_memory.add_assistant_message(
+                            response.content or "",
+                            reasoning_content=response.reasoning_content
+                        )
+                    yield {"type": "status", "content": "输出被截断，正在补充..."}
+                    continue
+
+                # === 5.5 处理工具调用 ===
                 if response.tool_calls:
                     self._tool_call_count_in_round += len(response.tool_calls)
                     self._session_compactor.track_tool_call()
@@ -1975,24 +2000,14 @@ class AgentLoop:
 
                     continue
 
-                # === 5.6 输出截断检测 ===
-                if hasattr(response, 'finish_reason') and response.finish_reason == "length":
-                    logger.info("[AgentLoop] 输出被截断 (finish_reason=length)，继续迭代补充...")
-                    if not self.flash_mode:
-                        effective_memory.add_assistant_message(
-                            response.content or "",
-                            reasoning_content=response.reasoning_content
-                        )
-                    yield {"type": "status", "content": "输出被截断，正在补充..."}
-                    continue
-
                 # === 5.7 工具帮助检测 ===
                 _help_keywords = ["工具帮助", "参数格式", "tool_help", "tool help",
                                   "怎么调用工具", "如何使用工具", "查看工具列表", "工具的参数是什么", "不确定参数怎么写"]
                 content_preview = (response.content or "").strip()[:200]
                 content_lower = content_preview.lower()
                 is_help_request = (
-                    not response.tool_calls 
+                    not response.tool_calls
+                    and not getattr(self, "_tool_help_given", False)
                     and any(kw in content_lower for kw in _help_keywords)
                     and ("?" in content_preview or "？" in content_preview or "请" in content_preview or "help" in content_lower)
                 )
@@ -2000,6 +2015,7 @@ class AgentLoop:
                     tool_defs = self._get_tools_definition()
                     help_text = AutoHintManager.format_tool_help(tool_defs)
                     logger.info("[AgentLoop] 检测到工具帮助请求，注入工具定义")
+                    self._tool_help_given = True
                     if not self.flash_mode:
                         effective_memory.add_assistant_message(
                             response.content or "",
@@ -2013,6 +2029,20 @@ class AgentLoop:
 
                 # === 6. 最终回复===
                 content = response.content or ""
+
+                # 空最终回复兜底：一次性重试，避免用户收到空响应
+                if not content.strip():
+                    if not getattr(self, "_empty_final_retried", False) and iteration < self.max_iterations:
+                        logger.warning("[AgentLoop] 最终回复为空，注入提示后重试 | iter=%d", iteration)
+                        self._empty_final_retried = True
+                        if not self.flash_mode:
+                            effective_memory.add_assistant_message("")
+                            effective_memory.add_user_message(
+                                "[系统] 上一轮回复为空，请直接给出最终回答。"
+                            )
+                        yield {"type": "status", "content": "回复为空，正在重新生成..."}
+                        continue
+                    logger.warning("[AgentLoop] 最终回复为空且无法重试，终止 | iter=%d", iteration)
 
                 is_looping, repeated_output = self._loop_controller.check_output_loop(content)
                 if is_looping:

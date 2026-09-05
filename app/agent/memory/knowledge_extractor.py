@@ -10,14 +10,13 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeExtractor:
-    """规则知识提取器 - 带中文分词增强"""
 
     def __init__(self, searcher=None):
         self.searcher = searcher
         self.tokenizer = get_tokenizer()
 
     def extract(self, user_input: str, response: str) -> List[Dict]:
-        """从对话中提取知识项（带结构化 schema 元数据）"""
+        """从对话中提取知识项"""
         text = (user_input or "") + "\n" + (response or "")
         results: List[Dict] = []
 
