@@ -1584,28 +1584,11 @@ class CelliumTUI(App):
             self.copy_to_clipboard(selection)
             self.screen.clear_selection()
             return
-        raw = self._last_assistant_source()
-        if raw:
-            self.copy_to_clipboard(raw)
-            self.screen.clear_selection()
-            return
         if self.input is not None and self.input.has_focus:
             try:
                 self.input.action_copy()
             except SkipAction:
                 pass
-
-    def _last_assistant_source(self) -> str:
-        try:
-            from app.tui.widgets import AssistantMessage
-            for child in reversed(self.chat.children):
-                if isinstance(child, AssistantMessage):
-                    src = getattr(child, "_source", None)
-                    if src:
-                        return src
-        except Exception:
-            pass
-        return ""
 
     def action_copy_selection(self):
         """Ctrl+Y 复制当前选区"""

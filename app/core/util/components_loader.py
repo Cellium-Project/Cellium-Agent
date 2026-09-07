@@ -121,9 +121,22 @@ def get_config_path() -> pathlib.Path:
     if COMPONENTS_CONFIG_PATH and COMPONENTS_CONFIG_PATH.exists():
         return COMPONENTS_CONFIG_PATH
 
-    base_dir = pathlib.Path(__file__).resolve().parent.parent.parent.parent
-    COMPONENTS_CONFIG_PATH = base_dir / "config" / "settings.yaml"
-    return COMPONENTS_CONFIG_PATH
+    from app.core.util.runtime_paths import resolve_config_dir, _find_package_data_dir
+    cfg_dir = pathlib.Path(resolve_config_dir()).parent
+    path = cfg_dir / "settings.yaml"
+    if not path.exists():
+        pkg_dir = _find_package_data_dir()
+        if pkg_dir:
+            tpl = pathlib.Path(pkg_dir) / "config" / "settings.yaml"
+            if tpl.exists():
+                try:
+                    import shutil
+                    cfg_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(tpl, path)
+                except Exception:
+                    pass
+    COMPONENTS_CONFIG_PATH = path
+    return path
 
 
 def load_settings() -> Dict[str, Any]:

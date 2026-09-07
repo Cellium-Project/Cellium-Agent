@@ -909,27 +909,13 @@ class HistoryMarkdown(Static):
         try:
             if self._md is None or self.size.height <= 0:
                 return None
-            src = self._source or ""
-            if not src:
-                return None
-            if selection.start is None and selection.end is None:
-                return src, "\n"
             from textual.visual import Visual as _V
             v = self._render()
             strips = _V.to_strips(self, v, self.size.width, None, self.visual_style)
-            rendered = "\n".join(strip.text for strip in strips)
-            lines = rendered.split("\n")
-            src_lines = src.split("\n")
-            sy = min(selection.start.y, len(lines) - 1) if selection.start else 0
-            ey = min(selection.end.y, len(lines) - 1) if selection.end else len(lines) - 1
-            sy = min(sy, len(src_lines) - 1)
-            ey = min(ey, len(src_lines) - 1)
-            if sy == ey:
-                return src_lines[sy], "\n"
-            result = "\n".join(src_lines[sy:ey + 1])
-            return result, "\n"
+            text = "\n".join(strip.text for strip in strips)
+            return selection.extract(text), "\n"
         except Exception:
-            return self._source or "", "\n"
+            return None
 
     def append(self, markdown):
         return self.update(self._source)

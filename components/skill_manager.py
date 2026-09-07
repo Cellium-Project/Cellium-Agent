@@ -45,8 +45,9 @@ class SkillManager(BaseCell):
 
     @staticmethod
     def _get_skills_dir() -> Path:
-        """获取 Skill 安装目录"""
-        return Path(__file__).resolve().parent / "skills"
+        """获取 Skill 安装目录（源码=项目根，pip=用户数据目录）"""
+        from app.core.util.runtime_paths import resolve_dir_writable
+        return Path(resolve_dir_writable("components", "skills"))
 
     @staticmethod
     def _get_skills_index_path() -> Path:

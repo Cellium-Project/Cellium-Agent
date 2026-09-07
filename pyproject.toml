@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellium-agent"
-version = "1.4.3.post3"
+version = "1.4.3.post4"
 description = "Cellium Agent - 桌面 AI 助手"
 readme = "README_en.md"
 requires-python = ">=3.12"
@@ -80,6 +80,5 @@ include = ["app*"]
 "cellium/vendor/ripgrep/x86_64-unknown-linux-musl" = ["vendor/ripgrep/x86_64-unknown-linux-musl/rg"]
 "cellium/vendor/ripgrep/aarch64-unknown-linux-gnu" = ["vendor/ripgrep/aarch64-unknown-linux-gnu/rg"]
 "cellium/components" = ["components/__init__.py", "components/_example_component.py", "components/component_builder.py", "components/feishu_files.py", "components/qq_files.py", "components/scheduler.py", "components/skill_installer.py", "components/skill_manager.py", "components/sub_agent.py", "components/telegram_files.py", "components/web_fetch.py", "components/web_search.py", "components/weixin_files.py"]
-"cellium/components/skills" = ["components/skills/__init__.py"]
 "cellium/memory" = ["memory/personality.md"]
 "cellium/licenses" = ["licenses/ripgrep-LICENSE"]
