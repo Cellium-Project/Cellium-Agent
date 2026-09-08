@@ -2141,7 +2141,14 @@ const HeuristicsSettings: React.FC = () => {
       ema_alpha: cfg.thresholds.ema_alpha,
       plateau_stuck_limit: cfg.thresholds.plateau_stuck_limit,
     } : undefined,
-    rules: cfg.rules,
+    rules: (() => {
+      const r: Record<string, any> = { ...cfg.rules };
+      if (r['loop-001']) {
+        const { enabled: _ignored, ...rest } = r['loop-001'];
+        r['loop-001'] = rest;
+      }
+      return r;
+    })(),
   });
 
   const deepEqual = (a: any, b: any): boolean => {
@@ -2176,7 +2183,11 @@ const HeuristicsSettings: React.FC = () => {
 
   const applyPreset = (presetKey: PresetKey) => {
     const preset = HEURISTICS_PRESETS[presetKey];
-    setConfig(preset.config);
+    const next = { ...preset.config, rules: { ...preset.config.rules } };
+    if (next.rules['loop-001']) {
+      next.rules['loop-001'] = { ...next.rules['loop-001'], enabled: !!config.rules?.['loop-001']?.enabled };
+    }
+    setConfig(next);
     setSelectedPreset(presetKey);
   };
 
