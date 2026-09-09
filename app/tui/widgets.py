@@ -126,6 +126,8 @@ _COMMANDS = ("help", "clear", "theme", "models", "session", "new", "settings", "
 class ChatScroll(VerticalScroll):
     """聊天滚动容器"""
 
+    ALLOW_SELECT = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._following = True
@@ -161,6 +163,7 @@ class ChatScroll(VerticalScroll):
 
 
 class CommandInput(TextArea):
+    ALLOW_SELECT = False
 
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("soft_wrap", True)
@@ -360,6 +363,7 @@ class CommandInput(TextArea):
 
 class CommandPalette(Vertical):
     """/ 命令补全面板"""
+    ALLOW_SELECT = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -413,6 +417,7 @@ class CommandPalette(Vertical):
 
 class FilePanel(Vertical):
     """@ 文件/文件夹选择面板"""
+    ALLOW_SELECT = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -787,8 +792,12 @@ class _SelectableRichVisual(RichVisual):
                 result.append(strip)
                 continue
             start, end = span
+            line_text = strip.text
+            start = _chars_to_cells(line_text, start)
             if end == -1:
                 end = strip.cell_length
+            else:
+                end = _chars_to_cells(line_text, end)
             cache_key = (sel_key, y, start, end)
             styled = styled_cache.get(cache_key)
             if styled is None:
@@ -798,6 +807,22 @@ class _SelectableRichVisual(RichVisual):
                 styled_cache[cache_key] = styled
             result.append(styled)
         return result
+
+def _chars_to_cells(text: str, char_index: int) -> int:
+    """Convert a character index to a cell (column) index.
+
+    Selection offsets in Textual are character indices, while strip
+    highlighting / span styling work in cell coordinates. For lines
+    containing wide characters (CJK etc.) the two differ, which caused
+    the selection highlight to drift away from the cursor.
+    """
+    from rich.cells import cell_len
+    if char_index <= 0:
+        return 0
+    if char_index >= len(text):
+        return cell_len(text)
+    return cell_len(text[:char_index])
+
 
 def _cells_to_chars(text: str, cell_offset: int) -> int:
     from rich.cells import cell_len
@@ -850,9 +875,20 @@ def _stylize_strip_range(strip, start: int, end: int, style) -> object:
                 output.append(Segment(text[:char_pre], seg_style, control))
             if char_mid_end > char_pre:
                 merged = (seg_style or Style()) + sel_rich
+                seg_off = (seg_style.meta if seg_style is not None else {}).get("offset")
+                if seg_off is not None:
+                    merged = merged + Style.from_meta(
+                        {"offset": (seg_off[0] + char_pre, seg_off[1])}
+                    )
                 output.append(Segment(text[char_pre:char_mid_end], merged, control))
             if char_mid_end < seg_chars:
-                output.append(Segment(text[char_mid_end:], seg_style, control))
+                fixed = seg_style
+                seg_off = (seg_style.meta if seg_style is not None else {}).get("offset")
+                if seg_off is not None:
+                    fixed = (seg_style or Style()) + Style.from_meta(
+                        {"offset": (seg_off[0] + char_mid_end, seg_off[1])}
+                    )
+                output.append(Segment(text[char_mid_end:], fixed, control))
         x = seg_end
     return Strip(output, strip.cell_length)
 

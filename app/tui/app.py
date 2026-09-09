@@ -576,10 +576,30 @@ class CelliumTUI(App):
         self._bootstrap_timer = self.set_interval(0.2, self._check_bootstrap)
         self._register_session_listener()
         self._apply_rich_md_theme()
+        self._setup_select_scope()
         # 全局 blink timer，所有 spinner 共享
         self._global_blink_timer = self.set_interval(0.5, self._tick_global_blink)
         # 常驻订阅 broker：空闲时也能实时收到对端（WebUI/外部平台）发起的消息
         self._post(self._start_broker_listener())
+
+    def _setup_select_scope(self):
+        try:
+            from textual.widget import Widget
+            from textual.widgets import Toast
+            Toast.ALLOW_SELECT = False
+        except Exception:
+            pass
+        try:
+            inside_chat = set(self.chat.walk_children(Widget))
+            for w in self.screen.walk_children(Widget):
+                if w in inside_chat:
+                    continue
+                try:
+                    w.ALLOW_SELECT = False
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _set_terminal_title(self):
         title = str(self.title or self.TITLE).replace("\x1b", "").replace("\x07", "")
