@@ -1210,11 +1210,12 @@ class AgentLoop:
 
                 # === 在迭代开始前执行待处理的压缩 ===
                 is_gene_processing = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
-                if not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact():
+                _pending_fallback = self._session_compactor.pending_fallback
+                if _pending_fallback or (not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact()):
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
-                    await self._session_compactor.compact_now(effective_memory, session_notes)
+                    await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_pending_fallback)
                     self._persist_conversation(
                         user_input="", response_content=None,
                         session_id=effective_session, memory=effective_memory,
@@ -1461,7 +1462,7 @@ class AgentLoop:
                 # 通过 PromptBuilder 构建结构化消息列表
                 llm_messages = self._prompt_builder.build(context)
 
-                # REPLAN 阶段：追加动态上下文（老代码保留不变）
+                # REPLAN 阶段：追加动态上下文
                 if replan_message:
                     llm_messages.append({
                         "role": "user",
@@ -1474,17 +1475,21 @@ class AgentLoop:
                 logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
                            iteration, len(llm_messages), len(tool_defs))
 
-                if not self.flash_mode and not is_gene_processing:
-                    if self._session_compactor.should_compact(effective_memory):
-                        logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
-                        yield {"type": "status", "content": "正在压缩会话记忆..."}
-                        session_notes = self._get_session_notes(effective_session)
-                        await self._session_compactor.compact_now(effective_memory, session_notes)
-                        llm_messages = self._prompt_builder.build(context)
-                        self._persist_conversation(
-                            user_input="", response_content=None,
-                            session_id=effective_session, memory=effective_memory,
-                        )
+                _over_window = self._session_compactor.is_over_window(
+                    effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
+                )
+                if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact(
+                    effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
+                )):
+                    logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
+                    yield {"type": "status", "content": "正在压缩会话记忆..."}
+                    session_notes = self._get_session_notes(effective_session)
+                    await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_over_window)
+                    llm_messages = self._prompt_builder.build(context)
+                    self._persist_conversation(
+                        user_input="", response_content=None,
+                        session_id=effective_session, memory=effective_memory,
+                    )
                 # 经 PromptDiffTracker 流式调用 LLM（自动追踪前缀缓存 + 逐 chunk 输出）
                 _stream_reasoning = []
                 _stream_reasoning_start = None
@@ -1517,9 +1522,6 @@ class AgentLoop:
                 _stream_task = asyncio.create_task(_collect_stream())
                 _stop_emitted = False
 
-                # 事件驱动等待：阻塞等待新 chunk，每处理完一个 chunk 即检查停止请求，
-                # wait_for 超时（0.1s）兜底处理流结束但队列停滞的边界。
-                # 相比原 20ms 忙轮询显著降低 CPU 占用，且不会因持续流入的 chunk 饿死停止检查。
                 while True:
                     if self._loop_controller.is_stop_requested:
                         if not _stop_emitted:
@@ -1993,10 +1995,13 @@ class AgentLoop:
                         self.save_agent_created_gene(response.content)
 
                     # 会话笔记压缩（在下一次迭代开始时执行）
-                    # Gene 处理轮次跳过压缩，避免丢失 Gene 评估上下文
-                    if not self.flash_mode and not is_gene_processing:
-                        if self._session_compactor.should_compact(effective_memory):
-                            self._session_compactor.request_compact()
+                    _over_window = self._session_compactor.is_over_window(
+                        effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
+                    )
+                    if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact(
+                        effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
+                    )):
+                        self._session_compactor.request_compact(fallback=_over_window)
 
                     continue
 
