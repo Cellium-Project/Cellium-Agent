@@ -210,7 +210,6 @@ class ChannelManager:
     async def _consume_channel_task_queue(self, message: UnifiedMessage, session_id: str, queue: asyncio.Queue):
         sent_any = False
         pending = ""
-        MAX_MSG_LEN = 1000
 
         adapter = self._adapters.get(message.platform)
         minimal_output = getattr(adapter, 'minimal_output', False) if adapter else False
@@ -218,21 +217,8 @@ class ChannelManager:
         async def safe_send(content: str):
             if not content:
                 return
-            MAX_MSG_LEN = 1000
-            MIN_CHUNK_LEN = 100
-            chunks = []
-            remaining = content
-            while remaining:
-                if len(remaining) <= MAX_MSG_LEN:
-                    chunks.append(remaining)
-                    break
-                cut = min(MAX_MSG_LEN, len(remaining))
-                for i in range(cut - 1, MIN_CHUNK_LEN - 1, -1):
-                    if remaining[i] == '\n':
-                        cut = i + 1
-                        break
-                chunks.append(remaining[:cut])
-                remaining = remaining[cut:]
+            from app.channels.base import split_markdown
+            chunks = split_markdown(content, max_len=1000)
             for chunk in chunks:
                 try:
                     await self.send_message(
@@ -253,9 +239,14 @@ class ChannelManager:
             async def flush_pending():
                 nonlocal pending, sent_all, sent_round
                 if pending.strip():
-                    await safe_send(pending)
-                    sent_all += pending
-                    sent_round += pending
+                    from app.channels.base import closing_fence
+                    body = pending
+                    fence = closing_fence(body)
+                    if fence:
+                        body += "\n" + fence  # 半截代码块补闭合，防渲染错乱
+                    await safe_send(body)
+                    sent_all += body
+                    sent_round += body
                     pending = ""
 
             while True:

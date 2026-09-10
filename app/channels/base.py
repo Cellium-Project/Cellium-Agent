@@ -291,3 +291,148 @@ class BaseChannelConfig(ABC):
         with open(self._config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return data.get("channels", {}).get(self.platform_name, {})
+
+
+# ============================================================
+# Markdown 感知的长消息切分器
+# ============================================================
+
+def _fence_of(line: str):
+    s = (line or "").strip()
+    if not s or s[0] not in "`~":
+        return None
+    ch = s[0]
+    n = 0
+    while n < len(s) and s[n] == ch:
+        n += 1
+    if n < 3:
+        return None
+    return ch * n, s[n:].strip()
+
+def is_markdown_open(text: str) -> bool:
+    n = 0
+    for line in (text or "").split("\n"):
+        if _fence_of(line):
+            n += 1
+    return n % 2 == 1
+
+
+def closing_fence(text: str):
+    open_fence = None
+    for line in (text or "").split("\n"):
+        f = _fence_of(line)
+        if f:
+            open_fence = None if open_fence else f[0]
+    return open_fence
+
+
+def _is_table_line(line: str) -> bool:
+    s = (line or "").strip()
+    return len(s) > 1 and s.startswith("|") and s.endswith("|")
+
+
+def _is_table_sep(line: str) -> bool:
+    s = (line or "").strip()
+    if "-" not in s:
+        return False
+    body = s.strip("|").strip()
+    if not body:
+        return False
+    return set(body).issubset(set("-:| "))
+
+
+def _expand_long_lines(lines, max_len):
+    out = []
+    for ln in lines:
+        if len(ln) + 1 <= max_len:
+            out.append(ln)
+            continue
+        s = ln
+        while len(s) + 1 > max_len:
+            cut = s.rfind(" ", 0, max_len)
+            if cut < max_len // 2:
+                cut = max_len - 1
+            out.append(s[:cut])
+            s = s[cut:]
+        out.append(s)
+    return out
+
+
+def split_markdown(text: str, max_len: int = 1500, min_block: int = 300) -> list:
+    if not text:
+        return []
+    if len(text) <= max_len:
+        return [text]
+
+    lines = _expand_long_lines(text.split("\n"), max_len)
+    chunks = []
+    cur = []
+    cur_len = 0
+    state = {"in_code": False, "fence": "```", "lang": "", "in_table": False, "header": []}
+
+    def close_segment():
+        nonlocal cur, cur_len
+        if not cur:
+            return
+        body = "\n".join(cur).rstrip()
+        if state["in_code"]:
+            body += "\n" + state["fence"]
+        if body.strip():
+            chunks.append(body)
+        cur = []
+        cur_len = 0
+
+    def reopen_segment():
+        nonlocal cur_len
+        if state["in_code"]:
+            opener = state["fence"] + state["lang"]
+            cur.append(opener)
+            cur_len += len(opener) + 1
+        elif state["in_table"] and state["header"]:
+            for h in state["header"]:
+                cur.append(h)
+                cur_len += len(h) + 1
+
+    soft_limit = max(min_block, int(max_len * 0.7))
+
+    for line in lines:
+        finfo = _fence_of(line)
+
+        if finfo:
+            if not state["in_code"]:
+                state["in_code"] = True
+                state["fence"] = finfo[0]
+                state["lang"] = finfo[1]
+            else:
+                state["in_code"] = False
+            cur.append(line)
+            cur_len += len(line) + 1
+            continue
+
+        if not state["in_code"]:
+            if _is_table_line(line):
+                if not state["in_table"]:
+                    state["in_table"] = True
+                    state["header"] = [line]
+                elif len(state["header"]) == 1 and _is_table_sep(line):
+                    state["header"].append(line)
+            else:
+                state["in_table"] = False
+                state["header"] = []
+
+        if (line.strip() == "" and not state["in_code"]
+                and not state["in_table"] and cur_len >= soft_limit):
+            cur.append(line)
+            close_segment()
+            reopen_segment()
+            continue
+
+        if cur_len + len(line) + 1 > max_len and cur:
+            close_segment()
+            reopen_segment()
+
+        cur.append(line)
+        cur_len += len(line) + 1
+
+    close_segment()
+    return chunks
