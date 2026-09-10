@@ -6,11 +6,52 @@
 """
 
 import os
+import logging
 import platform
 import shutil
+import subprocess
+import threading
 from typing import Optional, List, Dict, Any
 
 from app.core.util.browser_runtime import get_runtime_browser_path
+
+logger = logging.getLogger(__name__)
+
+_probe_cache: Dict[str, bool] = {}
+_probe_lock = threading.Lock()
+
+
+def _probe_browser(path: str) -> bool:
+    """探测浏览器"""
+    with _probe_lock:
+        cached = _probe_cache.get(path)
+    if cached is not None:
+        return cached
+
+    if platform.system() == "Windows":
+        cmd = [path, "--headless", "--disable-gpu", "--dump-dom", "about:blank"]
+        timeout = 10
+    else:
+        cmd = [path, "--version"]
+        timeout = 6
+
+    ok = False
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+
+    with _probe_lock:
+        _probe_cache[path] = ok
+    if not ok:
+        logger.warning("[BrowserUtils] 浏览器探测失败（无法正常启动）: %s", path)
+    return ok
 
 EDGE_PATHS_WINDOWS = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -96,6 +137,8 @@ def get_browser_candidates() -> List[Dict[str, Any]]:
         if key in seen:
             return
         if not os.path.exists(normalized):
+            return
+        if not _probe_browser(normalized):
             return
         seen.add(key)
         candidates.append({"path": normalized, "name": name, "source": source})

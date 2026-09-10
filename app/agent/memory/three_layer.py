@@ -9,6 +9,7 @@
 """
 
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,8 @@ from .chinese_tokenizer import get_tokenizer
 from .fts5_searcher import FTS5MemorySearcher
 from .knowledge_extractor import KnowledgeExtractor
 from .repository import MemoryRepository
+
+logger = logging.getLogger(__name__)
 
 
 class ThreeLayerMemory:

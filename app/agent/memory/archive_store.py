@@ -1,8 +1,11 @@
 import json
 import hashlib
+import logging
 import os
 from datetime import datetime
 from typing import Optional, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 class ArchiveStore:
@@ -72,11 +75,19 @@ class ArchiveStore:
                 if not file.endswith(".jsonl"):
                     continue
                 file_path = os.path.join(root, file)
-                with open(file_path, "r", encoding="utf-8-sig") as f:
-                    for line in f:
+                try:
+                    with open(file_path, "r", encoding="utf-8-sig") as f:
+                        lines = f.readlines()
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning("[ArchiveStore] 归档文件读取失败，跳过: %s (%s)", file_path, e)
+                    continue
+                for line in lines:
+                    try:
                         record = json.loads(line)
-                        if record.get("id") == record_id:
-                            return record
+                    except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+                        continue
+                    if record.get("id") == record_id:
+                        return record
         return None
 
     def get_by_session(self, session_id: str, limit: int = 20) -> List[Dict]:
@@ -88,16 +99,21 @@ class ArchiveStore:
 
         for fname in all_files:
             file_path = os.path.join(self.base_dir, fname)
-            with open(file_path, "r", encoding="utf-8-sig") as f:
-                for line in reversed(f.readlines()):
-                    try:
-                        record = json.loads(line)
-                        if record.get("session_id") == session_id:
-                            records.insert(0, record)
-                            if len(records) >= limit:
-                                return records
-                    except (json.JSONDecodeError, KeyError):
-                        continue
+            try:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    lines = f.readlines()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("[ArchiveStore] 归档文件读取失败，跳过: %s (%s)", fname, e)
+                continue
+            for line in reversed(lines):
+                try:
+                    record = json.loads(line)
+                    if record.get("session_id") == session_id:
+                        records.insert(0, record)
+                        if len(records) >= limit:
+                            return records
+                except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+                    continue
         return records
 
     def get_latest_by_session(self, session_id: str) -> Optional[Dict]:

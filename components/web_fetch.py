@@ -426,6 +426,11 @@ class WebFetch(BaseCell):
                     elif attempt > 0:
                         logger.info(f"[WebFetch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
                         self._browser_port = None
+                        self._working_browser_path = None
+                        self._working_browser_name = None
+                        browser_path = self._get_working_browser_path()
+                        if not browser_path:
+                            raise RuntimeError("重试时未找到可用浏览器")
                         time.sleep(1)
 
                     co = self._build_options(browser_path=browser_path)

@@ -333,6 +333,7 @@ class WebSearch(BaseCell):
                     if attempt > 0:
                         logger.info(f"[WebSearch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
                         self._browser_port = None
+                        self._browser_path = None
                         time.sleep(1)
 
                     co = self._get_options()
