@@ -26,6 +26,11 @@ class AutoHintManager:
         self._shown_load_errors: Dict[str, Dict[str, str]] = {}
         # session_id -> {拦截签名}，同一条拦截只提示一次
         self._shown_security_hints: Dict[str, Dict[str, str]] = {}
+        # session_id -> 本轮提问（用户输入轮）是否已注入过 Skill 提示
+        self._shown_skill_hints: set = set()
+
+    def reset_skill_hint(self, session_id: str = "default"):
+        self._shown_skill_hints.discard(session_id)
 
     def get_component_problem_hints(self, session_id: str = "default") -> str:
         hints = []
@@ -77,9 +82,8 @@ class AutoHintManager:
                 )
         return ""
 
-    def get_auto_tool_hints(self, tools: Dict[str, Any]) -> str:
-        skill_hint = self._get_skill_hint()
-        return skill_hint
+    def get_skill_hint(self, session_id: str = "default") -> str:
+        return self._get_skill_hint(session_id)
 
     def _get_load_errors_hint(self, session_id: str) -> str:
         """
@@ -183,13 +187,15 @@ class AutoHintManager:
             logger.debug("[AutoHint] 审计提示获取失败: %s", e)
             return ""
 
-    def _get_skill_hint(self) -> str:
+    def _get_skill_hint(self, session_id: str = "default") -> str:
         """
-        获取 Skill 可用性提示
+        获取 Skill 可用性提示（每次提问只注入一次，本轮后续迭代不再注入）
 
         Returns:
             Skill 提示文本（如果没有可用 Skill 则返回空字符串）
         """
+        if session_id in self._shown_skill_hints:
+            return ""
         try:
             from components.skill_manager import SkillManager
 
@@ -217,7 +223,8 @@ class AutoHintManager:
             if len(available_skills) > 10:
                 skill_list += f" 等共 {len(available_skills)} 个"
 
-            return f"**可用 Skill**: {skill_list}"
+            self._shown_skill_hints.add(session_id)
+            return f"**可用 Skill列表**: {skill_list}"
         except Exception as e:
             logger.debug("[AutoHint] Skill 提示获取失败: %s", e)
             return ""

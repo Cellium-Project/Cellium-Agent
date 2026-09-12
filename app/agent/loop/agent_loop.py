@@ -1094,6 +1094,11 @@ class AgentLoop:
 
         self._redirect_guidance_given = False
         self._last_ctrl_signature = ""
+        try:
+            from app.agent.loop.auto_hints import get_auto_hint_manager
+            get_auto_hint_manager().reset_skill_hint(effective_session)
+        except Exception:
+            pass
 
         try:
             # === 1. 消息接收事件 ===

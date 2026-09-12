@@ -1294,7 +1294,7 @@ class TestPromptContextBuilder(unittest.TestCase):
 
         mock_manager = MagicMock()
         mock_manager.get_component_problem_hints.return_value = ""
-        mock_manager.get_auto_tool_hints.return_value = "**可用 Skill**: test"
+        mock_manager.get_skill_hint.return_value = "**可用 Skill**: test"
         mock_manager.check_security_error_and_suggest.return_value = ""
 
         with patch("app.agent.loop.auto_hints.get_auto_hint_manager", return_value=mock_manager):
@@ -1316,7 +1316,7 @@ class TestPromptContextBuilder(unittest.TestCase):
 
         mock_manager = MagicMock()
         mock_manager.get_component_problem_hints.return_value = "## [警告] 组件加载错误 — 需要修复"
-        mock_manager.get_auto_tool_hints.return_value = ""
+        mock_manager.get_skill_hint.return_value = ""
         mock_manager.check_security_error_and_suggest.return_value = ""
 
         with patch("app.agent.loop.auto_hints.get_auto_hint_manager", return_value=mock_manager):
@@ -1338,7 +1338,7 @@ class TestPromptContextBuilder(unittest.TestCase):
 
         mock_manager = MagicMock()
         mock_manager.get_component_problem_hints.return_value = ""
-        mock_manager.get_auto_tool_hints.return_value = ""
+        mock_manager.get_skill_hint.return_value = ""
         mock_manager.check_security_error_and_suggest.return_value = ""
 
         with patch("app.agent.loop.auto_hints.get_auto_hint_manager", return_value=mock_manager):

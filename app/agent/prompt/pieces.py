@@ -251,18 +251,18 @@ def get_auto_hints_piece() -> PromptPiece:
         hints = []
 
         problem_hint = auto_hints.get_component_problem_hints(ctx.get("session_id", "default"))
-        if problem_hint:
+        if isinstance(problem_hint, str) and problem_hint:
             hints.append(problem_hint)
 
+        skill_hint = auto_hints.get_skill_hint(ctx.get("session_id", "default"))
+        if isinstance(skill_hint, str) and skill_hint:
+            hints.append(skill_hint)
+
         if ctx.get("iteration", 1) > 1:
-            tools = ctx.get("tools", {})
             tool_traces = ctx.get("tool_traces", [])
-            dynamic = auto_hints.get_auto_tool_hints(tools)
             security_hint = auto_hints.check_security_error_and_suggest(tool_traces, ctx.get("session_id", "default"))
-            if security_hint:
-                dynamic = dynamic + "\n\n" + security_hint if dynamic else security_hint
-            if dynamic:
-                hints.append(dynamic)
+            if isinstance(security_hint, str) and security_hint:
+                hints.append(security_hint)
 
         if not hints:
             return ""
