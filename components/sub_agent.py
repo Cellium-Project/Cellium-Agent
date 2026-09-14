@@ -37,9 +37,23 @@ def _resolve_engine_clone():
         raise RuntimeError("LLM 引擎未初始化，请先配置模型")
     main = container.resolve(BaseLLMEngine)
 
-    clone = OpenAICompatibleEngine(
+    base_url = getattr(main, "base_url", "") or "https://api.openai.com/v1"
+
+    engine_cls = OpenAICompatibleEngine
+    engine_kwargs = {}
+    if "opencode.ai" in base_url:
+        try:
+            from app.agent.llm.providers.opencode.engine import OpenCodeEngine
+            engine_cls = OpenCodeEngine
+            session_id = (getattr(main, "_extra_client_args", None) or {}).get("session_id")
+            if session_id:
+                engine_kwargs["session_id"] = session_id
+        except ImportError:
+            pass
+
+    clone = engine_cls(
         api_key=getattr(main, "api_key", "") or "",
-        base_url=getattr(main, "base_url", "") or "https://api.openai.com/v1",
+        base_url=base_url,
         model=getattr(main, "model", "") or "gpt-4o",
         temperature=getattr(main, "temperature", 0.7),
         max_tokens=getattr(main, "_explicit_max_tokens", None),
@@ -49,6 +63,7 @@ def _resolve_engine_clone():
         omit_max_tokens=getattr(main, "_omit_max_tokens", True),
         thinking=getattr(main, "_thinking", False),
         thinking_budget=getattr(main, "_thinking_budget", None),
+        **engine_kwargs,
     )
     return clone
 
@@ -96,7 +111,8 @@ class SubAgent(BaseCell):
         if constraints and constraints.strip():
             parts.append(f"[约束与边界]\n{constraints.strip()}")
 
-        tool_rules = self._extract_tool_rules(tools)
+        effective_tools = list(dict.fromkeys(list(tools or []) + list(self.DEFAULT_AUTO_TOOLS)))
+        tool_rules = self._extract_tool_rules(effective_tools)
         if tool_rules:
             parts.append(f"[工具使用规则]\n{tool_rules}")
 
@@ -181,10 +197,12 @@ class SubAgent(BaseCell):
                 selected.append(rule)
         return "\n\n".join(selected)
 
+    DEFAULT_AUTO_TOOLS = ("read", "ls", "glob", "grep")
+
     def _allowed_tool_names(self, tools) -> List[str]:
         """规范化工具白名单，过滤禁用平台组件"""
         if tools is None:
-            return []
+            tools = []
         if isinstance(tools, str):
             try:
                 import json
@@ -192,7 +210,7 @@ class SubAgent(BaseCell):
             except Exception:
                 tools = [t.strip() for t in tools.split(",") if t.strip()]
         if not isinstance(tools, list):
-            return []
+            tools = []
         names = []
         for t in tools:
             if isinstance(t, str) and t.strip():
@@ -201,7 +219,10 @@ class SubAgent(BaseCell):
                     logger.warning("[SubAgent] 工具 %s 在子 Agent 禁用列表，已忽略", t)
                     continue
                 names.append(t)
-        return names
+        for t in self.DEFAULT_AUTO_TOOLS:
+            if t not in names:
+                names.append(t)
+        return list(dict.fromkeys(names))
 
     def _collect_tool_instances(self, allowed_names: List[str]) -> Dict[str, Any]:
         """收集白名单内工具实例（内置工具 + 组件工具）"""
@@ -616,6 +637,7 @@ class SubAgent(BaseCell):
                 "每个子 Agent 独立使用 LLM 引擎（可安全并行）",
                 "tools 传工具名数组（不传则子 Agent 无工具，只能文本回复）",
                 "tools 可选: read edit file grep glob ls shell memory",
+                "ls/glob/grep/read 四个浏览类工具始终自动附带，无需显式传入",
                 "平台组件工具对子 Agent 禁用: weixin_files/web_search/web_fetch/telegram_files/scheduler/qq_files/feishu_files",
                 "persona / constraints 会注入到子 Agent 的系统提示词",
             ],
