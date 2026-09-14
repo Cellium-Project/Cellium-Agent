@@ -271,16 +271,17 @@ class TestSubAgentComponent(unittest.TestCase):
 
     def test_tools_whitelist_parsing(self):
         c = SubAgent()
-        self.assertEqual(c._allowed_tool_names('["read","grep"]'), ["read", "grep"])
-        self.assertEqual(c._allowed_tool_names("read, grep, glob"), ["read", "grep", "glob"])
-        self.assertEqual(c._allowed_tool_names(None), [])
-        self.assertEqual(c._allowed_tool_names(["read"]), ["read"])
+        # read/ls/glob/grep 为默认自动附带，用户传入的部分仅补齐缺失项
+        self.assertEqual(c._allowed_tool_names('["read","grep"]'), ["read", "grep", "ls", "glob"])
+        self.assertEqual(c._allowed_tool_names("read, grep, glob"), ["read", "grep", "glob", "ls"])
+        self.assertEqual(c._allowed_tool_names(None), ["read", "ls", "glob", "grep"])
+        self.assertEqual(c._allowed_tool_names(["read"]), ["read", "ls", "glob", "grep"])
 
     def test_tools_blacklist(self):
         c = SubAgent()
-        # 平台组件工具被过滤
+        # 平台组件工具被过滤，默认浏览工具自动附带
         result = c._allowed_tool_names(["read", "weixin_files", "web_search", "config", "scheduler", "grep"])
-        self.assertEqual(result, ["read", "grep"], f"禁用工具应被过滤: {result}")
+        self.assertEqual(result, ["read", "grep", "ls", "glob"], f"禁用工具应被过滤: {result}")
 
     def test_tools_rule_extraction(self):
         c = SubAgent()
@@ -373,8 +374,8 @@ class TestSubAgentIntegration(unittest.TestCase):
 
     def test_whitelist_isolation(self):
         import components.sub_agent as subagent_mod
-        # 只授权 grep，mock 强求 read → 应被拒绝
-        engine = ToolThenReplyEngine(first_tool="read")
+        # 只授权 grep；shell 不属于默认自动附带 → mock 强求 shell 应被拒绝
+        engine = ToolThenReplyEngine(first_tool="shell")
         c = setup_subagent(lambda: engine)
         r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "iso", "task": "任务", "tools": '["grep"]'}]))
         item = r["results"][0]
