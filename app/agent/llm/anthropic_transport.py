@@ -8,7 +8,7 @@ from typing import AsyncIterator, Dict, List, Optional
 import httpx
 
 from .models import ChatResponse, ToolCall
-from .transport import OpenAICompatTransport
+from .transport import OpenAICompatTransport, ContextOverflowError, _is_overflow_body
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,24 @@ class AnthropicTransport:
             body = resp.text
         except Exception:
             body = ""
+        if resp.status_code == 400 and _is_overflow_body(body):
+            raise ContextOverflowError(f"Anthropic API 返回 400 (上下文溢出): {body[:500]}")
+        raise RuntimeError(f"Anthropic API 返回 {resp.status_code}: {body[:500]}")
+
+    @staticmethod
+    async def _raise_for_status_stream(resp):
+        if resp.status_code < 400:
+            return
+        try:
+            await resp.aread()
+        except Exception:
+            pass
+        try:
+            body = resp.text
+        except Exception:
+            body = ""
+        if resp.status_code == 400 and _is_overflow_body(body):
+            raise ContextOverflowError(f"Anthropic API 返回 400 (上下文溢出): {body[:500]}")
         raise RuntimeError(f"Anthropic API 返回 {resp.status_code}: {body[:500]}")
 
     @staticmethod
@@ -107,17 +125,67 @@ class AnthropicTransport:
             m["content"] for m in messages if m["role"] == "system" and m.get("content")
         )
 
-        anthropic_messages = []
+        # OpenAI 消息 → Anthropic blocks：tool_calls→tool_use，tool→tool_result
+        converted: List[Dict] = []
         for m in messages:
-            if m["role"] == "system":
+            role = m.get("role")
+            if role == "system":
                 continue
-            content = m.get("content", "")
-            role = "assistant" if m["role"] == "assistant" else "user"
-            anthropic_messages.append({"role": role, "content": content})
+            content = m.get("content") or ""
+            if role == "assistant":
+                blocks: List[Dict] = []
+                if content:
+                    blocks.append({"type": "text", "text": content})
+                for tc in m.get("tool_calls") or []:
+                    fn = tc.get("function") or {}
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id") or "",
+                        "name": fn.get("name") or "",
+                        "input": args,
+                    })
+                if not blocks:
+                    blocks.append({"type": "text", "text": "(no content)"})
+                converted.append({"role": "assistant", "content": blocks})
+            elif role == "tool":
+                converted.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": m.get("tool_call_id") or "",
+                        "content": content if content else "(empty)",
+                    }],
+                })
+            else:
+                if not content:
+                    continue
+                converted.append({"role": "user", "content": content})
+
+        merged: List[Dict] = []
+        for m in converted:
+            if merged and merged[-1]["role"] == m["role"]:
+                last = merged[-1]["content"]
+                cur = m["content"]
+                if isinstance(last, list) or isinstance(cur, list):
+                    lb = last if isinstance(last, list) else (
+                        [{"type": "text", "text": last}] if last else []
+                    )
+                    cb = cur if isinstance(cur, list) else (
+                        [{"type": "text", "text": cur}] if cur else []
+                    )
+                    merged[-1]["content"] = lb + cb
+                else:
+                    merged[-1]["content"] = (last + "\n\n" + cur).strip()
+            else:
+                merged.append(dict(m))
 
         result: Dict = {
             "model": body.get("model", ""),
-            "messages": anthropic_messages,
+            "messages": merged,
             "max_tokens": body.get("max_tokens", 8192),
         }
         if system:
@@ -127,13 +195,16 @@ class AnthropicTransport:
         if tools:
             result["tools"] = cls._convert_tools(tools)
 
-        temperature = body.get("temperature")
-        if temperature is not None:
-            result["temperature"] = temperature
-
         thinking = body.get("thinking")
         if thinking:
             result["thinking"] = thinking
+            budget = thinking.get("budget_tokens") or 0
+            if budget and result["max_tokens"] <= budget:
+                result["max_tokens"] = budget + 4096
+        else:
+            temperature = body.get("temperature")
+            if temperature is not None:
+                result["temperature"] = temperature
 
         return result
 
@@ -246,7 +317,7 @@ class AnthropicTransport:
             headers=self._headers,
             json=request_body,
         ) as resp:
-            self._raise_for_status(resp)
+            await self._raise_for_status_stream(resp)
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line.startswith("data:"):

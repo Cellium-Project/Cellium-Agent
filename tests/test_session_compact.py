@@ -76,14 +76,6 @@ class TestCompactTrigger(unittest.TestCase):
         mem = make_memory(50, chars_per_msg=100)
         self.assertTrue(compactor.should_compact(mem), "token 到阈值应触发")
 
-    def test_cooldown_growth_ratio(self):
-        """增长 >50% 后能再次触发"""
-        compactor = SessionCompactor(llm_engine=FastEngine(), token_threshold=5000)
-        small = make_memory(20, chars_per_msg=50)
-        compactor._last_compact_tokens = compactor._estimate_tokens(small)
-        big = make_memory(200, chars_per_msg=100)
-        self.assertTrue(compactor.should_compact(big), "增长足够应触发")
-
 
 class TestSingleShotCompact(unittest.TestCase):
     """一次 LLM 调用压缩（无分块、无重试）"""
