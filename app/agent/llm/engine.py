@@ -321,19 +321,28 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             params.update(kwargs)
 
         if self._thinking:
-            reasoning_param = "reasoning_effort"
-            if self._provider_adapter:
-                reasoning_param = self._provider_adapter.get_reasoning_param_name()
+            thinking_payload = None
+            if self._provider_adapter is not None:
+                thinking_payload = self._provider_adapter.get_thinking_payload(
+                    self._thinking, self._thinking_budget, self._reasoning_effort
+                )
+            if thinking_payload is not None:
+                params["thinking"] = thinking_payload
+                logger.info("[LLM] 思考模式 | model=%s | thinking=%s", self.model, thinking_payload)
+            else:
+                reasoning_param = "reasoning_effort"
+                if self._provider_adapter:
+                    reasoning_param = self._provider_adapter.get_reasoning_param_name()
 
-            effort_level = self._reasoning_effort or "high"
-            params[reasoning_param] = effort_level
+                effort_level = self._reasoning_effort or "high"
+                params[reasoning_param] = effort_level
 
-            if self._thinking_budget:
-                thinking_obj = {"type": "enabled"}
                 if self._thinking_budget:
-                    thinking_obj["budget_tokens"] = self._thinking_budget
-                params["thinking"] = thinking_obj
-            logger.info("[LLM] 思考模式 | model=%s | %s=%s", self.model, reasoning_param, effort_level)
+                    thinking_obj = {"type": "enabled"}
+                    if self._thinking_budget:
+                        thinking_obj["budget_tokens"] = self._thinking_budget
+                    params["thinking"] = thinking_obj
+                logger.info("[LLM] 思考模式 | model=%s | %s=%s", self.model, reasoning_param, effort_level)
 
         return params
 

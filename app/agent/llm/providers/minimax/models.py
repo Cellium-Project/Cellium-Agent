@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import httpx
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ..base import BaseProvider
 from .config import (
@@ -21,6 +21,9 @@ class MiniMaxProvider(BaseProvider):
     def get_base_url(self) -> str:
         return BASE_URL
 
+    def get_match_urls(self) -> List[str]:
+        return [BASE_URL, "https://api.minimax.cn"]
+
     def get_models_endpoint(self) -> str:
         return MODELS_ENDPOINT
 
@@ -29,6 +32,11 @@ class MiniMaxProvider(BaseProvider):
 
     def get_reasoning_param_name(self) -> str:
         return REASONING_PARAM
+
+    def get_thinking_payload(self, thinking_enabled: bool, budget_tokens: int, effort: str) -> Optional[Dict]:
+        if thinking_enabled:
+            return {"type": "adaptive"}
+        return None
 
     async def fetch_models(self, api_key: str) -> List[Dict]:
         url = f"{BASE_URL}{MODELS_ENDPOINT}"

@@ -51,6 +51,13 @@ class BaseProvider(ABC):
     def get_default_thinking(self) -> Dict:
         return {}
 
+    def get_match_urls(self) -> List[str]:
+        """用于 detect_provider 的 base_url 匹配列表"""
+        return [self.get_base_url()]
+
+    def get_thinking_payload(self, thinking_enabled: bool, budget_tokens: int, effort: str):
+        return None
+
     def create_model_config(self, api_key: str, model_id: str, model_name: str = "") -> Dict:
         cfg = {
             "name": f"{self.get_provider_id()}-{model_id.split('/')[-1]}",
