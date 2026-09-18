@@ -9,6 +9,23 @@ from .models import ChatResponse, ToolCall
 
 logger = logging.getLogger(__name__)
 
+_OVERFLOW_PATTERNS = (
+    "maximum context length", "context length", "context_length",
+    "context window", "prompt is too long", "input length",
+    "too many tokens", "token limit", "exceed context", "exceeds context",
+    "上下文长度", "上下文窗口", "超出上下文", "输入过长",
+)
+
+
+class ContextOverflowError(RuntimeError):
+    """API 返回 400 且报文表明上下文溢出"""
+
+def _is_overflow_body(body: str) -> bool:
+    if not body:
+        return False
+    low = body.lower()
+    return any(p in low for p in _OVERFLOW_PATTERNS)
+
 
 class OpenAICompatTransport:
 
@@ -67,6 +84,24 @@ class OpenAICompatTransport:
             body = resp.text
         except Exception:
             body = ""
+        if resp.status_code == 400 and _is_overflow_body(body):
+            raise ContextOverflowError(f"LLM API 返回 400 (上下文溢出): {body[:500]}")
+        raise RuntimeError(f"LLM API 返回 {resp.status_code}: {body[:500]}")
+
+    @staticmethod
+    async def _raise_for_status_stream(resp):
+        if resp.status_code < 400:
+            return
+        try:
+            await resp.aread()
+        except Exception:
+            pass
+        try:
+            body = resp.text
+        except Exception:
+            body = ""
+        if resp.status_code == 400 and _is_overflow_body(body):
+            raise ContextOverflowError(f"LLM API 返回 400 (上下文溢出): {body[:500]}")
         raise RuntimeError(f"LLM API 返回 {resp.status_code}: {body[:500]}")
 
     @staticmethod
@@ -108,7 +143,7 @@ class OpenAICompatTransport:
             headers=self._headers,
             json={**body, "stream": True},
         ) as resp:
-            self._raise_for_status(resp)
+            await self._raise_for_status_stream(resp)
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line.startswith("data:"):

@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 
 from .models import ChatResponse, ModelInfo, ToolCall
-from .transport import OpenAICompatTransport
+from .transport import OpenAICompatTransport, ContextOverflowError
 from .anthropic_transport import AnthropicTransport
 from .providers import detect_provider
 from app.messaging.stream_normalizer import _THINK_PREFIXES, _think_fragment_tail
@@ -284,19 +284,22 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         temperature: float = None,
         max_tokens: int = None,
         truncate: bool = True,
+        force_truncate: bool = False,
         **kwargs,
     ) -> Dict:
         if not self.api_key:
             raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
 
+        # 事前不截断：压缩优先；仅当 API 返回上下文溢出错误时 force_truncate 重试
         effective_messages = messages
-        if truncate and messages:
-            effective_messages, was_truncated = self._truncate_if_needed(messages, tools)
-            if was_truncated:
-                logger.info(
-                    "[LLM] 输入已截断以适应 %d 上下文窗口",
-                    self.context_window,
-                )
+        if force_truncate and messages:
+            effective_messages, _ = self._truncate_if_needed(
+                messages, tools, target_ratio=0.6, force=True
+            )
+            logger.info(
+                "[LLM] 溢出重试：截断 %d → %d 条消息",
+                len(messages), len(effective_messages),
+            )
 
         final_max_tokens = self._resolve_max_tokens(
             effective_messages, tools, max_tokens
@@ -318,19 +321,28 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             params.update(kwargs)
 
         if self._thinking:
-            reasoning_param = "reasoning_effort"
-            if self._provider_adapter:
-                reasoning_param = self._provider_adapter.get_reasoning_param_name()
+            thinking_payload = None
+            if self._provider_adapter is not None:
+                thinking_payload = self._provider_adapter.get_thinking_payload(
+                    self._thinking, self._thinking_budget, self._reasoning_effort
+                )
+            if thinking_payload is not None:
+                params["thinking"] = thinking_payload
+                logger.info("[LLM] 思考模式 | model=%s | thinking=%s", self.model, thinking_payload)
+            else:
+                reasoning_param = "reasoning_effort"
+                if self._provider_adapter:
+                    reasoning_param = self._provider_adapter.get_reasoning_param_name()
 
-            effort_level = self._reasoning_effort or "high"
-            params[reasoning_param] = effort_level
+                effort_level = self._reasoning_effort or "high"
+                params[reasoning_param] = effort_level
 
-            if self._thinking_budget:
-                thinking_obj = {"type": "enabled"}
                 if self._thinking_budget:
-                    thinking_obj["budget_tokens"] = self._thinking_budget
-                params["thinking"] = thinking_obj
-            logger.info("[LLM] 思考模式 | model=%s | %s=%s", self.model, reasoning_param, effort_level)
+                    thinking_obj = {"type": "enabled"}
+                    if self._thinking_budget:
+                        thinking_obj["budget_tokens"] = self._thinking_budget
+                    params["thinking"] = thinking_obj
+                logger.info("[LLM] 思考模式 | model=%s | %s=%s", self.model, reasoning_param, effort_level)
 
         return params
 
@@ -440,6 +452,19 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         t0 = time.monotonic()
         try:
+            parsed = await transport.chat(params)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+        except ContextOverflowError:
+            if not truncate:
+                raise
+            logger.warning("[LLM] API 报告上下文溢出，强制截断后重试一次")
+            params = self._build_params(
+                messages, tools, temperature, max_tokens, True,
+                force_truncate=True, **kwargs
+            )
+            effective_messages = params["messages"]
+            req_tokens = self.estimate_tokens_calibrated(effective_messages, tools)
+            t0 = time.monotonic()
             parsed = await transport.chat(params)
             elapsed_ms = (time.monotonic() - t0) * 1000
         except Exception as e:
@@ -559,10 +584,46 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
 
         if self.provider == "anthropic":
+            try:
+                async for result in self._chat_stream_anthropic(transport, params, req_tokens):
+                    yield result
+                return
+            except ContextOverflowError:
+                if not truncate:
+                    raise
+            params = self._build_params(
+                messages, tools, temperature, max_tokens, True,
+                force_truncate=True, **kwargs
+            )
+            req_tokens = self.estimate_tokens_calibrated(params["messages"], tools)
+            logger.warning(
+                "[LLM] API 报告上下文溢出，强制截断后流式重试 | 消息数=%d",
+                len(params["messages"]),
+            )
             async for result in self._chat_stream_anthropic(transport, params, req_tokens):
                 yield result
             return
 
+        try:
+            async for chunk in self._iter_openai_stream(transport, params, req_tokens):
+                yield chunk
+            return
+        except ContextOverflowError:
+            if not truncate:
+                raise
+        params = self._build_params(
+            messages, tools, temperature, max_tokens, True,
+            force_truncate=True, **kwargs
+        )
+        req_tokens = self.estimate_tokens_calibrated(params["messages"], tools)
+        logger.warning(
+            "[LLM] API 报告上下文溢出，强制截断后流式重试 | 消息数=%d",
+            len(params["messages"]),
+        )
+        async for chunk in self._iter_openai_stream(transport, params, req_tokens):
+            yield chunk
+
+    async def _iter_openai_stream(self, transport, params, req_tokens):
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
         tool_calls_map: Dict[int, dict] = {}
@@ -795,6 +856,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         tools: List[Dict] = None,
         temperature: float = None,
         max_tokens: int = None,
+        truncate: bool = True,
         **kwargs,
     ) -> ChatResponse:
         """同步调用（测试用）"""
@@ -802,23 +864,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             raise ValueError("LLM 引擎未配置有效的 API key，请在设置中配置后重试")
         transport = self._ensure_transport()
 
-        effective_messages = messages
-        if messages:
-            effective_messages, _ = self._truncate_if_needed(messages, tools)
-
-        final_max_tokens = self._resolve_max_tokens(effective_messages, tools, max_tokens)
-
-        params = {
-            "model": self.model,
-            "messages": effective_messages,
-            "temperature": temperature or self.temperature,
-        }
-        if not self._omit_max_tokens:
-            params["max_tokens"] = final_max_tokens
-        if tools:
-            params["tools"] = tools
-        if kwargs:
-            params.update(kwargs)
+        params = self._build_params(messages, tools, temperature, max_tokens, truncate, **kwargs)
+        effective_messages = params["messages"]
 
         logger.info(
             "[LLM-sync] >>> 调用开始 | model=%s | 消息数=%d | tools=%d",
@@ -826,6 +873,18 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         )
         t0 = time.monotonic()
         try:
+            parsed = transport.chat_sync(params)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+        except ContextOverflowError:
+            if not truncate:
+                raise
+            logger.warning("[LLM-sync] API 报告上下文溢出，强制截断后重试一次")
+            params = self._build_params(
+                messages, tools, temperature, max_tokens, True,
+                force_truncate=True, **kwargs
+            )
+            effective_messages = params["messages"]
+            t0 = time.monotonic()
             parsed = transport.chat_sync(params)
             elapsed_ms = (time.monotonic() - t0) * 1000
         except Exception as e:
@@ -872,11 +931,14 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self,
         messages: List[Dict],
         tools: List[Dict] = None,
+        target_ratio: float = 0.95,
+        force: bool = False,
     ) -> tuple:
         """
-        检查并截断消息列表以适应上下文窗口
+        截断消息列表以适应上下文窗口
 
-        策略: 从最早的消息开始丢弃，保留 system prompt 和最近的消息。
+        策略: 从最早的消息开始按完整组丢弃，保留 system prompt 和最近的消息。
+        force=True 跳过预估检查直接强制截断（API 溢出重试用）。
 
         Returns:
             (可能被截断后的消息列表, bool: 是否发生了截断)
@@ -885,7 +947,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if tools:
             input_est += len(tools) * 150
 
-        if input_est <= self.context_window:
+        if not force and input_est <= self.context_window:
             return messages, False
 
         logger.warning(
@@ -895,15 +957,23 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         system_msgs = [m for m in messages if m.get("role") == "system"]
         normal_msgs = [m for m in messages if m.get("role") != "system"]
+        target = self.context_window * target_ratio
 
         while normal_msgs:
             test_msgs = system_msgs + normal_msgs
             est = _estimate_messages_tokens(test_msgs)
             if tools:
                 est += len(tools) * 150
-            if est <= self.context_window * 0.95:  
+            if est <= target:
                 break
-            normal_msgs.pop(0)  
+            cut = 0
+            while cut < len(normal_msgs) and normal_msgs[cut].get("role") == "tool":
+                cut += 1
+            if cut == 0:
+                cut = 1
+            while cut < len(normal_msgs) and normal_msgs[cut].get("role") == "tool":
+                cut += 1
+            normal_msgs = normal_msgs[cut:]
 
         result = system_msgs + normal_msgs
         new_est = _estimate_messages_tokens(result)

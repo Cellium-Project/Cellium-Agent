@@ -149,7 +149,12 @@ class ChatScroll(VerticalScroll):
 
     def _update_following(self, new_value: float) -> None:
         try:
+            was_following = self._following
             self._following = new_value >= self.max_scroll_y - 1.0
+            if self._following and not was_following:
+                app = self.app
+                if hasattr(app, "_on_chat_following_restored"):
+                    app._on_chat_following_restored()
         except Exception:
             pass
 

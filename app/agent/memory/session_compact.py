@@ -66,9 +66,6 @@ class SessionCompactor:
         self.max_notes_length = max_notes_length
         self._pending_compact = False
         self._tool_call_count = 0
-        self._last_compact_tokens = 0
-        self._compact_cooldown_ratio = 0.5
-        self._last_overhead = 0
         self._pending_fallback = False
         self._repository = repository
         self._archive = archive
@@ -95,21 +92,8 @@ class SessionCompactor:
                 actual = self.llm.get_last_prompt_tokens()
                 if actual > token_count:
                     token_count = actual
-            base = self._estimate_tokens(memory)
-            self._last_overhead = max(token_count - base, 0)
         else:
             token_count = self._estimate_tokens(memory)
-
-        cooldown_blocked = False
-        if self._last_compact_tokens > 0:
-            growth = token_count - self._last_compact_tokens
-            growth_ratio = growth / max(self._last_compact_tokens, 1)
-            if growth_ratio < self._compact_cooldown_ratio:
-                cooldown_blocked = True
-                logger.debug(
-                    "[SessionCompactor] 冷却中 | tool_calls=%d | 增长=%.1f%%",
-                    self._tool_call_count, growth_ratio * 100
-                )
 
         if self._tool_call_count >= self.tool_call_threshold:
             logger.info("[SessionCompactor] 工具调用触发压缩 | tool_calls=%d", self._tool_call_count)
@@ -119,11 +103,6 @@ class SessionCompactor:
             return False
 
         if token_count >= self.token_threshold:
-            if cooldown_blocked:
-                logger.info(
-                    "[SessionCompactor] 冷却中但已达阈值，强制触发压缩 | tokens=%d",
-                    token_count,
-                )
             logger.info("[SessionCompactor] Token 阈值触发压缩 | tokens=%d", token_count)
             return True
 
@@ -162,7 +141,7 @@ class SessionCompactor:
                 if actual > token_count:
                     token_count = actual
         else:
-            token_count = self._estimate_tokens(memory) + self._last_overhead
+            token_count = self._estimate_tokens(memory)
         return token_count > cw
 
     def request_compact(self, fallback: bool = False):
@@ -203,6 +182,8 @@ class SessionCompactor:
 
         notes.load()
 
+        cut = self._safe_cut_index(memory.messages, keep_n)
+
         # 增量压缩：只压上次快照后的新消息
         has_prior_notes = notes.exists() and (
             notes.get_goal() or notes.get_completed() or notes.get_findings() or notes.get_errors()
@@ -212,13 +193,13 @@ class SessionCompactor:
                 (i for i, m in enumerate(memory.messages) if m.get("_is_compacted_notes")), -1
             )
             if compact_idx >= 0:
-                old_messages = memory.messages[compact_idx + 1:-keep_n]
-                context_messages = memory.messages[compact_idx:-keep_n]
+                old_messages = memory.messages[compact_idx + 1:cut]
+                context_messages = memory.messages[compact_idx:cut]
             else:
-                old_messages = memory.messages[:-keep_n]
+                old_messages = memory.messages[:cut]
                 context_messages = old_messages
         else:
-            old_messages = memory.messages[:-keep_n]
+            old_messages = memory.messages[:cut]
             context_messages = old_messages
 
         if not old_messages:
@@ -257,15 +238,14 @@ class SessionCompactor:
         if self._repository:
             self._persist_notes_to_long_term(notes, summary_data)
 
-        self._replace_old_messages(memory, notes, summary_data.get("summary", ""), keep_n=keep_n)
+        self._replace_old_messages(memory, notes, summary_data.get("summary", ""), keep_n=keep_n, cut=cut)
 
         if self.llm and hasattr(self.llm, "reset_last_prompt_tokens"):
             self.llm.reset_last_prompt_tokens()
-        self._last_compact_tokens = self._estimate_tokens(memory) + self._last_overhead
 
         logger.info(
-            "[SessionCompactor] 压缩完成 | %d 条消息 | tokens=%d",
-            len(old_messages), self._last_compact_tokens
+            "[SessionCompactor] 压缩完成 | %d 条消息",
+            len(old_messages),
         )
 
     def _format_messages(self, messages: List[Dict]) -> str:
@@ -325,7 +305,15 @@ class SessionCompactor:
             logger.error("[SessionCompactor] LLM 摘要失败 | error=%s", e)
             return {}
 
-    def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = "", keep_n: int = None):
+    @staticmethod
+    def _safe_cut_index(messages: List[Dict], keep_n: int) -> int:
+        total = len(messages)
+        idx = max(0, total - keep_n)
+        while idx < total and messages[idx].get("role") == "tool":
+            idx += 1
+        return idx
+
+    def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = "", keep_n: int = None, cut: int = None):
         notes_content = notes.render_for_prompt(max_length=self.max_notes_length)
         if summary:
             notes_content = f"**摘要**: {summary}\n\n{notes_content}"
@@ -334,7 +322,9 @@ class SessionCompactor:
             "content": f"[系统压缩] 之前的对话已压缩为以下摘要：\n\n{notes_content}",
             "_is_compacted_notes": True,
         }
-        recent_messages = memory.messages[-(keep_n or self.keep_recent_messages):]
+        if cut is None:
+            cut = self._safe_cut_index(memory.messages, keep_n or self.keep_recent_messages)
+        recent_messages = memory.messages[cut:]
         memory.messages = [notes_message] + recent_messages
         memory.tool_call_counter = len([
             m for m in memory.messages if m.get("role") == "assistant" and m.get("tool_calls")

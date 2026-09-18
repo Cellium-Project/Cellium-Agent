@@ -53,8 +53,9 @@ def detect_provider(base_url: str) -> Optional[BaseProvider]:
         return None
     base_url_lower = base_url.lower()
     for provider in _PROVIDERS.values():
-        if provider.get_base_url().lower() in base_url_lower:
-            return provider
+        for url in provider.get_match_urls():
+            if url.lower() in base_url_lower:
+                return provider
     return None
 
 
