@@ -1608,7 +1608,7 @@ class AgentLoop:
                                 _stream_reasoning_start = chunk.get("start_time") or time.time()
                             _stream_reasoning_end = time.time()
                             _stream_reasoning.append(chunk.get("text", ""))
-                            yield {"type": "reasoning", "content": chunk.get("text", "")}
+                            yield {"type": "reasoning", "content": chunk.get("text", ""), "start_time": _stream_reasoning_start}
                         elif ctype == "tool_calls":
                             _stream_tool_calls = chunk.get("calls", [])
                         elif ctype == "done":
@@ -1616,10 +1616,8 @@ class AgentLoop:
                 except asyncio.QueueEmpty:
                     pass
                 if _stream_error is not None:
-                    # 原 async for 语义：流式异常向上传播，由外层捕获产 error 事件
                     raise _stream_error
 
-                # 流式未产出 done（异常降级）：用累积内容构造响应
                 if response is None:
                     from app.agent.llm.models import ChatResponse
                     response = ChatResponse(

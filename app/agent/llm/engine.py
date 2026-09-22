@@ -570,6 +570,15 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 if not model_name:
                     model_name = item.get("model", "") or model_name
 
+                delta_reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if delta_reasoning:
+                    reasoning_parts.append(delta_reasoning)
+                    chunk = {"type": "reasoning", "text": delta_reasoning}
+                    if not _reasoning_start_sent:
+                        chunk["start_time"] = time.time()
+                        _reasoning_start_sent = True
+                    yield chunk
+
                 delta_content = delta.get("content")
                 if delta_content:
                     if think_frag:
@@ -586,7 +595,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                                     yield {"type": "content", "text": before}
                                 rest = rest[tag.end():]
                                 in_think = True
-                                # 立即触发原生思考动画（青色 spinner + 实时耗时）
                                 yield {"type": "reasoning", "text": "", "start_time": time.time()}
                                 continue
                             frag = _think_fragment_tail(rest)
@@ -625,15 +633,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                                 reasoning_parts.append(rest)
                                 yield {"type": "reasoning", "text": rest}
                             rest = ""
-
-                delta_reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                if delta_reasoning:
-                    reasoning_parts.append(delta_reasoning)
-                    chunk = {"type": "reasoning", "text": delta_reasoning}
-                    if not _reasoning_start_sent:
-                        chunk["start_time"] = time.time()
-                        _reasoning_start_sent = True
-                    yield chunk
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)

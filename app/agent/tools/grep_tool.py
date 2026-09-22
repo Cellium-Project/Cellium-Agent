@@ -83,15 +83,24 @@ def _vendor_rg_path() -> Optional[str]:
         triple = 'aarch64-unknown-linux-gnu'
     binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
     vendor_dir = _get_vendor_dir()
-    candidate = os.path.join(vendor_dir, triple, binary)
-    if os.path.isfile(candidate):
-        return candidate
-    flat = os.path.join(vendor_dir, binary)
-    if os.path.isfile(flat):
-        return flat
+    candidates = [
+        os.path.join(vendor_dir, triple, binary),
+        os.path.join(vendor_dir, binary),
+    ]
     for root, dirs, files in os.walk(vendor_dir):
         if binary in files and 'VERSION' not in files:
-            return os.path.join(root, binary)
+            candidates.append(os.path.join(root, binary))
+            break
+    for candidate in candidates:
+        if not os.path.isfile(candidate):
+            continue
+        if sys.platform != 'win32' and not os.access(candidate, os.X_OK):
+            try:
+                os.chmod(candidate, 0o755)
+            except OSError:
+                logger.warning("vendor rg 缺执行位且无法修复: %s", candidate)
+                continue
+        return candidate
     return None
 
 
@@ -213,9 +222,14 @@ def _run_rg(args: List[str], search_path: str, rg_path: str = "rg") -> List[str]
         )
     except subprocess.TimeoutExpired:
         return []
+    except PermissionError:
+        logger.error("rg 不可执行（权限被拒）: %s", rg_path)
+        raise
     except FileNotFoundError:
+        logger.error("rg 二进制不存在: %s", rg_path)
         return []
-    except Exception:
+    except Exception as e:
+        logger.error("rg 执行异常: %s (%s)", rg_path, e)
         return []
 
     if proc.returncode == 1:
@@ -450,22 +464,25 @@ class GrepTool(BaseTool):
         if not rg:
             return _fallback_search(keyword, abs_path, ext, glob, offset, head_limit, output_mode)
 
-        result = self._rg_search(
-            query=keyword,
-            search_path=abs_path,
-            glob=glob,
-            output_mode=output_mode,
-            type=type,
-            context_before=kwargs.get('-B'),
-            context_after=kwargs.get('-A'),
-            context_around=kwargs.get('-C'),
-            show_line_numbers=kwargs.get('-n', True),
-            ignore_case=kwargs.get('-i', False),
-            head_limit=head_limit,
-            offset=offset,
-            multiline=kwargs.get('multiline', False),
-            rg_path=rg,
-        )
+        try:
+            result = self._rg_search(
+                query=keyword,
+                search_path=abs_path,
+                glob=glob,
+                output_mode=output_mode,
+                type=type,
+                context_before=kwargs.get('-B'),
+                context_after=kwargs.get('-A'),
+                context_around=kwargs.get('-C'),
+                show_line_numbers=kwargs.get('-n', True),
+                ignore_case=kwargs.get('-i', False),
+                head_limit=head_limit,
+                offset=offset,
+                multiline=kwargs.get('multiline', False),
+                rg_path=rg,
+            )
+        except PermissionError:
+            return _fallback_search(keyword, abs_path, ext, glob, offset, head_limit, output_mode)
         result["engine"] = "ripgrep"
         return result
 

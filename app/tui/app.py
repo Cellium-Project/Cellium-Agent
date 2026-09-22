@@ -1789,11 +1789,9 @@ class CelliumTUI(App):
             )
         elif t == "reasoning":
             self._touch_busy()
+            if self._current_response is not None:
+                return
             if self._current_reasoning is None:
-                if self._current_response is not None:
-                    self._current_response = None
-                    self._current_md = ""
-                    self._md_buffer.reset()
                 self._current_reasoning = ReasoningBlock(start_time=evt.get("start_time", 0))
                 await self.chat.mount(self._current_reasoning)
             self._current_reasoning.append_text(evt.get("content", ""))
