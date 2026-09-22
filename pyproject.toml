@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellium-agent"
-version = "1.4.3.post13"
+version = "1.4.3.post14"
 description = "Cellium Agent - 桌面 AI 助手"
 readme = "README_en.md"
 requires-python = ">=3.12"
@@ -72,7 +72,7 @@ include = ["app*"]
 "cellium/dll/linux-x86_64" = ["dll/linux-x86_64/libvector_engine.so"]
 "cellium/dll/windows-x86_64" = ["dll/windows-x86_64/vector_engine.dll"]
 "cellium/config" = ["config/settings.yaml"]
-"cellium/config/agent" = ["config/agent/agent.yaml", "config/agent/channels.yaml", "config/agent/heuristics.yaml", "config/agent/learning.yaml", "config/agent/llm.yaml", "config/agent/logging.yaml", "config/agent/memory.yaml", "config/agent/model_registry.yaml", "config/agent/routes.yaml", "config/agent/security.yaml", "config/agent/server.yaml"]
+"cellium/config/agent" = ["config/agent/agent.yaml", "config/agent/channels.yaml", "config/agent/heuristics.yaml", "config/agent/learning.yaml", "config/agent/llm.yaml", "config/agent/logging.yaml", "config/agent/memory.yaml", "config/agent/routes.yaml", "config/agent/security.yaml", "config/agent/server.yaml"]
 "cellium/vendor" = ["vendor/.gitkeep"]
 "cellium/vendor/ripgrep" = ["vendor/ripgrep/.gitkeep"]
 "cellium/vendor/ripgrep/x86_64-pc-windows-msvc" = ["vendor/ripgrep/x86_64-pc-windows-msvc/rg.exe"]

@@ -21,79 +21,6 @@ _EMPTY_RESPONSE_COUNT = 0
 
 _VERIFY_CACHE: Dict[str, bool] = {}
 
-# ---- 默认模型注册表（内置兜底）----
-_DEFAULT_MODEL_REGISTRY: Dict[str, ModelInfo] = {
-    "default": ModelInfo(8192, 4096, True),
-}
-
-def _load_model_registry() -> Dict[str, ModelInfo]:
-    """从配置文件加载模型注册表，失败时使用内置默认值"""
-    import yaml
-    from pathlib import Path
-
-    registry_path = Path(__file__).resolve().parent.parent.parent.parent / "config" / "agent" / "model_registry.yaml"
-
-    try:
-        if registry_path.exists():
-            with open(registry_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-
-            models = data.get("models", {}) or {}
-            result = {}
-            for name, values in models.items():
-                if isinstance(values, (list, tuple)) and len(values) >= 2:
-                    result[str(name)] = ModelInfo(
-                        context_window=int(values[0]),
-                        max_output_tokens=int(values[1]),
-                        supports_vision=bool(values[2]) if len(values) >= 3 else False,
-                    )
-            if result:
-                logger.info("[LLM] 从 %s 加载了 %d 个模型", registry_path, len(result))
-                return result
-    except Exception as e:
-        logger.warning("[LLM] 加载模型注册表失败，使用内置默认值: %s", e)
-
-    return dict(_DEFAULT_MODEL_REGISTRY)
-
-_MODEL_REGISTRY: Optional[Dict[str, ModelInfo]] = None
-
-
-def _get_model_registry() -> Dict[str, ModelInfo]:
-    global _MODEL_REGISTRY
-    if _MODEL_REGISTRY is None:
-        _MODEL_REGISTRY = _load_model_registry()
-    return _MODEL_REGISTRY
-
-
-def _match_model(model_name: str) -> Optional[ModelInfo]:
-    if not model_name:
-        return None
-
-    registry = _get_model_registry()
-    key = model_name.strip().lower()
-
-    if key in registry:
-        return registry[key]
-
-    for reg_key, info in registry.items():
-        if key.startswith(reg_key):
-            logger.info("[LLM] 模型 '%s' 前缀匹配到注册项 '%s'", model_name, reg_key)
-            return info
-
-    base = key.split(":")[0]
-    for reg_key, info in registry.items():
-        reg_base = reg_key.split(":")[0]
-        if base == reg_base or reg_key.startswith(base + ":"):
-            logger.info("[LLM] 模型 '%s' Ollama-tag 匹配到 '%s'", model_name, reg_key)
-            return info
-
-    logger.warning(
-        "[LLM] 模型 '%s' 不在内置数据库中，使用保守默认值 "
-        "(context=8192, max_output=4096)。如需精确值请在 config/agent/model_registry.yaml 中配置。",
-        model_name,
-    )
-    return None
-
 
 # ============================================================
 #  Token 预估器 
@@ -182,8 +109,8 @@ class BaseLLMEngine(ABC):
 
 class OpenAICompatibleEngine(BaseLLMEngine):
 
-    # 保守默认值（未知模型时的安全底线）
-    DEFAULT_CONTEXT_WINDOW = 128000
+    # 通用默认值（未知模型；精确值可在模型配置里显式指定 context_window/max_tokens）
+    DEFAULT_CONTEXT_WINDOW = 200000
     DEFAULT_MAX_OUTPUT = 16384
 
     def __init__(
@@ -219,12 +146,10 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._thinking_budget = thinking_budget
         self._reasoning_effort = kwargs.get("reasoning_effort", "high")
 
-        detected = _match_model(model)
-
         self._model_info = ModelInfo(
-            context_window=context_window or (detected.context_window if detected else self.DEFAULT_CONTEXT_WINDOW),
-            max_output_tokens=max_tokens or (detected.max_output_tokens if detected else self.DEFAULT_MAX_OUTPUT),
-            supports_vision=vision or (detected.supports_vision if detected else False),
+            context_window=context_window or self.DEFAULT_CONTEXT_WINDOW,
+            max_output_tokens=max_tokens or self.DEFAULT_MAX_OUTPUT,
+            supports_vision=vision,
         )
 
         self._calibrated = False
@@ -241,9 +166,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             "[LLM] 引擎初始化 | model=%s | ctx=%d | max_out=%s | url=%s | 能力来源=%s",
             model, self._model_info.context_window,
             max_tokens_hint, base_url[:50],
-            "显式传入" if (context_window or max_tokens)
-            else ("内置注册表" if detected
-                  else "保守默认值(待校准)"),
+            "显式传入" if (context_window or max_tokens) else "通用默认值(待校准)",
         )
 
     @property
@@ -910,22 +833,21 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         逻辑:
           1. 如果显式指定了且合理 → 使用指定值
           2. 否则用模型默认值
-          3. 但不能超过 (上下文窗口 - 已用输入 tokens)
+          3. 剩余空间充足时按剩余空间收缩；窗口已满时不压缩输出
         """
         input_estimate = self.estimate_tokens_calibrated(messages, tools)
 
         safety_margin = 512
-
         available = self.context_window - input_estimate - safety_margin
-        if available < 256:
-            available = 256 
 
         model_default = self.effective_max_tokens
+        cap = model_default if explicit_max is None else min(explicit_max, model_default)
 
-        if explicit_max is not None:
-            return min(explicit_max, available, model_default)
-
-        return min(model_default, available)
+        if available >= cap:
+            return cap
+        if available >= 1024:
+            return available
+        return cap
 
     def _truncate_if_needed(
         self,
@@ -943,9 +865,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         Returns:
             (可能被截断后的消息列表, bool: 是否发生了截断)
         """
-        input_est = _estimate_messages_tokens(messages)
-        if tools:
-            input_est += len(tools) * 150
+        input_est = self.estimate_tokens_calibrated(messages, tools)
 
         if not force and input_est <= self.context_window:
             return messages, False
@@ -961,9 +881,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
 
         while normal_msgs:
             test_msgs = system_msgs + normal_msgs
-            est = _estimate_messages_tokens(test_msgs)
-            if tools:
-                est += len(tools) * 150
+            est = self.estimate_tokens_calibrated(test_msgs, tools)
             if est <= target:
                 break
             cut = 0
@@ -1025,11 +943,6 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if cache_key in _VERIFY_CACHE:
             logger.debug("[LLM] 模型验证命中缓存 | model=%s | cached=%s", self.model, _VERIFY_CACHE[cache_key])
             return _VERIFY_CACHE[cache_key]
-
-        if _match_model(self.model) is not None:
-            logger.info("[LLM] 模型 '%s' 在内置注册表中，跳过 API 验证", self.model)
-            _VERIFY_CACHE[cache_key] = True
-            return True
 
         try:
             available_ids = self._ensure_transport().list_models()
@@ -1159,7 +1072,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             timeout=int(model_config.get("timeout", 120)),
             context_window=int(model_config.get("context_window", 0)) or None,
             verify_model=True,
-            omit_max_tokens=bool(model_config.get("omit_max_tokens", False)),
+            omit_max_tokens=bool(model_config.get("omit_max_tokens", True)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
             vision=model_vision,
@@ -1176,7 +1089,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         )
 
         engine._verify_deferred = False
-        _get_model_registry()
         logger.info("[LLMFactory] Anthropic 引擎已创建")
         return engine
 
@@ -1240,7 +1152,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             timeout=int(model_config.get("timeout", 60)),
             context_window=int(model_config.get("context_window", 0)) or None,
             verify_model=True,
-            omit_max_tokens=bool(model_config.get("omit_max_tokens", False)),
+            omit_max_tokens=bool(model_config.get("omit_max_tokens", True)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
             vision=model_vision,
@@ -1257,7 +1169,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         )
 
         engine._verify_deferred = False
-        _get_model_registry()
         logger.info("[LLMFactory] 引擎已创建")
         return engine
 
@@ -1275,7 +1186,7 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             timeout=int(oc.get("timeout", 120)),
             context_window=int(oc.get("context_window", 0)) or None,
             verify_model=True,
-            omit_max_tokens=bool(oc.get("omit_max_tokens", False)),
+            omit_max_tokens=bool(oc.get("omit_max_tokens", True)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
             vision=bool(oc.get("vision", False)),
@@ -1286,19 +1197,8 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             engine.model, info.context_window, info.max_output_tokens, info.supports_vision,
         )
         engine._verify_deferred = False
-        _get_model_registry()
         logger.info("[LLMFactory] Ollama 引擎已创建（首次调用时初始化 client）")
         return engine
 
     else:
         raise ValueError(f"不支持的 LLM provider: {provider} (可选: openai, ollama)")
-
-
-def list_supported_models() -> Dict[str, ModelInfo]:
-    """列出所有内置支持的模型及其能力"""
-    return dict(_get_model_registry())
-
-
-def query_model_capability(model_name: str) -> Optional[ModelInfo]:
-    """查询指定模型的能力信息（不创建引擎）"""
-    return _match_model(model_name)
