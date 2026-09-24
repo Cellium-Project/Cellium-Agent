@@ -1675,7 +1675,20 @@ class CelliumTUI(App):
 
     def _send(self, text):
         if self._busy:
-            self._post(self._append_system(self.tr("busy")))
+            from app.server.task_manager import get_task_manager
+            task_mgr = get_task_manager()
+            queued = task_mgr.enqueue_supplement_message(self.session_id, {
+                "content": text,
+                "source": "tui",
+                "msg_id": None,
+                "received_at": time.time(),
+                "platform": None,
+                "message_type": None,
+            })
+            if not queued:
+                self._post(self._append_system(self.tr("busy")))
+                return
+            self._post(self._append_user(text, force_scroll=True))
             return
         self._busy = True
         self._busy_status = self.tr("busy")

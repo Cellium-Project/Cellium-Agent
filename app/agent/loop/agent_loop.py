@@ -862,6 +862,12 @@ class AgentLoop:
 
         result_box = {}
         thread_ref = {}
+        loop = asyncio.get_running_loop()
+        completion = loop.create_future()
+
+        def _set_done():
+            if not completion.done():
+                completion.set_result(True)
 
         def _run_tool_in_thread():
             """在专用线程中同步执行工具，记录线程 ident 供强制中断"""
@@ -879,20 +885,21 @@ class AgentLoop:
                 result_box["error"] = e
             finally:
                 result_box["done"] = True
+                try:
+                    loop.call_soon_threadsafe(_set_done)
+                except RuntimeError:
+                    pass
 
         thread = threading.Thread(target=_run_tool_in_thread, daemon=True, name="tool-exec")
         thread.start()
 
         stop_task = asyncio.create_task(stop_event.wait())
         try:
-            while True:
-                # 等待工具完成或停止
-                done, _ = await asyncio.wait(
-                    {stop_task}, timeout=0.1,
-                )
-                if result_box.get("done"):
-                    break
-                if stop_task in done or self._loop_controller.is_stop_requested:
+            done, _ = await asyncio.wait(
+                {completion, stop_task}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if completion not in done:
+                if (stop_task in done or self._loop_controller.is_stop_requested) and not result_box.get("done"):
                     tid = thread_ref.get("ident")
                     if tid:
                         self._kill_shell_subprocesses(tid)

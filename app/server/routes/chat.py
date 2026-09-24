@@ -673,99 +673,96 @@ def _messages_to_renderable(raw_messages: list) -> list:
                 tool_traces = []
                 timeline = []
                 tc_map = {}
+                final_text = ""
+                j = i
 
-                if content:
-                    # 使用分割函数处理初始内容，保持顺序
-                    segments = _split_content_with_thinking(content)
-                    for seg in segments:
-                        if seg["type"] == "thinking":
-                            timeline.append({"kind": "thinking", "content": seg["content"]})
-                        elif seg["type"] == "text":
-                            timeline.append({"kind": "text", "content": seg["content"]})
-
-                for tc in tool_calls:
-                    tc_id = tc.get("id", "")
-                    fn = tc.get("function", {})
-                    tc_map[tc_id] = {
-                        "tool": fn.get("name", "unknown"),
-                        "arguments": json.loads(fn.get("arguments", "{}")) if fn.get("arguments") else {},
-                    }
-
-                j = i + 1
-                final_text = content
                 while j < len(raw_messages):
                     sub = raw_messages[j]
-                    if sub.get("role") == "tool":
-                        tc_id = sub.get("tool_call_id", "")
-                        if tc_id in tc_map:
+                    role = sub.get("role", "")
+
+                    if role == "tool":
+                        seg = tc_map.get(sub.get("tool_call_id", ""))
+                        if seg is not None:
                             try:
-                                result = json.loads(sub.get("content", "{}"))
+                                seg["result"] = json.loads(sub.get("content", "{}"))
                             except Exception:
-                                result = {"output": sub.get("content", "")}
-                            tc_map[tc_id]["result"] = result
+                                seg["result"] = {"output": sub.get("content", "")}
+                            ms = seg["result"].get("elapsed_ms") if isinstance(seg["result"], dict) else None
+                            if ms:
+                                try:
+                                    seg["duration_ms"] = round(float(ms))
+                                except (TypeError, ValueError):
+                                    pass
                         j += 1
-                    elif sub.get("role") == "assistant" and sub.get("tool_calls"):
-                        break
-                    elif sub.get("role") == "assistant" and sub.get("content") and not sub.get("tool_calls"):
+                        continue
+
+                    if role == "assistant" and sub.get("tool_calls"):
+                        sub_content = sub.get("content")
+                        if sub_content:
+                            for seg_ in _split_content_with_thinking(sub_content):
+                                if seg_["type"] == "thinking":
+                                    timeline.append({"kind": "thinking", "content": seg_["content"]})
+                                elif seg_["type"] == "text":
+                                    timeline.append({"kind": "text", "content": seg_["content"]})
+                        for tc in sub["tool_calls"]:
+                            fn = tc.get("function", {})
+                            try:
+                                args = json.loads(fn.get("arguments", "{}")) if fn.get("arguments") else {}
+                            except Exception:
+                                args = {}
+                            seg = {
+                                "kind": "tool",
+                                "tool": fn.get("name", "unknown"),
+                                "arguments": args,
+                                "result": None,
+                                "duration_ms": 0,
+                                "status": "done",
+                            }
+                            timeline.append(seg)
+                            tc_map[tc.get("id", "")] = seg
+                            tool_traces.append(seg)
+                        j += 1
+                        continue
+
+                    if role == "assistant" and sub.get("content"):
                         final_text = sub.get("content", "")
                         j += 1
-                        break
-                    elif sub.get("role") == "user":
-                        break
-                    else:
-                        j += 1
+                    break
 
-                for tc_info in tc_map.values():
-                    args = tc_info["arguments"]
-                    result = tc_info.get("result")
-                    duration_ms = 0
-                    if result and isinstance(result, dict):
-                        duration_ms = result.get("elapsed_ms", 0) or result.get("duration_ms", 0) or 0
-                        try:
-                            duration_ms = round(float(duration_ms)) if duration_ms else 0
-                        except (TypeError, ValueError):
-                            duration_ms = 0
-
-                    trace = {
-                        "tool": tc_info["tool"],
-                        "arguments": args,
-                        "result": result,
-                        "duration_ms": duration_ms,
-                    }
+                for seg in timeline:
+                    if seg["kind"] != "tool":
+                        continue
+                    args = seg["arguments"]
+                    result = seg.get("result")
+                    if isinstance(result, dict):
+                        if result.get("error"):
+                            seg["description"] = str(result["error"])
+                            continue
+                        ms = result.get("elapsed_ms") or result.get("duration_ms") or 0
+                        if not seg["duration_ms"]:
+                            try:
+                                seg["duration_ms"] = round(float(ms)) if ms else 0
+                            except (TypeError, ValueError):
+                                seg["duration_ms"] = 0
 
                     intent = (args.get("_intent") or "") if isinstance(args, dict) else ""
-                    if intent and intent.strip():
-                        trace["description"] = intent.strip()
-                    elif trace["tool"] == "shell":
+                    if intent.strip():
+                        seg["description"] = intent.strip()
+                    elif seg["tool"] == "shell":
                         cmd = args.get("command", "")[:80] if isinstance(args, dict) else ""
-                        trace["description"] = f"正在执行：{cmd}..." if cmd else "正在执行命令"
-                    elif trace["tool"] == "file":
+                        seg["description"] = f"正在执行：{cmd}..." if cmd else "正在执行命令"
+                    elif seg["tool"] == "file":
                         action = args.get("action", "") if isinstance(args, dict) else ""
-                        trace["description"] = f"正在查看：{action}" if action else "正在操作文件"
+                        seg["description"] = f"正在查看：{action}" if action else "正在操作文件"
                     else:
-                        trace["description"] = f"正在调用 {trace['tool']}"
-                    tool_traces.append(trace)
-                    timeline.append({
-                        "kind": "tool",
-                        "tool": trace["tool"],
-                        "arguments": trace["arguments"],
-                        "result": trace["result"],
-                        "duration_ms": trace["duration_ms"],
-                        "description": trace.get("description"),
-                        "status": "done",
-                    })
+                        seg["description"] = f"正在调用 {seg['tool']}"
 
-                if final_text and final_text != content:
-                    # 使用分割函数处理最终文本，保持顺序
-                    segments = _split_content_with_thinking(final_text)
-                    for seg in segments:
-                        if seg["type"] == "thinking":
-                            timeline.append({"kind": "thinking", "content": seg["content"]})
-                        elif seg["type"] == "text":
-                            timeline.append({"kind": "text", "content": seg["content"]})
-                elif final_text and final_text == content:
-                    # 已经在前面处理过，跳过
-                    pass
+                if final_text:
+                    for seg_ in _split_content_with_thinking(final_text):
+                        if seg_["type"] == "thinking":
+                            timeline.append({"kind": "thinking", "content": seg_["content"]})
+                        elif seg_["type"] == "text":
+                            timeline.append({"kind": "text", "content": seg_["content"]})
 
                 renderable.append({
                     "role": "assistant",

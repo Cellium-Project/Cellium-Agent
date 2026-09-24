@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify';
 import type { Message, TimelineSegment } from '../types';
 import { Icons } from './Icons';
 import { Collapsible } from './Collapsible';
+import { EditDiffCard, ShellOutputCard, parseUnifiedDiff } from './ToolOutput';
 
 marked.setOptions({ gfm: true });
 
@@ -322,7 +323,7 @@ function renderTimeline(message: Message): React.ReactNode {
     type ThinkingSegment = Extract<TimelineSegment, { kind: 'thinking' }>;
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
-      | ToolSegment
+      | { kind: 'tool-batch'; items: ToolSegment[] }
       | ThinkingSegment;
 
     const groups: GroupItem[] = [];
@@ -338,7 +339,12 @@ function renderTimeline(message: Message): React.ReactNode {
       } else if (segment.kind === 'thinking') {
         groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'tool') {
-        groups.push(segment as ToolSegment);
+        const last = groups[groups.length - 1];
+        if (last && last.kind === 'tool-batch') {
+          last.items.push(segment as ToolSegment);
+        } else {
+          groups.push({ kind: 'tool-batch', items: [segment as ToolSegment] });
+        }
       }
       // 'reasoning' segments are intentionally not displayed
     }
@@ -353,21 +359,8 @@ function renderTimeline(message: Message): React.ReactNode {
           if (group.kind === 'thinking') {
             return <JsonBlockCard key={idx} jsonStr={group.content} isThinking />;
           }
-          // tool segment
-          const seg = group as ToolSegment;
-          return (
-            <ToolTraceCard
-              key={idx}
-              trace={{
-                tool: seg.tool,
-                arguments: seg.arguments,
-                result: seg.result,
-                duration_ms: seg.duration_ms,
-                description: seg.description,
-              }}
-              status={seg.status}
-            />
-          );
+          // tool batch
+          return <ToolBatchCard key={idx} items={group.items} />;
         })}
       </>
     );
@@ -376,11 +369,17 @@ function renderTimeline(message: Message): React.ReactNode {
   return (
     <>
       {message.toolTraces && message.toolTraces.length > 0 && (
-        <div className="tool-traces-wrap">
-          {message.toolTraces.map((trace, idx) => (
-            <ToolTraceCard key={idx} trace={trace} />
-          ))}
-        </div>
+        <ToolBatchCard
+          items={message.toolTraces.map(tr => ({
+            kind: 'tool' as const,
+            tool: tr.tool,
+            arguments: (tr.arguments || {}) as Record<string, any>,
+            result: tr.result,
+            duration_ms: tr.duration_ms || 0,
+            description: tr.description,
+            status: tr.result?.error ? ('error' as const) : ('done' as const),
+          }))}
+        />
       )}
       {renderContentWithCollapsibleJson(message.content)}
     </>
@@ -420,87 +419,310 @@ interface ToolTraceCardProps {
     description?: string;
   };
   status?: 'running' | 'done' | 'error';
+  compact?: boolean;
 }
 
-const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
+const KEY_ARG_KEYS = ['file_path', 'command', 'url', 'path', 'pattern', 'query', 'keyword'];
+
+function pickKeyArg(args: Record<string, any> | undefined): string {
+  if (!args) return '';
+  for (const key of KEY_ARG_KEYS) {
+    const v = args[key];
+    if (typeof v === 'string' && v) return v;
+  }
+  return '';
+}
+
+function useElapsed(running: boolean): number {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startRef = useRef(Date.now());
+
+  useEffect(() => {
+    if (!running) return;
+    startRef.current = Date.now();
+    const timer = setInterval(() => setElapsedMs(Date.now() - startRef.current), 100);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  return running ? elapsedMs : 0;
+}
+
+function formatDuration(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+function ToolCallContent({ trace, status, compact }: ToolTraceCardProps & { compact?: boolean }): React.ReactNode {
   const { t } = useTranslation();
   const argsStr = JSON.stringify(trace.arguments || {}, null, 2);
   const resultPreview = makeResultPreview(trace.result, t);
-  
-  const cmdPreview = (() => {
-    try {
-      if (trace.arguments?.command) {
-        const cmd = String(trace.arguments.command);
-        return cmd.length > 80 ? cmd.slice(0, 80) + '...' : cmd;
-      }
-      if (trace.arguments?.url) {
-        const url = String(trace.arguments.url);
-        return url.length > 80 ? url.slice(0, 80) + '...' : url;
-      }
-      return '';
-    } catch {
-      return '';
-    }
-  })();
-  
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const startTimeRef = useRef(Date.now());
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  
-  useEffect(() => {
-    if (status === 'running') {
-      startTimeRef.current = Date.now();
-      timerRef.current = setInterval(() => {
-        setElapsedMs(Date.now() - startTimeRef.current);
-      }, 100);
-      return () => {
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
-        }
-      };
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    }
-  }, [status]);
-  
-  const displayMs = status === 'running' ? elapsedMs : (trace.duration_ms || 0);
-  const durStr = displayMs >= 1000 ? `${(displayMs / 1000).toFixed(1)}s` : `${displayMs}ms`;
 
   return (
     <>
-      {trace.description && (
+      {!compact && trace.description && (
         <div className="tool-description">{String(trace.description)}</div>
       )}
-      <div className={`tool-trace ${status === 'running' ? 'tool-running' : ''}`}>
-        <div className="tool-trace-header">
-          <span className="tool-trace-name">{String(trace.tool || 'unknown')}</span>
-          {status === 'running' && (
-            <span className="tool-status-running">
-              <span className="loading-pulse"></span>
-              {t('chat.executing')} {durStr}
-            </span>
-          )}
-          {status !== 'running' && <span className="tool-trace-time">{durStr}</span>}
-        </div>
-        {cmdPreview && (
-          <div className="tool-cmd-preview">
-            <code>{cmdPreview}</code>
-          </div>
-        )}
-        <Collapsible 
-          summary={t('chat.paramsAndResult')} 
-          defaultOpen={status === 'running' || (status === 'done' && trace.result?.error)}
-        >
-          <pre className="tool-args">{argsStr}</pre>
-          {status !== 'running' && <div className="tool-result">{resultPreview}</div>}
-          {status === 'running' && <div className="tool-result"><span className="status-dot dot-running"></span>{t('chat.waitingForResult')}</div>}
-        </Collapsible>
-      </div>
+      {trace.tool === 'edit' && status !== 'running' && trace.result?.diff && (
+        <EditDiffCard
+          diff={String(trace.result.diff)}
+          filePath={String(trace.arguments?.file_path || trace.result?.path || '')}
+        />
+      )}
+      {trace.tool === 'shell' && status !== 'running' && (trace.result?.output || trace.result?.stderr) && (
+        <ShellOutputCard result={trace.result} />
+      )}
+      <pre className="tool-args">{argsStr}</pre>
+      {status === 'running' && (
+        <div className="tool-result"><span className="status-dot dot-running"></span>{t('chat.waitingForResult')}</div>
+      )}
+      {status !== 'running' && (!compact || trace.result?.error) && (
+        <div className="tool-result">{resultPreview}</div>
+      )}
     </>
+  );
+}
+
+const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact }) => {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const elapsed = useElapsed(status === 'running');
+  const durStr = formatDuration(status === 'running' ? elapsed : (trace.duration_ms || 0));
+  const keyArg = pickKeyArg(trace.arguments);
+  const err = trace.result?.error ? String(trace.result.error) : '';
+
+  const tail = (() => {
+    if (status === 'running') {
+      return <span className="tool-tail tool-tail-run">{t('chat.executing')}</span>;
+    }
+    if (err) {
+      return <span className="tool-tail tool-tail-error">{err.length > 48 ? err.slice(0, 48) + '…' : err}</span>;
+    }
+    if (trace.tool === 'edit' && trace.result?.diff) {
+      const { adds, dels } = parseUnifiedDiff(String(trace.result.diff));
+      return (
+        <span className="tool-tail">
+          <span className="tail-add">+{adds}</span>
+          <span className="tail-del">−{dels}</span>
+        </span>
+      );
+    }
+    if (trace.tool === 'shell') {
+      const out = String(trace.result?.output || '');
+      const lines = out ? out.split('\n').filter(Boolean).length : 0;
+      const code = trace.result?.exit_code;
+      return (
+        <span className="tool-tail">
+          {code !== undefined && (
+            <span className={code === 0 ? 'tail-exit-ok' : 'tail-exit-fail'}>exit {code}</span>
+          )}
+          {lines > 0 && <span className="tail-lines">{lines} 行</span>}
+        </span>
+      );
+    }
+    return <span className="tool-tail tail-done">{t('chat.done')}</span>;
+  })();
+
+  return (
+    <div className={`tool-trace ${status === 'running' ? 'tool-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
+      <div
+        className="tool-trace-header"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+      >
+        <span className={`tool-state-dot ${status || 'done'}`} />
+        <span className="tool-trace-name">{String(trace.tool || 'unknown')}</span>
+        {keyArg && (
+          <span className="tool-trace-arg">{keyArg.length > 48 ? keyArg.slice(0, 48) + '…' : keyArg}</span>
+        )}
+        <span className="tool-trace-spacer" />
+        {tail}
+        <span className="tool-trace-time">{durStr}</span>
+        <Icons.ChevronDown size={13} className={`tool-trace-chevron ${expanded ? 'rotated' : ''}`} />
+      </div>
+      <div className="tool-trace-body">
+        <div className="tool-trace-body-inner">
+          <ToolCallContent trace={trace} status={status} compact={compact} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ToolGroupItem: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
+  const [expanded, setExpanded] = useState(false);
+  const elapsed = useElapsed(status === 'running');
+  const durStr = formatDuration(status === 'running' ? elapsed : (trace.duration_ms || 0));
+  const keyArg = pickKeyArg(trace.arguments);
+  const err = trace.result?.error ? String(trace.result.error) : '';
+
+  return (
+    <div className={`tool-group-item ${status === 'running' ? 'item-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
+      <div
+        className="tool-group-item-head"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+      >
+        <span className={`tool-state-dot ${status || 'done'}`} />
+        <span className="tool-group-item-arg">{keyArg || String(trace.tool || 'unknown')}</span>
+        {err && <span className="tool-group-item-err">{err.length > 40 ? err.slice(0, 40) + '…' : err}</span>}
+        <span className="tool-trace-spacer" />
+        <span className="tool-group-item-time">{durStr}</span>
+        <Icons.ChevronDown size={12} className={`tool-trace-chevron ${expanded ? 'rotated' : ''}`} />
+      </div>
+      <div className="tool-trace-body">
+        <div className="tool-trace-body-inner">
+          <ToolCallContent trace={trace} status={status} compact />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ToolGroupCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }>[] }> = ({ items }) => {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const running = items.some(i => i.status === 'running');
+  const errCount = items.filter(i => i.result?.error).length;
+  const totalMs = items.reduce((s, i) => s + (i.duration_ms || 0), 0);
+  const durStr = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+
+  return (
+    <div className={`tool-group ${running ? 'tool-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
+      <div
+        className="tool-trace-header"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+      >
+        <span className={`tool-state-dot ${running ? 'running' : errCount > 0 ? 'error' : 'done'}`} />
+        <span className="tool-trace-name">{String(items[0].tool || 'unknown')}</span>
+        <span className="tool-group-count">×{items.length}</span>
+        <span className="tool-trace-spacer" />
+        {running
+          ? <span className="tool-tail tool-tail-run">{t('chat.executing')}</span>
+          : errCount > 0
+            ? <span className="tool-tail tool-tail-error">{t('chat.errorsCount', { count: errCount })}</span>
+            : <span className="tool-tail tail-done">{t('chat.done')}</span>}
+        {!running && <span className="tool-trace-time">{durStr}</span>}
+        <Icons.ChevronDown size={13} className={`tool-trace-chevron ${expanded ? 'rotated' : ''}`} />
+      </div>
+      <div className="tool-trace-body">
+        <div className="tool-trace-body-inner tool-group-items">
+          {items.map((seg, i) => (
+            <ToolGroupItem
+              key={i}
+              trace={{
+                tool: seg.tool,
+                arguments: seg.arguments,
+                result: seg.result,
+                duration_ms: seg.duration_ms,
+                description: seg.description,
+              }}
+              status={seg.status}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+function batchSubGroups(items: Extract<TimelineSegment, { kind: 'tool' }>[]): Array<{ tool: string; items: Extract<TimelineSegment, { kind: 'tool' }>[] }> {
+  const subGroups: Array<{ tool: string; items: Extract<TimelineSegment, { kind: 'tool' }>[] }> = [];
+  for (const seg of items) {
+    const last = subGroups[subGroups.length - 1];
+    if (last && last.tool === seg.tool) {
+      last.items.push(seg);
+    } else {
+      subGroups.push({ tool: seg.tool, items: [seg] });
+    }
+  }
+  return subGroups;
+}
+
+const ToolBatchCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }>[] }> = ({ items }) => {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const running = items.some(i => i.status === 'running');
+  const errCount = items.filter(i => i.result?.error).length;
+  const totalMs = items.reduce((s, i) => s + (i.duration_ms || 0), 0);
+
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (running && !wasRunning.current) setExpanded(true);
+    if (wasRunning.current && !running) setExpanded(false);
+    wasRunning.current = running;
+  }, [running]);
+
+  if (items.length === 1) {
+    const seg = items[0];
+    return (
+      <ToolTraceCard
+        trace={{
+          tool: seg.tool,
+          arguments: seg.arguments,
+          result: seg.result,
+          duration_ms: seg.duration_ms,
+          description: seg.description,
+        }}
+        status={seg.status}
+      />
+    );
+  }
+
+  const subGroups = batchSubGroups(items);
+  const summary = subGroups
+    .map(g => (g.items.length > 1 ? `${g.tool} ×${g.items.length}` : g.tool))
+    .join('  ');
+
+  return (
+    <div className={`tool-batch ${running ? 'tool-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
+      <div
+        className="tool-trace-header"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+      >
+        <span className={`tool-state-dot ${running ? 'running' : errCount > 0 ? 'error' : 'done'}`} />
+        <span className="tool-trace-name">{t('chat.toolActivity')}</span>
+        <span className="tool-batch-summary">{summary}</span>
+        <span className="tool-trace-spacer" />
+        {running
+          ? <span className="tool-tail tool-tail-run">{t('chat.executing')}</span>
+          : errCount > 0
+            ? <span className="tool-tail tool-tail-error">{t('chat.errorsCount', { count: errCount })}</span>
+            : <span className="tool-tail tail-done">{t('chat.done')}</span>}
+        {!running && <span className="tool-trace-time">{formatDuration(totalMs)}</span>}
+        <Icons.ChevronDown size={13} className={`tool-trace-chevron ${expanded ? 'rotated' : ''}`} />
+      </div>
+      <div className="tool-trace-body">
+        <div className="tool-trace-body-inner tool-batch-items">
+          {subGroups.map((g, i) => (
+            g.items.length === 1
+              ? (
+                <ToolTraceCard
+                  key={i}
+                  compact
+                  trace={{
+                    tool: g.items[0].tool,
+                    arguments: g.items[0].arguments,
+                    result: g.items[0].result,
+                    duration_ms: g.items[0].duration_ms,
+                    description: g.items[0].description,
+                  }}
+                  status={g.items[0].status}
+                />
+              )
+              : <ToolGroupCard key={i} items={g.items} />
+          ))}
+        </div>
+      </div>
+    </div>
   );
 };
 

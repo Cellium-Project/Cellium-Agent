@@ -1071,6 +1071,55 @@ def _strip_ansi(text):
     return _ANSI_ESC_RE.sub("", text)
 
 
+_LEXER_CACHE: dict = {}
+_MONOKAI_THEME = "monokai"
+
+
+def _lexer_for_filename(path: str):
+    key = (path or "").lower()
+    if key in _LEXER_CACHE:
+        return _LEXER_CACHE[key]
+    lexer = None
+    try:
+        from pygments.lexers import get_lexer_for_filename
+        lexer = get_lexer_for_filename(key)
+    except Exception:
+        lexer = None
+    if len(_LEXER_CACHE) < 512:
+        _LEXER_CACHE[key] = lexer
+    return lexer
+
+
+def _highlight_segments(code: str, lexer, bg: str) -> list:
+    if not code:
+        return []
+    if lexer is None:
+        return [(code, Style(bgcolor=bg) if bg else None)]
+    try:
+        from rich.syntax import Syntax
+        highlighted = Syntax(code, lexer, theme=_MONOKAI_THEME, word_wrap=False).highlight(code)
+        plain = highlighted.plain
+        spans = sorted(highlighted.spans, key=lambda s: s.start)
+    except Exception:
+        return [(code, None)]
+    limit = min(len(plain), len(code))
+    overlay = Style(bgcolor=bg) if bg else None
+    segments: list = []
+    pos = 0
+    for span in spans:
+        start, end = max(span.start, pos), min(span.end, limit)
+        if start >= end:
+            continue
+        if start > pos:
+            segments.append((plain[pos:start], overlay))
+        style = span.style
+        segments.append((plain[start:end], (style + overlay) if (overlay and style is not None) else (style or overlay)))
+        pos = end
+    if pos < limit:
+        segments.append((plain[pos:limit], overlay))
+    return segments
+
+
 class ReasoningBlock(Static):
     """LLM 原生 reasoning_content 流式展示组件
 
@@ -1182,6 +1231,7 @@ class ToolCallCard(Static):
         self._folded_rows = []
         self._folded_index = 0
         self._diff_colors_cache = None
+        self._highlight_cache = {}
         self._last_blink = -1
 
     def on_mount(self):
@@ -1448,11 +1498,12 @@ class ToolCallCard(Static):
         adds = sum(1 for k, *_ in rows if k == "+")
         dels = sum(1 for k, *_ in rows if k == "-")
         self._foldable.add(cid)
-        folded = len(rows) > 20 and cid not in self._expanded_diffs
+        folded = len(rows) > 64 and cid not in self._expanded_diffs
         max_ln = max((o or 0) for _, o, n, _ in rows + [(" ", new_ln, new_ln, "")])
         w = max(1, len(str(max_ln)))
         import os as _os
         fname = _os.path.basename((c["arguments"] or {}).get("file_path") or "") or path
+        lexer = _lexer_for_filename(str((c["arguments"] or {}).get("file_path") or fname))
         if folded:
             t.append("\n")
             t.append(f"  # Edited {fname}", style=f"dim on {code_bg}")
@@ -1481,13 +1532,30 @@ class ToolCallCard(Static):
             lno = f"{ol:>{w}}" if ol is not None else " " * w
             rno = f"{nl:>{w}}" if nl is not None else " " * w
             if kind == "+":
-                t.append(f"    {rno} + {content}", style=f"{add_fg} on {add_bg}")
+                bg, fg, ln, mark = add_bg, add_fg, rno, " + "
             elif kind == "-":
-                t.append(f"    {lno} − {content}", style=f"{del_fg} on {del_bg}")
+                bg, fg, ln, mark = del_bg, del_fg, lno, " − "
             else:
-                t.append(f"    {rno}   {content}", style=f"dim on {code_bg}")
+                bg, fg, ln, mark = code_bg, None, rno, "   "
+            t.append(f"    {ln}", style=f"dim on {code_bg}")
+            t.append(mark, style=f"bold {fg} on {bg}" if fg else f"dim on {bg}")
+            for stext, sstyle in self._highlight(content, lexer, bg):
+                t.append(stext, style=sstyle if sstyle is not None else f"on {bg}")
         t.append("\n")
         t.append(" ", style=f"on {code_bg}")
+
+    def _highlight(self, content: str, lexer, bg: str) -> list:
+        if not content:
+            return []
+        key = (bg, getattr(lexer, "name", "text") if lexer else "text", content)
+        cached = self._highlight_cache.get(key)
+        if cached is not None:
+            return cached
+        segments = _highlight_segments(content, lexer, bg)
+        if len(self._highlight_cache) > 4096:
+            self._highlight_cache.clear()
+        self._highlight_cache[key] = segments
+        return segments
 
     def can_focus(self):
         return bool(self._folded_rows)
