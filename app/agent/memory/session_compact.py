@@ -313,6 +313,45 @@ class SessionCompactor:
             idx += 1
         return idx
 
+    GIANT_MSG_CHARS = 4000
+
+    @classmethod
+    def _truncate_giant_message(cls, msg: Dict) -> Dict:
+        role = msg.get("role")
+        if role not in ("user", "tool") or msg.get("_is_compacted_notes"):
+            return msg
+        content = msg.get("content")
+        if isinstance(content, str):
+            if len(content) <= cls.GIANT_MSG_CHARS:
+                return msg
+            new = dict(msg)
+            new["content"] = cls._clip_giant(content, role)
+            return new
+        if isinstance(content, list):
+            changed = False
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str) and len(part["text"]) > cls.GIANT_MSG_CHARS:
+                    part = dict(part)
+                    part["text"] = cls._clip_giant(part["text"], role)
+                    changed = True
+                parts.append(part)
+            if not changed:
+                return msg
+            new = dict(msg)
+            new["content"] = parts
+            return new
+        return msg
+
+    @classmethod
+    def _clip_giant(cls, content: str, role: str) -> str:
+        if role == "tool":
+            head, tail = 1000, 2600
+        else:
+            head, tail = 3200, 500
+        omitted = len(content) - head - tail
+        return f"{content[:head]}\n\n...[中间省略约 {omitted} 字符]...\n\n{content[-tail:]}"
+
     def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = "", keep_n: int = None, cut: int = None):
         notes_content = notes.render_for_prompt(max_length=self.max_notes_length)
         if summary:
@@ -324,7 +363,7 @@ class SessionCompactor:
         }
         if cut is None:
             cut = self._safe_cut_index(memory.messages, keep_n or self.keep_recent_messages)
-        recent_messages = memory.messages[cut:]
+        recent_messages = [self._truncate_giant_message(m) for m in memory.messages[cut:]]
         memory.messages = [notes_message] + recent_messages
         memory.tool_call_counter = len([
             m for m in memory.messages if m.get("role") == "assistant" and m.get("tool_calls")

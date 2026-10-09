@@ -45,6 +45,16 @@ def _unescape_string(value: str) -> str:
     return ''.join(chars)
 
 
+def _build_edit_candidates(value: str):
+    if not isinstance(value, str):
+        return [value]
+    cands = [value]
+    unescaped = _unescape_string(value)
+    if unescaped != value:
+        cands.append(unescaped)
+    return cands
+
+
 def _normalize_quotes(text: str) -> str:
     replacements = [
         ('\u2018', "'"),
@@ -148,8 +158,6 @@ class EditTool(BaseTool):
         new_string: str,
         replace_all: bool = False,
     ):
-        old_string = _unescape_string(old_string)
-
         if not file_path:
             return {"success": False, "error": "file_path is required"}
         if not old_string:
@@ -176,24 +184,26 @@ class EditTool(BaseTool):
             return {"success": False, "error": f"Cannot read file: {e}"}
 
         file_content = file_content.replace('\r\n', '\n')
-        old_string = old_string.replace('\r\n', '\n')
-        new_string = new_string.replace('\r\n', '\n')
 
-        old_string = _strip_trailing_whitespace(old_string) if old_string else old_string
+        old_cands = _build_edit_candidates(old_string)
+        new_cands = _build_edit_candidates(new_string)
 
-        if old_string == new_string:
-            return {"success": False, "error": "old_string and new_string are identical"}
+        matched, matches, used_unescaped = None, 0, False
+        for i, cand in enumerate(old_cands):
+            c = cand.replace('\r\n', '\n')
+            c = _strip_trailing_whitespace(c) if c else c
+            m, cnt, _norm = _find_match_with_tolerance(file_content, c)
+            if cnt > 0:
+                matched, matches, used_unescaped = m, cnt, (i > 0)
+                break
 
-        matched, matches, used_normalize = _find_match_with_tolerance(file_content, old_string)
         if matches == 0:
             hints = []
-            if "\\n" in old_string and "\n" in old_string:
-                pass
-            elif "\\n" in old_string:
-                hints.append("传入的字面 \\n 与文件真换行冲突，请直接用真 \\n")
+            if "\\n" in old_string or "\\t" in old_string:
+                hints.append("old_string 含字面转义序列，已自动尝试原始/反转义两种形式仍未匹配")
             if _strip_trailing_whitespace(old_string) != old_string:
                 hints.append("末尾空白不匹配，确认 tab/空格")
-            if not any(ch in old_string for ch in "\n") and len(old_string) > 80:
+            if "\n" not in old_string and len(old_string) > 80:
                 hints.append("old_string 单行过长，建议包含换行做上下文")
             hint_text = "; ".join(hints) if hints else "请检查空白/换行/引号是否与文件一致"
             return {
@@ -203,6 +213,12 @@ class EditTool(BaseTool):
             }
 
         old_string = matched
+        new_string = new_cands[1] if used_unescaped and len(new_cands) > 1 else new_cands[0]
+        if isinstance(new_string, str):
+            new_string = new_string.replace('\r\n', '\n')
+
+        if old_string == new_string:
+            return {"success": False, "error": "old_string and new_string are identical"}
 
         if matches > 1 and not replace_all:
             locations = []
