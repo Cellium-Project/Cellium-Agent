@@ -27,6 +27,8 @@ const MessageList = memo(({
   const historyLoadSnapshotRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const isLoadingHistoryRef = useRef<boolean>(false);
   const needsScrollToBottomRef = useRef<boolean>(false); // 切换对话后需要滚动到底部
+  const loadMoreLockRef = useRef<boolean>(false);
+  const lastLoadMoreRef = useRef<number>(0);
 
   const allMessages = streamingMessage
     ? [...messages, streamingMessage]
@@ -72,16 +74,22 @@ const MessageList = memo(({
   }, [currentSessionId, isLoadingMessages, allMessages.length, messagesContainerRef, messagesEndRef]);
 
   const handleScroll = useCallback(() => {
-    if (!messagesContainerRef.current || isLoadingMessages || isStreaming || !hasMoreHistory || !currentSessionId) return;
+    const container = messagesContainerRef.current;
+    if (!container || isLoadingMessages || isStreaming || !hasMoreHistory || !currentSessionId) return;
 
-    if (messagesContainerRef.current.scrollTop < 100) {
-      const container = messagesContainerRef.current;
+    if (container.scrollTop < 100) {
+      if (loadMoreLockRef.current) return;
+      const now = Date.now();
+      if (now - lastLoadMoreRef.current < 400) return;
+      lastLoadMoreRef.current = now;
+      loadMoreLockRef.current = true;
       historyLoadSnapshotRef.current = {
         scrollTop: container.scrollTop,
         scrollHeight: container.scrollHeight,
       };
       isLoadingHistoryRef.current = true;
       fetchMessages(currentSessionId, messages.length);
+      window.setTimeout(() => { loadMoreLockRef.current = false; }, 600);
     }
   }, [isLoadingMessages, isStreaming, hasMoreHistory, currentSessionId, fetchMessages, messages.length]);
 

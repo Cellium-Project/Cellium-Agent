@@ -708,6 +708,7 @@ body {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 16px 20px;
     display: flex;
     flex-direction: column;
@@ -777,7 +778,7 @@ body {
   border-radius: 20px;
   overflow: hidden;
   transition: all 0.3s ease;
-  max-width: 600px;
+  max-width: min(600px, 100%);
 }
 
 .scheduler-trigger-container.expanded {
@@ -856,6 +857,7 @@ body {
     display: flex;
     gap: 10px;
     max-width: 80%;
+    min-width: 0;
 }
 
 .message-row.user .message-wrapper {
@@ -887,6 +889,9 @@ body {
     line-height: 1.7;
     font-size: 15px;
     word-break: break-word;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 
 .user-content {
@@ -1614,7 +1619,6 @@ body {
 
 .tool-diff-body {
     padding: 4px 0;
-    overflow-x: auto;
 }
 
 .tool-diff-row {
@@ -1654,6 +1658,8 @@ body {
     min-width: 0;
     padding-right: 10px;
     color: var(--code-text);
+    white-space: pre-wrap;
+    word-break: break-all;
 }
 
 .tool-diff-hunk {
@@ -1743,7 +1749,8 @@ body {
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 11px;
     line-height: 1.6;
-    white-space: pre;
+    white-space: pre-wrap;
+    word-break: break-all;
     color: var(--code-text);
     animation: diffRowIn 0.25s ease-out both;
 }
@@ -1889,8 +1896,7 @@ body {
     font-size: 12px;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: normal;
-    word-break: break-word;
+    white-space: nowrap;
     flex: 1;
     min-width: 0;
 }
