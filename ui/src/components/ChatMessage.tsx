@@ -481,6 +481,19 @@ function ToolCallContent({ trace, status, compact }: ToolTraceCardProps & { comp
   );
 }
 
+function useCollapseMount(open: boolean, delay = 260): boolean {
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      return;
+    }
+    const t = setTimeout(() => setMounted(false), delay);
+    return () => clearTimeout(t);
+  }, [open, delay]);
+  return mounted;
+}
+
 const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact }) => {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -488,6 +501,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact })
   const durStr = formatDuration(status === 'running' ? elapsed : (trace.duration_ms || 0));
   const keyArg = pickKeyArg(trace.arguments);
   const err = trace.result?.error ? String(trace.result.error) : '';
+  const showBody = useCollapseMount(expanded);
 
   const tail = (() => {
     if (status === 'running') {
@@ -542,7 +556,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact })
       </div>
       <div className="tool-trace-body">
         <div className="tool-trace-body-inner">
-          <ToolCallContent trace={trace} status={status} compact={compact} />
+          {showBody && <ToolCallContent trace={trace} status={status} compact={compact} />}
         </div>
       </div>
     </div>
@@ -555,6 +569,7 @@ const ToolGroupItem: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
   const durStr = formatDuration(status === 'running' ? elapsed : (trace.duration_ms || 0));
   const keyArg = pickKeyArg(trace.arguments);
   const err = trace.result?.error ? String(trace.result.error) : '';
+  const showBody = useCollapseMount(expanded);
 
   return (
     <div className={`tool-group-item ${status === 'running' ? 'item-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
@@ -574,7 +589,7 @@ const ToolGroupItem: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
       </div>
       <div className="tool-trace-body">
         <div className="tool-trace-body-inner">
-          <ToolCallContent trace={trace} status={status} compact />
+          {showBody && <ToolCallContent trace={trace} status={status} compact />}
         </div>
       </div>
     </div>
@@ -588,6 +603,7 @@ const ToolGroupCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }
   const errCount = items.filter(i => i.result?.error).length;
   const totalMs = items.reduce((s, i) => s + (i.duration_ms || 0), 0);
   const durStr = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+  const showBody = useCollapseMount(expanded);
 
   return (
     <div className={`tool-group ${running ? 'tool-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
@@ -612,7 +628,7 @@ const ToolGroupCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }
       </div>
       <div className="tool-trace-body">
         <div className="tool-trace-body-inner tool-group-items">
-          {items.map((seg, i) => (
+          {showBody && items.map((seg, i) => (
             <ToolGroupItem
               key={i}
               trace={{
@@ -652,6 +668,7 @@ const ToolBatchCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }
   const totalMs = items.reduce((s, i) => s + (i.duration_ms || 0), 0);
 
   const wasRunning = useRef(running);
+  const showBody = useCollapseMount(expanded);
   useEffect(() => {
     if (running && !wasRunning.current) setExpanded(true);
     if (wasRunning.current && !running) setExpanded(false);
@@ -702,7 +719,7 @@ const ToolBatchCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }
       </div>
       <div className="tool-trace-body">
         <div className="tool-trace-body-inner tool-batch-items">
-          {subGroups.map((g, i) => (
+          {showBody && subGroups.map((g, i) => (
             g.items.length === 1
               ? (
                 <ToolTraceCard

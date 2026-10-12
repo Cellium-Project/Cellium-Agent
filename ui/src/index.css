@@ -13,6 +13,7 @@ body {
     background-color: var(--bg-primary);
     color: var(--text-primary);
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     transition: background-color 0.3s ease, color 0.3s ease;
     padding-bottom: env(safe-area-inset-bottom);
@@ -22,7 +23,8 @@ body {
 .app-layout {
     display: flex;
     height: 100vh;
-    width: 100vw;
+    height: 100dvh;
+    width: 100%;
     overflow: hidden;
     padding-bottom: env(safe-area-inset-bottom);
 }
@@ -550,6 +552,7 @@ body {
     background-color: var(--bg-primary);
     max-width: none;
     height: 100vh;
+    height: 100dvh;
     min-width: 0;
     position: relative;
     overflow: hidden;
@@ -1293,8 +1296,16 @@ body {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 8px;
+    padding: 0 8px;
     min-width: 0;
+}
+
+.tool-group-items > :first-child {
+    margin-top: 8px;
+}
+
+.tool-group-items > :last-child {
+    margin-bottom: 8px;
 }
 
 .tool-group-item {
@@ -1397,8 +1408,16 @@ body {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 2px 8px 8px;
+    padding: 0 8px;
     min-width: 0;
+}
+
+.tool-batch-items > :first-child {
+    margin-top: 2px;
+}
+
+.tool-batch-items > :last-child {
+    margin-bottom: 8px;
 }
 
 .tool-batch-items .tool-trace,
@@ -1423,8 +1442,16 @@ body {
 }
 
 .tool-batch-items .tool-group-items {
-    padding: 2px 0 0;
+    padding: 0;
     gap: 8px;
+}
+
+.tool-batch-items .tool-group-items > :first-child {
+    margin-top: 2px;
+}
+
+.tool-batch-items .tool-group-items > :last-child {
+    margin-bottom: 0;
 }
 
 .collapsible {
@@ -5229,6 +5256,7 @@ input:focus, select:focus, textarea:focus {
     .main-content {
         margin-top: 0;
         height: 100vh;
+        height: 100dvh;
     }
 
     .sidebar-toggle {

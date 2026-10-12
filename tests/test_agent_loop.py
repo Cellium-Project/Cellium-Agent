@@ -942,6 +942,67 @@ class TestRunStreamIntegration(unittest.TestCase):
         self.assertEqual(len(user_msgs), 1)
         self.assertEqual(user_msgs[0]["content"], "测试输入")
 
+    def test_run_stream_entry_cleanup_dangling_tool_calls(self):
+        """入口自愈：悬空 tool_calls 在请求开始前被清理，不发给 LLM"""
+        self.memory.add_user_message("历史问题")
+        self.memory.add_tool_calls_batch([
+            {"tool_name": "shell", "arguments": {"command": "ls"}, "tool_call_id": "tc-dangling"}
+        ], content="调用工具")
+
+        llm = MockLLMEngine(responses=[MockResponse(content="ok")])
+        loop = AgentLoop(
+            llm_engine=llm,
+            shell=self.shell,
+            memory=self.memory,
+            enable_heuristics=False,
+            enable_learning=False,
+            flash_mode=True,
+        )
+
+        async def run_test():
+            async for event in loop.run_stream("新问题", memory=self.memory):
+                if event.get("type") in ("done", "error"):
+                    break
+
+        asyncio.run(run_test())
+
+        sent = llm.chat_calls[0]["messages"] if llm.chat_calls else []
+        for msg in sent:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                ids = {tc.get("id") for tc in msg["tool_calls"]}
+                self.assertNotIn("tc-dangling", ids)
+        messages = self.memory.get_messages()
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                ids = {tc.get("id") for tc in msg["tool_calls"]}
+                self.assertNotIn("tc-dangling", ids)
+
+    def test_tool_calls_arguments_serialized_as_json_string(self):
+        """写入 memory 的 arguments 必须是 JSON 字符串（严格服务端要求）"""
+        self.memory.add_tool_calls_batch([
+            {"tool_name": "shell", "arguments": {"command": "ls"}, "tool_call_id": "tc-1"}
+        ], content="调用")
+        self.memory.add_tool_result("tc-1", {"result": "ok"})
+        messages = self.memory.get_messages()
+        asst = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+        self.assertEqual(len(asst), 1)
+        for tc in asst[0]["tool_calls"]:
+            self.assertIsInstance(tc["function"]["arguments"], str)
+            json.loads(tc["function"]["arguments"])
+
+    def test_get_messages_strips_dangling_tool_calls(self):
+        """get_messages 出口剥离悬空 tool_calls，脏历史不发给 LLM"""
+        self.memory.add_user_message("历史问题")
+        self.memory.add_tool_calls_batch([
+            {"tool_name": "shell", "arguments": {"command": "ls"}, "tool_call_id": "tc-dangling"}
+        ], content="调用工具")
+        messages = self.memory.get_messages()
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                ids = {tc.get("id") for tc in msg["tool_calls"]}
+                self.assertNotIn("tc-dangling", ids)
+        self.assertFalse(any(m.get("role") == "tool" for m in messages))
+
     def test_run_stream_detects_max_iterations(self):
         """超过 max_iterations 应被终止"""
         llm = MockLLMEngine(responses=[

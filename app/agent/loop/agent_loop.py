@@ -1094,6 +1094,7 @@ class AgentLoop:
 
         if effective_memory:
             effective_memory.clear_ephemeral_messages()
+            self._cleanup_incomplete_tool_calls(effective_memory)
             removed = effective_memory.remove_gene_system_messages()
             if removed > 0:
                 logger.info(f"[AgentLoop] 已清理上次残留的 {removed} 条 Gene 相关消息")
