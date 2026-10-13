@@ -1249,7 +1249,8 @@ class TelegramAdapter(ChannelAdapter):
             content = "[Sticker]"
 
         else:
-            content = "[Unsupported message type]"
+            logger.debug(f"[TelegramAdapter] Ignoring service/unsupported message: {sorted(message.keys())[:6]}")
+            return
 
         thread_id = message.get("message_thread_id")
         thread_id = str(thread_id) if thread_id else None
