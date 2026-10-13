@@ -79,7 +79,7 @@ class MessageBroker:
             for q in list(subs):
                 self._put_to_queue(q, decorated)
         else:
-            logger.warning("[Broker] 无订阅者 | session=%s | event=%s", session_id, event.get("type"))
+            logger.debug("[Broker] 无订阅者 | session=%s | event=%s", session_id, event.get("type"))
 
         if self._ws_publish is not None:
             try:

@@ -24,6 +24,263 @@ def _default_download_dir():
     return Path(resolve_dir_writable("workspace")) / "downloads" / "telegram"
 
 
+class _RichStreamSession:
+    THROTTLE = 0.7
+    MAX_HTML = 32000
+    MAX_RESULT_CHARS = 2000
+    MAX_RESULT_LINES = 64
+
+    def __init__(self, adapter: "TelegramAdapter", chat_id: str, thread_id: Optional[str] = None):
+        self._adapter = adapter
+        self._chat_id = chat_id
+        self._thread_id = thread_id
+        self._message_id = None
+        self._segments = []
+        self._dirty = False
+        self._degraded = False
+        self._finished = False
+        self._fail_count = 0
+        self._last_render = ""
+        self._task = None
+
+    @property
+    def degraded(self) -> bool:
+        return self._degraded
+
+    async def start(self) -> bool:
+        self._task = asyncio.create_task(self._loop())
+        return True
+
+    async def _ensure_message(self) -> bool:
+        if self._message_id:
+            return True
+        html = self._render()
+        if not html:
+            return False
+        try:
+            data = {"chat_id": self._chat_id, "rich_message": {"html": html}}
+            if self._thread_id:
+                data["message_thread_id"] = int(self._thread_id)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(f"{self._adapter.base_url}/sendRichMessage", json=data)
+                result = resp.json()
+            if result.get("ok"):
+                self._message_id = result.get("result", {}).get("message_id")
+                if self._message_id:
+                    self._last_render = html
+                    return True
+            logger.warning("[TelegramAdapter] rich stream start failed: %s", result.get("description", ""))
+        except Exception as e:
+            logger.warning("[TelegramAdapter] rich stream start error: %s", e)
+        return False
+
+    def on_event(self, event: dict):
+        if self._degraded or self._finished:
+            return
+        etype = event.get("type")
+        try:
+            if etype == "tool_start":
+                self._add_tool_start(event)
+            elif etype == "tool_result":
+                self._add_tool_result(event)
+            else:
+                return
+            self._dirty = True
+        except Exception as e:
+            logger.warning("[TelegramAdapter] rich stream on_event error: %s", e)
+
+    def _add_tool_start(self, event: dict):
+        self._segments.append({
+            "kind": "tool",
+            "name": event.get("tool", "unknown"),
+            "desc": event.get("description", ""),
+            "call_id": event.get("call_id", ""),
+            "status": "running",
+            "duration": 0,
+            "result": "",
+            "error": "",
+            "diff": "",
+        })
+
+    def _add_tool_result(self, event: dict):
+        call_id = event.get("call_id", "")
+        name = event.get("tool", "unknown")
+        target = None
+        for seg in reversed(self._segments):
+            if seg["kind"] == "tool" and seg["status"] == "running":
+                if (call_id and seg["call_id"] == call_id) or (not call_id and seg["name"] == name):
+                    target = seg
+                    break
+        if target is None:
+            for seg in reversed(self._segments):
+                if seg["kind"] == "tool" and seg["status"] == "running" and seg["name"] == name:
+                    target = seg
+                    break
+        if target is None:
+            return
+        result = event.get("result", {})
+        err = event.get("error") or (result.get("error") if isinstance(result, dict) else "")
+        target["status"] = "error" if err else "done"
+        target["duration"] = event.get("duration_ms", 0)
+        target["result"] = self._extract_result(result)
+        if isinstance(result, dict) and isinstance(result.get("diff"), str):
+            target["diff"] = result["diff"]
+        if err:
+            target["error"] = str(err)
+
+    @staticmethod
+    def _extract_result(result) -> str:
+        if isinstance(result, dict):
+            for key in ("content", "output", "text", "result"):
+                v = result.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v
+            return ""
+        return str(result) if result else ""
+
+    def _clip_result(self, text: str) -> str:
+        lines = text.split("\n")
+        if len(lines) > self.MAX_RESULT_LINES:
+            text = "\n".join(lines[:self.MAX_RESULT_LINES]) + f"\n… 共 {len(lines)} 行"
+        if len(text) > self.MAX_RESULT_CHARS:
+            text = text[:self.MAX_RESULT_CHARS] + "\n…"
+        return text
+
+    def _text_to_html(self, text: str) -> str:
+        out = []
+        for line in self._clip_result(text).split('\n'):
+            html = self._adapter._escape_html(line).replace(' ', '&nbsp;')
+            out.append(html or '&nbsp;')
+        return '<br/>'.join(out)
+
+    def _render_tool(self, seg: dict) -> str:
+        esc = self._adapter._escape_html
+        head = f'<b>{esc(seg["name"])}</b>'
+        if seg.get("desc"):
+            head += f' · {esc(seg["desc"][:60])}'
+        if seg["status"] == "running":
+            return f'<blockquote>🔧 {head} · 执行中…</blockquote>'
+        icon = "✅" if seg["status"] == "done" else "❌"
+        head = f'{icon} {head}'
+        if seg["duration"]:
+            head += f' · {seg["duration"]}ms'
+        if seg["status"] == "error" and seg.get("error"):
+            return f'<blockquote expandable>{head}<br/>{self._text_to_html(seg["error"])}</blockquote>'
+        diff = seg.get("diff") or ""
+        if diff.strip():
+            lines = diff.split('\n')
+            adds = sum(1 for l in lines if l.startswith('+') and not l.startswith('+++'))
+            dels = sum(1 for l in lines if l.startswith('-') and not l.startswith('---'))
+            head += f' · +{adds} -{dels}'
+            return f'<blockquote expandable>{head}<br/>{self._text_to_html(diff)}</blockquote>'
+        return f'<blockquote>{head}</blockquote>'
+
+    def _render(self) -> str:
+        while True:
+            html = "\n".join(self._render_tool(seg) for seg in self._segments)
+            if len(html.encode("utf-8")) <= self.MAX_HTML:
+                return html
+            if len(self._segments) <= 1:
+                return html
+            self._segments.pop(0)
+
+    async def _push(self) -> bool:
+        html = self._render()
+        if not html:
+            return True
+        if not self._message_id:
+            return await self._ensure_message()
+        if html == self._last_render:
+            return True
+        data = {"chat_id": self._chat_id, "message_id": self._message_id, "rich_message": {"html": html}}
+        for _ in range(2):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(f"{self._adapter.base_url}/editMessageText", json=data)
+                    result = resp.json()
+                if result.get("ok"):
+                    self._last_render = html
+                    self._fail_count = 0
+                    return True
+                desc = result.get("description", "")
+                if "message is not modified" in desc:
+                    self._last_render = html
+                    return True
+                retry_after = result.get("parameters", {}).get("retry_after")
+                if retry_after:
+                    await asyncio.sleep(retry_after + 0.2)
+                    continue
+                logger.warning("[TelegramAdapter] rich stream push failed: %s", desc)
+                break
+            except Exception as e:
+                logger.warning("[TelegramAdapter] rich stream push error: %s", e)
+                break
+        self._fail_count += 1
+        if self._fail_count >= 2:
+            self._degraded = True
+        return False
+
+    async def _loop(self):
+        try:
+            while not self._finished:
+                await asyncio.sleep(self.THROTTLE)
+                if self._dirty and not self._degraded:
+                    self._dirty = False
+                    await self._push()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning("[TelegramAdapter] rich stream loop error: %s", e)
+
+    async def _recover_full(self):
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(f"{self._adapter.base_url}/deleteMessage",
+                                  json={"chat_id": self._chat_id, "message_id": self._message_id})
+        except Exception:
+            pass
+        lines = []
+        for seg in self._segments:
+            icon = "✅" if seg["status"] == "done" else ("❌" if seg["status"] == "error" else "🔧")
+            line = f'{icon} {seg["name"]}'
+            if seg["duration"]:
+                line += f' · {seg["duration"]}ms'
+            lines.append(line)
+        text = "\n".join(lines)
+        if text.strip():
+            try:
+                await self._adapter.send_message(self._chat_id, text, "private")
+            except Exception as e:
+                logger.warning("[TelegramAdapter] rich stream recover send failed: %s", e)
+
+    async def finish(self):
+        if self._finished:
+            return
+        self._finished = True
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        if not self._message_id:
+            return
+        if self._degraded:
+            await self._recover_full()
+            return
+        if not self._render():
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(f"{self._adapter.base_url}/deleteMessage",
+                                      json={"chat_id": self._chat_id, "message_id": self._message_id})
+            except Exception:
+                pass
+            return
+        if not await self._push():
+            await self._recover_full()
+
+
 class TelegramAdapter(ChannelAdapter):
     """Telegram Bot 适配器"""
 
@@ -314,11 +571,15 @@ class TelegramAdapter(ChannelAdapter):
     def _inline_to_html(self, text: str) -> str:
         text = self._escape_html(text)
         placeholders = {}
-        def _save_code(m):
+        def _store(html):
             idx = len(placeholders)
-            placeholders[idx] = f'<code>{m.group(1)}</code>'
-            return f'%%%CODE_{idx}%%%'
+            placeholders[idx] = html
+            return f'\uE000{idx}\uE001'
+        def _save_code(m):
+            return _store(f'<code>{m.group(1)}</code>')
         text = re.sub(r'`([^`]+)`', _save_code, text)
+        text = re.sub(r'\$\$([^\n]+?)\$\$', lambda m: _store(f'<tg-math-block>{m.group(1)}</tg-math-block>'), text)
+        text = re.sub(r'\$(\S(?:[^$\n]*?\S)?)\$', lambda m: _store(f'<tg-math>{m.group(1)}</tg-math>'), text)
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
         text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
         text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
@@ -326,7 +587,7 @@ class TelegramAdapter(ChannelAdapter):
         text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
         text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
         for idx in sorted(placeholders):
-            text = text.replace(f'%%%CODE_{idx}%%%', placeholders[idx])
+            text = text.replace(f'\uE000{idx}\uE001', placeholders[idx])
         return text
 
     def _table_to_html(self, lines: list) -> Optional[str]:
@@ -356,7 +617,13 @@ class TelegramAdapter(ChannelAdapter):
                 i += 1
                 continue
             indent = len(m.group(1))
-            content = self._inline_to_html(m.group(2))
+            raw = m.group(2)
+            chk = re.match(r'^\[( |x|X)\]\s+(.+)$', raw, re.DOTALL)
+            if chk:
+                box = '☑' if chk.group(1).lower() == 'x' else '☐'
+                content = f'{box} {self._inline_to_html(chk.group(2))}'
+            else:
+                content = self._inline_to_html(raw)
             sub_lines = []
             j = i + 1
             while j < len(lines):
@@ -381,6 +648,26 @@ class TelegramAdapter(ChannelAdapter):
         if not content:
             return ""
         raw_blocks = re.split(r'\n{2,}', content)
+        merged = []
+        in_details = False
+        fence_open = False
+        for blk in raw_blocks:
+            if fence_open:
+                merged[-1] += '\n\n' + blk
+                if merged[-1].count('```') % 2 == 0:
+                    fence_open = False
+                continue
+            if in_details:
+                merged[-1] += '\n\n' + blk
+                if '</details>' in blk:
+                    in_details = False
+                continue
+            merged.append(blk)
+            if blk.count('```') % 2 == 1:
+                fence_open = True
+            if '<details>' in blk and '</details>' not in blk:
+                in_details = True
+        raw_blocks = merged
         html_blocks = []
 
         for block in raw_blocks:
@@ -390,13 +677,21 @@ class TelegramAdapter(ChannelAdapter):
 
             fenced = re.match(r'```(\w*)\s*\n?(.*?)```', stripped, re.DOTALL)
             if fenced:
-                lang = fenced.group(1)
-                code = self._escape_html(fenced.group(2))
-                if lang:
-                    html_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
-                else:
-                    html_blocks.append(f'<pre>{code}</pre>')
+                html_blocks.append(self._code_to_html(fenced.group(1), fenced.group(2)))
                 continue
+
+            math_block = re.match(r'^\$\$\s*\n?(.*?)\n?\s*\$\$$', stripped, re.DOTALL)
+            if math_block:
+                html_blocks.append(f'<tg-math-block>{self._escape_html(math_block.group(1))}</tg-math-block>')
+                continue
+
+            if stripped.startswith('<details>') and stripped.endswith('</details>'):
+                det = re.match(r'^<details>\s*(?:<summary>(.*?)</summary>\s*)?(.*?)</details>$', stripped, re.DOTALL)
+                if det:
+                    summary = self._inline_to_html(det.group(1)) if det.group(1) else '详情'
+                    inner = self._richify_markdown(det.group(2))
+                    html_blocks.append(f'<details><summary>{summary}</summary>{inner}</details>')
+                    continue
 
             if re.match(r'^[-*_]{3,}\s*$', stripped):
                 html_blocks.append('<hr/>')
@@ -404,7 +699,7 @@ class TelegramAdapter(ChannelAdapter):
 
             if all(l.startswith('>') for l in stripped.split('\n') if l.strip()):
                 quote_lines = [re.sub(r'^>\s?', '', l) for l in stripped.split('\n')]
-                quote_html = self._inline_to_html('\n'.join(quote_lines))
+                quote_html = self._inline_to_html('\n'.join(quote_lines)).replace('\n', '<br/>')
                 need_expand = len(quote_html) > 300
                 tag = 'blockquote expandable' if need_expand else 'blockquote'
                 html_blocks.append(f'<{tag}>{quote_html}</{tag.split()[0]}>')
@@ -420,12 +715,12 @@ class TelegramAdapter(ChannelAdapter):
                     rest_lines = rest.split('\n')
                     if all(l.startswith('>') for l in rest_lines if l.strip()):
                         quote_lines = [re.sub(r'^>\s?', '', l) for l in rest_lines]
-                        quote_html = self._inline_to_html('\n'.join(quote_lines))
+                        quote_html = self._inline_to_html('\n'.join(quote_lines)).replace('\n', '<br/>')
                         need_expand = len(quote_html) > 300
                         tag = 'blockquote expandable' if need_expand else 'blockquote'
                         html_blocks.append(f'<{tag}>{quote_html}</{tag.split()[0]}>')
                     else:
-                        html_blocks.append(f'<p>{self._inline_to_html(rest)}</p>')
+                        html_blocks.append(self._render_plain(rest))
                 continue
 
             lines = stripped.split('\n')
@@ -459,16 +754,84 @@ class TelegramAdapter(ChannelAdapter):
                 html_blocks.append(part)
                 continue
 
-            lines = stripped.split('\n')
-            if len(lines) >= 2 and all('|' in l for l in lines):
-                table = self._table_to_html(lines)
-                if table:
-                    html_blocks.append(table)
-                    continue
-
-            html_blocks.append(f'<p>{self._inline_to_html(stripped)}</p>')
+            html_blocks.append(self._render_plain(stripped))
 
         return '\n'.join(html_blocks)
+
+    def _extract_tables(self, text: str) -> list:
+        lines = text.split('\n')
+        parts = []
+        buf = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            nxt = lines[i + 1] if i + 1 < len(lines) else ''
+            if '|' in line and i + 1 < len(lines) and '-' in nxt and re.match(r'^\s*\|?[\s:|\-]+\|?\s*$', nxt):
+                if buf:
+                    parts.append(('text', '\n'.join(buf)))
+                    buf = []
+                tbl = [line, nxt]
+                j = i + 2
+                while j < len(lines) and '|' in lines[j]:
+                    tbl.append(lines[j])
+                    j += 1
+                parts.append(('table', tbl))
+                i = j
+            else:
+                buf.append(line)
+                i += 1
+        if buf:
+            parts.append(('text', '\n'.join(buf)))
+        return parts
+
+    def _extract_fences(self, text: str) -> list:
+        lines = text.split('\n')
+        parts = []
+        buf = []
+        i = 0
+        while i < len(lines):
+            m = re.match(r'^\s*```(\w*)\s*$', lines[i])
+            if m:
+                if buf:
+                    parts.append(('text', '\n'.join(buf)))
+                    buf = []
+                lang = m.group(1)
+                code_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith('```'):
+                    code_lines.append(lines[i])
+                    i += 1
+                parts.append(('fence', lang, '\n'.join(code_lines)))
+                i += 1
+            else:
+                buf.append(lines[i])
+                i += 1
+        if buf:
+            parts.append(('text', '\n'.join(buf)))
+        return parts
+
+    def _code_to_html(self, lang: str, code: str) -> str:
+        code = code.rstrip('\n')
+        esc = self._escape_html(code)
+        if lang == 'math':
+            return f'<tg-math-block>{esc}</tg-math-block>'
+        return f'<pre>{esc}</pre>'
+
+    def _render_plain(self, text: str) -> str:
+        parts = []
+        for kind, *payload in self._extract_fences(text):
+            if kind == 'fence':
+                lang, code = payload
+                parts.append(self._code_to_html(lang, code))
+                continue
+            for kind2, payload2 in self._extract_tables(payload[0]):
+                if kind2 == 'table':
+                    table = self._table_to_html(payload2)
+                    if table:
+                        parts.append(table)
+                elif payload2.strip():
+                    parts.append(f'<p>{self._inline_to_html(payload2.strip()).replace(chr(10), "<br/>")}</p>')
+        return '\n'.join(p for p in parts if p)
 
     async def _send_rich_message(self, target_id: str, content: str, **kwargs) -> bool:
         try:
@@ -483,6 +846,9 @@ class TelegramAdapter(ChannelAdapter):
             reply_to = kwargs.get("reply_to_message_id")
             if reply_to:
                 data["reply_to_message_id"] = reply_to
+            thread_id = kwargs.get("thread_id")
+            if thread_id:
+                data["message_thread_id"] = int(thread_id)
             async with httpx.AsyncClient() as client:
                 resp = await client.post(f"{self.base_url}/sendRichMessage", json=data)
                 result = resp.json()
@@ -493,6 +859,12 @@ class TelegramAdapter(ChannelAdapter):
         except Exception as e:
             logger.error("[TelegramAdapter] sendRichMessage error: %s", e)
             return False
+
+    async def start_rich_stream(self, target_id: str, thread_id: Optional[str] = None) -> Optional["_RichStreamSession"]:
+        session = _RichStreamSession(self, target_id, thread_id=thread_id)
+        if await session.start():
+            return session
+        return None
 
     def _format_message(self, content: str) -> tuple[str, list]:
         if not content:
@@ -652,6 +1024,9 @@ class TelegramAdapter(ChannelAdapter):
                         "chat_id": target_id,
                         "text": part,
                     }
+                    thread_id = kwargs.get("thread_id")
+                    if thread_id:
+                        data["message_thread_id"] = int(thread_id)
                     
                     if reply_to and i == 0:
                         data["reply_to_message_id"] = reply_to
@@ -675,6 +1050,9 @@ class TelegramAdapter(ChannelAdapter):
                     "text": text,
                     "entities": entities,
                 }
+                thread_id = kwargs.get("thread_id")
+                if thread_id:
+                    data["message_thread_id"] = int(thread_id)
                 
                 reply_to = kwargs.get("reply_to_message_id")
                 if reply_to:
@@ -714,6 +1092,8 @@ class TelegramAdapter(ChannelAdapter):
 
             if "reply_to_message_id" in kwargs:
                 data["reply_to_message_id"] = kwargs["reply_to_message_id"]
+            if kwargs.get("thread_id"):
+                data["message_thread_id"] = int(kwargs["thread_id"])
 
             def _read_file():
                 with open(photo_path, "rb") as f:
@@ -748,6 +1128,8 @@ class TelegramAdapter(ChannelAdapter):
 
             if "reply_to_message_id" in kwargs:
                 data["reply_to_message_id"] = kwargs["reply_to_message_id"]
+            if kwargs.get("thread_id"):
+                data["message_thread_id"] = int(kwargs["thread_id"])
 
             def _read_file():
                 with open(document_path, "rb") as f:
@@ -851,6 +1233,12 @@ class TelegramAdapter(ChannelAdapter):
             # 处理文件
             content = await self._handle_document(message, user_name)
 
+        elif "animation" in message:
+            content = await self._handle_document(message, user_name, key="animation")
+
+        elif "video_note" in message:
+            content = await self._handle_document(message, user_name, key="video_note")
+
         elif "voice" in message:
             content = "[Voice message]"
 
@@ -863,13 +1251,17 @@ class TelegramAdapter(ChannelAdapter):
         else:
             content = "[Unsupported message type]"
 
+        thread_id = message.get("message_thread_id")
+        thread_id = str(thread_id) if thread_id else None
+
         unified_msg = UnifiedMessage(
             platform=self.platform_name,
             user_id=user_id,
             content=content,
             message_type=message_type,
             group_id=group_id,
-            channel_id=chat_id, 
+            channel_id=chat_id,
+            thread_id=thread_id,
             raw=message
         )
 
@@ -898,11 +1290,14 @@ class TelegramAdapter(ChannelAdapter):
 
         return f"[Photo]{file_info}" + (f" Caption: {caption}" if caption else "")
 
-    async def _handle_document(self, message: Dict[str, Any], user_name: str) -> str:
+    async def _handle_document(self, message: Dict[str, Any], user_name: str, key: str = "document") -> str:
         """处理文件消息 - 不自动下载，仅返回文件信息"""
-        document = message.get("document", {})
+        document = message.get(key, {})
         file_id = document.get("file_id")
-        file_name = document.get("file_name", "file.dat")
+        file_name = document.get("file_name") or {
+            "animation": "animation.mp4",
+            "video_note": "video_note.mp4",
+        }.get(key, "file.dat")
         file_size = document.get("file_size", 0)
         mime_type = document.get("mime_type", "unknown")
 
@@ -918,7 +1313,7 @@ class TelegramAdapter(ChannelAdapter):
         file_info += f"  - 大小: {file_size} bytes\n"
         file_info += f"\n💡 使用 telegram_files.download 下载文件\n"
 
-        return f"[File: {file_name}]{file_info}"
+        return f"[File: {file_name}]{file_info}" + (f" Caption: {message.get('caption', '')}" if message.get('caption') else "")
 
     async def _download_file(self, file_id: str, save_name: str) -> Optional[str]:
         """下载文件到本地"""

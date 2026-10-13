@@ -185,6 +185,7 @@ class ChannelManager:
                     f"📎 已收到文件：{filename}\n请继续发送你要执行的任务",
                     message.message_type,
                     guild_id=message.guild_id,
+                    thread_id=message.thread_id,
                 )
             except asyncio.CancelledError:
                 return
@@ -214,11 +215,21 @@ class ChannelManager:
         adapter = self._adapters.get(message.platform)
         minimal_output = getattr(adapter, 'minimal_output', False) if adapter else False
 
+        stream = None
+        if message.platform == "telegram" and adapter is not None and not minimal_output \
+                and getattr(adapter, "_use_rich_messages", False):
+            try:
+                stream = await adapter.start_rich_stream(self._resolve_target_id(message), thread_id=message.thread_id)
+            except Exception as e:
+                logger.warning(f"[ChannelManager] Failed to start rich stream: {e}")
+                stream = None
+
         async def safe_send(content: str):
             if not content:
                 return
             from app.channels.base import split_markdown
-            chunks = split_markdown(content, max_len=1000)
+            max_len = 24000 if message.platform == "telegram" else 1000
+            chunks = split_markdown(content, max_len=max_len)
             for chunk in chunks:
                 try:
                     await self.send_message(
@@ -228,6 +239,7 @@ class ChannelManager:
                         message.message_type,
                         markdown=True,
                         guild_id=message.guild_id,
+                        thread_id=message.thread_id,
                     )
                 except Exception as e:
                     logger.warning(f"[ChannelManager] Failed to send message chunk: {e}")
@@ -290,6 +302,22 @@ class ChannelManager:
                             await flush_pending()
                             await safe_send(f"> ❌ **错误**: `{error_msg}`")
                     else:
+                        if stream is not None and event_type in ("tool_start", "tool_result"):
+                            if self._should_show_tool_cards(message.platform):
+                                stream.on_event(event)
+                            if stream.degraded:
+                                try:
+                                    await stream.finish()
+                                except Exception as se:
+                                    logger.warning(f"[ChannelManager] Rich stream finish failed: {se}")
+                                stream = None
+                            continue
+                        if event_type == "done" and stream is not None:
+                            try:
+                                await stream.finish()
+                            except Exception as se:
+                                logger.warning(f"[ChannelManager] Rich stream finish failed: {se}")
+                            stream = None
                         if event_type == "scheduler_task_start":
                             task_name = event.get("task_name", "未命名任务")
                             task_id = event.get("task_id", "unknown")
@@ -393,6 +421,11 @@ class ChannelManager:
             if pending:
                 await safe_send(pending)
         finally:
+            if stream is not None:
+                try:
+                    await stream.finish()
+                except Exception as e:
+                    logger.warning(f"[ChannelManager] Rich stream finish failed: {e}")
             self._channel_task_consumers.pop(session_id, None)
             try:
                 get_message_broker().unsubscribe(session_id, queue)
@@ -564,6 +597,7 @@ class ChannelManager:
                         "⏹ 当前没有正在运行的 Agent 会话",
                         message.message_type,
                         guild_id=message.guild_id,
+                        thread_id=message.thread_id,
                     )
                     return
                 else:
@@ -576,6 +610,7 @@ class ChannelManager:
                     "⏹ 已发送停止请求，Agent 将在当前迭代结束后停止",
                     message.message_type,
                     guild_id=message.guild_id,
+                    thread_id=message.thread_id,
                 )
             except Exception as e:
                 logger.error(f"[ChannelManager] /stop 处理失败: {e}")
@@ -585,6 +620,7 @@ class ChannelManager:
                     f"停止失败: {e}",
                     message.message_type,
                     guild_id=message.guild_id,
+                    thread_id=message.thread_id,
                 )
             return
 
@@ -614,6 +650,7 @@ class ChannelManager:
                         "📝 已收到补充说明，将在当前步骤完成后继续处理",
                         message.message_type,
                         guild_id=message.guild_id,
+                        thread_id=message.thread_id,
                     )
                     return
 
@@ -665,6 +702,7 @@ class ChannelManager:
                     message.message_type,
                     msg_id=message.msg_id,
                     guild_id=message.guild_id,
+                    thread_id=message.thread_id,
                 )
             return
 

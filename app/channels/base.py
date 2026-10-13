@@ -32,15 +32,20 @@ class UnifiedMessage:
     group_id: Optional[str] = None
     channel_id: Optional[str] = None
     guild_id: Optional[str] = None
+    thread_id: Optional[str] = None
     raw: Optional[Dict[str, Any]] = None
 
     @property
     def session_id(self) -> str:
         if self.message_type == "group" and self.group_id:
+            if self.thread_id and self.thread_id != "1":
+                return f"{self.platform}:group:{self.group_id}:t{self.thread_id}"
             return f"{self.platform}:group:{self.group_id}"
         if self.message_type == "guild" and self.channel_id:
             guild_part = self.guild_id or "unknown"
             return f"{self.platform}:guild:{guild_part}:{self.channel_id}"
+        if self.thread_id and self.thread_id != "1":
+            return f"{self.platform}:{self.user_id}:t{self.thread_id}"
         return f"{self.platform}:{self.user_id}"
 
     def to_agent_dict(self) -> Dict[str, Any]:
@@ -54,6 +59,7 @@ class UnifiedMessage:
             "group_id": self.group_id,
             "channel_id": self.channel_id,
             "guild_id": self.guild_id,
+            "thread_id": self.thread_id,
         }
 
 
