@@ -311,6 +311,18 @@ export function useChat() {
       ctx.lastEventId = event.event_id;
       lastEventIdBySessionRef.current[sessionId] = event.event_id;
     }
+    if (event.type !== 'reasoning' && ctx.timeline.length > 0) {
+      const last = ctx.timeline[ctx.timeline.length - 1];
+      if (last.kind === 'reasoning' && last.startedAt && !last.durationMs) {
+        last.durationMs = Date.now() - last.startedAt;
+        updateStreamingMessage({
+          role: 'assistant',
+          content: '',
+          toolTraces: ctx.traces,
+          timeline: [...ctx.timeline],
+        });
+      }
+    }
     switch (event.type) {
       case 'thinking':
       case 'thinking_streaming': {
@@ -341,9 +353,24 @@ export function useChat() {
         break;
       }
 
-      case 'reasoning':
-        // reasoning（LLM 原生 o1/o3）不显示，忽略
+      case 'reasoning': {
+        const content = event.content || '';
+        if (content) {
+          const last = ctx.timeline[ctx.timeline.length - 1];
+          if (last && last.kind === 'reasoning') {
+            last.content += content;
+          } else {
+            ctx.timeline.push({ kind: 'reasoning', content, startedAt: Date.now() });
+          }
+          updateStreamingMessage({
+            role: 'assistant',
+            content: '',
+            toolTraces: ctx.traces,
+            timeline: [...ctx.timeline],
+          });
+        }
         break;
+      }
 
       case 'tool_start': {
         flushChunkBuffer(ctx, sessionId, connectionId);

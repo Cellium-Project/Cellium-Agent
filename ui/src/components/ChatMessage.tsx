@@ -216,6 +216,31 @@ interface ChatMessageProps {
   isStreaming?: boolean;
 }
 
+const ReasoningBlock: React.FC<{ content: string; startedAt?: number; durationMs?: number; streaming?: boolean }> = ({ content, startedAt, durationMs, streaming }) => {
+  const [now, setNow] = React.useState(Date.now());
+
+  React.useEffect(() => {
+    if (!streaming) return;
+    const iv = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(iv);
+  }, [streaming]);
+
+  if (!streaming) return null;
+
+  const elapsed = startedAt ? (now - startedAt) / 1000 : 0;
+  const elapsedStr = `${(Math.floor(elapsed * 10) / 10).toFixed(1)}s`;
+  const tail = content ? content.trimEnd().split('\n').pop() || '' : '';
+
+  return (
+    <div className="reasoning-line reasoning-live">
+      <span className="reasoning-orbit" />
+      <span className="reasoning-label">Reasoning</span>
+      <span className="reasoning-timer">· {elapsedStr}</span>
+      {tail && <span className="reasoning-tail">{tail}</span>}
+    </div>
+  );
+};
+
 export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
@@ -307,8 +332,10 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => 
             </>
           ) : (
             <span className="assistant-content-wrap">
-              {renderTimeline(message)}
-              {isStreaming && <span className="streaming-cursor"><span /><span /><span /></span>}
+              {renderTimeline(message, isStreaming)}
+              {isStreaming && (!message.timeline || message.timeline.length === 0) && !message.content && (
+                <span className="streaming-cursor"><span /><span /><span /></span>
+              )}
             </span>
           )}
         </div>
@@ -317,14 +344,16 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => 
   );
 });
 
-function renderTimeline(message: Message): React.ReactNode {
+function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNode {
   if (message.timeline && message.timeline.length > 0) {
     type ToolSegment = Extract<TimelineSegment, { kind: 'tool' }>;
     type ThinkingSegment = Extract<TimelineSegment, { kind: 'thinking' }>;
+    type ReasoningSegment = Extract<TimelineSegment, { kind: 'reasoning' }>;
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
       | { kind: 'tool-batch'; items: ToolSegment[] }
-      | ThinkingSegment;
+      | ThinkingSegment
+      | ReasoningSegment;
 
     const groups: GroupItem[] = [];
 
@@ -338,6 +367,8 @@ function renderTimeline(message: Message): React.ReactNode {
         }
       } else if (segment.kind === 'thinking') {
         groups.push(segment as ThinkingSegment);
+      } else if (segment.kind === 'reasoning') {
+        groups.push(segment as ReasoningSegment);
       } else if (segment.kind === 'tool') {
         const last = groups[groups.length - 1];
         if (last && last.kind === 'tool-batch') {
@@ -358,6 +389,9 @@ function renderTimeline(message: Message): React.ReactNode {
           }
           if (group.kind === 'thinking') {
             return <JsonBlockCard key={idx} jsonStr={group.content} isThinking />;
+          }
+          if (group.kind === 'reasoning') {
+            return <ReasoningBlock key={idx} content={group.content} startedAt={group.startedAt} durationMs={group.durationMs} streaming={isStreaming && idx === groups.length - 1} />;
           }
           // tool batch
           return <ToolBatchCard key={idx} items={group.items} />;
@@ -393,6 +427,10 @@ function TimelineItem({ segment }: { segment: TimelineSegment }): React.ReactNod
 
   if (segment.kind === 'thinking') {
     return <JsonBlockCard jsonStr={segment.content} isThinking />;
+  }
+
+  if (segment.kind === 'reasoning') {
+    return <ReasoningBlock content={segment.content} startedAt={segment.startedAt} durationMs={segment.durationMs} />;
   }
 
   const seg = segment as Extract<TimelineSegment, { kind: 'tool' }>;

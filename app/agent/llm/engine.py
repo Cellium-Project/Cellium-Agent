@@ -2,12 +2,15 @@
 """LLM 引擎"""
 
 import json
+import asyncio
 import logging
 import re
 import time
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
+
+import httpx
 
 from .models import ChatResponse, ModelInfo, ToolCall
 from .transport import OpenAICompatTransport, ContextOverflowError
@@ -20,6 +23,40 @@ logger = logging.getLogger(__name__)
 _EMPTY_RESPONSE_COUNT = 0
 
 _VERIFY_CACHE: Dict[str, bool] = {}
+
+_RETRYABLE_NET_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError, httpx.ReadTimeout)
+
+
+def _net_err_detail(e: Exception) -> str:
+    parts = [type(e).__name__]
+    msg = str(e).strip()
+    if msg:
+        parts.append(msg)
+    cause = e.__cause__ or e.__context__
+    if cause is not None:
+        parts.append(f"cause={type(cause).__name__}: {cause}")
+    return " | ".join(parts)
+
+
+async def _chat_stream_with_retry(transport, params):
+    stream = transport.chat_stream(params)
+    for attempt in range(2):
+        try:
+            first = await stream.__anext__()
+            return stream, first
+        except _RETRYABLE_NET_ERRORS as e:
+            if attempt == 0:
+                logger.warning("[LLM] 连接类错误，自动重试 | %s", _net_err_detail(e))
+                await asyncio.sleep(0.6)
+                stream = transport.chat_stream(params)
+            else:
+                raise
+
+
+async def _first_and_rest(stream, first):
+    yield first
+    async for item in stream:
+        yield item
 
 
 # ============================================================
@@ -559,7 +596,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         _reasoning_start_sent = False
 
         try:
-            async for item in transport.chat_stream(params):
+            stream, first_item = await _chat_stream_with_retry(transport, params)
+            async for item in _first_and_rest(stream, first_item):
                 choices = item.get("choices") or []
                 if not choices:
                     if item.get("usage"):
@@ -687,7 +725,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             )
             yield {"type": "done", "response": response}
         except Exception as e:
-            logger.error("[LLM] <<< 流式调用失败 | model=%s | 错误类型=%s | 详情: %s", self.model, type(e).__name__, str(e))
+            logger.error("[LLM] <<< 流式调用失败 | model=%s | 错误类型=%s | 详情: %s", self.model, type(e).__name__, _net_err_detail(e))
             raise
 
     async def _chat_stream_anthropic(self, transport, params, req_tokens):
@@ -699,7 +737,8 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         finish_reason = ""
 
         try:
-            async for item in transport.chat_stream(params):
+            stream, first_item = await _chat_stream_with_retry(transport, params)
+            async for item in _first_and_rest(stream, first_item):
                 evt_type = item.get("type")
                 
                 if evt_type == "message_start":
@@ -769,7 +808,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             )
             yield {"type": "done", "response": response}
         except Exception as e:
-            logger.error("[LLM] <<< 流式调用失败 | model=%s | 错误类型=%s | 详情: %s", self.model, type(e).__name__, str(e))
+            logger.error("[LLM] <<< 流式调用失败 | model=%s | 错误类型=%s | 详情: %s", self.model, type(e).__name__, _net_err_detail(e))
             raise
 
     def chat_sync(

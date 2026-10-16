@@ -674,6 +674,8 @@ def _messages_to_renderable(raw_messages: list) -> list:
                 timeline = []
                 tc_map = {}
                 final_text = ""
+                final_reasoning = ""
+                final_reasoning_ms = 0
                 j = i
 
                 while j < len(raw_messages):
@@ -697,6 +699,13 @@ def _messages_to_renderable(raw_messages: list) -> list:
                         continue
 
                     if role == "assistant" and sub.get("tool_calls"):
+                        sub_reasoning = sub.get("reasoning_content")
+                        if sub_reasoning:
+                            try:
+                                sub_r_ms = round(float(sub.get("reasoning_duration_ms") or 0))
+                            except (TypeError, ValueError):
+                                sub_r_ms = 0
+                            timeline.append({"kind": "reasoning", "content": sub_reasoning, "durationMs": sub_r_ms})
                         sub_content = sub.get("content")
                         if sub_content:
                             for seg_ in _split_content_with_thinking(sub_content):
@@ -726,6 +735,11 @@ def _messages_to_renderable(raw_messages: list) -> list:
 
                     if role == "assistant" and sub.get("content"):
                         final_text = sub.get("content", "")
+                        final_reasoning = sub.get("reasoning_content") or ""
+                        try:
+                            final_reasoning_ms = round(float(sub.get("reasoning_duration_ms") or 0))
+                        except (TypeError, ValueError):
+                            final_reasoning_ms = 0
                         j += 1
                     break
 
@@ -757,6 +771,9 @@ def _messages_to_renderable(raw_messages: list) -> list:
                     else:
                         seg["description"] = f"正在调用 {seg['tool']}"
 
+                if final_reasoning:
+                    timeline.append({"kind": "reasoning", "content": final_reasoning, "durationMs": final_reasoning_ms})
+
                 if final_text:
                     for seg_ in _split_content_with_thinking(final_text):
                         if seg_["type"] == "thinking":
@@ -774,6 +791,13 @@ def _messages_to_renderable(raw_messages: list) -> list:
 
             else:
                 timeline = []
+                reasoning = msg.get("reasoning_content")
+                if reasoning:
+                    try:
+                        r_ms = round(float(msg.get("reasoning_duration_ms") or 0))
+                    except (TypeError, ValueError):
+                        r_ms = 0
+                    timeline.append({"kind": "reasoning", "content": reasoning, "durationMs": r_ms})
                 if content:
                     # 使用新的分割函数，保持文本和 thinking 的顺序
                     segments = _split_content_with_thinking(content)

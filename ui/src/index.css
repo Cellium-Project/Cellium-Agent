@@ -1835,6 +1835,69 @@ body {
     font-family: inherit;
 }
 
+.reasoning-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 18px;
+    line-height: 18px;
+    margin: 8px 0;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.reasoning-orbit {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0deg, #4ec9b0 260deg, transparent 330deg);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    animation: reasoning-orbit-spin 0.9s linear infinite;
+}
+
+.reasoning-label {
+    flex: none;
+    font-size: 12px;
+    font-weight: 600;
+    background: linear-gradient(90deg, #3aa898 0%, #8ff0e0 45%, #3aa898 90%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: reasoning-shimmer 2s linear infinite;
+}
+
+.reasoning-timer {
+    flex: none;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    opacity: 0.75;
+}
+
+.reasoning-tail {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-secondary);
+    opacity: 0.85;
+}
+
+@keyframes reasoning-orbit-spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes reasoning-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
 /* =========================================
    JSON Block 卡片样式 - 可折叠的JSON结构
    ========================================= */
@@ -1916,15 +1979,6 @@ body {
     overflow-x: auto;
     max-height: 400px;
     overflow-y: auto;
-}
-
-.reasoning-card {
-    margin-bottom: 8px;
-}
-
-.reasoning-label {
-    background: var(--accent-info-light, rgba(59, 130, 246, 0.1));
-    color: var(--accent-info, #3b82f6);
 }
 
 
