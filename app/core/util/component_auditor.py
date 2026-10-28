@@ -151,8 +151,8 @@ class ComponentAuditor:
 
     @property
     def EXEMPTED_NAMES(self) -> Set[str]:
-        from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
-        return EXEMPTED_NAMES
+        from app.core.util.cell_tool_adapter import get_exempted_names
+        return get_exempted_names()
 
     # 审查规则配置
     RULES = {

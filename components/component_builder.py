@@ -1236,6 +1236,158 @@ class BackgroundMonitor(BaseCell):
             "component_count": count,
         }
 
+    def _cmd_sandbox_list(self) -> Dict[str, Any]:
+        """查看免沙箱白名单（内置硬编码名单 + 自定义名单）
+
+        Returns:
+            builtin=内置免沙箱组件（代码硬编码，不写入白名单文件）
+            custom=自定义白名单（config/sandbox.yaml）
+            in_sandbox=仍在沙箱子进程运行的组件（即可以加入白名单的候选）
+        """
+        from app.core.util.cell_tool_adapter import (
+            EXEMPTED_NAMES,
+            get_exempted_names,
+            get_sandbox_whitelist_path,
+            load_sandbox_whitelist,
+        )
+        from app.core.util.components_loader import get_scan_dirs
+
+        custom = load_sandbox_whitelist()
+        effective = get_exempted_names()
+        loaded = sorted(n for n in (getattr(c, "cell_name", "") for c in get_all_cells().values()) if n)
+
+        return {
+            "success": True,
+            "whitelist_file": get_sandbox_whitelist_path(),
+            "builtin": sorted(EXEMPTED_NAMES),
+            "custom": sorted(custom),
+            "effective": sorted(effective),
+            "in_sandbox": [n for n in loaded if n not in effective],
+            "stale": sorted(custom - set(loaded)),
+            "components_dirs": [str(d) for d in get_scan_dirs()],
+            "note": (
+                "只有组件（components 目录下的 BaseCell 子类）参与沙箱；"
+                "内置工具 shell/file/edit 等不经过适配器，无需白名单。"
+                "builtin 组件已免沙箱，无需也不必写入白名单文件。"
+                "stale 是白名单中当前未加载的残留项，可用 sandbox_remove 清理"
+            ),
+        }
+
+    def _cmd_sandbox_add(self, name: str = "", auto_reload: bool = True) -> Dict[str, Any]:
+        """将组件加入免沙箱白名单（该组件将在主进程直接执行）
+
+        Args:
+            name: 组件名（cell_name）
+            auto_reload: 是否立即热重载使配置生效，默认 True
+
+        Returns:
+            白名单文件路径与最新自定义清单
+        """
+        from app.core.util.cell_tool_adapter import (
+            EXEMPTED_NAMES,
+            get_sandbox_whitelist_path,
+            load_sandbox_whitelist,
+            save_sandbox_whitelist,
+        )
+
+        target = (name or "").strip()
+        if not target:
+            return {"success": False, "error": "缺少参数 name（组件名）"}
+
+        loaded = {getattr(c, "cell_name", "") for c in get_all_cells().values()}
+        if target not in loaded:
+            return {
+                "success": False,
+                "error": f"组件 {target} 未加载，无法加入白名单",
+                "loaded_components": sorted(n for n in loaded if n),
+            }
+
+        if target in EXEMPTED_NAMES:
+            return {
+                "success": True,
+                "already_exempt": True,
+                "message": f"{target} 是内置免沙箱组件，无需添加",
+            }
+
+        custom = load_sandbox_whitelist()
+        if target in custom:
+            return {"success": True, "already_exempt": True, "message": f"{target} 已在自定义白名单中"}
+
+        custom.add(target)
+        path = save_sandbox_whitelist(custom)
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "message": f"{target} 已加入免沙箱白名单",
+            "whitelist_file": path,
+            "custom": sorted(custom),
+            "reloaded": False,
+        }
+        if auto_reload:
+            try:
+                reload_result = self._cmd_reload()
+                result["reloaded"] = True
+                result["reload_summary"] = reload_result.get("summary")
+            except Exception as e:
+                result["reload_error"] = str(e)
+                result["hint"] = "请手动调用 component.reload 使配置生效"
+        else:
+            result["hint"] = "调用 component.reload 后生效"
+        return result
+
+    def _cmd_sandbox_remove(self, name: str = "", auto_reload: bool = True) -> Dict[str, Any]:
+        """将组件移出自定义免沙箱白名单（恢复沙箱隔离）
+
+        Args:
+            name: 组件名（cell_name）
+            auto_reload: 是否立即热重载使配置生效，默认 True
+
+        Returns:
+            白名单文件路径与最新自定义清单
+        """
+        from app.core.util.cell_tool_adapter import (
+            EXEMPTED_NAMES,
+            get_sandbox_whitelist_path,
+            load_sandbox_whitelist,
+            save_sandbox_whitelist,
+        )
+
+        target = (name or "").strip()
+        if not target:
+            return {"success": False, "error": "缺少参数 name（组件名）"}
+
+        if target in EXEMPTED_NAMES:
+            return {
+                "success": False,
+                "error": f"{target} 是内置免沙箱组件，不能通过此命令移除",
+            }
+
+        custom = load_sandbox_whitelist()
+        if target not in custom:
+            return {"success": True, "message": f"{target} 不在自定义白名单中", "custom": sorted(custom)}
+
+        custom.discard(target)
+        path = save_sandbox_whitelist(custom)
+
+        result: Dict[str, Any] = {
+            "success": True,
+            "message": f"{target} 已移出白名单，将恢复沙箱隔离",
+            "whitelist_file": path,
+            "custom": sorted(custom),
+            "reloaded": False,
+        }
+        if auto_reload:
+            try:
+                reload_result = self._cmd_reload()
+                result["reloaded"] = True
+                result["reload_summary"] = reload_result.get("summary")
+            except Exception as e:
+                result["reload_error"] = str(e)
+                result["hint"] = "请手动调用 component.reload 使配置生效"
+        else:
+            result["hint"] = "调用 component.reload 后生效"
+        return result
+
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         """查询组件使用帮助（LLM 可通过此命令了解如何正确调用 component 工具）
         
@@ -1260,6 +1412,9 @@ class BackgroundMonitor(BaseCell):
                 {"command": "dir", "args": {}, "description": "获取组件文件夹真实路径（自动区分 pip/绿色版）"},
                 {"command": "install", "args": {"package": "<pip包名>"}, "description": "pip 安装组件包到组件真实目录并热重载（Windows/Linux 通用）"},
                 {"command": "cleanup", "args": {"dry_run": True}, "description": "预览/清理组件缓存"},
+                {"command": "sandbox_list", "args": {}, "description": "查看免沙箱白名单（内置+自定义）"},
+                {"command": "sandbox_add", "args": {"name": "<组件名>"}, "description": "把组件加入免沙箱白名单，改后自动热重载"},
+                {"command": "sandbox_remove", "args": {"name": "<组件名>"}, "description": "把组件移出白名单，恢复沙箱隔离"},
             ],
             "_notes": [
                 "这是系统内置组件（白名单豁免），负责创建和管理其他 Cellium 组件",
@@ -1267,6 +1422,8 @@ class BackgroundMonitor(BaseCell):
                 "generate_package 创建包组件（文件夹形式），适合复杂功能，便于模块解耦",
                 "每次调用必须带 command 字段指定子命令名",
                 "调用格式: {\"command\": \"generate\", \"name\": \"my_tool\", ...}",
+                "sandbox_add 让组件在主进程直接执行（不进沙箱子进程），白名单持久化到 config/sandbox.yaml，pip 与绿色版通用",
+                "内置组件（builtin）已硬编码免沙箱，sandbox_add 只用于自定义组件",
                 "如果不确定如何调用，可先调 help 查看用法或调 list 查看可用命令",
             ],
             "_call_format": {

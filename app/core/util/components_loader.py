@@ -597,6 +597,17 @@ def load_components(
             if "组件文件不存在" in str(e):
                 logger.warning(f"[Component] 组件文件已删除，从配置移除: {module_path}")
                 unregister_from_config(module_path)
+                try:
+                    from app.core.util.cell_tool_adapter import load_sandbox_whitelist, save_sandbox_whitelist
+                    parts = module_path.split(".")
+                    stem = parts[1] if len(parts) > 1 else ""
+                    whitelist = load_sandbox_whitelist()
+                    if stem and stem in whitelist:
+                        whitelist.discard(stem)
+                        save_sandbox_whitelist(whitelist)
+                        logger.info(f"[Component] 已从免沙箱白名单移除已删除组件: {stem}")
+                except Exception as ex:
+                    logger.debug(f"[Component] 清理免沙箱白名单失败 {module_path}: {ex}")
             else:
                 logger.error(f"[Component] 加载失败 {module_path}: {e}", exc_info=True)
             failed.append(module_path)
@@ -605,7 +616,18 @@ def load_components(
             failed.append(module_path)
     
     logger.info(f"[Component] 加载完成: {len(loaded)} 成功, {len(failed)} 失败")
-    
+
+    if loaded and not failed:
+        try:
+            from app.core.util.cell_tool_adapter import load_sandbox_whitelist, save_sandbox_whitelist
+            whitelist = load_sandbox_whitelist()
+            stale = whitelist - set(loaded.keys())
+            if stale:
+                save_sandbox_whitelist(whitelist - stale)
+                logger.info(f"[Component] 已清理免沙箱白名单无效项: {sorted(stale)}")
+        except Exception as e:
+            logger.debug(f"[Component] 清理免沙箱白名单无效项失败: {e}")
+
     if loaded:
         try:
             from app.core.util.component_tool_registry import get_component_tool_registry
@@ -889,8 +911,8 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
 
                         instance, info = _instantiate_component(item["module_path"], purge_cache=True)
 
-                        from app.core.util.cell_tool_adapter import EXEMPTED_NAMES
-                        use_sandbox = instance.cell_name not in EXEMPTED_NAMES
+                        from app.core.util.cell_tool_adapter import get_exempted_names
+                        use_sandbox = instance.cell_name not in get_exempted_names()
                         
                         if use_sandbox:
                             try:
@@ -959,6 +981,16 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
 
             unregister_cell(target_name)
             unregister_from_config(module_path)
+
+            try:
+                from app.core.util.cell_tool_adapter import load_sandbox_whitelist, save_sandbox_whitelist
+                whitelist = load_sandbox_whitelist()
+                if target_name in whitelist:
+                    whitelist.discard(target_name)
+                    save_sandbox_whitelist(whitelist)
+                    logger.info(f"[HotReload] 已从免沙箱白名单移除: {target_name}")
+            except Exception as e:
+                logger.debug(f"[HotReload] 清理免沙箱白名单失败 {target_name}: {e}")
             
             try:
                 from app.core.util.component_tool_registry import get_component_tool_registry

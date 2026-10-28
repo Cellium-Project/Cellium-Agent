@@ -62,11 +62,64 @@ EXEMPTED_NAMES: Set[str] = {
     "web_fetch",
     "scheduler",
     "sub_agent",
-    "napcat",
 }
 
 # 是否启用沙箱模式（可通过配置关闭）
 SANDBOX_ENABLED = True
+
+_SANDBOX_WHITELIST_FILE = "sandbox.yaml"
+_sandbox_whitelist_cache: Dict[str, Any] = {"path": None}
+
+def get_sandbox_whitelist_path() -> str:
+    """自定义免沙箱白名单文件"""
+    cached = _sandbox_whitelist_cache.get("path")
+    if cached:
+        return cached
+    from app.core.util.runtime_paths import resolve_dir_writable
+    path = os.path.join(resolve_dir_writable("config"), _SANDBOX_WHITELIST_FILE)
+    _sandbox_whitelist_cache["path"] = path
+    return path
+
+
+def load_sandbox_whitelist() -> Set[str]:
+    """读取自定义免沙箱白名单"""
+    path = get_sandbox_whitelist_path()
+    if not os.path.exists(path):
+        return set()
+    try:
+        import yaml
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        raw = data.get("exempted") if isinstance(data, dict) else data
+        if isinstance(raw, list):
+            return {n.strip() for n in raw if isinstance(n, str) and n.strip()}
+    except Exception as e:
+        logger.warning("[CellToolAdapter] 免沙箱白名单读取失败: %s", e)
+    return set()
+
+
+def save_sandbox_whitelist(names) -> str:
+    """写入自定义免沙箱白名单，返回文件路径"""
+    import yaml
+
+    class _Dumper(yaml.SafeDumper):
+        def increase_indent(self, flow=False, indentless=False):
+            return super().increase_indent(flow, False)
+
+    path = get_sandbox_whitelist_path()
+    payload = sorted({n.strip() for n in names if isinstance(n, str) and n.strip()})
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# 免沙箱白名单 — 这里的组件在主进程直接执行，不进沙箱子进程\n")
+        f.write("# 由 component.sandbox_add / component.sandbox_remove 维护，也可手动编辑\n")
+        f.write("# 内置组件（component/scheduler/skill_manager 等）已硬编码免沙箱，无需写入此文件\n")
+        yaml.dump({"exempted": payload}, f, Dumper=_Dumper,
+                  default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return path
+
+
+def get_exempted_names() -> Set[str]:
+    """内置免沙箱名单 + 用户自定义白名单"""
+    return set(EXEMPTED_NAMES) | load_sandbox_whitelist()
 
 
 class CellToolAdapter(BaseTool):
@@ -141,7 +194,7 @@ class CellToolAdapter(BaseTool):
             return use_sandbox
 
         # 自动判断：白名单组件不使用沙箱
-        return self.name not in EXEMPTED_NAMES
+        return self.name not in get_exempted_names()
 
     @property
     def cell(self) -> ICell:
