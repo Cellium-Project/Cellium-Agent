@@ -266,6 +266,8 @@ class QQAdapter(ChannelAdapter):
 
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0
+        self._md_unavailable: bool = False
+        self._msg_seq_counters: Dict[str, int] = {}
 
         self._connect_client: Optional["QQConnectClient"] = None
 
@@ -434,33 +436,87 @@ class QQAdapter(ChannelAdapter):
                 logger.error(f"[QQAdapter] Send error: {e}\n{traceback.format_exc()}")
         return False
 
+    def _log_send_error(self, resp: "httpx.Response", scene: str, payload: Dict[str, Any] = None):
+        try:
+            summary = ""
+            if payload:
+                summary = (
+                    f" | msg_id={'有' if payload.get('msg_id') else '无'}"
+                    f" seq={payload.get('msg_seq')} type={payload.get('msg_type')}"
+                    f" len={len(payload.get('content') or (payload.get('markdown') or {}).get('content') or '')}"
+                )
+            logger.error(f"[QQAdapter] {scene} 发送失败: HTTP {resp.status_code}{summary} body={resp.text[:500]}")
+        except Exception:
+            logger.error(f"[QQAdapter] {scene} 发送失败: HTTP {resp.status_code}")
+
+    def _next_msg_seq(self, msg_id: str) -> int:
+        if not msg_id:
+            return 1
+        seq = self._msg_seq_counters.get(msg_id, 0) + 1
+        self._msg_seq_counters[msg_id] = seq
+        if len(self._msg_seq_counters) > 200:
+            for k in list(self._msg_seq_counters.keys())[:100]:
+                del self._msg_seq_counters[k]
+        return seq
+
+    @staticmethod
+    def _build_msg_payload(content: str, msg_id: str, msg_seq: int, is_markdown: bool) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"msg_seq": msg_seq}
+        if msg_id:
+            payload["msg_id"] = msg_id
+        if is_markdown:
+            payload["msg_type"] = 2
+            payload["markdown"] = {"content": content}
+        else:
+            payload["msg_type"] = 0
+            payload["content"] = content
+        return payload
+
     async def _send_c2c_message(self, token: str, user_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
         url = f"https://api.sgroup.qq.com/v2/users/{user_id}/messages"
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
-        import uuid
-        msg_seq = int(uuid.uuid4().int % 900000000000000) + 100000000000000
-        if is_markdown:
-            payload = {"markdown": {"content": content}, "msg_type": 2, "msg_id": msg_id, "seq": msg_seq}
-        else:
-            payload = {"content": content, "msg_type": 0, "msg_id": msg_id, "seq": msg_seq}
+        msg_seq = self._next_msg_seq(msg_id)
+        if not (content or "").strip():
+            logger.warning("[QQAdapter] C2C 空内容，跳过发送")
+            return False
+        if len(content) > 4500:
+            content = content[:4500] + "\n…"
+        if is_markdown and self._md_unavailable:
+            is_markdown = False
+        payload = self._build_msg_payload(content, msg_id, msg_seq, is_markdown)
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                self._log_send_error(resp, "C2C", payload)
+                if is_markdown:
+                    self._md_unavailable = True
+                    return await self._send_c2c_message(token, user_id, content, msg_id, False)
+                return False
             logger.debug(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}, markdown={is_markdown}")
             return True
 
     async def _send_group_message(self, token: str, group_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
-        url = "https://api.sgroup.qq.com/openapi/msg/group"
+        url = f"https://api.sgroup.qq.com/v2/groups/{group_id}/messages"
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
-        if is_markdown:
-            payload = {"target": {"type": 2, "id": group_id}, "markdown": {"content": content}, "msg_type": 2, "msg_id": msg_id}
-        else:
-            payload = {"target": {"type": 2, "id": group_id}, "content": content, "msg_type": 0, "msg_id": msg_id}
+        msg_seq = self._next_msg_seq(msg_id)
+        if not (content or "").strip():
+            logger.warning("[QQAdapter] Group 空内容，跳过发送")
+            return False
+        if len(content) > 4500:
+            content = content[:4500] + "\n…"
+        if is_markdown and self._md_unavailable:
+            is_markdown = False
+        payload = self._build_msg_payload(content, msg_id, msg_seq, is_markdown)
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                self._log_send_error(resp, "Group", payload)
+                if is_markdown:
+                    self._md_unavailable = True
+                    return await self._send_group_message(token, group_id, content, msg_id, False)
+                return False
             logger.debug(f"[QQAdapter] Group sent: markdown={is_markdown}")
             return True
 
@@ -491,7 +547,7 @@ class QQAdapter(ChannelAdapter):
                 msg_id=d.get("id", ""),
                 raw=d,
             )
-        elif t == "GROUP_AT_MSG_CREATE":
+        elif t in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("author", {}).get("member_openid", ""),
@@ -499,6 +555,17 @@ class QQAdapter(ChannelAdapter):
                 message_type="group",
                 msg_id=d.get("id", ""),
                 group_id=d.get("group_openid", ""),
+                raw=d,
+            )
+        elif t == "AT_MESSAGE_CREATE":
+            return UnifiedMessage(
+                platform="qq",
+                user_id=d.get("author", {}).get("id", ""),
+                content=d.get("content", ""),
+                message_type="guild",
+                msg_id=d.get("id", ""),
+                channel_id=d.get("channel_id", ""),
+                guild_id=d.get("guild_id", ""),
                 raw=d,
             )
         elif t == "MESSAGE_CREATE":

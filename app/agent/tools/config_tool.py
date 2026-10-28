@@ -2,6 +2,7 @@
 """配置管理工具"""
 
 import logging
+import re
 from typing import Any, Dict
 
 from app.agent.tools.base_tool import BaseTool
@@ -26,6 +27,32 @@ class ConfigTool(BaseTool):
         "list_channels/set_telegram/set_qq/set_feishu 管理外部通道。"
     )
 
+    def _cmd_version(self) -> dict:
+        """查看 Cellium Agent 版本"""
+        import platform
+
+        ver = "unknown"
+        try:
+            from importlib.metadata import version
+            ver = version("cellium-agent")
+        except Exception:
+            try:
+                import pathlib
+                root = pathlib.Path(__file__).resolve().parents[3]
+                text = (root / "pyproject.toml").read_text(encoding="utf-8")
+                m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+                if m:
+                    ver = m.group(1)
+            except Exception:
+                pass
+        return {
+            "success": True,
+            "name": "cellium-agent",
+            "version": ver,
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+        }
+
     def _cmd_help(self) -> dict:
         """查看配置工具帮助"""
         return {
@@ -33,6 +60,7 @@ class ConfigTool(BaseTool):
             "message": (
                 "§配置工具命令：\n"
                 "• help() — 查看本帮助\n"
+                "• version() — 查看 Cellium Agent 版本\n"
                 "• list_models() — 查看可用模型列表\n"
                 "• add_model(name, model, api_key, base_url, temperature=0.7, vision=true) — 添加模型\n"
                 "• switch_model(model_name) — 切换当前 LLM 模型\n"

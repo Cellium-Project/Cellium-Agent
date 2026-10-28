@@ -255,9 +255,17 @@ class SessionStore:
                 session_id = f"sess_{uuid.uuid4().hex[:12]}"
                 title = None
             elif session_id.startswith("qq:"):
-                title = f"QQ-{session_id.split(':')[1][:8]}"
+                parts = session_id.split(":")
+                if len(parts) >= 3 and parts[1] == "group":
+                    title = f"QQ群-{parts[2][:8]}"
+                else:
+                    title = f"QQ-{parts[1][:8]}"
             elif session_id.startswith("telegram:"):
-                title = f"TG-{session_id.split(':')[1][:8]}"
+                parts = session_id.split(":")
+                if len(parts) >= 3 and parts[1] == "group":
+                    title = f"TG群-{parts[2][:8]}"
+                else:
+                    title = f"TG-{parts[1][:8]}"
             elif session_id.startswith("feishu:"):
                 parts = session_id.split(":")
                 if len(parts) >= 3 and parts[1] == "group":

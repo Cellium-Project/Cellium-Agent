@@ -1121,6 +1121,118 @@ class BackgroundMonitor(BaseCell):
 
         return result
 
+    def _cmd_install(self, package: str = "", upgrade: bool = False) -> Dict[str, Any]:
+        pkg = (package or "").strip()
+        if not pkg:
+            return {
+                "success": False,
+                "error": "package 为必填",
+                "hint": '示例: {"command":"install","package":"cellium-comp-xxx"} 或 "pkg>=1.0.0"',
+            }
+        if pkg.startswith("-") or any(c in pkg for c in ";|&`$><\\\n\r'\""):
+            return {"success": False, "error": f"无效的包名: {package}"}
+
+        import subprocess
+        import sys as _sys
+
+        components_dir = get_components_dir()
+        try:
+            os.makedirs(components_dir, exist_ok=True)
+        except Exception as e:
+            return {"success": False, "error": f"组件目录不可写: {e}", "target_dir": str(components_dir)}
+
+        cmd = [
+            _sys.executable, "-m", "pip", "install", pkg,
+            "--target", str(components_dir),
+            "--disable-pip-version-check", "--no-input",
+        ]
+        if upgrade:
+            cmd.append("--upgrade")
+
+        def _run(pip_cmd):
+            try:
+                return subprocess.run(
+                    pip_cmd, capture_output=True, text=True,
+                    timeout=600, encoding="utf-8", errors="replace",
+                )
+            except subprocess.TimeoutExpired:
+                return None
+
+        proc = _run(cmd)
+        if proc is None:
+            return {"success": False, "error": "pip install 超时（600s）", "pip_cmd": " ".join(cmd[2:])}
+
+        # Linux 新发行版 PEP 668 系统保护，--target 也可能触发，降级重试
+        if proc.returncode != 0 and "externally-managed-environment" in (proc.stderr or ""):
+            cmd.append("--break-system-packages")
+            proc = _run(cmd)
+            if proc is None:
+                return {"success": False, "error": "pip install 超时（600s）", "pip_cmd": " ".join(cmd[2:])}
+
+        ok = proc.returncode == 0
+        result: Dict[str, Any] = {
+            "success": ok,
+            "package": pkg,
+            "target_dir": str(components_dir),
+            "pip_cmd": " ".join(cmd[2:]),
+            "stdout": (proc.stdout or "")[-3000:],
+            "stderr": (proc.stderr or "")[-2000:],
+        }
+        if not ok:
+            result["error"] = f"pip install 失败（exit={proc.returncode}）"
+            result["hint"] = "已装过同名包可带 upgrade=true 重试，或检查包名/网络"
+            return result
+
+        try:
+            from app.core.util.components_loader import hot_reload
+            from app.core.di.container import get_container as get_di
+            try:
+                container = get_di()
+            except Exception:
+                container = None
+            report = hot_reload(container=container)
+            result["reload"] = report
+            result["new_components"] = [a.get("name") for a in report.get("added", [])]
+            try:
+                from app.core.util.component_tool_registry import get_component_tool_registry
+                get_component_tool_registry().sync_from_components_loader()
+            except Exception:
+                pass
+            result["message"] = f"已安装 {pkg} 到 {components_dir} 并热重载"
+        except Exception as e:
+            result["reload_error"] = str(e)
+            result["message"] = f"已安装 {pkg}，但热重载失败，可手动 component.reload()"
+        return result
+
+    def _cmd_dir(self) -> Dict[str, Any]:
+        """获取组件文件夹的真实路径（pip 安装模式返回 pip 数据目录，绿色版返回项目目录）"""
+        from app.core.util.runtime_paths import _detect_install_mode
+
+        components_dir = get_components_dir()
+        mode, source_root = _detect_install_mode()
+        exists = components_dir.exists()
+
+        count = 0
+        if exists:
+            try:
+                count = sum(
+                    1 for item in components_dir.iterdir()
+                    if not item.name.startswith("_")
+                    and (item.is_file() and item.suffix == ".py"
+                         or item.is_dir() and (item / "__init__.py").exists())
+                )
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "components_dir": str(components_dir),
+            "mode": mode,
+            "mode_desc": "pip 安装" if mode == "installed" else "绿色版/源码",
+            "exists": exists,
+            "component_count": count,
+        }
+
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         """查询组件使用帮助（LLM 可通过此命令了解如何正确调用 component 工具）
         
@@ -1142,6 +1254,8 @@ class BackgroundMonitor(BaseCell):
                 {"command": "list", "args": {"show_commands": True}, "description": "列出所有已加载组件"},
                 {"command": "info", "args": {"name": "<组件名>"}, "description": "查看指定组件详情"},
                 {"command": "reload", "args": {}, "description": "手动触发热重载扫描"},
+                {"command": "dir", "args": {}, "description": "获取组件文件夹真实路径（自动区分 pip/绿色版）"},
+                {"command": "install", "args": {"package": "<pip包名>"}, "description": "pip 安装组件包到组件真实目录并热重载（Windows/Linux 通用）"},
                 {"command": "cleanup", "args": {"dry_run": True}, "description": "预览/清理组件缓存"},
             ],
             "_notes": [
@@ -1223,6 +1337,29 @@ class BackgroundMonitor(BaseCell):
                     "focused_command": topic,
                     "command_description": commands.get(topic),
                     "hint": '调用示例: {"command":"reload"}',
+                },
+                "dir": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "hint": (
+                        '调用示例: {"command":"dir"}\n'
+                        '返回: components_dir（真实路径）, mode（source=绿色版 / installed=pip 安装）, '
+                        'mode_desc, exists, component_count\n'
+                        '路径自动兼容两种模式：绿色版返回项目 components/ 目录，pip 安装返回 cellium/components 数据目录'
+                    ),
+                },
+                "install": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "required_params": ["package"],
+                    "optional_params": ["upgrade"],
+                    "hint": (
+                        '调用示例:\n'
+                        '  - {"command":"install","package":"cellium-comp-xxx"}\n'
+                        '  - {"command":"install","package":"pkg>=1.0.0","upgrade":true}\n'
+                        '说明: pip install --target=<组件真实目录>，Windows/Linux 通用，\n'
+                        '装完自动热重载并注册为 LLM 工具；已装过的包需带 upgrade=true'
+                    ),
                 },
                 "cleanup": {
                     "focused_command": topic,

@@ -232,14 +232,19 @@ class ChannelManager:
             chunks = split_markdown(content, max_len=max_len)
             for chunk in chunks:
                 try:
+                    send_kwargs = {
+                        "markdown": True,
+                        "guild_id": message.guild_id,
+                        "thread_id": message.thread_id,
+                    }
+                    if message.platform == "qq" and message.msg_id and not message.msg_id.startswith(("scheduler_", "component_")):
+                        send_kwargs["msg_id"] = message.msg_id
                     await self.send_message(
                         message.platform,
                         self._resolve_target_id(message),
                         chunk,
                         message.message_type,
-                        markdown=True,
-                        guild_id=message.guild_id,
-                        thread_id=message.thread_id,
+                        **send_kwargs,
                     )
                 except Exception as e:
                     logger.warning(f"[ChannelManager] Failed to send message chunk: {e}")
@@ -584,6 +589,12 @@ class ChannelManager:
 
         if message.content.strip() == "/stop":
             session_id = message.session_id
+            reply_kwargs = {
+                "guild_id": message.guild_id,
+                "thread_id": message.thread_id,
+            }
+            if message.platform == "qq" and message.msg_id and not message.msg_id.startswith(("scheduler_", "component_")):
+                reply_kwargs["msg_id"] = message.msg_id
             try:
                 from app.server.task_manager import get_task_manager
                 task_mgr = get_task_manager()
@@ -596,8 +607,7 @@ class ChannelManager:
                         self._resolve_target_id(message),
                         "⏹ 当前没有正在运行的 Agent 会话",
                         message.message_type,
-                        guild_id=message.guild_id,
-                        thread_id=message.thread_id,
+                        **reply_kwargs,
                     )
                     return
                 else:
@@ -609,8 +619,7 @@ class ChannelManager:
                     self._resolve_target_id(message),
                     "⏹ 已发送停止请求，Agent 将在当前迭代结束后停止",
                     message.message_type,
-                    guild_id=message.guild_id,
-                    thread_id=message.thread_id,
+                    **reply_kwargs,
                 )
             except Exception as e:
                 logger.error(f"[ChannelManager] /stop 处理失败: {e}")
@@ -619,8 +628,7 @@ class ChannelManager:
                     self._resolve_target_id(message),
                     f"停止失败: {e}",
                     message.message_type,
-                    guild_id=message.guild_id,
-                    thread_id=message.thread_id,
+                    **reply_kwargs,
                 )
             return
 

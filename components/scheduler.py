@@ -59,8 +59,19 @@ class Scheduler(BaseCell):
         names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         return names[n] if 0 <= n <= 6 else "未知"
 
-    def _cmd_create_interval(self, name: str, minutes: int, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """创建间隔任务: scheduler.create_interval(name, minutes, prompt)"""
+    def _with_tool_policy(self, platform_context: Dict[str, Any] = None,
+                          tools: List[str] = None, policy_mode: str = None) -> Dict[str, Any]:
+        if not tools and not policy_mode:
+            return platform_context
+        ctx = dict(platform_context or {})
+        ctx["tool_policy"] = {
+            "mode": policy_mode or "whitelist" if tools else "blacklist",
+            "tools": list(tools) if tools else [],
+        }
+        return ctx
+
+    def _cmd_create_interval(self, name: str, minutes: int, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None, tools: List[str] = None, policy_mode: str = None) -> Dict[str, Any]:
+        """创建间隔任务: scheduler.create_interval(name, minutes, prompt) - 可选 tools=[...]/policy_mode=whitelist|blacklist 限制任务可用工具"""
         task_id = self._generate_task_id()
         next_run_dt = datetime.now() + timedelta(minutes=minutes)
         next_run = next_run_dt.isoformat()
@@ -75,7 +86,7 @@ class Scheduler(BaseCell):
             next_run=next_run,
             enabled=True,
             session_id=session_id,
-            platform_context=platform_context,
+            platform_context=self._with_tool_policy(platform_context, tools, policy_mode),
         )
         self._manager.add_task(task)
 
@@ -87,8 +98,8 @@ class Scheduler(BaseCell):
             "message": f"已创建间隔任务: {name} (每{minutes}分钟)，下次执行: {next_run_dt.strftime('%Y-%m-%d %H:%M')}"
         }
 
-    def _cmd_create_daily(self, name: str, time: str, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """创建每日任务: scheduler.create_daily(name, time, prompt) - time格式HH:MM"""
+    def _cmd_create_daily(self, name: str, time: str, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None, tools: List[str] = None, policy_mode: str = None) -> Dict[str, Any]:
+        """创建每日任务: scheduler.create_daily(name, time, prompt) - time格式HH:MM - 可选 tools=[...]/policy_mode 限制任务可用工具"""
         try:
             hour, minute = map(int, time.split(":"))
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
@@ -113,7 +124,7 @@ class Scheduler(BaseCell):
             next_run=next_run.isoformat(),
             enabled=True,
             session_id=session_id,
-            platform_context=platform_context,
+            platform_context=self._with_tool_policy(platform_context, tools, policy_mode),
         )
         self._manager.add_task(task)
 
@@ -126,8 +137,8 @@ class Scheduler(BaseCell):
             "message": f"已创建每日任务: {name} (每天 {time})，下次执行: {next_run.strftime('%Y-%m-%d %H:%M')}"
         }
 
-    def _cmd_create_weekly(self, name: str, weekday: List[int], time: str, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """创建每周任务: scheduler.create_weekly(name, weekday, time, prompt) - weekday为单个数字0-6或数组[0,2](0=周一,6=周日)，数字范围0-6"""
+    def _cmd_create_weekly(self, name: str, weekday: List[int], time: str, prompt: str, session_id: str = None, platform_context: Dict[str, Any] = None, tools: List[str] = None, policy_mode: str = None) -> Dict[str, Any]:
+        """创建每周任务: scheduler.create_weekly(name, weekday, time, prompt) - weekday为单个数字0-6或数组[0,2](0=周一,6=周日)，数字范围0-6 - 可选 tools=[...]/policy_mode 限制任务可用工具"""
         if isinstance(weekday, (bool,)):
             return {"error": "星期格式错误，weekday必须为0-6数字或数组 (0=周一, 6=周日)"}
         if isinstance(weekday, (int, str)):
@@ -172,7 +183,7 @@ class Scheduler(BaseCell):
             next_run=next_run.isoformat(),
             enabled=True,
             session_id=session_id,
-            platform_context=platform_context,
+            platform_context=self._with_tool_policy(platform_context, tools, policy_mode),
         )
         self._manager.add_task(task)
 

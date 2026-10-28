@@ -471,10 +471,70 @@ class TestCellToolAdapterContext:
         
         assert result.get("success") is True
         task_id = result["task_id"]
-        
+
         task = scheduler._manager.get_task(task_id)
         assert task.session_id == "telegram:12345"
         assert task.platform_context == platform_ctx
+
+    def test_create_daily_with_tool_policy(self):
+        """测试 create_daily 传入 tools 注入 tool_policy"""
+        from app.core.util.cell_tool_adapter import CellToolAdapter
+        from components.scheduler import Scheduler
+
+        SchedulerManager._instance = None
+        SchedulerManager._initialized = False
+
+        scheduler = Scheduler()
+        adapter = CellToolAdapter(scheduler)
+
+        result = adapter.execute_with_context({
+            "command": "create_daily",
+            "name": "受限任务",
+            "time": "09:00",
+            "prompt": "测试",
+            "tools": ["web_query", "memory"],
+        })
+
+        assert result.get("success") is True
+        task = scheduler._manager.get_task(result["task_id"])
+        policy = task.platform_context["tool_policy"]
+        assert policy["mode"] == "whitelist"
+        assert sorted(policy["tools"]) == ["memory", "web_query"]
+
+    def test_create_daily_with_explicit_blacklist(self):
+        """测试 create_daily 显式 policy_mode=blacklist"""
+        from components.scheduler import Scheduler
+
+        SchedulerManager._instance = None
+        SchedulerManager._initialized = False
+
+        scheduler = Scheduler()
+        result = scheduler.execute("create_daily", name="黑名单任务", time="09:00",
+                                   prompt="测试", policy_mode="blacklist",
+                                   tools=["shell", "file"])
+
+        assert result.get("success") is True
+        task = scheduler._manager.get_task(result["task_id"])
+        policy = task.platform_context["tool_policy"]
+        assert policy["mode"] == "blacklist"
+        assert sorted(policy["tools"]) == ["file", "shell"]
+
+    def test_create_daily_without_tools_keeps_context(self):
+        """测试不传 tools 时 platform_context 原样保留（旧协议兼容）"""
+        from components.scheduler import Scheduler
+
+        SchedulerManager._instance = None
+        SchedulerManager._initialized = False
+
+        scheduler = Scheduler()
+        ctx = {"platform": "telegram", "user_id": "123"}
+        result = scheduler.execute("create_daily", name="普通任务", time="09:00",
+                                   prompt="测试", platform_context=ctx)
+
+        assert result.get("success") is True
+        task = scheduler._manager.get_task(result["task_id"])
+        assert task.platform_context == ctx
+        assert "tool_policy" not in (task.platform_context or {})
 
 
 class TestSchedulerExecutor:

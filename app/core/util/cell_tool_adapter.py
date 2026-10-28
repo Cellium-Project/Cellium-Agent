@@ -33,6 +33,7 @@ from typing import Any, Dict, Optional, Set
 
 from app.agent.tools.base_tool import BaseTool
 from app.core.interface.icell import ICell
+from app.core.interface.tool_policy import CommandPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ EXEMPTED_NAMES: Set[str] = {
     "weixin_files",
     "web_fetch",
     "scheduler",
-    "sub_agent",  
+    "sub_agent",
+    "napcat",
 }
 
 # 是否启用沙箱模式（可通过配置关闭）
@@ -220,6 +222,24 @@ class CellToolAdapter(BaseTool):
             logger.debug("[CellToolAdapter] 检查加载错误失败: %s", e)
         return None
 
+    def _check_cell_policy(self, cmd_name: str, platform_context) -> Optional[Dict[str, Any]]:
+        """组件自带的命令策略检查"""
+        try:
+            reason = CommandPolicy.check(self._cell, cmd_name, platform_context)
+        except Exception as e:
+            logger.warning("[CellToolAdapter] %s 策略检查失败（放行）: %s", self.name, e)
+            return None
+        if not reason:
+            return None
+        logger.warning("[CellToolAdapter] 组件策略拒绝 | component=%s | command=%s | reason=%s",
+                       self.name, cmd_name, reason)
+        return {
+            "success": False,
+            "error": reason,
+            "_tool_blocked": True,
+            "_source": f"component:{self.name}",
+        }
+
     def _execute_direct(self, command, *args, **kwargs) -> Dict[str, Any]:
         """直接执行组件命令"""
         _ensure_libs_in_path()
@@ -345,7 +365,11 @@ class CellToolAdapter(BaseTool):
                 "error": "无法推断命令，请显式指定 command 参数",
                 "_source": f"component:{self.name}",
             }
-        
+
+        denied = self._check_cell_policy(cmd_name, platform_context)
+        if denied:
+            return denied
+
         target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}"
         
         valid_params = None

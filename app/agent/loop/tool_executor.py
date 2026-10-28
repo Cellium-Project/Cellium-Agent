@@ -631,6 +631,32 @@ class ToolExecutor:
         self._error_tracker: Dict[str, int] = {}
         self._error_threshold: int = 3
         self._on_tools_changed = on_tools_changed  # 工具变化时的回调
+        self._tool_policy = None
+
+    def set_tool_policy(self, policy) -> None:
+        """实例级策略，context 里带的优先"""
+        self._tool_policy = policy
+
+    def _check_policy(self, tool_name: str, platform_context, session_id: str = None, arguments=None):
+        from app.core.interface.tool_policy import ToolPolicy, MODE_WHITELIST
+        policy = ToolPolicy.from_context(platform_context) or self._tool_policy
+        if policy is None:
+            return None
+        cmd = arguments.get("command") if isinstance(arguments, dict) else None
+        key = f"{tool_name}.{cmd.strip()}" if isinstance(cmd, str) and cmd.strip() else tool_name
+        if policy.mode == MODE_WHITELIST:
+            allowed = policy.allows(tool_name) or policy.allows(key)
+        else:
+            allowed = policy.allows(tool_name) and policy.allows(key)
+        if allowed:
+            return None
+        logger.warning("[ToolExecutor] 权限不足，禁止使用工具 | session=%s | tool=%s | mode=%s",
+                       session_id, key, policy.mode)
+        return {
+            "error": policy.block_reason(key),
+            "_tool_blocked": True,
+            "_source": "permission_check",
+        }
 
     def refresh_tools(self, tools: Dict[str, Any]):
         """更新工具表（热插拔后调用）"""
@@ -655,29 +681,9 @@ class ToolExecutor:
         else:
             arguments = dict(arguments or {})
 
-        tool_allowed = platform_context.get("tool_allowed") if platform_context else None
-        if tool_allowed is False:
-            _blocked_tools = {
-                "shell", "file", "memory", "web_search", "web_fetch",
-                "napcat.add_user", "napcat.remove_user", "napcat.add_group", "napcat.remove_group",
-                "napcat.subscribe", "napcat.unsubscribe",
-                "napcat.set_bot_qq", "napcat.set_port",
-                "napcat.enable_user_whitelist", "napcat.disable_user_whitelist",
-                "napcat.enable_group_whitelist", "napcat.disable_group_whitelist",
-                "napcat.enable_at", "napcat.disable_at",
-                "napcat.enable_proactive", "napcat.disable_proactive",
-                "napcat.set_proactive_threshold", "napcat.set_proactive_interval",
-                "napcat.add_wake_word", "napcat.remove_wake_word", "napcat.list_wake_words",
-                "component.reload", "component.load", "component.unload",
-                "component.discover", "component.scan",
-            }
-            if tool_name in _blocked_tools:
-                logger.warning("[ToolExecutor] 权限不足，禁止使用工具 | session=%s | tool=%s", session_id, tool_name)
-                return {
-                    "error": "权限不足，当前会话禁止使用工具",
-                    "_tool_blocked": True,
-                    "_source": "permission_check",
-                }
+        blocked = self._check_policy(tool_name, platform_context, session_id, arguments)
+        if blocked is not None:
+            return blocked
 
         try:
             registry = get_component_tool_registry()
@@ -728,29 +734,9 @@ class ToolExecutor:
             arguments = dict(arguments or {})
 
         platform_context = platform_context or {}
-        tool_allowed = platform_context.get("tool_allowed")
-        if tool_allowed is False:
-            _blocked_tools = {
-                "shell", "file", "memory", "web_search", "web_fetch",
-                "napcat.add_user", "napcat.remove_user", "napcat.add_group", "napcat.remove_group",
-                "napcat.subscribe", "napcat.unsubscribe",
-                "napcat.set_bot_qq", "napcat.set_port",
-                "napcat.enable_user_whitelist", "napcat.disable_user_whitelist",
-                "napcat.enable_group_whitelist", "napcat.disable_group_whitelist",
-                "napcat.enable_at", "napcat.disable_at",
-                "napcat.enable_proactive", "napcat.disable_proactive",
-                "napcat.set_proactive_threshold", "napcat.set_proactive_interval",
-                "napcat.add_wake_word", "napcat.remove_wake_word", "napcat.list_wake_words",
-                "component.reload", "component.load", "component.unload",
-                "component.discover", "component.scan",
-            }
-            if tool_name in _blocked_tools:
-                logger.warning("[ToolExecutor] 权限不足，禁止使用工具 | session=%s | tool=%s", session_id, tool_name)
-                return {
-                    "error": "权限不足，当前会话禁止使用工具",
-                    "_tool_blocked": True,
-                    "_source": "permission_check",
-                }
+        blocked = self._check_policy(tool_name, platform_context, session_id, arguments)
+        if blocked is not None:
+            return blocked
 
         try:
             registry = get_component_tool_registry()
