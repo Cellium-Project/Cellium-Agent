@@ -48,7 +48,9 @@ class QQFiles(BaseCell):
         """执行工具调用（带平台上下文）"""
         command = arguments.get("command", "")
         
-        self._last_platform_context = platform_context or {}
+        # 未传 context 时保留上一次的上下文，避免被空值覆盖
+        if platform_context is not None:
+            self._last_platform_context = platform_context
         
         if command == "download":
             return self._cmd_download(
@@ -60,13 +62,15 @@ class QQFiles(BaseCell):
             return self._cmd_send_file(
                 file_path=arguments.get("file_path", ""),
                 target_id=arguments.get("target_id"),
-                is_group=arguments.get("is_group")
+                is_group=arguments.get("is_group"),
+                msg_id=arguments.get("msg_id")
             )
         elif command == "send_image":
             return self._cmd_send_image(
                 image_path=arguments.get("image_path", ""),
                 target_id=arguments.get("target_id"),
-                is_group=arguments.get("is_group")
+                is_group=arguments.get("is_group"),
+                msg_id=arguments.get("msg_id")
             )
         elif command == "list":
             return self._cmd_list(folder=arguments.get("folder", ""))
@@ -75,9 +79,9 @@ class QQFiles(BaseCell):
 
     def _get_platform_context(self) -> Dict[str, Any]:
         """获取当前会话的平台上下文"""
-        if hasattr(self, "_last_platform_context"):
+        if getattr(self, "_last_platform_context", None):
             return self._last_platform_context
-        
+
         try:
             from app.agent.loop.session_manager import get_session_manager
             session_mgr = get_session_manager()
@@ -95,6 +99,33 @@ class QQFiles(BaseCell):
         except Exception as e:
             print(f"[QQFiles] Failed to get platform context: {e}")
             return {}
+
+    def _resolve_target_params(self, target_id, is_group, msg_id):
+        """解析发送目标与被动回复 msg_id
+
+        Returns:
+            (target_id, is_group, msg_id, error)
+        """
+        if target_id is not None and is_group is not None and msg_id is not None:
+            return target_id, is_group, msg_id, None
+
+        context = self._get_platform_context()
+        if not context:
+            return target_id, is_group, msg_id, "无法获取当前会话信息，请确保是通过 QQ 平台接收的消息"
+
+        if target_id is None:
+            target_id = context.get("target_id")
+            if not target_id:
+                return target_id, is_group, msg_id, "无法获取目标 ID（群 OpenID 或用户 OpenID）"
+
+        if is_group is None:
+            is_group = context.get("message_type") == "group"
+
+        if msg_id is None:
+            msg_id = context.get("msg_id")
+
+        print(f"[QQFiles] 会话信息: target_id={target_id}, is_group={is_group}, msg_id={msg_id}")
+        return target_id, is_group, msg_id, None
 
     # ============================================================
     # 文件下载
@@ -168,7 +199,8 @@ class QQFiles(BaseCell):
         self,
         file_path: str,
         target_id: str = None,
-        is_group: bool = None
+        is_group: bool = None,
+        msg_id: str = None
     ) -> Dict[str, Any]:
         """
         发送本地文件到 QQ
@@ -181,6 +213,7 @@ class QQFiles(BaseCell):
             file_path: 本地文件的完整路径
             target_id: 用户 OpenID 或群 OpenID（可选，默认自动获取当前会话）
             is_group: 是否是群聊（可选，默认自动检测）
+            msg_id: 被动回复的消息 ID（可选，默认自动获取当前会话）
 
         Returns:
             {"success": True, "message": "文件发送成功"}
@@ -192,52 +225,27 @@ class QQFiles(BaseCell):
             return {"success": False, "error": "QQ 服务未启动"}
 
         file_path_obj = Path(file_path)
+        if not str(file_path).strip():
+            return {"success": False, "error": "缺少 file_path 参数"}
         if not file_path_obj.exists():
             return {"success": False, "error": f"文件不存在: {file_path}"}
+        if not file_path_obj.is_file():
+            return {"success": False, "error": f"不是普通文件: {file_path}"}
 
-        if target_id is None or is_group is None:
-            context = self._get_platform_context()
-            if not context:
-                return {"success": False, "error": "无法获取当前会话信息，请确保是通过 QQ 平台接收的消息"}
-            
-            if target_id is None:
-                target_id = context.get("target_id")
-                if not target_id:
-                    return {"success": False, "error": "无法获取目标用户 ID"}
-            
-            if is_group is None:
-                is_group = context.get("message_type") == "group"
-            
-            print(f"[QQFiles] 自动获取会话信息: target_id={target_id}, is_group={is_group}")
+        target_id, is_group, msg_id, error = self._resolve_target_params(
+            target_id, is_group, msg_id
+        )
+        if error:
+            return {"success": False, "error": error}
 
-        try:
-            import concurrent.futures
-
-            def _run_in_new_loop(coro):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(coro)
-                finally:
-                    loop.close()
-
-            send_coro = adapter.send_file_message(target_id, file_path, is_group)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                send_future = executor.submit(_run_in_new_loop, send_coro)
-                success = send_future.result(timeout=60)
-
-            if success:
-                return {"success": True, "message": "文件发送成功"}
-            else:
-                return {"success": False, "error": "发送文件消息失败"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return self._send_media(adapter, target_id, file_path, 4, is_group, msg_id, "文件")
 
     def _cmd_send_image(
         self,
         image_path: str,
         target_id: str = None,
-        is_group: bool = None
+        is_group: bool = None,
+        msg_id: str = None
     ) -> Dict[str, Any]:
         """
         发送本地图片到 QQ
@@ -250,6 +258,7 @@ class QQFiles(BaseCell):
             image_path: 本地图片的完整路径
             target_id: 用户 OpenID 或群 OpenID（可选，默认自动获取当前会话）
             is_group: 是否是群聊（可选，默认自动检测）
+            msg_id: 被动回复的消息 ID（可选，默认自动获取当前会话）
 
         Returns:
             {"success": True, "message": "图片发送成功"}
@@ -260,41 +269,66 @@ class QQFiles(BaseCell):
         if not adapter:
             return {"success": False, "error": "QQ 服务未启动"}
 
-        if target_id is None or is_group is None:
-            context = self._get_platform_context()
-            if not context:
-                return {"success": False, "error": "无法获取当前会话信息，请确保是通过 QQ 平台接收的消息"}
-            
-            if target_id is None:
-                target_id = context.get("target_id")
-                if not target_id:
-                    return {"success": False, "error": "无法获取目标用户 ID"}
-            
-            if is_group is None:
-                is_group = context.get("message_type") == "group"
-            
-            print(f"[QQFiles] 自动获取会话信息: target_id={target_id}, is_group={is_group}")
+        if not str(image_path).strip():
+            return {"success": False, "error": "缺少 image_path 参数"}
+        image_path_obj = Path(image_path)
+        if not image_path_obj.exists():
+            return {"success": False, "error": f"图片不存在: {image_path}"}
+        if not image_path_obj.is_file():
+            return {"success": False, "error": f"不是普通文件: {image_path}"}
+
+        target_id, is_group, msg_id, error = self._resolve_target_params(
+            target_id, is_group, msg_id
+        )
+        if error:
+            return {"success": False, "error": error}
+
+        return self._send_media(adapter, target_id, image_path, 1, is_group, msg_id, "图片")
+
+    def _send_media(
+        self,
+        adapter,
+        target_id: str,
+        file_path: str,
+        file_type: int,
+        is_group: bool,
+        msg_id: str,
+        type_name: str
+    ) -> Dict[str, Any]:
+        """在独立事件循环中执行异步发送，并把平台错误原样带回"""
+        import concurrent.futures
+
+        def _run_in_new_loop(coro):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
 
         try:
-            import concurrent.futures
-
-            def _run_in_new_loop(coro):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(coro)
-                finally:
-                    loop.close()
-
+            coro = adapter.send_media_message(
+                target_id, file_path, file_type,
+                is_group=is_group, msg_id=msg_id
+            )
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_in_new_loop, adapter.send_image_message(target_id, image_path, is_group))
-                success = future.result(timeout=30)
-            if success:
-                return {"success": True, "message": "图片发送成功"}
-            else:
-                return {"success": False, "error": "图片发送失败"}
+                future = executor.submit(_run_in_new_loop, coro)
+                result = future.result(timeout=600)
+        except concurrent.futures.TimeoutError:
+            return {"success": False, "error": f"{type_name}发送超时（上传可能仍在后台进行）"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+        if not isinstance(result, dict):
+            return {"success": False, "error": f"{type_name}发送返回异常: {result}"}
+
+        if result.get("success"):
+            return {"success": True, "message": f"{type_name}发送成功"}
+
+        error_msg = result.get("error") or f"{type_name}发送失败"
+        if not msg_id:
+            error_msg += "（缺少 msg_id，非被动回复的富媒体消息在群聊中受限）"
+        return {"success": False, "error": error_msg}
 
     # ============================================================
     # 文件管理

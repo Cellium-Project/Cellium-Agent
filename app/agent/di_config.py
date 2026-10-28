@@ -120,6 +120,29 @@ async def _do_feishu_channel_start(channel_mgr, feishu_config):
         logger.error("[AgentDI] 飞书通道启动失败: %s", e)
 
 
+# 展示类开关
+_HOT_DISPLAY_KEYS = ("show_tool_cards", "show_thinking_plan")
+
+def _strip_display_flags(platform_cfg):
+    rest = {k: v for k, v in (platform_cfg or {}).items() if k not in _HOT_DISPLAY_KEYS}
+    group = rest.get("group")
+    if isinstance(group, dict):
+        group_rest = {k: v for k, v in group.items() if k not in _HOT_DISPLAY_KEYS}
+        if group_rest:
+            rest["group"] = group_rest
+        else:
+            rest.pop("group", None)
+    return rest
+
+def _only_display_flags_changed(old_val, new_val) -> bool:
+    old_d = old_val or {}
+    new_d = new_val or {}
+    for platform in set(old_d) | set(new_d):
+        if _strip_display_flags(old_d.get(platform)) != _strip_display_flags(new_d.get(platform)):
+            return False
+    return True
+
+
 def setup_agent_di(
     llm_engine=None,
     shell=None,
@@ -363,27 +386,13 @@ def setup_agent_di(
 
     _cfg.on_change("logging", _on_logging_config_change)
 
-    def _only_show_tool_cards_changed(old_val, new_val) -> bool:
-        """判断 channels 配置变化是否仅涉及 show_tool_cards（无需重连通道）"""
-        old_d = old_val or {}
-        new_d = new_val or {}
-        for platform in set(old_d) | set(new_d):
-            old_p = old_d.get(platform) or {}
-            new_p = new_d.get(platform) or {}
-            old_rest = {k: v for k, v in old_p.items() if k != "show_tool_cards"}
-            new_rest = {k: v for k, v in new_p.items() if k != "show_tool_cards"}
-            if old_rest != new_rest:
-                return False
-        return True
-
     def _on_channels_config_change(section, old_val, new_val):
         """channels 配置变更时重新加载通道配置并重连"""
         if section != "channels":
             return
         try:
-            # 仅工具卡片显示开关变化：直接生效，无需断开重连
-            if _only_show_tool_cards_changed(old_val, new_val):
-                logger.info("[AgentDI] 仅工具卡片显示配置变更，跳过通道重连")
+            if _only_display_flags_changed(old_val, new_val):
+                logger.info("[AgentDI] 仅展示类开关变更，跳过通道重连")
                 return
             from app.channels.qq import QQChannelConfig
             from app.channels.telegram import TelegramChannelConfig

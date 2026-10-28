@@ -40,11 +40,63 @@ class ChannelReloadRequest(BaseModel):
 class ChannelToolCardsRequest(BaseModel):
     platform: str
     show_tool_cards: bool = True
+    scope: Optional[str] = None  # "group" 表示仅群聊；缺省为平台级（私聊）
+
+
+class ChannelThinkingPlanRequest(BaseModel):
+    platform: str
+    show_thinking_plan: bool = True
+    scope: Optional[str] = None  # "group" 表示仅群聊；缺省为平台级（私聊）
+
+
+def _display_config_key(platform: str, scope: Optional[str], field: str) -> str:
+    if (scope or "").strip().lower() == "group":
+        return f"channels.{platform}.group.{field}"
+    return f"channels.{platform}.{field}"
+
+
+@router.post("/thinking-plan")
+async def set_show_thinking_plan(req: ChannelThinkingPlanRequest) -> Dict[str, Any]:
+    """开关某平台是否发送「思考」与「计划进度」"""
+    from app.core.util.agent_config import get_config
+
+    platform = (req.platform or "").strip().lower()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform 不能为空")
+
+    cfg = get_config()
+    channels = cfg.get_section("channels") or {}
+    if platform not in channels:
+        raise HTTPException(status_code=404, detail=f"通道 {platform} 未配置")
+
+    try:
+        cfg.set(
+            _display_config_key(platform, req.scope, "show_thinking_plan"),
+            bool(req.show_thinking_plan),
+            persist=True,
+            notify=False,
+        )
+    except Exception as e:
+        logger.error(f"[ChannelAPI] 更新 {platform} 思考/计划开关失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info(
+        "[ChannelAPI] 通道 %s（scope=%s）思考/计划进度=%s",
+        platform,
+        req.scope or "platform",
+        req.show_thinking_plan,
+    )
+    return {
+        "status": "ok",
+        "platform": platform,
+        "scope": req.scope or "platform",
+        "show_thinking_plan": bool(req.show_thinking_plan),
+    }
 
 
 @router.post("/tool-cards")
 async def set_show_tool_cards(req: ChannelToolCardsRequest) -> Dict[str, Any]:
-    """开关某平台是否发送工具调用卡片（热加载，无需重连通道）"""
+    """开关某平台是否发送工具调用卡片"""
     from app.core.util.agent_config import get_config
 
     platform = (req.platform or "").strip().lower()
@@ -58,15 +110,26 @@ async def set_show_tool_cards(req: ChannelToolCardsRequest) -> Dict[str, Any]:
 
     try:
         # notify=False：仅写内存+文件，不触发 channels on_change 回调，避免无谓重连
-        cfg.set(f"channels.{platform}.show_tool_cards", bool(req.show_tool_cards), persist=True, notify=False)
+        cfg.set(
+            _display_config_key(platform, req.scope, "show_tool_cards"),
+            bool(req.show_tool_cards),
+            persist=True,
+            notify=False,
+        )
     except Exception as e:
         logger.error(f"[ChannelAPI] 更新 {platform} 工具卡片开关失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    logger.info("[ChannelAPI] 通道 %s 工具调用卡片=%s（热加载生效）", platform, req.show_tool_cards)
+    logger.info(
+        "[ChannelAPI] 通道 %s（scope=%s）工具调用卡片=%s",
+        platform,
+        req.scope or "platform",
+        req.show_tool_cards,
+    )
     return {
         "status": "ok",
         "platform": platform,
+        "scope": req.scope or "platform",
         "show_tool_cards": bool(req.show_tool_cards),
     }
 

@@ -21,19 +21,32 @@ from ..base import ChannelAdapter, UnifiedMessage
 
 logger = logging.getLogger(__name__)
 
-# QQ Bot API 各类型文件上传大小限制
+# QQ Bot API 各类型富媒体「软限制」
 UPLOAD_SIZE_LIMITS: Dict[int, int] = {
-    1: 30 * 1024 * 1024,   # IMAGE:  30MB
-    2: 100 * 1024 * 1024,  # VIDEO:  100MB
+    1: 20 * 1024 * 1024,   # IMAGE:  20MB
+    2: 30 * 1024 * 1024,   # VIDEO:  30MB
     3: 20 * 1024 * 1024,   # VOICE:  20MB
-    4: 100 * 1024 * 1024,  # FILE:   100MB
+    4: 200 * 1024 * 1024,  # FILE:   200MB
 }
+
+# 平台支持的媒体格式，其余后缀一律降级为文件类型上传
+MEDIA_EXTENSIONS: Dict[int, set] = {
+    1: {".png", ".jpg", ".jpeg"},
+    2: {".mp4"},
+    3: {".silk", ".wav", ".mp3", ".flac"},
+}
+
+# 平台硬限制：超过直接拒绝
+UPLOAD_HARD_LIMIT = 200 * 1024 * 1024
+
+# 二进制直传（base64 file_data）上限：5MB，超过必须走分片上传
+DIRECT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 
 # 大文件阈值（超过此值发送进度提示）：5MB
 LARGE_FILE_THRESHOLD = 5 * 1024 * 1024
 
 # 分片上传默认并发数
-DEFAULT_CONCURRENT_PARTS = 3
+DEFAULT_CONCURRENT_PARTS = 1
 
 # 单个分片上传超时（毫秒）— 5 分钟
 PART_UPLOAD_TIMEOUT = 300_000
@@ -41,8 +54,20 @@ PART_UPLOAD_TIMEOUT = 300_000
 # 单个分片上传最大重试次数
 PART_UPLOAD_MAX_RETRIES = 2
 
-# 分片大小：8MB
+# 分片大小兜底值：8MB（服务端 upload_prepare 返回的 block_size 优先）
 PART_SIZE = 8 * 1024 * 1024
+
+# 秒传判断用切片长度：文件前 10002432 字节的 MD5（官方定义，非 10MB）
+MD5_10M_SLICE_SIZE = 10002432
+
+# 同一个 msg_id 的被动回复次数上限（超过后平台返回 40034128）
+MAX_PASSIVE_REPLIES = 5
+
+# 被动回复相关错误码 -> 可操作的中文提示
+PASSIVE_REPLY_ERROR_HINTS: Dict[int, str] = {
+    40034128: "被动回复已超时或次数用尽（同一 msg_id 最多回复 5 条，群聊有效期 5 分钟）",
+    40034005: "被动回复的 msg_id 已过期",
+}
 
 # 上传缓存最大条目数
 MAX_UPLOAD_CACHE_SIZE = 500
@@ -90,10 +115,16 @@ def _set_cached_file_info(
         for i in range(len(keys) // 2):
             del _upload_cache[keys[i]]
 
+    ttl = int(ttl or 0)
+    if ttl <= 0:
+        expires_at = now + 7 * 24 * 3600
+    else:
+        expires_at = now + max(ttl - 60, 30)
+
     _upload_cache[cache_key] = {
         "file_info": file_info,
         "file_uuid": file_uuid,
-        "expires_at": now + ttl - 60
+        "expires_at": expires_at
     }
 
     logger.info(f"[QQAdapter] Cache SET: key={cache_key[:20]}..., ttl={ttl}s")
@@ -159,19 +190,18 @@ def _clear_session(app_id: str):
 
 
 def _read_file_part(file_path: str, offset: int, length: int) -> bytes:
-    """同步读取文件指定部分（用于 asyncio.to_thread）"""
+    """同步读取文件指定部分"""
     with open(file_path, "rb") as f:
         f.seek(offset)
         return f.read(length)
 
 
-async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str, str]:
+async def _compute_file_hashes(file_path: str) -> Tuple[str, str, str]:
     """
     计算文件哈希值（MD5、SHA1、MD5_10M）
 
-    Args:
-        file_path: 文件路径
-        file_size: 文件大小
+    md5_10m 为文件前 MD5_10M_SLICE_SIZE 字节的 MD5（秒传判断用）；
+    文件不超过该长度时，前 N 字节即整个文件，结果与整体 md5 相同。
 
     Returns:
         (md5, sha1, md5_10m) 元组
@@ -180,8 +210,7 @@ async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str
     sha1_hash = hashlib.sha1()
     md5_10m_hash = hashlib.md5()
 
-    bytes_read = 0
-    need_10m = file_size > 10 * 1024 * 1024
+    remaining = MD5_10M_SLICE_SIZE
 
     with open(file_path, "rb") as f:
         while True:
@@ -192,49 +221,26 @@ async def _compute_file_hashes(file_path: str, file_size: int) -> Tuple[str, str
             md5_hash.update(chunk)
             sha1_hash.update(chunk)
 
-            if need_10m:
-                remaining = 10 * 1024 * 1024 - bytes_read
-                if remaining > 0:
-                    md5_10m_hash.update(chunk[:remaining] if remaining < len(chunk) else chunk)
+            if remaining > 0:
+                taken = chunk[:remaining]
+                md5_10m_hash.update(taken)
+                remaining -= len(taken)
 
-            bytes_read += len(chunk)
-
-    md5_10m = md5_10m_hash.hexdigest() if need_10m else md5_hash.hexdigest()
-    return md5_hash.hexdigest(), sha1_hash.hexdigest(), md5_10m
+    return md5_hash.hexdigest(), sha1_hash.hexdigest(), md5_10m_hash.hexdigest()
 
 
-async def _upload_with_retry(
-    client: httpx.AsyncClient,
-    url: str,
-    headers: Dict[str, str],
-    data: Dict[str, Any],
-    max_retries: int = PART_UPLOAD_MAX_RETRIES
-) -> Dict[str, Any]:
-    """带重试的文件上传"""
-    for attempt in range(max_retries + 1):
-        try:
-            resp = await client.post(url, headers=headers, data=data, timeout=PART_UPLOAD_TIMEOUT)
-            if resp.status_code == 200:
-                return resp.json()
-            text = resp.text
-            if attempt < max_retries:
-                logger.warning(f"[QQAdapter] 上传失败，重试 {attempt + 1}/{max_retries}: HTTP {resp.status_code}")
-                await asyncio.sleep(1 * (attempt + 1))
-            else:
-                return {"error": f"上传失败: HTTP {resp.status_code}, {text}"}
-        except httpx.TimeoutException:
-            if attempt < max_retries:
-                logger.warning(f"[QQAdapter] 上传超时，重试 {attempt + 1}/{max_retries}")
-                await asyncio.sleep(1 * (attempt + 1))
-            else:
-                return {"error": "上传超时"}
-        except Exception as e:
-            if attempt < max_retries:
-                logger.warning(f"[QQAdapter] 上传异常，重试 {attempt + 1}/{max_retries}: {e}")
-                await asyncio.sleep(1 * (attempt + 1))
-            else:
-                return {"error": f"上传异常: {e}"}
-    return {"error": "上传失败"}
+def _friendly_send_error(resp: "httpx.Response") -> str:
+    """平台错误码，未知错误保留原始响应"""
+    try:
+        data = resp.json() or {}
+        code = data.get("err_code") or data.get("code")
+        hint = PASSIVE_REPLY_ERROR_HINTS.get(code)
+    except Exception:
+        return f"HTTP {resp.status_code}, {resp.text[:300]}"
+
+    if hint:
+        return f"{hint}，请在 QQ 中重新发送一条消息后再试（err_code={code}）"
+    return f"HTTP {resp.status_code}, {resp.text[:300]}"
 
 
 class QQAdapter(ChannelAdapter):
@@ -276,7 +282,7 @@ class QQAdapter(ChannelAdapter):
         self._min_send_interval: float = 0.5
         self._send_lock = asyncio.Lock()
 
-        # 数据目录（用于存储下载的文件）
+        # 数据目录
         from app.core.util.runtime_paths import resolve_dir_writable
         self._data_dir = Path(resolve_dir_writable("workspace")) / "downloads" / "qq"
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -537,6 +543,27 @@ class QQAdapter(ChannelAdapter):
             logger.debug(f"[QQAdapter] Guild sent: channel={channel_id}, markdown={is_markdown}")
             return True
 
+    @staticmethod
+    def _render_group_mentions(content: str, mentions: List[Dict[str, Any]]) -> str:
+        """把群消息里的 @ 标记还原成可读的 @昵称
+
+        官方约定：入站内容中的 @成员 会替换为 <@member_openid>，@全体 为 <@all>。
+        这里按 mentions 列表还原成 @昵称，便于模型理解谁被 @ 了。
+        未在 mentions 中出现的标记保持原样。
+        """
+        if not content:
+            return content
+
+        content = content.replace("<@all>", "@全体成员")
+        for m in mentions or []:
+            uid = m.get("member_openid") or m.get("id")
+            if not uid:
+                continue
+            name = m.get("username") or uid
+            content = content.replace(f"<@!{uid}>", f"@{name}")
+            content = content.replace(f"<@{uid}>", f"@{name}")
+        return content
+
     def _parse_message(self, t: str, d: Dict[str, Any]) -> Optional[UnifiedMessage]:
         if t == "C2C_MESSAGE_CREATE":
             return UnifiedMessage(
@@ -551,7 +578,9 @@ class QQAdapter(ChannelAdapter):
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("author", {}).get("member_openid", ""),
-                content=d.get("content", ""),
+                content=self._render_group_mentions(
+                    d.get("content", ""), d.get("mentions") or []
+                ),
                 message_type="group",
                 msg_id=d.get("id", ""),
                 group_id=d.get("group_openid", ""),
@@ -913,20 +942,41 @@ class QQAdapter(ChannelAdapter):
             包含 file_info 的字典或错误信息
         """
         try:
+            if not target_id:
+                return {"error": "缺少 target_id（群 OpenID 或用户 OpenID）"}
+            if file_type not in UPLOAD_SIZE_LIMITS:
+                return {"error": f"不支持的 file_type: {file_type}"}
+
             file_path_obj = Path(file_path)
             if not file_path_obj.exists():
                 return {"error": f"文件不存在: {file_path}"}
+            if not file_path_obj.is_file():
+                return {"error": f"不是普通文件: {file_path}"}
 
             file_size = file_path_obj.stat().st_size
             file_name = file_path_obj.name
+            if file_size <= 0:
+                return {"error": f"文件为空，无法发送: {file_name}"}
+            if file_size > UPLOAD_HARD_LIMIT:
+                return {"error": f"文件大小超过平台上限 200MB: {file_size / 1024 / 1024:.2f}MB"}
 
-            size_limit = UPLOAD_SIZE_LIMITS.get(file_type, 30 * 1024 * 1024)
-            if file_size > size_limit:
-                type_names = {1: "图片", 2: "视频", 3: "语音", 4: "文件"}
-                return {"error": f"{type_names.get(file_type, '文件')}大小超过限制 ({size_limit / 1024 / 1024:.0f}MB)"}
+            # 超过软限制时平台会降级为「文件」类型，主动降级以走对应的上传分支
+            if file_type != 4 and file_size > UPLOAD_SIZE_LIMITS[file_type]:
+                logger.info(
+                    f"[QQAdapter] 文件 {file_name} 超过类型 {file_type} 软限制，降级为文件类型上传"
+                )
+                file_type = 4
+
+            # 后缀不受平台支持时同样降级为文件，避免 850019 错误
+            allowed_ext = MEDIA_EXTENSIONS.get(file_type)
+            if allowed_ext and file_path_obj.suffix.lower() not in allowed_ext:
+                logger.info(
+                    f"[QQAdapter] 后缀 {file_path_obj.suffix} 不在类型 {file_type} 支持范围内，降级为文件类型上传"
+                )
+                file_type = 4
 
             logger.info(f"[QQAdapter] 计算文件哈希: {file_name}")
-            md5_hash, _, _ = await _compute_file_hashes(file_path, file_size)
+            md5_hash, _, _ = await _compute_file_hashes(file_path)
 
             scope = "group" if is_group else "c2c"
             cache_key = _get_cache_key(md5_hash, scope, target_id, file_type)
@@ -946,21 +996,26 @@ class QQAdapter(ChannelAdapter):
             token = await self._get_access_token()
 
             if is_group:
-                url = "https://api.sgroup.qq.com/v2/groups/{}/files".format(target_id)
+                base_url = "https://api.sgroup.qq.com/v2/groups/{}".format(target_id)
             else:
-                url = "https://api.sgroup.qq.com/v2/users/{}/files".format(target_id)
+                base_url = "https://api.sgroup.qq.com/v2/users/{}".format(target_id)
 
-            if file_size <= 20 * 1024 * 1024:
-                result = await self._upload_small_file(url, token, file_path, file_name, file_type)
+            # 二进制直传上限 5MB，超过必须走分片上传
+            if file_size <= DIRECT_UPLOAD_MAX_BYTES:
+                result = await self._upload_small_file(
+                    f"{base_url}/files", token, file_path, file_name, file_type
+                )
             else:
-                result = await self._upload_large_file(url, token, file_path, file_name, file_type, file_size)
+                result = await self._upload_large_file(
+                    base_url, token, file_path, file_name, file_type, file_size
+                )
 
-            if "file_info" in result and "ttl" in result:
+            if result.get("file_info"):
                 _set_cached_file_info(
                     cache_key,
                     result["file_info"],
                     result.get("file_uuid", ""),
-                    result["ttl"]
+                    result.get("ttl", 0)
                 )
 
             return result
@@ -977,92 +1032,350 @@ class QQAdapter(ChannelAdapter):
         file_name: str,
         file_type: int
     ) -> Dict[str, Any]:
-        """上传小文件（<20MB）- 使用 base64 编码"""
+        """上传小文件（<=5MB）- 使用 base64 编码二进制直传"""
         import base64
-        
+
         async with httpx.AsyncClient() as client:
-            with open(file_path, "rb") as f:
-                file_data = base64.b64encode(f.read()).decode("utf-8")
-            
+            raw = await asyncio.to_thread(_read_file_part, file_path, 0, DIRECT_UPLOAD_MAX_BYTES)
+            file_data = base64.b64encode(raw).decode("utf-8")
+
             body = {
                 "file_type": file_type,
                 "file_data": file_data,
                 "file_name": file_name,
+                "srv_send_msg": False,
             }
-            
+
             headers = {
                 "Authorization": f"QQBot {token}",
                 "Content-Type": "application/json"
             }
-            
-            resp = await client.post(url, headers=headers, json=body, timeout=120)
+
+            try:
+                resp = await client.post(url, headers=headers, json=body, timeout=120)
+            except httpx.TimeoutException:
+                return {"error": "上传超时，请稍后重试"}
+            except Exception as e:
+                return {"error": f"上传异常: {e}"}
+
             if resp.status_code == 200:
                 return resp.json()
-            else:
-                return {"error": f"上传失败: HTTP {resp.status_code}, {resp.text}"}
+            return {"error": f"上传失败: HTTP {resp.status_code}, {resp.text[:300]}"}
 
     async def _upload_large_file(
         self,
-        url: str,
+        base_url: str,
         token: str,
         file_path: str,
         file_name: str,
         file_type: int,
         file_size: int
     ) -> Dict[str, Any]:
-        """分片上传大文件（>=20MB）"""
-        logger.info(f"[QQAdapter] 计算文件哈希: {file_name}")
-        md5, sha1, md5_10m = await _compute_file_hashes(file_path, file_size)
+        """分片上传大文件（>5MB）
 
+        官方四步流程：
+        1. POST {base}/upload_prepare 拿到 upload_id / block_size / 预签名 URL
+        2. 逐片 PUT 到预签名 URL（不带 Authorization）
+        3. 每片 PUT 成功后 POST {base}/upload_part_finish
+        4. 全部分片完成后 POST {base}/files 携带 upload_id 完成合并
+        """
+        logger.info(f"[QQAdapter] 分片上传: {file_name}, 大小: {file_size} bytes")
+        md5, sha1, md5_10m = await _compute_file_hashes(file_path)
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
 
-        total_parts = (file_size + PART_SIZE - 1) // PART_SIZE
-        logger.info(f"[QQAdapter] 开始分片上传: {file_name}, 共 {total_parts} 个分片")
-
-        uploaded_parts = []
-
         async with httpx.AsyncClient() as client:
-            semaphore = asyncio.Semaphore(DEFAULT_CONCURRENT_PARTS)
+            # ---- 1. 预上传 ----
+            prepare_body = {
+                "file_type": file_type,
+                "file_size": str(file_size),
+                "file_name": file_name,
+                "md5": md5,
+                "sha1": sha1,
+                "md5_10m": md5_10m,
+            }
+            try:
+                resp = await client.post(
+                    f"{base_url}/upload_prepare", headers=headers, json=prepare_body, timeout=60
+                )
+            except httpx.TimeoutException:
+                return {"error": "预上传超时，请稍后重试"}
+            except Exception as e:
+                return {"error": f"预上传异常: {e}"}
 
-            async def upload_part(part_index: int) -> Dict[str, Any]:
+            if resp.status_code != 200:
+                return {"error": f"预上传失败: HTTP {resp.status_code}, {resp.text[:300]}"}
+
+            prepare = resp.json() or {}
+            upload_id = prepare.get("upload_id")
+            raw_parts = prepare.get("parts") or []
+            if not upload_id or not raw_parts:
+                return {"error": f"预上传响应异常（缺少 upload_id/parts）: {prepare}"}
+
+            upload_config = prepare.get("upload_config") or {}
+            try:
+                concurrency = max(1, int(upload_config.get("concurrency") or DEFAULT_CONCURRENT_PARTS))
+            except (TypeError, ValueError):
+                concurrency = DEFAULT_CONCURRENT_PARTS
+
+            try:
+                sorted_parts = sorted(raw_parts, key=lambda p: int(p.get("index", 0)))
+            except (TypeError, ValueError):
+                return {"error": f"预上传返回的 parts 格式异常: {raw_parts}"}
+
+            # 按服务端下发的 block_size 累加计算每个分片的文件偏移
+            offsets: Dict[int, int] = {}
+            cursor = 0
+            for part in sorted_parts:
+                idx = int(part.get("index", 0))
+                offsets[idx] = cursor
+                try:
+                    declared = int(part.get("block_size") or 0)
+                except (TypeError, ValueError):
+                    declared = 0
+                cursor += declared if declared > 0 else PART_SIZE
+            if cursor < file_size:
+                logger.warning(
+                    f"[QQAdapter] 分片总大小 {cursor} 小于文件大小 {file_size}，可能存在未覆盖区间"
+                )
+
+            logger.info(f"[QQAdapter] 预上传成功: upload_id={upload_id}, 分片数={len(sorted_parts)}, 并发={concurrency}")
+
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def upload_part(part: Dict[str, Any]) -> Optional[str]:
+                """返回 None 表示成功，否则返回错误信息"""
                 async with semaphore:
-                    offset = part_index * PART_SIZE
-                    length = min(PART_SIZE, file_size - offset)
+                    try:
+                        idx = int(part.get("index", 0))
+                    except (TypeError, ValueError):
+                        return "分片 index 非法"
+                    presigned_url = part.get("presigned_url")
+                    if not presigned_url:
+                        return f"分片 {idx} 缺少 presigned_url"
 
-                    part_data = await asyncio.to_thread(_read_file_part, file_path, offset, length)
+                    offset = offsets.get(idx, 0)
+                    try:
+                        declared = int(part.get("block_size") or 0)
+                    except (TypeError, ValueError):
+                        declared = 0
+                    length = min(declared or PART_SIZE, file_size - offset)
+                    if length <= 0:
+                        return f"分片 {idx} 长度为 0（offset={offset}）"
 
-                    form_data = {
-                        "file": (f"{file_name}.part{part_index}", part_data, "application/octet-stream"),
-                        "file_type": str(file_type),
-                        "part_index": str(part_index),
-                        "total_parts": str(total_parts),
+                    data = await asyncio.to_thread(_read_file_part, file_path, offset, length)
+
+                    # ---- 2. PUT 到预签名 URL（COS 预签名地址不能带 QQBot token）----
+                    put_error = ""
+                    for attempt in range(PART_UPLOAD_MAX_RETRIES + 1):
+                        try:
+                            put_resp = await client.put(
+                                presigned_url,
+                                content=data,
+                                headers={"Content-Type": "application/octet-stream"},
+                                timeout=PART_UPLOAD_TIMEOUT,
+                            )
+                            if put_resp.status_code in (200, 201, 204):
+                                put_error = ""
+                                break
+                            put_error = f"HTTP {put_resp.status_code}"
+                        except httpx.TimeoutException:
+                            put_error = "超时"
+                        except Exception as e:
+                            put_error = str(e)
+
+                        if attempt < PART_UPLOAD_MAX_RETRIES:
+                            logger.warning(
+                                f"[QQAdapter] 分片 {idx} PUT 失败({put_error})，重试 {attempt + 1}/{PART_UPLOAD_MAX_RETRIES}"
+                            )
+                            await asyncio.sleep(1 * (attempt + 1))
+
+                    if put_error:
+                        return f"分片 {idx} PUT 失败: {put_error}"
+
+                    # ---- 3. 通知服务端分片完成 ----
+                    finish_body = {
+                        "upload_id": upload_id,
+                        "part_index": idx,
+                        "block_size": str(length),
+                        "md5": hashlib.md5(data).hexdigest(),
                     }
+                    try:
+                        finish_resp = await client.post(
+                            f"{base_url}/upload_part_finish", headers=headers, json=finish_body, timeout=60
+                        )
+                    except Exception as e:
+                        return f"分片 {idx} 完成通知异常: {e}"
 
-                    result = await _upload_with_retry(client, url, {"Authorization": f"QQBot {token}"}, form_data)
+                    if finish_resp.status_code != 200:
+                        return (
+                            f"分片 {idx} 完成通知失败: HTTP {finish_resp.status_code}, "
+                            f"{finish_resp.text[:200]}"
+                        )
+                    return None
 
-                    if "file_info" in result:
-                        logger.info(f"[QQAdapter] 分片 {part_index + 1}/{total_parts} 上传成功")
-                    else:
-                        logger.error(f"[QQAdapter] 分片 {part_index + 1}/{total_parts} 上传失败: {result}")
+            results = await asyncio.gather(
+                *[upload_part(part) for part in sorted_parts], return_exceptions=True
+            )
 
-                    return result
-
-            tasks = [upload_part(i) for i in range(total_parts)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
+            errors = []
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
-                    return {"error": f"分片 {i + 1} 上传异常: {result}"}
-                if "error" in result:
-                    return {"error": f"分片 {i + 1} 上传失败: {result['error']}"}
-                if "file_info" in result:
-                    uploaded_parts.append(result["file_info"])
+                    errors.append(f"分片 {i} 异常: {result}")
+                elif result:
+                    errors.append(result)
+            if errors:
+                logger.error(f"[QQAdapter] 分片上传失败: {errors}")
+                return {"error": "分片上传失败: " + "; ".join(errors)}
 
-        if uploaded_parts:
-            logger.info(f"[QQAdapter] 大文件上传完成: {file_name}")
-            return {"file_info": uploaded_parts[-1]}
+            # ---- 4. 合并分片 ----
+            merge_body = {
+                "file_type": file_type,
+                "srv_send_msg": False,
+                "file_name": file_name,
+                "upload_id": upload_id,
+            }
+            try:
+                merge_resp = await client.post(
+                    f"{base_url}/files", headers=headers, json=merge_body, timeout=120
+                )
+            except httpx.TimeoutException:
+                return {"error": "分片合并超时，请稍后重试"}
+            except Exception as e:
+                return {"error": f"分片合并异常: {e}"}
 
-        return {"error": "分片上传失败"}
+            if merge_resp.status_code != 200:
+                return {"error": f"分片合并失败: HTTP {merge_resp.status_code}, {merge_resp.text[:300]}"}
+
+            result = merge_resp.json() or {}
+            if not result.get("file_info"):
+                return {"error": f"分片合并未返回 file_info: {result}"}
+
+            logger.info(f"[QQAdapter] 分片上传完成: {file_name}")
+            return result
+
+    _MEDIA_TYPE_NAMES = {1: "图片", 2: "视频", 3: "语音", 4: "文件"}
+
+    async def _send_media_message(
+        self,
+        target_id: str,
+        file_path: str,
+        file_type: int,
+        is_group: bool = False,
+        msg_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """上传并以 msg_type=7 发送富媒体消息，返回详细结果
+
+        Args:
+            target_id: 用户或群 OpenID
+            file_path: 本地文件路径
+            file_type: 1=图片 2=视频 3=语音 4=文件
+            is_group: 是否是群聊
+            msg_id: 被动回复的消息 ID；缺失时会按主动消息发送（群聊每月仅 4 条）
+
+        Returns:
+            {"success": True, "message_id": ..., "file_info": ...}
+            或 {"success": False, "error": "..."}
+        """
+        type_name = self._MEDIA_TYPE_NAMES.get(file_type, "文件")
+
+        if not target_id:
+            return {"success": False, "error": "缺少 target_id（群 OpenID 或用户 OpenID）"}
+
+        # scheduler_/component_ 是内部合成的 ID，不是平台消息 ID，不能用于被动回复
+        if msg_id and msg_id.startswith(("scheduler_", "component_")):
+            logger.info("[QQAdapter] 合成 msg_id 非平台消息 ID，改按主动消息发送")
+            msg_id = None
+
+        # 平台限制：同一 msg_id 最多被动回复 5 条，超限必然失败，提前拦截避免白跑上传
+        if msg_id and self._msg_seq_counters.get(msg_id, 0) >= MAX_PASSIVE_REPLIES:
+            logger.warning(
+                f"[QQAdapter] msg_id {msg_id[:12]}... 被动回复已达 {MAX_PASSIVE_REPLIES} 条上限，跳过发送"
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"该消息的被动回复次数已用尽（同一 msg_id 最多 {MAX_PASSIVE_REPLIES} 条），"
+                    "请在 QQ 中重新发送一条消息后重试"
+                ),
+            }
+
+        upload_result = await self.upload_media(
+            target_id, file_path, file_type=file_type, is_group=is_group
+        )
+        file_info = upload_result.get("file_info")
+        if not file_info:
+            error_msg = upload_result.get("error") or f"{type_name}上传失败（未返回 file_info）"
+            logger.error(f"[QQAdapter] {type_name}上传失败: {error_msg}")
+            return {"success": False, "error": f"{type_name}上传失败: {error_msg}"}
+
+        token = await self._get_access_token()
+
+        if is_group:
+            url = f"https://api.sgroup.qq.com/v2/groups/{target_id}/messages"
+        else:
+            url = f"https://api.sgroup.qq.com/v2/users/{target_id}/messages"
+
+        headers = {
+            "Authorization": f"QQBot {token}",
+            "Content-Type": "application/json"
+        }
+
+        # 注意：字段名是 msg_seq（不是 seq），且必须与 msg_id 配合使用
+        payload: Dict[str, Any] = {
+            "msg_type": 7,
+            "msg_seq": self._next_msg_seq(msg_id),
+            "media": {"file_info": file_info},
+            # 群聊 content 为必填项，用文件名兜底，避免空串被平台拒绝
+            "content": Path(file_path).name or "文件",
+        }
+        if msg_id:
+            payload["msg_id"] = msg_id
+        else:
+            logger.warning(
+                "[QQAdapter] 富媒体消息缺少 msg_id（非被动回复），群聊主动消息每月仅 4 条且需群主开启主动发言"
+            )
+
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, headers=headers, json=payload, timeout=60)
+            except httpx.TimeoutException:
+                return {"success": False, "error": "发送超时，请稍后重试"}
+            except Exception as e:
+                logger.error(f"[QQAdapter] {type_name}消息发送异常: {e}")
+                return {"success": False, "error": f"发送异常: {e}"}
+
+            if resp.status_code != 200:
+                scene = f"{type_name}({'群' if is_group else '单聊'})"
+                self._log_send_error(resp, scene, payload)
+                return {
+                    "success": False,
+                    "error": f"发送失败: {_friendly_send_error(resp)}"
+                }
+
+            data = resp.json() if resp.content else {}
+            logger.info(f"[QQAdapter] {type_name}消息发送成功: id={data.get('id', 'unknown')}")
+            return {
+                "success": True,
+                "message_id": data.get("id", ""),
+                "file_info": file_info
+            }
+
+    async def send_media_message(
+        self,
+        target_id: str,
+        file_path: str,
+        file_type: int = 4,
+        is_group: bool = False,
+        msg_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """发送富媒体消息（不会抛异常），返回详细结果供上层展示错误原因"""
+        try:
+            return await self._send_media_message(
+                target_id, file_path, file_type, is_group=is_group, msg_id=msg_id
+            )
+        except Exception as e:
+            logger.error(f"[QQAdapter] 发送富媒体消息失败: {e}")
+            return {"success": False, "error": str(e)}
 
     async def send_file_message(
         self,
@@ -1071,59 +1384,11 @@ class QQAdapter(ChannelAdapter):
         is_group: bool = False,
         msg_id: Optional[str] = None
     ) -> bool:
-        """
-        上传并发送文件消息
-
-        Args:
-            target_id: 用户或群 OpenID
-            file_path: 本地文件路径
-            is_group: 是否是群聊
-            msg_id: 被动回复的消息 ID
-
-        Returns:
-            是否发送成功
-        """
-        try:
-            upload_result = await self.upload_media(target_id, file_path, file_type=4, is_group=is_group)
-            file_info = upload_result.get("file_info")
-
-            if not file_info:
-                error_msg = upload_result.get("error", "未知错误")
-                logger.error(f"[QQAdapter] 上传文件失败: {error_msg}, upload_result={upload_result}")
-                return False
-
-            token = await self._get_access_token()
-
-            if is_group:
-                url = f"https://api.sgroup.qq.com/v2/groups/{target_id}/messages"
-            else:
-                url = f"https://api.sgroup.qq.com/v2/users/{target_id}/messages"
-
-            headers = {
-                "Authorization": f"QQBot {token}",
-                "Content-Type": "application/json"
-            }
-
-            import uuid
-            msg_seq = int(uuid.uuid4().int % 900000000000000) + 100000000000000
-
-            payload = {
-                "msg_type": 7,  # 文件消息
-                "msg_id": msg_id,
-                "seq": msg_seq,
-                "content": "",
-                "media": {"file_info": file_info}
-            }
-
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                logger.info(f"[QQAdapter] 文件消息发送成功")
-                return True
-
-        except Exception as e:
-            logger.error(f"[QQAdapter] 发送文件消息失败: {e}")
-            return False
+        """上传并发送文件消息，返回是否成功（详细错误请用 send_media_message）"""
+        result = await self.send_media_message(
+            target_id, file_path, file_type=4, is_group=is_group, msg_id=msg_id
+        )
+        return bool(result.get("success"))
 
     async def send_image_message(
         self,
@@ -1132,60 +1397,11 @@ class QQAdapter(ChannelAdapter):
         is_group: bool = False,
         msg_id: Optional[str] = None
     ) -> bool:
-        """
-        上传并发送图片消息
-
-        Args:
-            target_id: 用户或群 OpenID
-            image_path: 本地图片路径
-            is_group: 是否是群聊
-            msg_id: 被动回复的消息 ID
-
-        Returns:
-            是否发送成功
-        """
-        try:
-            # 上传图片
-            upload_result = await self.upload_media(target_id, image_path, file_type=1, is_group=is_group)
-            file_info = upload_result.get("file_info")
-
-            if not file_info:
-                logger.error(f"[QQAdapter] 图片上传失败: {upload_result}")
-                return False
-
-            # 发送图片消息
-            token = await self._get_access_token()
-
-            if is_group:
-                url = f"https://api.sgroup.qq.com/v2/groups/{target_id}/messages"
-            else:
-                url = f"https://api.sgroup.qq.com/v2/users/{target_id}/messages"
-
-            headers = {
-                "Authorization": f"QQBot {token}",
-                "Content-Type": "application/json"
-            }
-
-            import uuid
-            msg_seq = int(uuid.uuid4().int % 900000000000000) + 100000000000000
-
-            payload = {
-                "msg_type": 7, 
-                "msg_id": msg_id,
-                "seq": msg_seq,
-                "content": "",
-                "media": {"file_info": file_info}
-            }
-
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-                logger.info(f"[QQAdapter] 图片消息发送成功")
-                return True
-
-        except Exception as e:
-            logger.error(f"[QQAdapter] 发送图片消息失败: {e}")
-            return False
+        """上传并发送图片消息，返回是否成功（详细错误请用 send_media_message）"""
+        result = await self.send_media_message(
+            target_id, image_path, file_type=1, is_group=is_group, msg_id=msg_id
+        )
+        return bool(result.get("success"))
 
     async def process_message_attachments(
         self,

@@ -200,11 +200,31 @@ class ChannelManager:
         session_info.pending_file_notice_task = asyncio.create_task(_notice_later())
         session_info.pending_file_notice_created_at = time.time()
 
-    def _should_show_tool_cards(self, platform: str) -> bool:
-        """按配置控制该平台是否发送工具调用卡片"""
+    def _should_show_tool_cards(self, platform: str, message_type: str = "") -> bool:
+        """按配置控制该平台是否发送工具调用卡片
+
+        QQ 群聊默认关闭（避免快速耗尽被动回复额度），QQ 私聊保持默认开启。
+        """
         try:
             from app.core.util.agent_config import get_config
-            return bool(get_config().get(f"channels.{platform}.show_tool_cards", True))
+            cfg = get_config()
+            if platform == "qq" and message_type == "group":
+                return bool(cfg.get("channels.qq.group.show_tool_cards", False))
+            return bool(cfg.get(f"channels.{platform}.show_tool_cards", True))
+        except Exception:
+            return True
+
+    def _should_show_thinking_plan(self, platform: str, message_type: str = "") -> bool:
+        """按配置控制该平台是否发送「思考」与「计划进度」消息
+
+        QQ 群聊默认关闭，QQ 私聊保持默认开启。
+        """
+        try:
+            from app.core.util.agent_config import get_config
+            cfg = get_config()
+            if platform == "qq" and message_type == "group":
+                return bool(cfg.get("channels.qq.group.show_thinking_plan", False))
+            return bool(cfg.get(f"channels.{platform}.show_thinking_plan", True))
         except Exception:
             return True
 
@@ -308,7 +328,7 @@ class ChannelManager:
                             await safe_send(f"> ❌ **错误**: `{error_msg}`")
                     else:
                         if stream is not None and event_type in ("tool_start", "tool_result"):
-                            if self._should_show_tool_cards(message.platform):
+                            if self._should_show_tool_cards(message.platform, message.message_type):
                                 stream.on_event(event)
                             if stream.degraded:
                                 try:
@@ -333,17 +353,20 @@ class ChannelManager:
                             await safe_send(f"🔔 **组件事件触发**: {task_name}")
                         elif event_type == "status":
                             await flush_pending()
-                            if self._should_show_tool_cards(message.platform):
+                            if self._should_show_thinking_plan(message.platform, message.message_type):
                                 status_content = event.get("content", "")
                                 if status_content:
                                     await safe_send(f"> 💭 **Thinking**: {status_content}")
                         elif event_type == "thinking":
-                            thinking_content = event.get("content", "Thinking...")
-                            if thinking_content:
-                                await safe_send(f"> 💭 **Thinking**: {thinking_content}")
+                            if self._should_show_thinking_plan(message.platform, message.message_type):
+                                thinking_content = event.get("content", "Thinking...")
+                                if thinking_content:
+                                    await safe_send(f"> 💭 **Thinking**: {thinking_content}")
                         elif event_type in ("thinking_start", "reasoning"):
                             pass
                         elif event_type == "thinking_streaming":
+                            if not self._should_show_thinking_plan(message.platform, message.message_type):
+                                continue
                             thinking_content = event.get("content", "")
                             if not thinking_content:
                                 continue
@@ -363,7 +386,7 @@ class ChannelManager:
                         elif event_type == "tool_start":
                             await flush_pending()
                             sent_round = ""
-                            if not self._should_show_tool_cards(message.platform):
+                            if not self._should_show_tool_cards(message.platform, message.message_type):
                                 continue
                             tool_name = event.get("tool", "unknown")
                             desc = event.get("description", "")
@@ -372,7 +395,7 @@ class ChannelManager:
                                 tool_info += f"\n> {desc}"
                             await safe_send(tool_info)
                         elif event_type == "tool_result":
-                            if not self._should_show_tool_cards(message.platform):
+                            if not self._should_show_tool_cards(message.platform, message.message_type):
                                 continue
                             tool_name = event.get("tool", "unknown")
                             result = event.get("result", {})
@@ -382,6 +405,8 @@ class ChannelManager:
                                 content_str = content_str[:300] + "..."
                             await safe_send(f"###### ✅ {tool_name} 耗时 {duration}ms")
                         elif event_type == "hybrid_phase":
+                            if not self._should_show_thinking_plan(message.platform, message.message_type):
+                                continue
                             phase_msg = event.get("message", "")
                             phase_desc = event.get("description", "")
                             if phase_msg in ("观察中", "完成"):

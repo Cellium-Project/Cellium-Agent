@@ -73,13 +73,16 @@ class ConfigTool(BaseTool):
                 "• set_qq(app_id, app_secret) — 配置 QQ 机器人\n"
                 "• set_feishu(app_id, app_secret, whitelist_users=[]) — 配置飞书\n"
                 "• enable_channel(channel_name, enabled) — 启用/禁用通道\n"
-                "• set_show_tool_cards(channel_name, enabled) — 开启/关闭通道的工具调用卡片显示\n"
+                "• set_show_tool_cards(channel_name, enabled, scope=\"group\") — 开启/关闭通道（或仅群聊）的工具调用卡片显示\n"
+                "• set_show_thinking_plan(channel_name, enabled, scope=\"group\") — 开启/关闭通道（或仅群聊）的思考与计划进度消息\n"
                 "\n"
                 "说明：\n"
                 "- name 是 llm.yaml 中 - name: 后的标识，用于 switch_model\n"
                 "- model 是实际模型名\n"
                 "- channel_name 支持: telegram, qq, feishu\n"
-                "- set_show_tool_cards 的 enabled=true 显示 🔧 工具调用卡片，false 隐藏（仅发正文与思考卡片）\n"
+                "- set_show_tool_cards 的 enabled=true 显示 🔧 工具调用卡片，false 隐藏\n"
+                "- set_show_thinking_plan 的 enabled=false 隐藏 💭 Thinking 与 [执行中] 执行计划等进度消息\n"
+                "- scope=group 时仅对群聊生效；QQ 群聊默认关闭这两类消息（避免耗尽被动回复额度），私聊默认开启\n"
             ),
         }
 
@@ -330,6 +333,7 @@ class ConfigTool(BaseTool):
                     "enabled": pc.get("enabled", False),
                     "configured": bool(self._channel_is_configured(platform, pc)),
                     "show_tool_cards": pc.get("show_tool_cards", True),
+                    "show_thinking_plan": pc.get("show_thinking_plan", True),
                 }
 
             return {"success": True, "channels": result}
@@ -484,12 +488,23 @@ class ConfigTool(BaseTool):
             "message": f"通道 {channel_name} 已{'启用' if enabled else '禁用'}。{self._channel_reload_hint(channel_name)}",
         }
 
-    def _cmd_set_show_tool_cards(self, channel_name: str = "", enabled: bool = None) -> dict:
+    def _display_scope_fields(self, platform: str, field: str, value: bool, scope: str) -> Dict[str, Any]:
+        """构造展示开关的写入字段；scope=group 时写入 channels.<platform>.group 下"""
+        if (scope or "").strip().lower() == "group":
+            from app.core.util.agent_config import get_config
+            platform_cfg = (get_config().get_section("channels") or {}).get(platform) or {}
+            group = dict(platform_cfg.get("group") or {})
+            group[field] = value
+            return {"group": group}
+        return {field: value}
+
+    def _cmd_set_show_tool_cards(self, channel_name: str = "", enabled: bool = None, scope: str = "") -> dict:
         """开启/关闭外部通道的工具调用卡片显示（热加载，无需重连通道）
 
         说明：
           - enabled=true: 显示 🔧 工具调用卡片 + ✅ 耗时
-          - enabled=false: 隐藏工具卡片，仍发送正文与思考卡片
+          - enabled=false: 隐藏工具卡片，仅发送正文
+          - scope=group: 仅作用于群聊（QQ 群聊默认关闭）
         """
         if channel_name not in ("telegram", "qq", "feishu"):
             return {
@@ -499,17 +514,64 @@ class ConfigTool(BaseTool):
         if enabled is None:
             return {"success": False, "error": "enabled 参数必填（true/false）"}
 
-        res = self._set_channel_config(channel_name, {"show_tool_cards": bool(enabled)})
+        res = self._set_channel_config(
+            channel_name, self._display_scope_fields(channel_name, "show_tool_cards", bool(enabled), scope)
+        )
         if not res.get("success"):
             return res
 
-        logger.info("[ConfigTool] set_show_tool_cards | %s | enabled=%s", channel_name, enabled)
+        logger.info(
+            "[ConfigTool] set_show_tool_cards | %s | scope=%s | enabled=%s",
+            channel_name, scope or "platform", enabled,
+        )
+        target = "群聊" if (scope or "").strip().lower() == "group" else "通道"
         return {
             "success": True,
             "platform": channel_name,
+            "scope": scope or "platform",
             "show_tool_cards": bool(enabled),
             "message": (
-                f"通道 {channel_name} 工具调用卡片已{'开启' if enabled else '关闭'}，"
-                "立即生效（无需重连）。关闭后仅发送正文与思考卡片。"
+                f"{channel_name} {target}工具调用卡片已{'开启' if enabled else '关闭'}，"
+                "立即生效（无需重连）。"
+            ),
+        }
+
+
+    def _cmd_set_show_thinking_plan(self, channel_name: str = "", enabled: bool = None, scope: str = "") -> dict:
+        """开启/关闭外部通道的思考与计划进度消息（热加载，无需重连通道）
+
+        说明：
+          - enabled=true: 显示 💭 Thinking、[执行中] 执行计划 等进度消息
+          - enabled=false: 隐藏上述进度消息，仅发送正文
+          - scope=group: 仅作用于群聊（QQ 群聊默认关闭）
+        """
+        if channel_name not in ("telegram", "qq", "feishu"):
+            return {
+                "success": False,
+                "error": f"channel_name 仅支持: telegram, qq, feishu（收到: {channel_name}）",
+            }
+        if enabled is None:
+            return {"success": False, "error": "enabled 参数必填（true/false）"}
+
+        res = self._set_channel_config(
+            channel_name,
+            self._display_scope_fields(channel_name, "show_thinking_plan", bool(enabled), scope),
+        )
+        if not res.get("success"):
+            return res
+
+        logger.info(
+            "[ConfigTool] set_show_thinking_plan | %s | scope=%s | enabled=%s",
+            channel_name, scope or "platform", enabled,
+        )
+        target = "群聊" if (scope or "").strip().lower() == "group" else "通道"
+        return {
+            "success": True,
+            "platform": channel_name,
+            "scope": scope or "platform",
+            "show_thinking_plan": bool(enabled),
+            "message": (
+                f"{channel_name} {target}思考与计划进度消息已{'开启' if enabled else '关闭'}，"
+                "立即生效（无需重连）。"
             ),
         }

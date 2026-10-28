@@ -40,22 +40,37 @@ const FieldLabel: React.FC<{ label: string; desc?: string }> = ({ label, desc })
   </div>
 );
 
-// ── 通用组件：工具调用卡片开关（即时保存，热加载生效）──────
-const ShowToolCardsToggle: React.FC<{
+// ── 通用组件：通道展示开关（即时保存，热加载生效）──────
+const DisplayToggle: React.FC<{
   config: Record<string, any>;
   onChange: (field: string, value: any) => void;
   platform: string;
-}> = ({ config, onChange, platform }) => {
+  field: 'show_tool_cards' | 'show_thinking_plan';
+  endpoint: string;
+  labelKey: string;
+  descKey?: string;
+  scope?: 'group';
+  defaultOn?: boolean;
+}> = ({ config, onChange, platform, field, endpoint, labelKey, descKey, scope, defaultOn = true }) => {
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
+  const isGroup = scope === 'group';
+  const groupCfg = isGroup && config.group && typeof config.group === 'object' ? config.group : {};
+  const raw = isGroup ? groupCfg[field] : config[field];
+  const enabled = raw === undefined ? defaultOn : raw !== false;
+
+  const apply = (value: boolean) => {
+    if (isGroup) onChange('group', { ...groupCfg, [field]: value });
+    else onChange(field, value);
+  };
 
   const toggle = async (value: boolean) => {
-    onChange('show_tool_cards', value);
+    apply(value);
     setSaving(true);
     try {
-      await postJSON(API.channelToolCards, { platform, show_tool_cards: value });
+      await postJSON(endpoint, { platform, scope, [field]: value });
     } catch {
-      onChange('show_tool_cards', !value);
+      apply(!value);
     } finally {
       setSaving(false);
     }
@@ -63,22 +78,81 @@ const ShowToolCardsToggle: React.FC<{
 
   return (
     <div className="form-group">
-      <FieldLabel label={t('settings.channel.showToolCards')} />
+      <FieldLabel label={t(labelKey)} desc={descKey ? t(descKey) : undefined} />
       <label className="toggle-switch">
         <input
           type="checkbox"
-          checked={config.show_tool_cards !== false}
+          checked={enabled}
           disabled={saving}
           onChange={e => toggle(e.target.checked)}
         />
         <span className="toggle-slider"></span>
         <span className="toggle-label">
-          {config.show_tool_cards !== false ? t('settings.channel.showToolCardsOn') : t('settings.channel.showToolCardsOff')}
+          {enabled ? t(`${labelKey}On`) : t(`${labelKey}Off`)}
         </span>
       </label>
     </div>
   );
 };
+
+const ShowToolCardsToggle: React.FC<{
+  config: Record<string, any>;
+  onChange: (field: string, value: any) => void;
+  platform: string;
+}> = props => (
+  <DisplayToggle
+    {...props}
+    field="show_tool_cards"
+    endpoint={API.channelToolCards}
+    labelKey="settings.channel.showToolCards"
+  />
+);
+
+// ── 通用组件：思考与计划进度开关 ──────
+const ShowThinkingPlanToggle: React.FC<{
+  config: Record<string, any>;
+  onChange: (field: string, value: any) => void;
+  platform: string;
+}> = props => (
+  <DisplayToggle
+    {...props}
+    field="show_thinking_plan"
+    endpoint={API.channelThinkingPlan}
+    labelKey="settings.channel.showThinkingPlan"
+    descKey="settings.channel.showThinkingPlanDesc"
+  />
+);
+
+// ── QQ 群聊专用开关（群聊默认关闭工具卡片与思考/计划进度）──────
+const QQGroupDisplayToggles: React.FC<{
+  config: Record<string, any>;
+  onChange: (field: string, value: any) => void;
+}> = ({ config, onChange }) => (
+  <>
+    <DisplayToggle
+      config={config}
+      onChange={onChange}
+      platform="qq"
+      scope="group"
+      field="show_tool_cards"
+      endpoint={API.channelToolCards}
+      labelKey="settings.channel.groupShowToolCards"
+      descKey="settings.channel.groupShowToolCardsDesc"
+      defaultOn={false}
+    />
+    <DisplayToggle
+      config={config}
+      onChange={onChange}
+      platform="qq"
+      scope="group"
+      field="show_thinking_plan"
+      endpoint={API.channelThinkingPlan}
+      labelKey="settings.channel.groupShowThinkingPlan"
+      descKey="settings.channel.groupShowThinkingPlanDesc"
+      defaultOn={false}
+    />
+  </>
+);
 
 // 通用组件：保存按钮反馈
 function useSavingState() {
@@ -794,6 +868,8 @@ const QQChannelCard: React.FC<{
         </div>
 
         <ShowToolCardsToggle config={config} onChange={updateField} platform="qq" />
+        <ShowThinkingPlanToggle config={config} onChange={updateField} platform="qq" />
+        <QQGroupDisplayToggles config={config} onChange={updateField} />
 
         <div className="form-group">
           <FieldLabel label={t('settings.channel.qq.connectionStatus')} />
@@ -943,6 +1019,7 @@ const TelegramChannelCard: React.FC<{
         </div>
 
         <ShowToolCardsToggle config={config} onChange={updateField} platform="telegram" />
+        <ShowThinkingPlanToggle config={config} onChange={updateField} platform="telegram" />
 
         <div className="form-group" style={{ gridColumn: 'span 2' }}>
           <FieldLabel label={t('settings.channel.telegram.botToken')} desc={t('settings.channel.telegram.botTokenDesc')} />
@@ -1059,6 +1136,7 @@ const FeishuChannelCard: React.FC<{
         </div>
 
         <ShowToolCardsToggle config={config} onChange={updateField} platform="feishu" />
+        <ShowThinkingPlanToggle config={config} onChange={updateField} platform="feishu" />
 
         <div className="form-group" style={{ gridColumn: 'span 2' }}>
           <FieldLabel label={t('settings.channel.feishu.appId')} />

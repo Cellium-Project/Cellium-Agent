@@ -24,6 +24,9 @@ channels:
     app_secret:               # QQ 机器人平台分配的 App Secret（BotToken）
     auto_start: true          # 是否随服务启动自动连接
     enabled: true             # 是否启用 QQ 通道
+    group:
+      show_tool_cards: false      # 群聊是否展示工具调用卡片
+      show_thinking_plan: false   # 群聊是否展示思考与计划进度
     intents: 1107296256       # 事件订阅 intents 位掩码（默认监听全部常规事件，一般无需修改）
   telegram:
     auto_start: true          # 是否随服务启动自动连接
