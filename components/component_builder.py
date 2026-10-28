@@ -1205,10 +1205,12 @@ class BackgroundMonitor(BaseCell):
         return result
 
     def _cmd_dir(self) -> Dict[str, Any]:
-        """获取组件文件夹的真实路径（pip 安装模式返回 pip 数据目录，绿色版返回项目目录）"""
+        """获取组件文件夹的真实路径（pip 安装模式返回用户数据目录，绿色版返回项目目录）"""
         from app.core.util.runtime_paths import _detect_install_mode
+        from app.core.util.components_loader import get_builtin_components_dir
 
         components_dir = get_components_dir()
+        builtin_dir = get_builtin_components_dir()
         mode, source_root = _detect_install_mode()
         exists = components_dir.exists()
 
@@ -1227,6 +1229,7 @@ class BackgroundMonitor(BaseCell):
         return {
             "success": True,
             "components_dir": str(components_dir),
+            "builtin_dir": str(builtin_dir),
             "mode": mode,
             "mode_desc": "pip 安装" if mode == "installed" else "绿色版/源码",
             "exists": exists,

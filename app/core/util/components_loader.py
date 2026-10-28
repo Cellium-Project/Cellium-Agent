@@ -243,104 +243,134 @@ def unregister_from_config(module_path: str):
 # 自动发现 — 核心扫描引擎
 # ============================================================
 
-def get_components_dir() -> pathlib.Path:
-    """获取组件扫描目录（components/）"""
+def get_builtin_components_dir() -> pathlib.Path:
+    """内置组件目录（包内，只读）"""
     from app.core.util.runtime_paths import resolve_dir
     return pathlib.Path(resolve_dir("components"))
 
 
+def get_components_dir() -> pathlib.Path:
+    """用户组件目录（可写；pip/pipx 安装指向用户数据目录）"""
+    from app.core.util.runtime_paths import resolve_dir_writable
+    return pathlib.Path(resolve_dir_writable("components"))
+
+
+def get_scan_dirs() -> List[pathlib.Path]:
+    """扫描顺序：用户目录优先，内置目录兜底；两者相同时去重"""
+    user_dir = get_components_dir()
+    builtin_dir = get_builtin_components_dir()
+    try:
+        same = user_dir.resolve() == builtin_dir.resolve()
+    except Exception:
+        same = str(user_dir) == str(builtin_dir)
+    return [user_dir] if same else [user_dir, builtin_dir]
+
+
+def _rel_to_scan_dir(file_path: pathlib.Path) -> pathlib.Path:
+    for scan_dir in get_scan_dirs():
+        try:
+            return file_path.relative_to(scan_dir)
+        except ValueError:
+            continue
+    return pathlib.Path(file_path.name)
+
 
 def discover_components() -> List[Dict[str, Any]]:
-    components_dir = get_components_dir()
     results = []
+    seen = set()
 
-    if not components_dir.exists():
-        return results
-
-    conflicts = []
-    for item in sorted(components_dir.iterdir()):
-        if item.name.startswith("_"):
+    for components_dir in get_scan_dirs():
+        if not components_dir.exists():
             continue
 
-        py_file = components_dir / f"{item.stem}.py" if item.is_dir() else None
-        if py_file and py_file.exists():
-            conflicts.append(item.stem)
+        conflicts = []
+        for item in sorted(components_dir.iterdir()):
+            if item.name.startswith("_"):
+                continue
+            if item.stem in seen:
+                logger.info(f"[Component] 同名组件已跳过: {item.name} ({components_dir})")
+                continue
+            seen.add(item.stem)
 
-        if item.is_file() and item.suffix == ".py":
-            try:
-                result = _extract_cell_classes(item)
-                if isinstance(result, tuple):
-                    classes, error_info = result
-                    if error_info:
-                        logger.warning(f"[Component] 文件有错误 {item.name}: {error_info['error_type']} - {error_info['error']}")
-                        _load_errors[str(item)] = {
-                            "file": item.name,
-                            "error": error_info['error'],
-                            "error_type": error_info['error_type'],
-                            "timestamp": time.time(),
-                        }
+            py_file = components_dir / f"{item.stem}.py" if item.is_dir() else None
+            if py_file and py_file.exists():
+                conflicts.append(item.stem)
+
+            if item.is_file() and item.suffix == ".py":
+                try:
+                    result = _extract_cell_classes(item)
+                    if isinstance(result, tuple):
+                        classes, error_info = result
+                        if error_info:
+                            logger.warning(f"[Component] 文件有错误 {item.name}: {error_info['error_type']} - {error_info['error']}")
+                            _load_errors[str(item)] = {
+                                "file": item.name,
+                                "error": error_info['error'],
+                                "error_type": error_info['error_type'],
+                                "timestamp": time.time(),
+                            }
+                        else:
+                            if str(item) in _load_errors:
+                                del _load_errors[str(item)]
                     else:
+                        classes = result
                         if str(item) in _load_errors:
                             del _load_errors[str(item)]
-                else:
-                    classes = result
-                    if str(item) in _load_errors:
-                        del _load_errors[str(item)]
 
-                for cls_info in classes:
-                    is_new = str(item) not in _loaded_files
-                    results.append({
-                        "file": str(item),
-                        "class_name": cls_info["class_name"],
-                        "module_path": cls_info["module_path"],
-                        "cls": cls_info["cls"],
-                        "is_new": is_new,
-                    })
-            except Exception as e:
-                logger.error(f"[Component] 解析文件失败 {item.name}: {e}")
+                    for cls_info in classes:
+                        is_new = str(item) not in _loaded_files
+                        results.append({
+                            "file": str(item),
+                            "class_name": cls_info["class_name"],
+                            "module_path": cls_info["module_path"],
+                            "cls": cls_info["cls"],
+                            "is_new": is_new,
+                        })
+                except Exception as e:
+                    logger.error(f"[Component] 解析文件失败 {item.name}: {e}")
 
-        elif item.is_dir() and (item / "__init__.py").exists():
-            try:
-                result = _extract_cell_classes_from_package(item)
-                if isinstance(result, tuple):
-                    classes, error_info = result
-                    if error_info:
-                        logger.warning(f"[Component] 包有错误 {item.name}: {error_info['error_type']} - {error_info['error']}")
-                        _load_errors[str(item)] = {
-                            "file": item.name,
-                            "error": error_info['error'],
-                            "error_type": error_info['error_type'],
-                            "timestamp": time.time(),
-                        }
+            elif item.is_dir() and (item / "__init__.py").exists():
+                try:
+                    result = _extract_cell_classes_from_package(item)
+                    if isinstance(result, tuple):
+                        classes, error_info = result
+                        if error_info:
+                            logger.warning(f"[Component] 包有错误 {item.name}: {error_info['error_type']} - {error_info['error']}")
+                            _load_errors[str(item)] = {
+                                "file": item.name,
+                                "error": error_info['error'],
+                                "error_type": error_info['error_type'],
+                                "timestamp": time.time(),
+                            }
+                        else:
+                            if str(item) in _load_errors:
+                                del _load_errors[str(item)]
                     else:
+                        classes = result
                         if str(item) in _load_errors:
                             del _load_errors[str(item)]
-                else:
-                    classes = result
-                    if str(item) in _load_errors:
-                        del _load_errors[str(item)]
 
-                for cls_info in classes:
-                    is_new = str(item) not in _loaded_files
-                    results.append({
-                        "file": str(item),
-                        "class_name": cls_info["class_name"],
-                        "module_path": cls_info["module_path"],
-                        "cls": cls_info["cls"],
-                        "is_new": is_new,
-                        "is_package": True,
-                    })
-            except Exception as e:
-                logger.error(f"[Component] 解析包失败 {item.name}: {e}")
+                    for cls_info in classes:
+                        is_new = str(item) not in _loaded_files
+                        results.append({
+                            "file": str(item),
+                            "class_name": cls_info["class_name"],
+                            "module_path": cls_info["module_path"],
+                            "cls": cls_info["cls"],
+                            "is_new": is_new,
+                            "is_package": True,
+                        })
+                except Exception as e:
+                    logger.error(f"[Component] 解析包失败 {item.name}: {e}")
 
-    if conflicts:
-        logger.warning(f"[Component] 包名冲突: {', '.join(conflicts)} 同时存在 .py 文件和目录，已优先使用包")
+        if conflicts:
+            logger.warning(f"[Component] 包名冲突: {', '.join(conflicts)} 同时存在 .py 文件和目录，已优先使用包 ({components_dir})")
 
     return results
 
 
 def _extract_cell_classes(file_path: pathlib.Path) -> tuple:
-    rel_path = file_path.relative_to(get_components_dir())
+    rel_path = _rel_to_scan_dir(file_path)
     module_name = f"_component_{rel_path.stem}_{hash(str(file_path)) & 0xFFFFFF}"
 
     try:
@@ -420,7 +450,7 @@ def _extract_cell_classes_ast(file_path: pathlib.Path) -> list:
     if not base_names:
         return []
 
-    rel_path = file_path.relative_to(get_components_dir())
+    rel_path = _rel_to_scan_dir(file_path)
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
@@ -594,15 +624,21 @@ def _instantiate_component(module_path: str, purge_cache: bool = False) -> tuple
         raise ValueError(f"无效的模块路径: {module_path}")
 
     module_name, class_name = parts
-    components_dir = get_components_dir()
+    scan_dirs = get_scan_dirs()
 
-    if str(components_dir) not in sys.path:
-        sys.path.insert(0, str(components_dir))
+    for scan_dir in reversed(scan_dirs):
+        if str(scan_dir) not in sys.path:
+            sys.path.insert(0, str(scan_dir))
 
     pkg_name = module_name.split(".")[-1] if "." in module_name else module_name
-    pkg_dir = components_dir / pkg_name
+    pkg_dir = None
+    for scan_dir in scan_dirs:
+        candidate = scan_dir / pkg_name
+        if candidate.is_dir() and (candidate / "__init__.py").exists():
+            pkg_dir = candidate
+            break
 
-    if pkg_dir.is_dir() and (pkg_dir / "__init__.py").exists():
+    if pkg_dir is not None:
         if purge_cache:
             for key in list(sys.modules.keys()):
                 if key == pkg_name or key.startswith(f"{pkg_name}."):
@@ -680,10 +716,16 @@ def _instantiate_component(module_path: str, purge_cache: bool = False) -> tuple
     import re
     s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
     snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
-    file_path = components_dir / f"{snake_name}.py"
 
-    if not file_path.exists():
-        raise ImportError(f"组件文件不存在: {file_path}")
+    file_path = None
+    for scan_dir in scan_dirs:
+        candidate = scan_dir / f"{snake_name}.py"
+        if candidate.exists():
+            file_path = candidate
+            break
+
+    if file_path is None:
+        raise ImportError(f"组件文件不存在: {snake_name}.py (扫描目录: {[str(d) for d in scan_dirs]})")
 
     old_file = None
     if module_name in sys.modules:

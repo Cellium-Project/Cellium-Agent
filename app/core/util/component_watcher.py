@@ -41,6 +41,7 @@ class ComponentWatcher:
 
     # 监控的目录
     COMPONENTS_DIR = None  # 延迟初始化，在 start() 时确定
+    COMPONENTS_DIRS = []  # 用户目录 + 内置目录
 
     def __init__(
         self,
@@ -96,10 +97,11 @@ class ComponentWatcher:
             logger.warning("[ComponentWatcher] 已在运行中，忽略重复启动")
             return
 
-        from app.core.util.components_loader import get_components_dir
+        from app.core.util.components_loader import get_components_dir, get_scan_dirs
 
         if self.COMPONENTS_DIR is None:
             self.COMPONENTS_DIR = get_components_dir()
+        self.COMPONENTS_DIRS = get_scan_dirs()
 
         self._stop_event.clear()
         self._running = True
@@ -199,6 +201,7 @@ class ComponentWatcher:
             "running": self.is_running,
             "interval": self._interval,
             "components_dir": str(self.COMPONENTS_DIR) if self.COMPONENTS_DIR else None,
+            "components_dirs": [str(d) for d in self.COMPONENTS_DIRS],
             "watched_files": len(self._file_snapshot),
             "loaded_components": len(get_all_cells()),
             "stats": dict(self._stats),
@@ -236,43 +239,44 @@ class ComponentWatcher:
 
         current_files = set()
 
-        if not self.COMPONENTS_DIR or not self.COMPONENTS_DIR.exists():
+        scan_dirs = self.COMPONENTS_DIRS or ([self.COMPONENTS_DIR] if self.COMPONENTS_DIR else [])
+        if not any(d.exists() for d in scan_dirs):
             return
 
-        # 遍历当前目录中的 .py 文件
-        for py_file in sorted(self.COMPONENTS_DIR.glob("*.py")):
-            # 跳过特殊文件
-            if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                continue
-            if py_file.name == "__init__.py":
-                continue
+        for scan_dir in scan_dirs:
+            for py_file in sorted(scan_dir.glob("*.py")):
+                # 跳过特殊文件
+                if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                    continue
+                if py_file.name == "__init__.py":
+                    continue
 
-            try:
-                abs_path = str(py_file.resolve())
-                current_files.add(abs_path)
-            except OSError:
-                # Windows 路径解析失败（文件被锁定或设备不存在）
-                continue
+                try:
+                    abs_path = str(py_file.resolve())
+                    current_files.add(abs_path)
+                except OSError:
+                    # Windows 路径解析失败（文件被锁定或设备不存在）
+                    continue
 
-            try:
-                current_mtime = os.path.getmtime(abs_path)
-            except OSError:
-                continue
+                try:
+                    current_mtime = os.path.getmtime(abs_path)
+                except OSError:
+                    continue
 
-            cached_mtime = self._file_snapshot.get(abs_path)
+                cached_mtime = self._file_snapshot.get(abs_path)
 
-            # 新文件 或 文件被修改
-            if cached_mtime is None or abs(current_mtime - cached_mtime) > 0.1:
-                logger.info(
-                    "[ComponentWatcher] 检测到变化: %s (new=%s, modified=%s)",
-                    py_file.name,
-                    cached_mtime is None,
-                    cached_mtime is not None,
-                )
+                # 新文件 或 文件被修改
+                if cached_mtime is None or abs(current_mtime - cached_mtime) > 0.1:
+                    logger.info(
+                        "[ComponentWatcher] 检测到变化: %s (new=%s, modified=%s)",
+                        py_file.name,
+                        cached_mtime is None,
+                        cached_mtime is not None,
+                    )
 
-                # 触发热重载
-                self.reload_now()
-                return  # reload_now 内部会更新快照，直接返回避免重复处理
+                    # 触发热重载
+                    self.reload_now()
+                    return  # reload_now 内部会更新快照，直接返回避免重复处理
 
         # 检测被删除的文件
         deleted_files = set(self._file_snapshot.keys()) - current_files
@@ -288,20 +292,22 @@ class ComponentWatcher:
         """拍摄当前目录文件状态快照"""
         self._file_snapshot.clear()
 
-        if not self.COMPONENTS_DIR or not self.COMPONENTS_DIR.exists():
-            return
+        scan_dirs = self.COMPONENTS_DIRS or ([self.COMPONENTS_DIR] if self.COMPONENTS_DIR else [])
 
-        for py_file in self.COMPONENTS_DIR.glob("*.py"):
-            if py_file.name.startswith("_") and py_file.name != "__init__.py":
+        for scan_dir in scan_dirs:
+            if not scan_dir or not scan_dir.exists():
                 continue
-            if py_file.name == "__init__.py":
-                continue
+            for py_file in scan_dir.glob("*.py"):
+                if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                    continue
+                if py_file.name == "__init__.py":
+                    continue
 
-            try:
-                abs_path = str(py_file.resolve())
-                self._file_snapshot[abs_path] = os.path.getmtime(abs_path)
-            except OSError:
-                pass
+                try:
+                    abs_path = str(py_file.resolve())
+                    self._file_snapshot[abs_path] = os.path.getmtime(abs_path)
+                except OSError:
+                    pass
 
 
 # ================================================================
