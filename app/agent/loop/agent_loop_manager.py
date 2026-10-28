@@ -193,6 +193,7 @@ class AgentLoopManager:
         from app.agent.tools.shell_tool import ShellTool
 
         max_iterations = self._global_config.get("max_iterations", float('inf'))
+        tool_timeout = self._global_config.get("tool_timeout", 900)
         flash_mode = self._global_config.get("flash_mode", False)
         enable_heuristics = self._global_config.get("enable_heuristics", True)
         enable_learning = self._global_config.get("enable_learning", True)
@@ -235,6 +236,7 @@ class AgentLoopManager:
             three_layer_memory=self._three_layer_memory,
             tools=session_tools,
             max_iterations=max_iterations,
+            tool_timeout=tool_timeout,
             session_id=session_id,
             event_bus_instance=None,
             loop_detection_threshold=3,

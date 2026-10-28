@@ -1,6 +1,7 @@
 agent:
   section: agent
   max_iterations: 20
+  tool_timeout: 900
   enforce_iteration_limit: false
   request_timeout: 300
   max_sessions: 100

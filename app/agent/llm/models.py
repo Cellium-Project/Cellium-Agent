@@ -24,6 +24,7 @@ class ChatResponse:
     finish_reason: str = ""
     usage: Dict[str, int] = field(default_factory=dict)
     reasoning_content: Optional[str] = None
+    interrupted: bool = False
 
     @property
     def has_tool_calls(self) -> bool:

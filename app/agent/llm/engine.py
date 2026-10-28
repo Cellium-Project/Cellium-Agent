@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from .models import ChatResponse, ModelInfo, ToolCall
-from .transport import OpenAICompatTransport, ContextOverflowError
+from .transport import OpenAICompatTransport, ContextOverflowError, RetryableAPIError
 from .anthropic_transport import AnthropicTransport
 from .providers import detect_provider
 from app.messaging.stream_normalizer import _THINK_PREFIXES, _think_fragment_tail
@@ -24,7 +24,16 @@ _EMPTY_RESPONSE_COUNT = 0
 
 _VERIFY_CACHE: Dict[str, bool] = {}
 
-_RETRYABLE_NET_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError, httpx.ReadTimeout)
+_RETRYABLE_NET_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    httpx.PoolTimeout,
+)
 
 
 def _net_err_detail(e: Exception) -> str:
@@ -38,19 +47,35 @@ def _net_err_detail(e: Exception) -> str:
     return " | ".join(parts)
 
 
+_STREAM_OPEN_MAX_ATTEMPTS = 3
+
+_STREAM_OPEN_BACKOFFS = (1, 2, 4)
+
+
 async def _chat_stream_with_retry(transport, params):
-    stream = transport.chat_stream(params)
-    for attempt in range(2):
+    last_error: Optional[Exception] = None
+    for attempt in range(1, _STREAM_OPEN_MAX_ATTEMPTS + 1):
+        stream = transport.chat_stream(params)
         try:
             first = await stream.__anext__()
             return stream, first
-        except _RETRYABLE_NET_ERRORS as e:
-            if attempt == 0:
-                logger.warning("[LLM] 连接类错误，自动重试 | %s", _net_err_detail(e))
-                await asyncio.sleep(0.6)
-                stream = transport.chat_stream(params)
-            else:
+        except (_RETRYABLE_NET_ERRORS + (RetryableAPIError,)) as e:
+            last_error = e
+            if attempt >= _STREAM_OPEN_MAX_ATTEMPTS:
                 raise
+            delay = 0.0
+            if isinstance(e, RetryableAPIError) and e.retry_after > 0:
+                delay = e.retry_after
+            else:
+                delay = _STREAM_OPEN_BACKOFFS[attempt - 1]
+            delay = min(delay, 30.0)
+            logger.warning(
+                "[LLM] 流式建立失败，自动重试 | 尝试=%d/%d | 延迟=%.1fs | %s",
+                attempt, _STREAM_OPEN_MAX_ATTEMPTS, delay, _net_err_detail(e),
+            )
+            await asyncio.sleep(delay)
+    if last_error is not None:
+        raise last_error
 
 
 async def _first_and_rest(stream, first):
@@ -595,96 +620,107 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         think_frag = ""
         _reasoning_start_sent = False
 
+        interrupted = False
+
         try:
             stream, first_item = await _chat_stream_with_retry(transport, params)
-            async for item in _first_and_rest(stream, first_item):
-                choices = item.get("choices") or []
-                if not choices:
-                    if item.get("usage"):
-                        usage = item.get("usage")
-                    continue
-                choice0 = choices[0] or {}
-                delta = choice0.get("delta") or {}
-                if not model_name:
-                    model_name = item.get("model", "") or model_name
+            try:
+                async for item in _first_and_rest(stream, first_item):
+                    choices = item.get("choices") or []
+                    if not choices:
+                        if item.get("usage"):
+                            usage = item.get("usage")
+                        continue
+                    choice0 = choices[0] or {}
+                    delta = choice0.get("delta") or {}
+                    if not model_name:
+                        model_name = item.get("model", "") or model_name
 
-                delta_reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                if delta_reasoning:
-                    reasoning_parts.append(delta_reasoning)
-                    chunk = {"type": "reasoning", "text": delta_reasoning}
-                    if not _reasoning_start_sent:
-                        chunk["start_time"] = time.time()
-                        _reasoning_start_sent = True
-                    yield chunk
+                    delta_reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                    if delta_reasoning:
+                        reasoning_parts.append(delta_reasoning)
+                        chunk = {"type": "reasoning", "text": delta_reasoning}
+                        if not _reasoning_start_sent:
+                            chunk["start_time"] = time.time()
+                            _reasoning_start_sent = True
+                        yield chunk
 
-                delta_content = delta.get("content")
-                if delta_content:
-                    if think_frag:
-                        delta_content = think_frag + delta_content
-                        think_frag = ""
-                    rest = delta_content
-                    while rest:
-                        if not in_think:
-                            tag = re.search(r"<think>", rest)
-                            if tag:
-                                before = rest[:tag.start()]
-                                if before:
-                                    content_parts.append(before)
-                                    yield {"type": "content", "text": before}
-                                rest = rest[tag.end():]
-                                in_think = True
-                                yield {"type": "reasoning", "text": "", "start_time": time.time()}
-                                continue
-                            frag = _think_fragment_tail(rest)
-                            if frag:
-                                keep = rest[:-len(frag)] if frag != rest else ""
-                                if keep:
-                                    content_parts.append(keep)
-                                    yield {"type": "content", "text": keep}
-                                think_frag = frag
+                    delta_content = delta.get("content")
+                    if delta_content:
+                        if think_frag:
+                            delta_content = think_frag + delta_content
+                            think_frag = ""
+                        rest = delta_content
+                        while rest:
+                            if not in_think:
+                                tag = re.search(r"<think>", rest)
+                                if tag:
+                                    before = rest[:tag.start()]
+                                    if before:
+                                        content_parts.append(before)
+                                        yield {"type": "content", "text": before}
+                                    rest = rest[tag.end():]
+                                    in_think = True
+                                    yield {"type": "reasoning", "text": "", "start_time": time.time()}
+                                    continue
+                                frag = _think_fragment_tail(rest)
+                                if frag:
+                                    keep = rest[:-len(frag)] if frag != rest else ""
+                                    if keep:
+                                        content_parts.append(keep)
+                                        yield {"type": "content", "text": keep}
+                                    think_frag = frag
+                                    rest = ""
+                                    break
+                                if rest:
+                                    content_parts.append(rest)
+                                    yield {"type": "content", "text": rest}
                                 rest = ""
-                                break
-                            if rest:
-                                content_parts.append(rest)
-                                yield {"type": "content", "text": rest}
-                            rest = ""
-                        else:
-                            close = re.search(r"</think>", rest)
-                            if close:
-                                chunk_text = rest[:close.start()]
-                                if chunk_text:
-                                    reasoning_parts.append(chunk_text)
-                                    yield {"type": "reasoning", "text": chunk_text}
-                                rest = rest[close.end():]
-                                in_think = False
-                                continue
-                            frag = _think_fragment_tail(rest)
-                            if frag:
-                                keep = rest[:-len(frag)] if frag != rest else ""
-                                if keep:
-                                    reasoning_parts.append(keep)
-                                    yield {"type": "reasoning", "text": keep}
-                                think_frag = frag
+                            else:
+                                close = re.search(r"</think>", rest)
+                                if close:
+                                    chunk_text = rest[:close.start()]
+                                    if chunk_text:
+                                        reasoning_parts.append(chunk_text)
+                                        yield {"type": "reasoning", "text": chunk_text}
+                                    rest = rest[close.end():]
+                                    in_think = False
+                                    continue
+                                frag = _think_fragment_tail(rest)
+                                if frag:
+                                    keep = rest[:-len(frag)] if frag != rest else ""
+                                    if keep:
+                                        reasoning_parts.append(keep)
+                                        yield {"type": "reasoning", "text": keep}
+                                    think_frag = frag
+                                    rest = ""
+                                    break
+                                if rest:
+                                    reasoning_parts.append(rest)
+                                    yield {"type": "reasoning", "text": rest}
                                 rest = ""
-                                break
-                            if rest:
-                                reasoning_parts.append(rest)
-                                yield {"type": "reasoning", "text": rest}
-                            rest = ""
 
-                for tc in delta.get("tool_calls") or []:
-                    idx = tc.get("index", 0)
-                    entry = tool_calls_map.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if tc.get("id"):
-                        entry["id"] = tc["id"]
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        entry["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        entry["arguments"] += fn["arguments"]
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        entry = tool_calls_map.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if tc.get("id"):
+                            entry["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            entry["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            entry["arguments"] += fn["arguments"]
 
-                if choice0.get("finish_reason"):
-                    finish_reason = choice0.get("finish_reason")
+                    if choice0.get("finish_reason"):
+                        finish_reason = choice0.get("finish_reason")
+            except (_RETRYABLE_NET_ERRORS + (RetryableAPIError,)) as e:
+                if not content_parts and not reasoning_parts and not tool_calls_map:
+                    raise
+                interrupted = True
+                logger.warning(
+                    "[LLM] 流式响应中断，保留已生成内容 | model=%s | 已保留content长度=%d | 错误: %s",
+                    self.model, len("".join(content_parts)), _net_err_detail(e),
+                )
 
             if in_think and think_frag:
                 reasoning_parts.append(think_frag)
@@ -698,7 +734,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                     try:
                         args = json.loads(entry["arguments"])
                     except Exception:
+                        if interrupted:
+                            continue
                         args = {"raw": entry["arguments"]}
+                if interrupted and not entry["name"]:
+                    continue
                 calls.append(ToolCall(id=entry["id"], name=entry["name"], arguments=args))
             if calls:
                 yield {"type": "tool_calls", "calls": calls}
@@ -707,9 +747,10 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 content="".join(content_parts),
                 tool_calls=calls,
                 model=model_name,
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or ("interrupted" if interrupted else "stop"),
                 usage=usage,
                 reasoning_content="".join(reasoning_parts) or None,
+                interrupted=interrupted,
             )
             if usage:
                 self._calibrate_from_usage(usage, req_tokens)
@@ -736,43 +777,54 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         model_name = ""
         finish_reason = ""
 
+        interrupted = False
+
         try:
             stream, first_item = await _chat_stream_with_retry(transport, params)
-            async for item in _first_and_rest(stream, first_item):
-                evt_type = item.get("type")
-                
-                if evt_type == "message_start":
-                    msg = item.get("message") or {}
-                    model_name = msg.get("model", "")
-                elif evt_type == "message_delta":
-                    finish_reason = item.get("delta", {}).get("stop_reason", "")
-                    u = item.get("usage") or {}
-                    if u:
-                        usage = {
-                            "prompt_tokens": u.get("input_tokens", 0),
-                            "completion_tokens": u.get("output_tokens", 0),
-                            "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0),
-                        }
-                elif evt_type == "content_block_start":
-                    block = item.get("content_block") or {}
-                    if block.get("type") == "tool_use":
-                        idx = item.get("index", 0)
-                        tool_calls_map.setdefault(idx, {
-                            "id": block.get("id", "") or "",
-                            "name": block.get("name", "") or "",
-                            "arguments": "",
-                        })
-                elif evt_type == "content_block_delta":
-                    delta = item.get("delta") or {}
-                    dtype = delta.get("type")
-                    if dtype == "text_delta":
-                        text = delta.get("text", "")
-                        content_parts.append(text)
-                        yield {"type": "content", "text": text}
-                    elif dtype == "thinking_delta":
-                        text = delta.get("thinking", "")
-                        reasoning_parts.append(text)
-                        yield {"type": "reasoning", "text": text}
+            try:
+                async for item in _first_and_rest(stream, first_item):
+                    evt_type = item.get("type")
+
+                    if evt_type == "message_start":
+                        msg = item.get("message") or {}
+                        model_name = msg.get("model", "")
+                    elif evt_type == "message_delta":
+                        finish_reason = item.get("delta", {}).get("stop_reason", "")
+                        u = item.get("usage") or {}
+                        if u:
+                            usage = {
+                                "prompt_tokens": u.get("input_tokens", 0),
+                                "completion_tokens": u.get("output_tokens", 0),
+                                "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0),
+                            }
+                    elif evt_type == "content_block_start":
+                        block = item.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            idx = item.get("index", 0)
+                            tool_calls_map.setdefault(idx, {
+                                "id": block.get("id", "") or "",
+                                "name": block.get("name", "") or "",
+                                "arguments": "",
+                            })
+                    elif evt_type == "content_block_delta":
+                        delta = item.get("delta") or {}
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            text = delta.get("text", "")
+                            content_parts.append(text)
+                            yield {"type": "content", "text": text}
+                        elif dtype == "thinking_delta":
+                            text = delta.get("thinking", "")
+                            reasoning_parts.append(text)
+                            yield {"type": "reasoning", "text": text}
+            except (_RETRYABLE_NET_ERRORS + (RetryableAPIError,)) as e:
+                if not content_parts and not reasoning_parts and not tool_calls_map:
+                    raise
+                interrupted = True
+                logger.warning(
+                    "[LLM] 流式响应中断，保留已生成内容 | model=%s | 已保留content长度=%d | 错误: %s",
+                    self.model, len("".join(content_parts)), _net_err_detail(e),
+                )
 
             calls = []
             for idx in sorted(tool_calls_map):
@@ -782,7 +834,11 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                     try:
                         args = json.loads(entry["arguments"])
                     except Exception:
+                        if interrupted:
+                            continue
                         args = {"raw": entry["arguments"]}
+                if interrupted and not entry["name"]:
+                    continue
                 calls.append(ToolCall(id=entry["id"], name=entry["name"], arguments=args))
             if calls:
                 yield {"type": "tool_calls", "calls": calls}
@@ -791,9 +847,10 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 content="".join(content_parts),
                 tool_calls=calls,
                 model=model_name,
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or ("interrupted" if interrupted else "stop"),
                 usage=usage,
                 reasoning_content="".join(reasoning_parts) or None,
+                interrupted=interrupted,
             )
             if usage:
                 self._calibrate_from_usage(usage, req_tokens)

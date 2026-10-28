@@ -389,6 +389,46 @@ class TestSubAgentIntegration(unittest.TestCase):
         r = call_cmd(lambda: c._cmd_parallel(tasks=json.dumps([{"name": "j1", "task": "任务"}])))
         self.assertTrue(r["success"], f"字符串 JSON 应兼容: {r}")
 
+    def test_timeout_param_cancels(self):
+        from unittest.mock import patch
+        import components.sub_agent as subagent_mod
+        c = setup_subagent(lambda: SlowEngine(5))
+        with patch.object(subagent_mod, "SUB_AGENT_TIMEOUT_SECONDS", 0.3):
+            r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "to", "task": "任务"}]))
+        self.assertFalse(r["success"])
+        self.assertTrue(r.get("timeout"))
+        self.assertIn("超时", r["error"])
+
+    def test_timeout_clamped_to_max(self):
+        from unittest.mock import patch
+        import components.sub_agent as subagent_mod
+        c = setup_subagent(lambda: SlowEngine(5))
+        with patch.object(subagent_mod, "SUB_AGENT_MAX_TIMEOUT_SECONDS", 0.3):
+            r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "clamp", "task": "任务"}], timeout=99999))
+        self.assertFalse(r["success"])
+        self.assertTrue(r.get("timeout"))
+
+    def test_invalid_timeout_falls_back_to_default(self):
+        import components.sub_agent as subagent_mod
+        c = setup_subagent(lambda: SimpleEngine("完成"))
+        r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "bad", "task": "任务"}], timeout="abc"))
+        self.assertTrue(r["success"], f"非法 timeout 应回退默认值: {r}")
+
+    def test_nan_timeout_falls_back_to_default(self):
+        from unittest.mock import patch
+        import components.sub_agent as subagent_mod
+        c = setup_subagent(lambda: SlowEngine(5))
+        with patch.object(subagent_mod, "SUB_AGENT_TIMEOUT_SECONDS", 0.3):
+            r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "nan", "task": "任务"}], timeout=float("nan")))
+        self.assertTrue(r.get("timeout"), f"NaN 应回退默认值而非报错: {r}")
+
+    def test_definition_exposes_optional_timeout(self):
+        from app.core.util.cell_tool_adapter import CellToolAdapter
+        d = CellToolAdapter(SubAgent()).definition
+        params = d["function"]["parameters"]
+        self.assertEqual(params["properties"]["timeout"]["type"], "number")
+        self.assertNotIn("timeout", params["required"])
+
 
 class TestSubAgentIsolation(unittest.TestCase):
     """异常隔离、资源清理、人格隔离"""

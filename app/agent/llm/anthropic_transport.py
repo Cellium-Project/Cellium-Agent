@@ -8,7 +8,13 @@ from typing import AsyncIterator, Dict, List, Optional
 import httpx
 
 from .models import ChatResponse, ToolCall
-from .transport import OpenAICompatTransport, ContextOverflowError, _is_overflow_body
+from .transport import (
+    OpenAICompatTransport,
+    ContextOverflowError,
+    RetryableAPIError,
+    _is_overflow_body,
+    _retry_after_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +83,8 @@ class AnthropicTransport:
             body = ""
         if resp.status_code == 400 and _is_overflow_body(body):
             raise ContextOverflowError(f"Anthropic API 返回 400 (上下文溢出): {body[:500]}")
+        if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
+            raise RetryableAPIError(resp.status_code, f"Anthropic API 返回 {resp.status_code}: {body[:500]}", _retry_after_seconds(resp))
         raise RuntimeError(f"Anthropic API 返回 {resp.status_code}: {body[:500]}")
 
     @staticmethod
@@ -93,6 +101,8 @@ class AnthropicTransport:
             body = ""
         if resp.status_code == 400 and _is_overflow_body(body):
             raise ContextOverflowError(f"Anthropic API 返回 400 (上下文溢出): {body[:500]}")
+        if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
+            raise RetryableAPIError(resp.status_code, f"Anthropic API 返回 {resp.status_code}: {body[:500]}", _retry_after_seconds(resp))
         raise RuntimeError(f"Anthropic API 返回 {resp.status_code}: {body[:500]}")
 
     @staticmethod

@@ -92,6 +92,7 @@ def _setup_containers(cfg):
 
     agent_cfg = {
         "max_iterations": max_iter,
+        "tool_timeout": cfg.get("agent.tool_timeout", 900),
         "flash_mode": cfg.get("agent.flash_mode", False),
         "enable_heuristics": True,
         "enable_learning": True,

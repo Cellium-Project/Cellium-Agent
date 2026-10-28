@@ -20,6 +20,27 @@ _OVERFLOW_PATTERNS = (
 class ContextOverflowError(RuntimeError):
     """API 返回 400 且报文表明上下文溢出"""
 
+
+class RetryableAPIError(RuntimeError):
+    def __init__(self, status_code: int, message: str = "", retry_after: float = 0.0):
+        super().__init__(message or f"LLM API 返回 {status_code}")
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(resp) -> float:
+    try:
+        raw = resp.headers.get("retry-after")
+    except Exception:
+        return 0.0
+    if not raw:
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _is_overflow_body(body: str) -> bool:
     if not body:
         return False
@@ -86,6 +107,8 @@ class OpenAICompatTransport:
             body = ""
         if resp.status_code == 400 and _is_overflow_body(body):
             raise ContextOverflowError(f"LLM API 返回 400 (上下文溢出): {body[:500]}")
+        if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
+            raise RetryableAPIError(resp.status_code, f"LLM API 返回 {resp.status_code}: {body[:500]}", _retry_after_seconds(resp))
         raise RuntimeError(f"LLM API 返回 {resp.status_code}: {body[:500]}")
 
     @staticmethod
@@ -102,6 +125,8 @@ class OpenAICompatTransport:
             body = ""
         if resp.status_code == 400 and _is_overflow_body(body):
             raise ContextOverflowError(f"LLM API 返回 400 (上下文溢出): {body[:500]}")
+        if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
+            raise RetryableAPIError(resp.status_code, f"LLM API 返回 {resp.status_code}: {body[:500]}", _retry_after_seconds(resp))
         raise RuntimeError(f"LLM API 返回 {resp.status_code}: {body[:500]}")
 
     @staticmethod

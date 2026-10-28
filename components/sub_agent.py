@@ -68,6 +68,11 @@ def _resolve_engine_clone():
     return clone
 
 
+SUB_AGENT_TIMEOUT_SECONDS = 900
+
+SUB_AGENT_MAX_TIMEOUT_SECONDS = 3600
+
+
 def _get_main_loop():
     """获取主事件循环"""
     from app.agent.di_config import _main_loop
@@ -84,7 +89,11 @@ def _run_coro_on_main_loop(coro, timeout=None):
     if loop is None:
         raise RuntimeError("无可用主事件循环，无法运行子 Agent")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 _SUBAGENTS: Dict[str, Dict[str, Any]] = {}
@@ -480,6 +489,7 @@ class SubAgent(BaseCell):
     def _cmd_parallel(
         self,
         tasks: List[Dict[str, Any]],
+        timeout: float = 0,
     ) -> Dict[str, Any]:
         """
         并行执行子 Agent（单任务传单元素数组），每个子 Agent 可独立定义工具/人格/约束
@@ -492,6 +502,8 @@ class SubAgent(BaseCell):
                    平台组件工具（weixin_files/web_search/web_fetch/telegram_files/
                    scheduler/qq_files/feishu_files）对子 Agent 禁用。
                    兼容传法: 对象数组 或 JSON 字符串数组 或 整个 JSON 字符串。
+            timeout: 本次并行的总超时秒数（可选），0 或留空用默认 900 秒；上限 3600 秒，
+                     长任务可自行调大，超时会取消子 Agent 并返回 timeout=true
 
         Returns:
             {"results": [{name, success, content, ...}...], "total": N, "success_count": M,
@@ -502,6 +514,14 @@ class SubAgent(BaseCell):
         if not specs:
             return {"success": False, "error": "tasks 必须是非空数组，每项为 {name, task, tools, persona, constraints}"}
 
+        try:
+            effective_timeout = float(timeout or 0)
+        except (TypeError, ValueError):
+            effective_timeout = 0.0
+        if not (effective_timeout > 0):
+            effective_timeout = float(SUB_AGENT_TIMEOUT_SECONDS)
+        effective_timeout = min(effective_timeout, float(SUB_AGENT_MAX_TIMEOUT_SECONDS))
+
         async def _run_all():
             return await asyncio.gather(
                 *[self._run_one(s) for s in specs],
@@ -510,7 +530,14 @@ class SubAgent(BaseCell):
 
         t0 = time.time()
         try:
-            raw_results = _run_coro_on_main_loop(_run_all())
+            raw_results = _run_coro_on_main_loop(_run_all(), timeout=effective_timeout)
+        except TimeoutError:
+            logger.warning("[SubAgent] parallel 超时 | timeout=%ss", effective_timeout)
+            return {
+                "success": False,
+                "timeout": True,
+                "error": f"子 Agent 执行超时（{effective_timeout:g} 秒），可调大 timeout（上限 {SUB_AGENT_MAX_TIMEOUT_SECONDS} 秒）或拆分任务",
+            }
         except Exception as e:
             logger.exception("[SubAgent] parallel 失败")
             return {"success": False, "error": f"{type(e).__name__}: {e}"}
@@ -634,6 +661,7 @@ class SubAgent(BaseCell):
             ],
             "_notes": [
                 "parallel: 并行执行子 Agent，tasks 为对象数组（单任务传单元素数组）",
+                "parallel 可选 timeout 参数控制本次总超时秒数（默认 900，上限 3600），长任务可自行调大",
                 "每个子 Agent 独立使用 LLM 引擎（可安全并行）",
                 "tools 传工具名数组（不传则子 Agent 无工具，只能文本回复）",
                 "tools 可选: read edit file grep glob ls shell memory",

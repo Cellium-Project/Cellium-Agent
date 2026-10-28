@@ -55,6 +55,7 @@ class AgentLoop:
         three_layer_memory=None,
         tools: Dict[str, Any] = None,
         max_iterations: int = 10,
+        tool_timeout: float = 900,
         session_id: str = "default",
         event_bus_instance=None,
         loop_detection_threshold: int = 3,
@@ -71,6 +72,7 @@ class AgentLoop:
         self.shell = shell
         self.three_layer_memory = three_layer_memory
         self.max_iterations = max_iterations
+        self._tool_timeout = float(tool_timeout or 0)
         self.session_id = session_id
         self.flash_mode = flash_mode
 
@@ -894,16 +896,17 @@ class AgentLoop:
         thread.start()
 
         stop_task = asyncio.create_task(stop_event.wait())
+        _timeout = self._tool_timeout if self._tool_timeout > 0 else None
         try:
             done, _ = await asyncio.wait(
-                {completion, stop_task}, return_when=asyncio.FIRST_COMPLETED,
+                {completion, stop_task}, timeout=_timeout, return_when=asyncio.FIRST_COMPLETED,
             )
             if completion not in done:
-                if (stop_task in done or self._loop_controller.is_stop_requested) and not result_box.get("done"):
-                    tid = thread_ref.get("ident")
-                    if tid:
-                        self._kill_shell_subprocesses(tid)
-                        self._force_interrupt_thread(tid)
+                stopped = (stop_task in done) or self._loop_controller.is_stop_requested
+                tid = thread_ref.get("ident")
+                if tid and not result_box.get("done"):
+                    self._kill_shell_subprocesses(tid)
+                    self._force_interrupt_thread(tid)
                     for _ in range(10):
                         if not thread.is_alive():
                             break
@@ -911,7 +914,11 @@ class AgentLoop:
                         if thread.is_alive() and tid:
                             self._kill_shell_subprocesses(tid)
                             self._force_interrupt_thread(tid)
+                if stopped or result_box.get("done"):
                     return {"_stopped_by_user": True, "error": "stopped_by_user"}
+                tool_name = getattr(tool_call, "name", "") or (tool_call.get("name", "") if isinstance(tool_call, dict) else "")
+                logger.warning("[AgentLoop] 工具执行超时 | tool=%s | timeout=%ss", tool_name, self._tool_timeout)
+                return {"success": False, "timeout": True, "error": f"工具执行超时（{self._tool_timeout:g} 秒）"}
         finally:
             if not stop_task.done():
                 stop_task.cancel()
@@ -1535,78 +1542,38 @@ class AgentLoop:
                 _stream_task = asyncio.create_task(_collect_stream())
                 _stop_emitted = False
 
-                while True:
-                    if self._loop_controller.is_stop_requested:
-                        if not _stop_emitted:
-                            _stop_emitted = True
-                            _stream_task.cancel()
-                            try:
-                                await _stream_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                            async for event in self._emit_stop_and_finalize(
-                                stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
-                                user_input=user_input,
-                                effective_session=effective_session,
-                                effective_memory=effective_memory,
-                                tool_traces=tool_traces,
-                                iteration=iteration,
-                                start_time=start_time,
-                                final_response_content=self._get_last_assistant_message(effective_memory),
-                            ):
-                                yield event
-                        return
-                    # 阻塞等待新 chunk，期间可被超时打断以周期性检查停止请求
-                    try:
-                        chunk = await asyncio.wait_for(
-                            _stream_queue.get(), timeout=0.1
-                        )
-                    except asyncio.TimeoutError:
-                        # 流已结束且队列空：退出（无 chunk 残留的异常/完成场景）
-                        if _stream_finished.is_set() and _stream_queue.empty():
-                            break
-                        continue
-                    ctype = chunk.get("type")
-                    if ctype == "content":
-                        _stream_content.append(chunk.get("text", ""))
-                        yield {"type": "content_chunk", "content": chunk.get("text", "")}
-                    elif ctype == "reasoning":
-                        if _stream_reasoning_start is None:
-                            _stream_reasoning_start = chunk.get("start_time") or time.time()
-                        _stream_reasoning_end = time.time()
-                        _stream_reasoning.append(chunk.get("text", ""))
-                        yield {"type": "reasoning", "content": chunk.get("text", ""), "start_time": _stream_reasoning_start}
-                    elif ctype == "tool_calls":
-                        _stream_tool_calls = chunk.get("calls", [])
-                    elif ctype == "done":
-                        response = chunk.get("response")
-                    # 每次处理 chunk 后立即检查停止，避免被持续流入的 chunk 饿死
-                    if self._loop_controller.is_stop_requested:
-                        if not _stop_emitted:
-                            _stop_emitted = True
-                            _stream_task.cancel()
-                            try:
-                                await _stream_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                            async for event in self._emit_stop_and_finalize(
-                                stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
-                                user_input=user_input,
-                                effective_session=effective_session,
-                                effective_memory=effective_memory,
-                                tool_traces=tool_traces,
-                                iteration=iteration,
-                                start_time=start_time,
-                                final_response_content=self._get_last_assistant_message(effective_memory),
-                            ):
-                                yield event
-                        return
-                    if _stream_finished.is_set() and _stream_queue.empty():
-                        break
-                # 流式结束后清空队列残留（避免一次性 fallback 的 done 未被消费）
                 try:
                     while True:
-                        chunk = _stream_queue.get_nowait()
+                        if self._loop_controller.is_stop_requested:
+                            if not _stop_emitted:
+                                _stop_emitted = True
+                                _stream_task.cancel()
+                                try:
+                                    await _stream_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                async for event in self._emit_stop_and_finalize(
+                                    stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
+                                    user_input=user_input,
+                                    effective_session=effective_session,
+                                    effective_memory=effective_memory,
+                                    tool_traces=tool_traces,
+                                    iteration=iteration,
+                                    start_time=start_time,
+                                    final_response_content=self._get_last_assistant_message(effective_memory),
+                                ):
+                                    yield event
+                            return
+                        # 阻塞等待新 chunk，期间可被超时打断以周期性检查停止请求
+                        try:
+                            chunk = await asyncio.wait_for(
+                                _stream_queue.get(), timeout=0.1
+                            )
+                        except asyncio.TimeoutError:
+                            # 流已结束且队列空：退出（无 chunk 残留的异常/完成场景）
+                            if _stream_finished.is_set() and _stream_queue.empty():
+                                break
+                            continue
                         ctype = chunk.get("type")
                         if ctype == "content":
                             _stream_content.append(chunk.get("text", ""))
@@ -1621,10 +1588,58 @@ class AgentLoop:
                             _stream_tool_calls = chunk.get("calls", [])
                         elif ctype == "done":
                             response = chunk.get("response")
-                except asyncio.QueueEmpty:
-                    pass
-                if _stream_error is not None:
-                    raise _stream_error
+                        # 每次处理 chunk 后立即检查停止，避免被持续流入的 chunk 饿死
+                        if self._loop_controller.is_stop_requested:
+                            if not _stop_emitted:
+                                _stop_emitted = True
+                                _stream_task.cancel()
+                                try:
+                                    await _stream_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                async for event in self._emit_stop_and_finalize(
+                                    stop_event={"type": "stopped", "reason": "user_cancelled", "iteration": iteration},
+                                    user_input=user_input,
+                                    effective_session=effective_session,
+                                    effective_memory=effective_memory,
+                                    tool_traces=tool_traces,
+                                    iteration=iteration,
+                                    start_time=start_time,
+                                    final_response_content=self._get_last_assistant_message(effective_memory),
+                                ):
+                                    yield event
+                            return
+                        if _stream_finished.is_set() and _stream_queue.empty():
+                            break
+                    # 流式结束后清空队列残留（避免一次性 fallback 的 done 未被消费）
+                    try:
+                        while True:
+                            chunk = _stream_queue.get_nowait()
+                            ctype = chunk.get("type")
+                            if ctype == "content":
+                                _stream_content.append(chunk.get("text", ""))
+                                yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                            elif ctype == "reasoning":
+                                if _stream_reasoning_start is None:
+                                    _stream_reasoning_start = chunk.get("start_time") or time.time()
+                                _stream_reasoning_end = time.time()
+                                _stream_reasoning.append(chunk.get("text", ""))
+                                yield {"type": "reasoning", "content": chunk.get("text", ""), "start_time": _stream_reasoning_start}
+                            elif ctype == "tool_calls":
+                                _stream_tool_calls = chunk.get("calls", [])
+                            elif ctype == "done":
+                                response = chunk.get("response")
+                    except asyncio.QueueEmpty:
+                        pass
+                    if _stream_error is not None:
+                        raise _stream_error
+                finally:
+                    if not _stream_finished.is_set() and not _stream_task.done():
+                        _stream_task.cancel()
+                        try:
+                            await _stream_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
                 if response is None:
                     from app.agent.llm.models import ChatResponse
@@ -1634,6 +1649,10 @@ class AgentLoop:
                         reasoning_content="".join(_stream_reasoning) or None,
                         finish_reason="stop",
                     )
+
+                if getattr(response, "interrupted", False):
+                    logger.warning("[AgentLoop] LLM 流式响应中断，已保留部分内容 | iteration=%d", iteration)
+                    yield {"type": "status", "content": "网络中断，已保留已生成内容"}
 
                 logger.info("[AgentLoop] 迭代 %d: LLM 返回 (tool_calls=%d, content长度=%d)",
                            iteration, len(response.tool_calls) if response.tool_calls else 0, len(response.content or ""))
