@@ -110,6 +110,7 @@ class ComponentToolRegistry:
             with self._lock:
                 existing = self._registry.get(tool_name)
             if existing is not None and existing.cell is cell:
+                existing.refresh_sandbox_mode()
                 return existing
 
         from app.core.util.component_auditor import get_auditor

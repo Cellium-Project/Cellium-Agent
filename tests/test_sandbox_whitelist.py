@@ -74,6 +74,14 @@ class TestWhitelistFile(unittest.TestCase):
         cta.save_sandbox_whitelist({"a_comp", "b_comp"})
         self.assertEqual(cta.load_sandbox_whitelist(), {"a_comp", "b_comp"})
 
+    def test_save_creates_missing_dir(self):
+        """首次添加时父目录不存在也要能自动建出来"""
+        nested = os.path.join(self.wl._dir.name, "x", "y", "sandbox.yaml")
+        cta._sandbox_whitelist_cache = {"path": nested}
+        cta.save_sandbox_whitelist({"first_comp"})
+        self.assertTrue(os.path.exists(nested))
+        self.assertEqual(cta.load_sandbox_whitelist(), {"first_comp"})
+
     def test_dedup_and_blank_filtered(self):
         cta.save_sandbox_whitelist({"dup", "dup", "  ", "", None})
         self.assertEqual(cta.load_sandbox_whitelist(), {"dup"})
@@ -170,6 +178,32 @@ class TestAdapterSandboxMode(unittest.TestCase):
     def test_global_switch_off(self):
         cta.SANDBOX_ENABLED = False
         self.assertFalse(cta.CellToolAdapter(_ProbeCell("random_comp"))._use_sandbox)
+
+    def test_refresh_sandbox_mode(self):
+        """热重载复用同一 adapter 时，必须按新白名单重算"""
+        a = cta.CellToolAdapter(_ProbeCell("random_comp"))
+        self.assertTrue(a._use_sandbox)
+        cta.save_sandbox_whitelist({"random_comp"})
+        self.assertFalse(a.refresh_sandbox_mode())
+        cta.save_sandbox_whitelist(set())
+        self.assertTrue(a.refresh_sandbox_mode())
+
+    def test_refresh_keeps_explicit_flag(self):
+        a = cta.CellToolAdapter(_ProbeCell("random_comp"), use_sandbox=False)
+        cta.save_sandbox_whitelist(set())
+        self.assertFalse(a.refresh_sandbox_mode())
+
+    def test_registry_reuses_adapter_but_refreshes(self):
+        from app.core.util.component_tool_registry import ComponentToolRegistry
+
+        reg = ComponentToolRegistry()
+        cell = _ProbeCell("zz_refresh")
+        a1 = reg.register(cell)
+        self.assertTrue(a1._use_sandbox)
+        cta.save_sandbox_whitelist({"zz_refresh"})
+        a2 = reg.register(cell)
+        self.assertIs(a1, a2)
+        self.assertFalse(a1._use_sandbox)
 
 
 class TestSandboxCommands(unittest.TestCase):
@@ -268,6 +302,31 @@ class TestSandboxCommands(unittest.TestCase):
         self.assertTrue(r["success"])
         self.assertEqual(r["custom"], ["demo_b"])
         self.assertEqual(cta.load_sandbox_whitelist(), {"demo_b"})
+
+    def test_add_name_case_insensitive(self):
+        """LLM 传小写，白名单必须落原始 cell_name"""
+        self.mod.get_all_cells = lambda: {"demo_a": _FakeCell("Demo_A")}
+        r = self.builder._cmd_sandbox_add(name="demo_a", auto_reload=False)
+        self.assertTrue(r["success"])
+        self.assertEqual(r["resolved_name"], "Demo_A")
+        self.assertEqual(cta.load_sandbox_whitelist(), {"Demo_A"})
+        self.assertFalse(cta.CellToolAdapter(_ProbeCell("Demo_A"))._use_sandbox)
+
+    def test_add_sanitized_tool_name_resolved(self):
+        """LLM 看到的是 sanitize 后的工具名，也要能还原成原始名"""
+        self.mod.get_all_cells = lambda: {"demo.probe": _FakeCell("Demo.Probe")}
+        r = self.builder._cmd_sandbox_add(name="Demo_Probe", auto_reload=False)
+        self.assertTrue(r["success"])
+        self.assertEqual(r["resolved_name"], "Demo.Probe")
+        self.assertEqual(cta.load_sandbox_whitelist(), {"Demo.Probe"})
+        self.assertFalse(cta.CellToolAdapter(_ProbeCell("Demo.Probe"))._use_sandbox)
+
+    def test_remove_name_case_insensitive(self):
+        cta.save_sandbox_whitelist({"Demo_B"})
+        self.mod.get_all_cells = lambda: {"demo_b": _FakeCell("Demo_B")}
+        r = self.builder._cmd_sandbox_remove(name="demo_b", auto_reload=False)
+        self.assertTrue(r["success"])
+        self.assertEqual(cta.load_sandbox_whitelist(), set())
 
 
 if __name__ == "__main__":

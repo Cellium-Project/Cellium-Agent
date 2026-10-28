@@ -108,6 +108,9 @@ def save_sandbox_whitelist(names) -> str:
 
     path = get_sandbox_whitelist_path()
     payload = sorted({n.strip() for n in names if isinstance(n, str) and n.strip()})
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("# 免沙箱白名单 — 这里的组件在主进程直接执行，不进沙箱子进程\n")
         f.write("# 由 component.sandbox_add / component.sandbox_remove 维护，也可手动编辑\n")
@@ -173,6 +176,7 @@ class CellToolAdapter(BaseTool):
             else:
                 self.description = f"组件 [{self.name}]"
 
+        self._sandbox_override = use_sandbox
         self._use_sandbox = self._determine_sandbox_mode(use_sandbox)
         
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -195,6 +199,11 @@ class CellToolAdapter(BaseTool):
 
         # 自动判断：白名单组件不使用沙箱
         return self.name not in get_exempted_names()
+
+    def refresh_sandbox_mode(self) -> bool:
+        """白名单变更后重算沙箱模式（registry 同步时调用）"""
+        self._use_sandbox = self._determine_sandbox_mode(self._sandbox_override)
+        return self._use_sandbox
 
     @property
     def cell(self) -> ICell:

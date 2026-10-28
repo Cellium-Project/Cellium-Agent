@@ -27,6 +27,25 @@ from app.core.util.components_loader import (
 )
 
 
+def _resolve_cell_name(raw_name: str) -> str:
+    from app.agent.tools.base_tool import sanitize_tool_name
+
+    raw = (raw_name or "").strip()
+    if not raw:
+        return ""
+    names = [n for n in (getattr(c, "cell_name", "") for c in get_all_cells().values()) if n]
+    if raw in names:
+        return raw
+    low = raw.lower()
+    for n in names:
+        if n.lower() == low:
+            return n
+    for n in names:
+        if sanitize_tool_name(n).lower() == low:
+            return n
+    return raw
+
+
 class ComponentBuilder(BaseCell):
     """组件生成器 — 创建、管理、查看 Cellium 组件"""
 
@@ -1290,7 +1309,7 @@ class BackgroundMonitor(BaseCell):
             save_sandbox_whitelist,
         )
 
-        target = (name or "").strip()
+        target = _resolve_cell_name(name)
         if not target:
             return {"success": False, "error": "缺少参数 name（组件名）"}
 
@@ -1319,6 +1338,7 @@ class BackgroundMonitor(BaseCell):
         result: Dict[str, Any] = {
             "success": True,
             "message": f"{target} 已加入免沙箱白名单",
+            "resolved_name": target,
             "whitelist_file": path,
             "custom": sorted(custom),
             "reloaded": False,
@@ -1352,7 +1372,7 @@ class BackgroundMonitor(BaseCell):
             save_sandbox_whitelist,
         )
 
-        target = (name or "").strip()
+        target = _resolve_cell_name(name)
         if not target:
             return {"success": False, "error": "缺少参数 name（组件名）"}
 
@@ -1364,7 +1384,10 @@ class BackgroundMonitor(BaseCell):
 
         custom = load_sandbox_whitelist()
         if target not in custom:
-            return {"success": True, "message": f"{target} 不在自定义白名单中", "custom": sorted(custom)}
+            hit = next((n for n in custom if n.lower() == target.lower()), "")
+            if not hit:
+                return {"success": True, "message": f"{target} 不在自定义白名单中", "custom": sorted(custom)}
+            target = hit
 
         custom.discard(target)
         path = save_sandbox_whitelist(custom)

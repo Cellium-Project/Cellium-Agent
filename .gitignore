@@ -47,6 +47,7 @@ logs/
 
 # 用户数据（个性化数据，每个用户独立）
 data/
+config/sandbox.yaml
 
 # 缓存文件
 workspace/.cache/
