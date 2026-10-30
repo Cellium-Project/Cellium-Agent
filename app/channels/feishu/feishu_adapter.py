@@ -30,6 +30,7 @@ def _check_lark():
 
 class FeishuAdapter(ChannelAdapter):
     """飞书 Bot 适配器"""
+    max_text_chunk = 6000
     
     def __init__(self, config: FeishuChannelConfig = None, **kwargs):
         if not _check_lark():

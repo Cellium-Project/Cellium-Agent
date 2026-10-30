@@ -248,8 +248,8 @@ class ChannelManager:
             if not content:
                 return
             from app.channels.base import split_markdown
-            max_len = 24000 if message.platform == "telegram" else 1000
-            chunks = split_markdown(content, max_len=max_len)
+            max_len = getattr(adapter, "max_text_chunk", None) or 1000
+            chunks = split_markdown(content, max_len=int(max_len))
             for chunk in chunks:
                 try:
                     send_kwargs = {

@@ -17,7 +17,14 @@ from urllib.parse import urlparse
 import httpx
 import websockets
 
-from ..base import ChannelAdapter, UnifiedMessage
+from ..base import ChannelAdapter, UnifiedMessage, split_markdown
+from .passive_window import (
+    EXPIRED_CODES,
+    MARKDOWN_FAIL_CODES,
+    PASSIVE_MAX_REPLIES,
+    RESERVE_SLOTS,
+    PassiveWindowTracker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +68,7 @@ PART_SIZE = 8 * 1024 * 1024
 MD5_10M_SLICE_SIZE = 10002432
 
 # 同一个 msg_id 的被动回复次数上限（超过后平台返回 40034128）
-MAX_PASSIVE_REPLIES = 5
+MAX_PASSIVE_REPLIES = PASSIVE_MAX_REPLIES
 
 # 被动回复相关错误码 -> 可操作的中文提示
 PASSIVE_REPLY_ERROR_HINTS: Dict[int, str] = {
@@ -245,6 +252,7 @@ def _friendly_send_error(resp: "httpx.Response") -> str:
 
 class QQAdapter(ChannelAdapter):
     platform_name = "qq"
+    max_text_chunk = 4500
 
     def __init__(self, app_id: str = "", app_secret: str = "", intents: int = 1107296256):
         self.app_id = app_id
@@ -274,6 +282,8 @@ class QQAdapter(ChannelAdapter):
         self._token_expires_at: float = 0
         self._md_unavailable: bool = False
         self._msg_seq_counters: Dict[str, int] = {}
+        self._passive = PassiveWindowTracker()
+        self._maintenance_task: Optional[asyncio.Task] = None
 
         self._connect_client: Optional["QQConnectClient"] = None
 
@@ -434,13 +444,83 @@ class QQAdapter(ChannelAdapter):
                 if message_type == "c2c":
                     return await self._send_c2c_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
                 elif message_type == "group":
-                    return await self._send_group_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
+                    return await self._send_group_with_windows(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
                 elif message_type == "guild":
                     return await self._send_guild_message(token, target_id, guild_id, content, kwargs.get("msg_id", ""), is_markdown)
             except Exception as e:
                 import traceback
                 logger.error(f"[QQAdapter] Send error: {e}\n{traceback.format_exc()}")
         return False
+
+    async def _send_group_with_windows(
+        self,
+        token: str,
+        group_id: str,
+        content: str,
+        msg_id: str,
+        is_markdown: bool = False,
+    ) -> bool:
+        self._passive.purge()
+        if self._passive.has_pending(group_id) and self._passive.remaining(group_id) > 0:
+            msg_id = await self._flush_pending(group_id, self._passive.resolve(group_id, msg_id), token)
+        msg_id = self._passive.resolve(group_id, msg_id)
+        if self._passive.queue_mode_active(group_id) or not msg_id:
+            if (content or "").strip():
+                self._passive.enqueue(group_id, content)
+                logger.warning(
+                    f"[QQAdapter] 群 {group_id} 暂无可用被动回复窗口，内容已入队等待下一条消息补发"
+                )
+            return False
+        try:
+            ok, err_code = await self._send_group_message(token, group_id, content, msg_id, is_markdown)
+        except Exception as e:
+            logger.error(f"[QQAdapter] 群 {group_id} 发送异常: {e}")
+            if (content or "").strip():
+                self._passive.enqueue(group_id, content)
+            return False
+        if ok:
+            self._passive.mark_used(msg_id)
+            return True
+        if err_code in EXPIRED_CODES:
+            self._passive.mark_exhausted(msg_id)
+            if (content or "").strip():
+                self._passive.enqueue(group_id, content)
+                logger.warning(
+                    f"[QQAdapter] 群 {group_id} 被动回复窗口失效（err_code={err_code}），内容已入队等待补发"
+                )
+        return False
+
+    async def _flush_pending(self, group_id: str, msg_id: str, token: str) -> str:
+        if not self._passive.has_pending(group_id):
+            return msg_id
+        text = "".join(self._passive.peek_pending(group_id))
+        self._passive.clear_pending(group_id)
+        if not text.strip():
+            return msg_id
+        chunks = split_markdown(text, max_len=4500)
+        budget = max(0, self._passive.remaining(group_id, msg_id) - RESERVE_SLOTS)
+        sent = 0
+        current = msg_id
+        try:
+            for chunk in chunks:
+                if sent >= budget or not current:
+                    break
+                ok, err_code = await self._send_group_message(token, group_id, chunk, current, True)
+                if ok:
+                    self._passive.mark_used(current)
+                    sent += 1
+                    continue
+                if err_code in EXPIRED_CODES:
+                    self._passive.mark_exhausted(current)
+                    current = ""
+                break
+        except Exception as e:
+            logger.error(f"[QQAdapter] 补发排队内容失败: {e}")
+        leftover = chunks[sent:]
+        if leftover:
+            self._passive.replace_pending(group_id, leftover)
+            self._passive.set_queue_mode(group_id)
+        return current
 
     def _log_send_error(self, resp: "httpx.Response", scene: str, payload: Dict[str, Any] = None):
         try:
@@ -502,13 +582,13 @@ class QQAdapter(ChannelAdapter):
             logger.debug(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}, markdown={is_markdown}")
             return True
 
-    async def _send_group_message(self, token: str, group_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
+    async def _send_group_message(self, token: str, group_id: str, content: str, msg_id: str, is_markdown: bool = False) -> Tuple[bool, Optional[int]]:
         url = f"https://api.sgroup.qq.com/v2/groups/{group_id}/messages"
         headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
         msg_seq = self._next_msg_seq(msg_id)
         if not (content or "").strip():
             logger.warning("[QQAdapter] Group 空内容，跳过发送")
-            return False
+            return False, None
         if len(content) > 4500:
             content = content[:4500] + "\n…"
         if is_markdown and self._md_unavailable:
@@ -519,12 +599,17 @@ class QQAdapter(ChannelAdapter):
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
                 self._log_send_error(resp, "Group", payload)
-                if is_markdown:
+                err_code = None
+                try:
+                    err_code = int(resp.json().get("err_code"))
+                except Exception:
+                    err_code = None
+                if is_markdown and err_code in MARKDOWN_FAIL_CODES:
                     self._md_unavailable = True
                     return await self._send_group_message(token, group_id, content, msg_id, False)
-                return False
+                return False, err_code
             logger.debug(f"[QQAdapter] Group sent: markdown={is_markdown}")
-            return True
+            return True, None
 
     async def _send_guild_message(self, token: str, channel_id: str, guild_id: str, content: str, msg_id: str, is_markdown: bool = False) -> bool:
         url = f"https://api.sgroup.qq.com/channels/{channel_id}/messages"
@@ -597,6 +682,7 @@ class QQAdapter(ChannelAdapter):
             atts = self._render_attachments(d.get("attachments") or [])
             if atts:
                 content = f"{content}\n{atts}" if content else atts
+            self._passive.note_inbound(d.get("group_openid", ""), d.get("id", ""))
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("author", {}).get("member_openid", ""),
@@ -652,6 +738,7 @@ class QQAdapter(ChannelAdapter):
             content = f"[用户发送了一个文件]\n文件名: {filename}\n大小: {size} bytes"
             if url:
                 content += f"\n下载链接: {url}"
+            self._passive.note_inbound(d.get("group_openid", ""), d.get("id", ""))
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("user_openid", ""),
@@ -727,6 +814,19 @@ class QQAdapter(ChannelAdapter):
                 except Exception:
                     break
 
+    def _ensure_maintenance(self):
+        if self._maintenance_task and not self._maintenance_task.done():
+            return
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+
+    async def _maintenance_loop(self):
+        while self._running:
+            try:
+                self._passive.purge()
+            except Exception as e:
+                logger.error(f"[QQAdapter] 被动回复窗口维护失败: {e}")
+            await asyncio.sleep(60)
+
     async def connect(self):
         if self._running:
             return
@@ -750,6 +850,7 @@ class QQAdapter(ChannelAdapter):
             while self._running:
                 await asyncio.sleep(0.1)
             self._running = True
+            self._ensure_maintenance()
             while True:
                 if not self._running or self._shutting_down:
                     break
@@ -876,6 +977,9 @@ class QQAdapter(ChannelAdapter):
             await self._ws.close()
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._maintenance_task:
+            self._maintenance_task.cancel()
+            self._maintenance_task = None
         if self._connect_client:
             await self._connect_client.close()
             self._connect_client = None
@@ -1301,23 +1405,33 @@ class QQAdapter(ChannelAdapter):
         if not target_id:
             return {"success": False, "error": "缺少 target_id（群 OpenID 或用户 OpenID）"}
 
-        # scheduler_/component_ 是内部合成的 ID，不是平台消息 ID，不能用于被动回复
-        if msg_id and msg_id.startswith(("scheduler_", "component_")):
-            logger.info("[QQAdapter] 合成 msg_id 非平台消息 ID，改按主动消息发送")
-            msg_id = None
+        if is_group:
+            self._passive.purge()
+            preferred = ""
+            if msg_id and not msg_id.startswith(("scheduler_", "component_")):
+                preferred = msg_id
+            msg_id = self._passive.resolve(target_id, preferred)
+            if self._passive.remaining(target_id, msg_id) <= 0:
+                return {
+                    "success": False,
+                    "error": "群聊暂无可用被动回复窗口（5 分钟内未收到新消息或次数已用尽），请重新发送消息后再试",
+                }
+        else:
+            if msg_id and msg_id.startswith(("scheduler_", "component_")):
+                logger.info("[QQAdapter] 合成 msg_id 非平台消息 ID，改按主动消息发送")
+                msg_id = None
 
-        # 平台限制：同一 msg_id 最多被动回复 5 条，超限必然失败，提前拦截避免白跑上传
-        if msg_id and self._msg_seq_counters.get(msg_id, 0) >= MAX_PASSIVE_REPLIES:
-            logger.warning(
-                f"[QQAdapter] msg_id {msg_id[:12]}... 被动回复已达 {MAX_PASSIVE_REPLIES} 条上限，跳过发送"
-            )
-            return {
-                "success": False,
-                "error": (
-                    f"该消息的被动回复次数已用尽（同一 msg_id 最多 {MAX_PASSIVE_REPLIES} 条），"
-                    "请在 QQ 中重新发送一条消息后重试"
-                ),
-            }
+            if msg_id and self._msg_seq_counters.get(msg_id, 0) >= MAX_PASSIVE_REPLIES:
+                logger.warning(
+                    f"[QQAdapter] msg_id {msg_id[:12]}... 被动回复已达 {MAX_PASSIVE_REPLIES} 条上限，跳过发送"
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"该消息的被动回复次数已用尽（同一 msg_id 最多 {MAX_PASSIVE_REPLIES} 条），"
+                        "请在 QQ 中重新发送一条消息后重试"
+                    ),
+                }
 
         upload_result = await self.upload_media(
             target_id, file_path, file_type=file_type, is_group=is_group
@@ -1367,11 +1481,27 @@ class QQAdapter(ChannelAdapter):
             if resp.status_code != 200:
                 scene = f"{type_name}({'群' if is_group else '单聊'})"
                 self._log_send_error(resp, scene, payload)
+                err_code = None
+                try:
+                    err_code = int(resp.json().get("err_code"))
+                except Exception:
+                    err_code = None
+                if is_group and err_code in EXPIRED_CODES:
+                    self._passive.mark_exhausted(msg_id)
+                    logger.warning(
+                        f"[QQAdapter] 群 {target_id} 被动回复窗口失效（err_code={err_code}），已标记该 msg_id 不可用"
+                    )
+                    return {
+                        "success": False,
+                        "error": "该消息的被动回复已超时或次数用尽（同一 msg_id 最多 5 条），请在 QQ 中重新发送一条消息后再试"
+                    }
                 return {
                     "success": False,
                     "error": f"发送失败: {_friendly_send_error(resp)}"
                 }
 
+            if is_group and msg_id:
+                self._passive.mark_used(msg_id)
             data = resp.json() if resp.content else {}
             logger.info(f"[QQAdapter] {type_name}消息发送成功: id={data.get('id', 'unknown')}")
             return {

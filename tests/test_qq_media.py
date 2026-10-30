@@ -211,7 +211,9 @@ class TestSendMediaPayload(QQMediaTestBase):
         server = FakeQQServer()
         adapter = _make_adapter()
         path = self.make_file("pic.png", 64)
-        adapter._msg_seq_counters["MSG_FULL"] = qq_mod.MAX_PASSIVE_REPLIES
+        adapter._passive.note_inbound("GROUP_X", "MSG_FULL")
+        for _ in range(qq_mod.MAX_PASSIVE_REPLIES):
+            adapter._passive.mark_used("MSG_FULL")
 
         with _patch_async_client(server):
             result = asyncio.run(adapter.send_media_message(
@@ -219,7 +221,7 @@ class TestSendMediaPayload(QQMediaTestBase):
             ))
 
         self.assertFalse(result["success"])
-        self.assertIn("被动回复次数已用尽", result["error"])
+        self.assertIn("暂无可用被动回复窗口", result["error"])
         self.assertEqual(server.requests, [], "额度用尽时不应再发起上传/发送请求")
 
     def test_passive_expired_error_is_translated(self):
@@ -231,6 +233,7 @@ class TestSendMediaPayload(QQMediaTestBase):
             "message": "回复消息失败，被动回复时间或者次数超过限制",
         }
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_X", "MSG_OLD")
         path = self.make_file("pic.png", 64)
 
         with _patch_async_client(server):
@@ -242,9 +245,10 @@ class TestSendMediaPayload(QQMediaTestBase):
         self.assertIn("被动回复", result["error"])
         self.assertIn("重新发送一条消息", result["error"])
 
-    def test_synthetic_msg_id_sent_as_active_message(self):
+    def test_synthetic_msg_id_resolves_to_window(self):
         server = FakeQQServer()
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_X", "MSG_WIN")
         path = self.make_file("pic.png", 64)
 
         with _patch_async_client(server):
@@ -253,11 +257,12 @@ class TestSendMediaPayload(QQMediaTestBase):
             ))
 
         self.assertTrue(result["success"], result)
-        self.assertNotIn("msg_id", server.message_payloads[0])
+        self.assertEqual(server.message_payloads[0]["msg_id"], "MSG_WIN")
 
     def test_group_file_uses_msg_seq_and_msg_id(self):
         server = FakeQQServer()
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_OPENID", "MSG_ABC")
         path = self.make_file("report.txt", 1024)
 
         with _patch_async_client(server):
@@ -305,6 +310,7 @@ class TestSendMediaPayload(QQMediaTestBase):
     def test_msg_seq_increments_per_msg_id(self):
         server = FakeQQServer()
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_1", "SAME_MSG")
         path = self.make_file("a.txt", 100)
 
         with _patch_async_client(server):
@@ -323,7 +329,7 @@ class TestSendMediaPayload(QQMediaTestBase):
 
         with _patch_async_client(server):
             result = asyncio.run(adapter.send_media_message(
-                "GROUP_1", path, 4, is_group=True, msg_id=None
+                "USER_1", path, 4, is_group=False, msg_id=None
             ))
 
         self.assertTrue(result["success"], result)
@@ -337,6 +343,7 @@ class TestSendMediaPayload(QQMediaTestBase):
         server.message_status = 400
         server.message_body = {"code": 40054005, "message": "消息被去重"}
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_1", "M1")
         path = self.make_file("a.txt", 100)
 
         with _patch_async_client(server):
@@ -353,6 +360,7 @@ class TestSendMediaPayload(QQMediaTestBase):
         server.upload_status = 400
         server.upload_body = {"code": 850019, "message": "不支持的文件格式"}
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_1", "M1")
         path = self.make_file("a.txt", 100)
 
         with _patch_async_client(server):
@@ -368,6 +376,7 @@ class TestSendMediaPayload(QQMediaTestBase):
     def test_empty_response_body_still_success(self):
         server = FakeQQServer()
         adapter = _make_adapter()
+        adapter._passive.note_inbound("GROUP_1", "M1")
         path = self.make_file("a.txt", 100)
 
         real_handler = server.handler
@@ -522,6 +531,8 @@ class TestUploadBoundaries(QQMediaTestBase):
     def test_cache_reuse_skips_second_upload(self):
         server = FakeQQServer()
         adapter = _make_adapter()
+        adapter._passive.note_inbound("G", "M1")
+        adapter._passive.note_inbound("G", "M2")
         path = self.make_file("dup.txt", 512)
 
         with _patch_async_client(server):
@@ -534,6 +545,7 @@ class TestUploadBoundaries(QQMediaTestBase):
     def test_cache_key_isolated_between_group_and_c2c(self):
         server = FakeQQServer()
         adapter = _make_adapter()
+        adapter._passive.note_inbound("X", "M1")
         path = self.make_file("dup.txt", 512)
 
         with _patch_async_client(server):

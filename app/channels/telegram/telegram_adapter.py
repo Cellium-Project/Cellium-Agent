@@ -283,6 +283,7 @@ class _RichStreamSession:
 
 class TelegramAdapter(ChannelAdapter):
     """Telegram Bot 适配器"""
+    max_text_chunk = 4000
 
     def __init__(self, bot_token: str, whitelist_user_ids: Optional[list] = None,
                  whitelist_usernames: Optional[list] = None, use_rich_messages: bool = True, **kwargs):
