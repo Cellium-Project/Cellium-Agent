@@ -1686,10 +1686,12 @@ class CelliumTUI(App):
                 "message_type": None,
             })
             if not queued:
-                self._post(self._append_system(self.tr("busy")))
+                self._busy = False
+                self._busy_status = ""
+                self._stop_busy_animation()
+            else:
+                self._post(self._append_user(text, force_scroll=True))
                 return
-            self._post(self._append_user(text, force_scroll=True))
-            return
         self._busy = True
         self._busy_status = self.tr("busy")
         self._start_busy_animation()
@@ -1704,7 +1706,6 @@ class CelliumTUI(App):
                 except asyncio.TimeoutError:
                     pass
             await self._append_user(text, force_scroll=True)
-            # 记录本端已显示的用户消息，供常驻监听器去重 message_received
             self._last_user_msg = text
             if not self._bootstrap_ready.is_set():
                 await self._append_system(self.tr("initializing"))
@@ -1730,8 +1731,19 @@ class CelliumTUI(App):
                     user_input=text,
                     memory=memory,
                 )
+                if not started:
+                    if not task_mgr.enqueue_supplement_message(self.session_id, {
+                        "content": text,
+                        "source": "tui",
+                        "msg_id": None,
+                        "received_at": time.time(),
+                        "platform": None,
+                        "message_type": None,
+                    }):
+                        await self._append_system(self.tr("error.exec", "任务启动失败"))
+                    return
                 # 事件统一由常驻订阅监听器（_start_broker_listener）消费渲染，
-                # _agent_worker 只负责启动任务并等待其结束（避免双订阅竞态）。
+                # _agent_worker 只负责启动任务并等待其结束。
                 if started:
                     self._last_local_task_end = 0.0
                     while True:
@@ -1996,8 +2008,9 @@ class CelliumTUI(App):
         if self._is_user_selecting():
             self._pending_render_after_select = True
             return
-        import asyncio
-        asyncio.ensure_future(self._render_now(force_layout=True))
+        # 50ms 合并窗口：高频 chunk 只触发一次渲染，SSH/低带宽链路下不刷屏
+        if getattr(self, "_md_render_timer", None) is None:
+            self._md_render_timer = self.set_timer(0.05, self._do_md_render)
 
     def _is_user_selecting(self) -> bool:
         try:
@@ -2036,14 +2049,9 @@ class CelliumTUI(App):
         resp = self._current_response
         if resp is None or not self._md_buffer.has_changed():
             return
-        prev = getattr(self, "_md_layout_len", 0)
-        cur = len(self._md_buffer.get_content())
-        force = (cur - prev) > 300 or prev == 0
-        if force:
-            self._md_layout_len = cur
         try:
             import asyncio
-            asyncio.ensure_future(self._render_now(force_layout=force))
+            asyncio.ensure_future(self._render_now(force_layout=True))
             self._md_buffer.mark_rendered()
         except Exception as e:
             logging.warning(f"Failed to schedule markdown render: {e}")
@@ -2210,7 +2218,6 @@ class CelliumTUI(App):
             if self._current_response is not None and self._current_md:
                 try:
                     await self._current_response.update(self._current_md, layout=True)
-                    self._md_layout_len = len(self._current_md)
                 except Exception:
                     pass
             try:

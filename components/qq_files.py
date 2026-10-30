@@ -19,6 +19,7 @@ class QQFiles(BaseCell):
     - 从 QQ 消息下载文件到 workspace
     - 发送本地文件到 QQ
     - 发送本地图片到 QQ
+    - 发送本地语音到 QQ（silk/wav/mp3/flac）
     - 列出从 QQ 下载的文件
     """
 
@@ -68,6 +69,13 @@ class QQFiles(BaseCell):
         elif command == "send_image":
             return self._cmd_send_image(
                 image_path=arguments.get("image_path", ""),
+                target_id=arguments.get("target_id"),
+                is_group=arguments.get("is_group"),
+                msg_id=arguments.get("msg_id")
+            )
+        elif command == "send_voice":
+            return self._cmd_send_voice(
+                voice_path=arguments.get("voice_path", ""),
                 target_id=arguments.get("target_id"),
                 is_group=arguments.get("is_group"),
                 msg_id=arguments.get("msg_id")
@@ -284,6 +292,46 @@ class QQFiles(BaseCell):
             return {"success": False, "error": error}
 
         return self._send_media(adapter, target_id, image_path, 1, is_group, msg_id, "图片")
+
+    def _cmd_send_voice(
+        self,
+        voice_path: str,
+        target_id: str = None,
+        is_group: bool = None,
+        msg_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        发送本地语音到 QQ（支持 silk/wav/mp3/flac）
+
+        使用场景：
+        - 用 TTS 生成语音后发送
+        - 发送录音给用户或群
+
+        Args:
+            voice_path: 本地语音文件的完整路径
+            target_id: 用户 OpenID 或群 OpenID（可选，默认自动获取当前会话）
+            is_group: 是否是群聊（可选，默认自动检测）
+            msg_id: 被动回复的消息 ID（可选，默认自动获取当前会话）
+        """
+        adapter = self._get_adapter()
+        if not adapter:
+            return {"success": False, "error": "QQ 服务未启动"}
+
+        if not str(voice_path).strip():
+            return {"success": False, "error": "缺少 voice_path 参数"}
+        voice_path_obj = Path(voice_path)
+        if not voice_path_obj.exists():
+            return {"success": False, "error": f"语音文件不存在: {voice_path}"}
+        if not voice_path_obj.is_file():
+            return {"success": False, "error": f"不是普通文件: {voice_path}"}
+
+        target_id, is_group, msg_id, error = self._resolve_target_params(
+            target_id, is_group, msg_id
+        )
+        if error:
+            return {"success": False, "error": error}
+
+        return self._send_media(adapter, target_id, voice_path, 3, is_group, msg_id, "语音")
 
     def _send_media(
         self,

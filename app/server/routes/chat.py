@@ -205,6 +205,16 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     )
 
     if not started:
+        re_queued = task_mgr.enqueue_supplement_message(session_id, {
+            "content": user_input,
+            "source": "webui",
+            "msg_id": None,
+            "received_at": __import__('time').time(),
+            "platform": None,
+            "message_type": None,
+        })
+        if re_queued:
+            return {"status": "queued", "session_id": session_id}
         return {"status": "error", "error": "无法启动任务", "session_id": session_id}
 
     return {"status": "started", "session_id": session_id}
@@ -255,7 +265,30 @@ async def supplement_chat(request: SupplementRequest):
         "message_type": None,
     })
     if not queued:
-        return {"status": "not_running", "session_id": session_id}
+        agent_loop = await _get_session_loop(session_id)
+        if agent_loop is None:
+            return {"status": "error", "error": "Agent 未初始化", "session_id": session_id}
+        session_info = get_session_manager().get_or_create(session_id)
+        started = await task_mgr.start_task(
+            session_id=session_id,
+            agent_loop=agent_loop,
+            user_input=message,
+            memory=session_info.memory,
+        )
+        if not started:
+            re_queued = task_mgr.enqueue_supplement_message(session_id, {
+                "content": message,
+                "source": "webui",
+                "msg_id": None,
+                "received_at": __import__('time').time(),
+                "platform": None,
+                "message_type": None,
+            })
+            if re_queued:
+                return {"status": "queued", "session_id": session_id, "mode": "queued_running"}
+            return {"status": "error", "error": "无法启动任务", "session_id": session_id}
+        logger.info(f"[supplement_chat] 任务已结束，兜底启动新任务 | session={session_id}")
+        return {"status": "started", "session_id": session_id, "mode": "new_task"}
     return {"status": "queued", "session_id": session_id}
 
 

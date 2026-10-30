@@ -11,6 +11,7 @@
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -61,8 +62,10 @@ class BackgroundTaskManager:
         self._info: Dict[str, TaskInfo] = {}
         self._pending_inputs: Dict[str, str] = {}
         self._supplement_messages: Dict[str, List[Dict[str, Any]]] = {}
+        self._supplement_lock = threading.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
         self._normalizers: Dict[str, StreamNormalizer] = {}
+        self._auto_tasks: Dict[str, asyncio.Task] = {}
 
     def _ensure_cleanup_task(self):
         if self._cleanup_task is None or self._cleanup_task.done():
@@ -133,15 +136,17 @@ class BackgroundTaskManager:
         info = self._info.get(session_id)
         if not info or info.status != TaskStatus.RUNNING:
             return False
-        queue = self._supplement_messages.setdefault(session_id, [])
-        queue.append(payload)
+        with self._supplement_lock:
+            queue = self._supplement_messages.setdefault(session_id, [])
+            queue.append(payload)
         info.supplement_count += 1
         return True
 
     def drain_supplement_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """提取并清空补充消息队列"""
-        messages = self._supplement_messages.get(session_id, [])
-        self._supplement_messages[session_id] = []
+        with self._supplement_lock:
+            messages = self._supplement_messages.get(session_id, [])
+            self._supplement_messages[session_id] = []
         return messages
 
     async def start_task(
@@ -174,7 +179,14 @@ class BackgroundTaskManager:
         # 重置任务状态，保留常驻订阅者
         self.broker.clear_session(session_id)
         queue = self.broker.ensure_queue(session_id)
-        self._supplement_messages[session_id] = []
+        with self._supplement_lock:
+            _leftover = self._supplement_messages.get(session_id)
+            if not _leftover:
+                self._supplement_messages[session_id] = []
+        if _leftover:
+            logger.warning(
+                "[TaskManager] 上次任务遗留 %d 条未消费补充消息，将随新任务注入", len(_leftover)
+            )
 
         from app.core.util.logger import clear_status_history, clear_runtime_status
         clear_status_history()
@@ -315,6 +327,64 @@ class BackgroundTaskManager:
                 from app.agent.loop.session_store import get_session_store
                 store = get_session_store()
                 store.update_message_count(session_id, delta=1)
+            self._auto_continue_if_supplement(session_id, agent_loop, memory, system_injection)
+
+    def _auto_continue_if_supplement(self, session_id: str, agent_loop, memory, system_injection=None):
+        """任务自然结束后若有遗留补充消息，自动触发新任务继续"""
+        try:
+            info = self._info.get(session_id)
+            if not info or info.status != TaskStatus.COMPLETED:
+                return
+            with self._supplement_lock:
+                leftover = [s for s in self._supplement_messages.get(session_id, []) if s.get("content")]
+                if not leftover:
+                    return
+                self._supplement_messages[session_id] = []
+            content = "\n\n".join(s.get("content", "") for s in leftover).strip()
+            if not content:
+                return
+            logger.info(
+                "[TaskManager] 任务结束后遗留 %d 条补充消息，自动触发新任务继续 | session=%s",
+                len(leftover), session_id,
+            )
+            task = asyncio.create_task(
+                self._run_auto_continue(session_id, agent_loop, content, memory, leftover, system_injection)
+            )
+            self._auto_tasks[session_id] = task
+        except Exception as e:
+            logger.warning("[TaskManager] 补充消息自动续跑检查失败: %s | session=%s", e, session_id)
+
+    async def _run_auto_continue(
+        self,
+        session_id: str,
+        agent_loop,
+        user_input: str,
+        memory,
+        leftover: List[Dict[str, Any]],
+        system_injection=None,
+    ):
+        try:
+            self._auto_tasks.pop(session_id, None)
+            await asyncio.sleep(0.2)
+            started = await self.start_task(
+                session_id=session_id,
+                agent_loop=agent_loop,
+                user_input=user_input,
+                memory=memory,
+                system_injection=system_injection,
+            )
+            if not started:
+                self._requeue_supplement(session_id, leftover)
+                logger.warning("[TaskManager] 自动续跑未启动（已有任务在运行），遗留消息已归还队列 | session=%s", session_id)
+        except Exception as e:
+            self._requeue_supplement(session_id, leftover)
+            logger.warning("[TaskManager] 自动续跑异常，遗留消息已归还队列: %s | session=%s", e, session_id)
+
+    def _requeue_supplement(self, session_id: str, leftover: List[Dict[str, Any]]):
+        if not leftover:
+            return
+        with self._supplement_lock:
+            self._supplement_messages.setdefault(session_id, []).extend(leftover)
 
     def cancel_task(self, session_id: str) -> bool:
         """
@@ -351,7 +421,7 @@ class BackgroundTaskManager:
         """
         self._tasks.pop(session_id, None)
         self._pending_inputs.pop(session_id, None)
-        self._supplement_messages.pop(session_id, None)
+        # 未消费的补充消息保留：留给下一次任务继承（start_task 不清队列）
         self._normalizers.pop(session_id, None)
         self.broker.clear_session(session_id)
         logger.debug("[TaskManager] 任务资源已清理 | session=%s", session_id)
@@ -368,7 +438,8 @@ class BackgroundTaskManager:
             self._tasks.pop(session_id, None)
             self._info.pop(session_id, None)
             self._pending_inputs.pop(session_id, None)
-            self._supplement_messages.pop(session_id, None)
+            with self._supplement_lock:
+                self._supplement_messages.pop(session_id, None)
             self._normalizers.pop(session_id, None)
             self.broker.clear_session(session_id)
 

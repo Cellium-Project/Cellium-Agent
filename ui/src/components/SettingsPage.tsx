@@ -913,7 +913,7 @@ const QQChannelCard: React.FC<{
           />
         </div>
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.qq.qrcode')} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <button
@@ -931,7 +931,7 @@ const QQChannelCard: React.FC<{
         </div>
 
         {qrcodeUrl && (
-          <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <div className="form-group form-span-2">
             <a
               href={qrcodeUrl}
               target="_blank"
@@ -1021,7 +1021,7 @@ const TelegramChannelCard: React.FC<{
         <ShowToolCardsToggle config={config} onChange={updateField} platform="telegram" />
         <ShowThinkingPlanToggle config={config} onChange={updateField} platform="telegram" />
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.telegram.botToken')} desc={t('settings.channel.telegram.botTokenDesc')} />
           <input
             type="password"
@@ -1138,7 +1138,7 @@ const FeishuChannelCard: React.FC<{
         <ShowToolCardsToggle config={config} onChange={updateField} platform="feishu" />
         <ShowThinkingPlanToggle config={config} onChange={updateField} platform="feishu" />
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.feishu.appId')} />
           <input
             type="text"
@@ -1148,7 +1148,7 @@ const FeishuChannelCard: React.FC<{
           />
         </div>
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.feishu.appSecret')} />
           <input
             type="password"
@@ -1158,7 +1158,7 @@ const FeishuChannelCard: React.FC<{
           />
         </div>
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.feishu.whitelistUsers')} desc={t('settings.channel.feishu.whitelistUsersDesc')} />
           <input
             type="text"
@@ -1331,7 +1331,7 @@ const WeixinChannelCard: React.FC<{
           </div>
         </div>
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.weixin.stateDir')} desc={t('settings.channel.weixin.stateDirDesc')} />
           <input
             type="text"
@@ -1341,7 +1341,7 @@ const WeixinChannelCard: React.FC<{
           />
         </div>
 
-        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+        <div className="form-group form-span-2">
           <FieldLabel label={t('settings.channel.weixin.qrcode')} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <button
@@ -1359,7 +1359,7 @@ const WeixinChannelCard: React.FC<{
         </div>
 
         {qrcodeUrl && (
-          <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <div className="form-group form-span-2">
             <a
               href={qrcodeUrl}
               target="_blank"

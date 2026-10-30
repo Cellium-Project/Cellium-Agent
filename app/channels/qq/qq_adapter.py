@@ -545,12 +545,7 @@ class QQAdapter(ChannelAdapter):
 
     @staticmethod
     def _render_group_mentions(content: str, mentions: List[Dict[str, Any]]) -> str:
-        """把群消息里的 @ 标记还原成可读的 @昵称
-
-        官方约定：入站内容中的 @成员 会替换为 <@member_openid>，@全体 为 <@all>。
-        这里按 mentions 列表还原成 @昵称，便于模型理解谁被 @ 了。
-        未在 mentions 中出现的标记保持原样。
-        """
+        """把群消息里的 @ 标记还原成可读的 @昵称"""
         if not content:
             return content
 
@@ -564,23 +559,48 @@ class QQAdapter(ChannelAdapter):
             content = content.replace(f"<@{uid}>", f"@{name}")
         return content
 
+    @staticmethod
+    def _render_attachments(attachments: List[Dict[str, Any]]) -> str:
+        """把消息内联附件（图片/语音/视频/文件）转成可读摘要"""
+        lines = []
+        for a in attachments or []:
+            ct = a.get("content_type", "file")
+            name = a.get("filename") or "attachment"
+            size = a.get("size")
+            url = (a.get("voice_wav_url") or a.get("url") or "") if ct == "voice" else (a.get("url") or "")
+            line = f"[附件] {name} ({ct}, {size} bytes)" if size else f"[附件] {name} ({ct})"
+            if a.get("asr_refer_text"):
+                line += f"\n语音转文字: {a['asr_refer_text']}"
+            if url:
+                line += f"\n下载链接: {url}"
+            lines.append(line)
+        return "\n".join(lines)
+
     def _parse_message(self, t: str, d: Dict[str, Any]) -> Optional[UnifiedMessage]:
         if t == "C2C_MESSAGE_CREATE":
+            content = d.get("content", "")
+            atts = self._render_attachments(d.get("attachments") or [])
+            if atts:
+                content = f"{content}\n{atts}" if content else atts
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("author", {}).get("user_openid", ""),
-                content=d.get("content", ""),
+                content=content,
                 message_type="c2c",
                 msg_id=d.get("id", ""),
                 raw=d,
             )
         elif t in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
+            content = self._render_group_mentions(
+                d.get("content", ""), d.get("mentions") or []
+            )
+            atts = self._render_attachments(d.get("attachments") or [])
+            if atts:
+                content = f"{content}\n{atts}" if content else atts
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("author", {}).get("member_openid", ""),
-                content=self._render_group_mentions(
-                    d.get("content", ""), d.get("mentions") or []
-                ),
+                content=content,
                 message_type="group",
                 msg_id=d.get("id", ""),
                 group_id=d.get("group_openid", ""),

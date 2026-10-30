@@ -1208,25 +1208,27 @@ class AgentLoop:
             self._empty_final_retried = False
 
             while True:
-                # === 检查并注入补充消息 ===
-                try:
-                    from app.server.task_manager import get_task_manager
-                    task_mgr = get_task_manager()
-                    supplements = task_mgr.drain_supplement_messages(effective_session)
-                    for sup in supplements:
-                        sup_content = sup.get("content", "")
-                        if sup_content:
-                            logger.info(f"[AgentLoop] 注入补充消息 | content={sup_content[:50]}...")
-                            effective_memory.add_user_message(sup_content)
-                            supplement_event = {
-                                "type": "supplement_injected",
-                                "content": sup_content,
-                                "source": sup.get("source", "unknown"),
-                            }
-                            logger.info(f"[AgentLoop] yield supplement_injected | content={sup_content[:30]}")
-                            yield supplement_event
-                except Exception as e:
-                    logger.warning(f"[AgentLoop] 注入补充消息失败: {e}")
+                # === 检查并注入补充消息（Gene 评估轮跳过，避免污染评估上下文，留给收尾前消费）===
+                _in_gene_round = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
+                if not _in_gene_round:
+                    try:
+                        from app.server.task_manager import get_task_manager
+                        task_mgr = get_task_manager()
+                        supplements = task_mgr.drain_supplement_messages(effective_session)
+                        for sup in supplements:
+                            sup_content = sup.get("content", "")
+                            if sup_content:
+                                logger.info(f"[AgentLoop] 注入补充消息 | content={sup_content[:50]}...")
+                                effective_memory.add_user_message(sup_content)
+                                supplement_event = {
+                                    "type": "supplement_injected",
+                                    "content": sup_content,
+                                    "source": sup.get("source", "unknown"),
+                                }
+                                logger.info(f"[AgentLoop] yield supplement_injected | content={sup_content[:30]}")
+                                yield supplement_event
+                    except Exception as e:
+                        logger.warning(f"[AgentLoop] 注入补充消息失败: {e}")
 
                 # === 在迭代开始前执行待处理的压缩 ===
                 is_gene_processing = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
@@ -2136,6 +2138,43 @@ class AgentLoop:
                     reasoning_duration_ms=reasoning_duration_ms,
                 )
                 # 流式已逐 chunk 产出 thinking/content_chunk，此处不再重复 yield
+
+                # 收尾前消费补充消息（置于 Gene 提炼之前：用户消息优先，Gene 评估基于完整会话）
+                # 上限轮不 drain：消息留在队列，由下一次 start_task 继承
+                _tail_content = ""
+                if iteration < self.max_iterations:
+                    try:
+                        from app.server.task_manager import get_task_manager
+                        _tail_sups = get_task_manager().drain_supplement_messages(effective_session)
+                    except Exception:
+                        _tail_sups = []
+                    _tail_content = "\n\n".join(
+                        s.get("content", "") for s in _tail_sups if s.get("content")
+                    ).strip()
+                else:
+                    logger.warning("[AgentLoop] 已达最大迭代，补充消息留待下次任务")
+                if _tail_content:
+                    _lag = max(
+                        (time.time() - s.get("received_at", time.time()) for s in _tail_sups),
+                        default=0.0,
+                    )
+                    logger.info(
+                        "[AgentLoop] 最终回复后消费补充消息 | n=%d | 滞后%.1fs",
+                        len(_tail_sups), _lag,
+                    )
+                    # Gene 评估收尾轮：先清标志，补充轮不继承 Gene 状态
+                    if self._loop_state and getattr(self._loop_state, 'gene_processing_done', False):
+                        self._loop_state.gene_creation_source = ""
+                        self._loop_state.gene_creation_prompt = None
+                        self._loop_state.gene_processing_done = False
+                        self._loop_state.gene_tool_call_count = 0
+                    effective_memory.add_user_message(_tail_content)
+                    yield {
+                        "type": "supplement_injected",
+                        "content": _tail_content,
+                        "source": "pre_final_drain",
+                    }
+                    continue
 
                 # Mechanism B: 复杂任务触发，在最终回复后由主 Agent 处理 Gene
                 if self._loop_state and getattr(self._loop_state, 'gene_creation_source', '') == "complexity":
