@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-组件生成器 — 让 LLM 能快速创建符合规范的新组件
+组件生成器 — 让 LLM 能快速创建、管理、安装新组件
 
 能力：
   - generate: 交互式/参数式创建新组件（自动写入 components/）
   - list: 列出当前已加载的所有组件及其命令
   - info: 查看指定组件的详细信息（命令、源文件路径等）
   - template: 获取标准组件模板代码
+  - market_search: 在组件市场（components.cellium.top）按关键词/分类搜索
+  - market_info: 读取市场组件的完整元信息（版本、安装包地址、README）
+  - market_install: 按元信息下载安装包 → 审查 → 安装并热重载
 
 生成的组件自带 _cmd_help 方法，LLM 可通过 help 命令自查询用法
 """
@@ -47,7 +50,7 @@ def _resolve_cell_name(raw_name: str) -> str:
 
 
 class ComponentBuilder(BaseCell):
-    """组件生成器 — 创建、管理、查看 Cellium 组件"""
+    """组件生成器 — 创建、管理、安装 Cellium 组件。除了本地生成/查看组件，还能从官方组件市场（components.cellium.top）搜索组件、读取元信息并直接安装：market_search 按关键词/分类搜索 → market_info 查看版本与安装包地址 → market_install 下载、审查并热重载。"""
 
     @property
     def cell_name(self) -> str:
@@ -1845,6 +1848,482 @@ class MyIntegration(BaseCell):
                         return str(sub.value.value)
         return ""
 
+    # ================================================================
+    # 组件市场（C 端：搜索 → 元信息 → 下载安装）
+    # ================================================================
+
+    _MARKET_BASE_DEFAULT = "https://components.cellium.top"
+    _MARKET_CACHE_TTL = 300          # 索引缓存秒数，与线上 5 分钟发布节奏一致
+    _MARKET_TIMEOUT = 20             # 单次网络请求超时
+    _MARKET_MAX_BYTES = 50 * 1024 * 1024
+    _market_cache: Dict[str, Any] = {"base": "", "at": 0.0, "data": None}
+
+    def _market_base(self) -> str:
+        """市场站点地址，可用环境变量 CELLIUM_COMPONENTS_BASE 覆盖"""
+        base = (os.environ.get("CELLIUM_COMPONENTS_BASE") or self._MARKET_BASE_DEFAULT).strip()
+        return base.rstrip("/")
+
+    @staticmethod
+    def _market_slug(raw: str) -> str:
+        """兼容 slug / URL / 站点复制的 `market install <slug>` 三种写法"""
+        s = (raw or "").strip().strip('"').strip("'")
+        if "market install " in s:
+            s = s.split("market install ", 1)[1].strip()
+        if "/c/" in s:
+            s = s.split("/c/", 1)[1]
+        s = s.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        if s.endswith(".json"):
+            s = s[:-5]
+        return s.strip()
+
+    @staticmethod
+    def _market_valid_slug(slug: str) -> bool:
+        import re
+        return bool(re.match(r"^[a-z0-9][a-z0-9_-]{1,39}$", slug))
+
+    @staticmethod
+    def _market_http_json(url: str, timeout: float) -> Any:
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Cellium-Agent/component-builder",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = getattr(resp, "status", 200)
+                if status != 200:
+                    raise RuntimeError(f"HTTP {status}")
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise RuntimeError("组件不存在（404）") from e
+            raise RuntimeError(f"HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"网络不可达: {e.reason}") from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"返回内容不是合法 JSON: {e}") from e
+
+    def _market_index(self, refresh: bool = False) -> Dict[str, Any]:
+        """拉取市场索引 /data/index.json（带 5 分钟内存缓存）"""
+        import time
+
+        base = self._market_base()
+        cache = self._market_cache
+        now = time.time()
+        if (
+            not refresh
+            and cache.get("data")
+            and cache.get("base") == base
+            and now - float(cache.get("at") or 0) < self._MARKET_CACHE_TTL
+        ):
+            return cache["data"]
+
+        data = self._market_http_json(f"{base}/data/index.json", self._MARKET_TIMEOUT)
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise RuntimeError("市场索引格式不正确（缺少 items 列表）")
+        self._market_cache.update({"base": base, "at": now, "data": data})
+        return data
+
+    def _market_detail(self, slug: str) -> Dict[str, Any]:
+        """拉取组件详情 /data/c/<slug>.json"""
+        from urllib.parse import quote
+
+        base = self._market_base()
+        data = self._market_http_json(
+            f"{base}/data/c/{quote(slug, safe='')}.json", self._MARKET_TIMEOUT
+        )
+        if not isinstance(data, dict) or not data.get("slug"):
+            raise RuntimeError("组件详情格式不正确")
+        return data
+
+    @staticmethod
+    def _market_install_url(base: str, meta: Dict[str, Any], version: Dict[str, Any]) -> str:
+        """版本自带直链优先；否则回落到站点自建的 pkg/<file>"""
+        download = str(version.get("download") or "").strip()
+        if download:
+            return download
+        slug = str(meta.get("slug") or "")
+        ver = str(version.get("version") or "")
+        file_name = str(version.get("file") or f"{slug}-{ver}.zip")
+        return f"{base}/pkg/{file_name}"
+
+    @staticmethod
+    def _market_archive_suffix(url: str) -> str:
+        path = url.split("?", 1)[0].split("#", 1)[0].lower()
+        for suffix in (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip", ".tar"):
+            if path.endswith(suffix):
+                return suffix
+        return ".zip"
+
+    def _market_download(self, url: str, dest) -> Dict[str, Any]:
+        """下载安装包到本地，边下边算 sha256，超限即停"""
+        import hashlib
+        import urllib.error
+        import urllib.request
+
+        sha = hashlib.sha256()
+        total = 0
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Cellium-Agent/component-builder"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._MARKET_TIMEOUT) as resp:
+                status = getattr(resp, "status", 200)
+                if status != 200:
+                    raise RuntimeError(f"HTTP {status}")
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > self._MARKET_MAX_BYTES:
+                            raise RuntimeError(
+                                f"安装包超过 {self._MARKET_MAX_BYTES // 1024 // 1024}MB 上限，已中止"
+                            )
+                        sha.update(chunk)
+                        f.write(chunk)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"下载失败 HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"下载失败，网络不可达: {e.reason}") from e
+        return {"size": total, "sha256": sha.hexdigest()}
+
+    def _market_is_installed(self, slug: str) -> bool:
+        """slug（可能带 -）与组件文件名（Python 标识符，可能用 _）都算已安装"""
+        components_dir = get_components_dir()
+        for name in {slug, slug.replace("-", "_")}:
+            if (components_dir / f"{name}.py").exists() or (components_dir / name).exists():
+                return True
+        return False
+
+    def _cmd_market_search(
+        self,
+        keyword: str = "",
+        category: str = "",
+        tags: str = "",
+        page: int = 1,
+        page_size: int = 10,
+        refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        在 Cellium 组件市场搜索组件（C 端站点 https://components.cellium.top 同源数据）
+
+        只读索引 /data/index.json，不下载安装包。用于先了解市场有什么，再决定装哪个。
+
+        Args:
+            keyword: 关键词，匹配组件名/slug/简介/tags（不区分大小写）
+            category: 分类精确过滤，可选 web/ai/security/interaction/automation/data/media/other
+            tags: 标签过滤，逗号分隔，命中任意一个即可
+            page: 页码（从 1 开始）
+            page_size: 每页数量（默认 10，最大 50）
+            refresh: 是否强制刷新索引缓存（默认 5 分钟缓存）
+
+        Returns:
+            {"items":[{slug,name,summary,category,tags,author,latest_version,updated_at,installed}],
+             "total": N, "page": ..., "total_pages": ..., "market_base": ...}
+
+        使用:
+            component.market_search(keyword="pdf")
+            component.market_search(category="automation", page=2)
+        """
+        base = self._market_base()
+        try:
+            index = self._market_index(refresh=refresh)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"读取市场索引失败: {e}",
+                "market_base": base,
+                "hint": "检查网络或设置环境变量 CELLIUM_COMPONENTS_BASE 指向可用镜像",
+            }
+
+        items = index.get("items") or []
+        kw = (keyword or "").strip().lower()
+        cat = (category or "").strip().lower()
+        tag_list = [t.strip().lower() for t in (tags or "").split(",") if t.strip()]
+
+        filtered = []
+        for it in items:
+            if cat and str(it.get("category", "")).lower() != cat:
+                continue
+            if kw:
+                haystack = " ".join(
+                    [
+                        str(it.get("slug", "")),
+                        str(it.get("name", "")),
+                        str(it.get("summary", "")),
+                        " ".join(str(t) for t in (it.get("tags") or [])),
+                    ]
+                ).lower()
+                if kw not in haystack:
+                    continue
+            if tag_list:
+                item_tags = {str(t).lower() for t in (it.get("tags") or [])}
+                if not item_tags.intersection(tag_list):
+                    continue
+            filtered.append(it)
+
+        filtered.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+
+        total = len(filtered)
+        page_size = max(1, min(int(page_size or 10), 50))
+        page = max(1, int(page or 1))
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        if total_pages and page > total_pages:
+            page = total_pages
+        start = (page - 1) * page_size
+
+        results = []
+        for it in filtered[start:start + page_size]:
+            slug = str(it.get("slug") or "")
+            results.append({
+                "slug": slug,
+                "name": it.get("name", ""),
+                "summary": it.get("summary", ""),
+                "category": it.get("category", ""),
+                "tags": it.get("tags") or [],
+                "author": it.get("author", ""),
+                "latest_version": it.get("latest_version", ""),
+                "updated_at": it.get("updated_at", ""),
+                "deprecated": bool(it.get("deprecated")),
+                "installed": self._market_is_installed(slug),
+                "next": f"component.market_info(slug='{slug}') 查看详情，component.market_install(slug='{slug}') 安装",
+            })
+
+        response: Dict[str, Any] = {
+            "success": True,
+            "items": results,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "market_base": base,
+            "generated_at": index.get("generated_at", ""),
+        }
+        if total and not results:
+            response["hint"] = f"页码超出范围，可用的总页数是 {total_pages}"
+        elif not total:
+            response["hint"] = "没有匹配的组件，可换个关键词，或 refresh=true 强制刷新索引"
+        return response
+
+    def _cmd_market_info(self, slug: str, version: str = "") -> Dict[str, Any]:
+        """
+        查看市场组件的完整元信息：版本列表、安装包下载地址、校验值、README
+
+        先读详情 /data/c/<slug>.json，再解析出「该怎么装」——install_url、
+        sha256/size 校验值，以及可直接调用的 market_install 参数。
+
+        Args:
+            slug: 组件标识，也可直接贴站点复制的 `market install <slug>` 或详情页 URL
+            version: 指定版本号（默认最新版）
+
+        Returns:
+            {"success": True, "slug":..., "resolved_version":..., "install_url":...,
+             "checks": {"sha256":..., "size":...}, "install": {"command":"market_install", ...},
+             "versions":[...], "readme": ...}
+        """
+        base = self._market_base()
+        target = self._market_slug(slug)
+        if not target:
+            return {"success": False, "error": "缺少参数 slug", "hint": '示例: {"command":"market_info","slug":"my-cell"}'}
+        if not self._market_valid_slug(target):
+            return {"success": False, "error": f"非法 slug: {target}", "hint": "slug 只能用小写字母、数字、-、_，2–40 字符"}
+
+        try:
+            meta = self._market_detail(target)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"读取组件元信息失败: {e}",
+                "slug": target,
+                "market_base": base,
+                "hint": "可在 market_search 里确认 slug 是否正确",
+            }
+
+        versions = meta.get("versions") or []
+        if not versions:
+            return {"success": False, "error": "该组件没有可用版本", "slug": target}
+
+        want = (version or "").strip().lstrip("vV")
+        chosen = versions[0]
+        if want:
+            chosen = next(
+                (v for v in versions if str(v.get("version", "")).lstrip("vV") == want), None
+            )
+            if not chosen:
+                return {
+                    "success": False,
+                    "error": f"版本不存在: {version}",
+                    "slug": target,
+                    "available_versions": [str(v.get("version", "")) for v in versions],
+                }
+
+        ver = str(chosen.get("version") or "")
+        install_url = self._market_install_url(base, meta, chosen)
+        readme = str(meta.get("readme") or "")
+        truncated = len(readme) > 3000
+
+        return {
+            "success": True,
+            "slug": meta.get("slug", target),
+            "name": meta.get("name", ""),
+            "summary": meta.get("summary", ""),
+            "category": meta.get("category", ""),
+            "tags": meta.get("tags") or [],
+            "author": meta.get("author", ""),
+            "repo": meta.get("repo", ""),
+            "license": meta.get("license", ""),
+            "deprecated": bool(meta.get("deprecated")),
+            "latest_version": meta.get("latest_version", ""),
+            "resolved_version": ver,
+            "updated_at": meta.get("updated_at", ""),
+            "install_url": install_url,
+            "checks": {
+                "sha256": str(chosen.get("sha256") or ""),
+                "size": chosen.get("size"),
+                "changelog": str(chosen.get("changelog") or ""),
+                "date": str(chosen.get("date") or ""),
+            },
+            "versions": [
+                {
+                    "version": v.get("version", ""),
+                    "date": v.get("date", ""),
+                    "changelog": v.get("changelog", ""),
+                    "size": v.get("size"),
+                    "sha256": v.get("sha256", ""),
+                    "download": v.get("download", ""),
+                }
+                for v in versions
+            ],
+            "readme": readme[:3000],
+            "readme_truncated": truncated,
+            "installed": self._market_is_installed(str(meta.get("slug", target))),
+            "install": {
+                "command": "market_install",
+                "slug": meta.get("slug", target),
+                "version": ver,
+            },
+            "market_base": base,
+        }
+
+    def _cmd_market_install(
+        self,
+        slug: str,
+        version: str = "",
+        force: bool = False,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        从组件市场下载并安装组件（下载 → 校验 → 审查 → 装入 → 热重载）
+
+        按 market_info 给出的 install_url 下载安装包；元信息带 sha256/size 时先校验，
+        再复用本地安装流程的审查与热重载，安装完组件立即成为可用工具。
+
+        Args:
+            slug: 组件标识（也接受 `market install <slug>` / 详情页 URL）
+            version: 指定版本号（默认最新版）
+            force: 本地已存在同名组件时是否覆盖
+            dry_run: 只下载并审查，不写入组件目录（用于装前确认）
+
+        Returns:
+            {"success": True, "name":..., "target":..., "audit":{...},
+             "market": {"slug":..., "version":..., "install_url":..., "sha256":..., "size":...}}
+        """
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        base = self._market_base()
+        target = self._market_slug(slug)
+        if not target:
+            return {"success": False, "error": "缺少参数 slug", "hint": '示例: {"command":"market_install","slug":"my-cell"}'}
+        if not self._market_valid_slug(target):
+            return {"success": False, "error": f"非法 slug: {target}", "hint": "slug 只能用小写字母、数字、-、_，2–40 字符"}
+
+        try:
+            meta = self._market_detail(target)
+        except Exception as e:
+            return {"success": False, "error": f"读取组件元信息失败: {e}", "slug": target, "market_base": base}
+
+        versions = meta.get("versions") or []
+        if not versions:
+            return {"success": False, "error": "该组件没有可用版本", "slug": target}
+
+        want = (version or "").strip().lstrip("vV")
+        chosen = versions[0]
+        if want:
+            chosen = next(
+                (v for v in versions if str(v.get("version", "")).lstrip("vV") == want), None
+            )
+            if not chosen:
+                return {
+                    "success": False,
+                    "error": f"版本不存在: {version}",
+                    "slug": target,
+                    "available_versions": [str(v.get("version", "")) for v in versions],
+                }
+
+        ver = str(chosen.get("version") or "")
+        install_url = self._market_install_url(base, meta, chosen)
+        expected_sha = str(chosen.get("sha256") or "").strip().lower()
+        expected_size = chosen.get("size")
+        if not install_url.startswith("https://"):
+            return {"success": False, "error": f"安装包地址不是 https://：{install_url}", "slug": target}
+
+        tmpdir = tempfile.mkdtemp(prefix="cellium_market_")
+        try:
+            dest = Path(tmpdir) / f"{target}-{ver}{self._market_archive_suffix(install_url)}"
+            try:
+                got = self._market_download(install_url, dest)
+            except Exception as e:
+                return {"success": False, "error": str(e), "slug": target, "install_url": install_url, "market_base": base}
+
+            if isinstance(expected_size, int) and expected_size > 0 and got["size"] != expected_size:
+                return {
+                    "success": False,
+                    "error": f"安装包大小不符：期望 {expected_size} 字节，实际 {got['size']} 字节",
+                    "slug": target,
+                    "version": ver,
+                    "install_url": install_url,
+                    "hint": "安装包可能已被替换，确认来源可信后再用 force 重装",
+                }
+            if expected_sha and got["sha256"] != expected_sha:
+                return {
+                    "success": False,
+                    "error": "安装包 sha256 校验失败，内容与市场记录不一致",
+                    "slug": target,
+                    "version": ver,
+                    "install_url": install_url,
+                    "expected_sha256": expected_sha,
+                    "actual_sha256": got["sha256"],
+                }
+
+            result = self._cmd_install_local(path=str(dest), force=force, dry_run=dry_run)
+            result["market"] = {
+                "slug": meta.get("slug", target),
+                "version": ver,
+                "install_url": install_url,
+                "sha256": got["sha256"],
+                "size": got["size"],
+                "sha256_verified": bool(expected_sha),
+                "dry_run": bool(dry_run),
+            }
+            if result.get("success") and not dry_run:
+                result["message"] = f"已从市场安装 {result.get('name') or target} v{ver} 并热重载"
+            return result
+        finally:
+            try:
+                shutil.rmtree(tmpdir)
+            except Exception:
+                pass
+
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         """查询组件使用帮助（LLM 可通过此命令了解如何正确调用 component 工具）
         
@@ -1857,7 +2336,7 @@ class MyIntegration(BaseCell):
         commands = self.get_commands()
         base_info: Dict[str, Any] = {
             "name": self.cell_name,
-            "description": "组件生成器 — 让 LLM 能快速创建符合规范的新组件",
+            "description": "组件生成器 — 创建、管理、安装 Cellium 组件（含组件市场搜索与一键安装）",
             "available_commands": commands,
             "command_count": len(commands),
             "usage_examples": [
@@ -1865,6 +2344,9 @@ class MyIntegration(BaseCell):
                 {"command": "generate_package", "args": {"name": "<组件名>", "description": "<描述>", "modules": "[\"utils\",\"monitor\"]"}, "description": "创建包组件（复杂功能）"},
                 {"command": "list", "args": {"show_commands": True}, "description": "列出所有已加载组件"},
                 {"command": "info", "args": {"name": "<组件名>"}, "description": "查看指定组件详情"},
+                {"command": "market_search", "args": {"keyword": "<关键词>", "category": "<分类>"}, "description": "在组件市场搜索组件（先看有什么）"},
+                {"command": "market_info", "args": {"slug": "<组件标识>"}, "description": "查看市场组件元信息：版本、安装包地址、校验值"},
+                {"command": "market_install", "args": {"slug": "<组件标识>", "version": "<可选版本>"}, "description": "从市场下载安装包，校验后安装并热重载"},
                 {"command": "reload", "args": {}, "description": "手动触发热重载扫描"},
                 {"command": "dir", "args": {}, "description": "获取组件文件夹真实路径（自动区分 pip/绿色版）"},
                 {"command": "install_local", "args": {"path": "<文件夹或压缩包路径>"}, "description": "从本地文件夹/zip/tar.gz 安装组件（自动审查结构、组件类、依赖后装入）"},
@@ -1875,6 +2357,9 @@ class MyIntegration(BaseCell):
             ],
             "_notes": [
                 "这是系统内置组件（白名单豁免），负责创建和管理其他 Cellium 组件",
+                "安装市场组件的标准链路：market_search 找组件 → market_info 看版本与包地址 → market_install 安装",
+                "market_install 会先校验 sha256/size（元信息有时），再复用本地安装的审查流程，装完自动热重载",
+                "市场地址默认 https://components.cellium.top，可用环境变量 CELLIUM_COMPONENTS_BASE 指向镜像",
                 "generate 创建单文件组件，适合简单功能",
                 "generate_package 创建包组件（文件夹形式），适合复杂功能，便于模块解耦",
                 "每次调用必须带 command 字段指定子命令名",
@@ -1978,6 +2463,43 @@ class MyIntegration(BaseCell):
                         '支持: .py 单文件 / 含 __init__.py 的包目录 / .zip / .tar.gz；\n'
                         '审查内容: 是否含 BaseCell 组件类、语法错误、第三方依赖缺失、危险调用（os.system/subprocess/eval 等告警）；\n'
                         '装完自动热重载并注册为 LLM 工具'
+                    ),
+                },
+                "market_search": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "optional_params": ["keyword", "category", "tags", "page", "page_size", "refresh"],
+                    "hint": (
+                        '调用示例:\n'
+                        '  - {"command":"market_search","keyword":"pdf"}\n'
+                        '  - {"command":"market_search","category":"automation","page":1,"page_size":10}\n'
+                        '只读市场索引 /data/index.json，返回 slug/name/summary/tags/latest_version；\n'
+                        '每条结果带 next 提示，可直接用 market_info 看详情'
+                    ),
+                },
+                "market_info": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "required_params": ["slug"],
+                    "optional_params": ["version"],
+                    "hint": (
+                        '调用示例: {"command":"market_info","slug":"my-cell"}\n'
+                        '返回 install_url（安装包下载地址）、checks（sha256/size）、versions、readme、\n'
+                        '以及可直接执行的 install 参数（{"command":"market_install","slug":...,"version":...}）'
+                    ),
+                },
+                "market_install": {
+                    "focused_command": topic,
+                    "command_description": commands.get(topic),
+                    "required_params": ["slug"],
+                    "optional_params": ["version", "force", "dry_run"],
+                    "hint": (
+                        '调用示例:\n'
+                        '  - {"command":"market_install","slug":"my-cell","dry_run":true}   # 下载+审查，不写入\n'
+                        '  - {"command":"market_install","slug":"my-cell"}                  # 装最新版\n'
+                        '  - {"command":"market_install","slug":"my-cell","version":"1.0.0"}\n'
+                        '流程: 读元信息 → 下载 install_url → 校验 sha256/size（元信息有才校验）\n'
+                        '      → 复用 install_local 审查与安装 → 热重载并注册为工具'
                     ),
                 },
                 "cleanup": {

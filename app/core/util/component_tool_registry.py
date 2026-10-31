@@ -199,14 +199,37 @@ class ComponentToolRegistry:
         with self._lock:
             return dict(self._registry)
 
+    @staticmethod
+    def _channel_ready(adapter: CellToolAdapter) -> bool:
+        """检查组件依赖的通道是否已配置并注册（未配置时该工具不注入给 LLM）"""
+        platform = getattr(adapter.cell, "required_channel", "") or ""
+        if not platform:
+            return True
+        try:
+            from app.channels import ChannelManager
+            target = ChannelManager.get_instance().get_adapter(platform)
+            if target is None:
+                return False
+            if platform == "weixin":
+                return bool(getattr(target, "_running", False))
+            return True
+        except Exception:
+            return True
+
     def get_component_tools(self) -> Dict[str, Any]:
         """
         获取纯组件工具字典（可直接合并到 AgentLoop.tools）
-        
+
+        依赖未配置通道的组件会被过滤，通道热重载注册适配器后自动恢复。
+
         Returns:
             {tool_name: CellToolAdapter}
         """
-        return self.get_all_adapters()
+        return {
+            name: adapter
+            for name, adapter in self.get_all_adapters().items()
+            if self._channel_ready(adapter)
+        }
 
     def get_tool_definitions(self) -> List[Dict]:
         """
@@ -216,7 +239,7 @@ class ComponentToolRegistry:
             [function_calling_definition_dict, ...]
         """
         definitions = []
-        for adapter in self.get_all_adapters().values():
+        for adapter in self.get_component_tools().values():
             try:
                 definitions.append(adapter.definition)
             except Exception as e:

@@ -110,6 +110,18 @@ class ChannelManager:
         self._adapters[adapter.platform_name] = adapter
         logger.info(f"[ChannelManager] Registered adapter: {adapter.platform_name}")
 
+    async def unregister_adapter(self, platform: str) -> bool:
+        """移除并断开指定通道适配器（通道被停用时调用）"""
+        adapter = self._adapters.pop(platform, None)
+        if adapter is None:
+            return False
+        try:
+            await adapter.disconnect()
+        except Exception as e:
+            logger.warning(f"[ChannelManager] 断开 {platform} 适配器失败: {e}")
+        logger.info(f"[ChannelManager] Unregistered adapter: {platform}")
+        return True
+
     def set_global_handler(self, handler: Callable[[UnifiedMessage], None]):
         self._global_handler = handler
 
@@ -129,6 +141,9 @@ class ChannelManager:
     async def _run_adapter(self, adapter: ChannelAdapter):
         from .base import NonRetryableError
         while self._running:
+            if self._adapters.get(adapter.platform_name) is not adapter:
+                logger.info(f"[ChannelManager] {adapter.platform_name} adapter removed, stopping runner")
+                break
             try:
                 await adapter.connect()
                 # 连接成功后，等待适配器停止运行

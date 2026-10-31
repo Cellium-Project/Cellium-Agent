@@ -21,6 +21,9 @@ class BaseCell(ICell, metaclass=AutoInjectMeta):
     # 声明为后台组件：沙箱模式下启动心跳保活
     IS_BACKGROUND = False
 
+    # 依赖的通道平台（如 qq/telegram/feishu/weixin）；为空表示不依赖通道
+    required_channel = ""
+
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
     

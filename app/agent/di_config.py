@@ -85,7 +85,7 @@ async def _do_channel_start(channel_mgr, qq_config):
             app_secret=qq_config.get_app_secret(),
             intents=qq_config._intents,
         )
-        await channel_mgr.register_adapter(adapter)
+        channel_mgr.register_adapter(adapter)
         await adapter.connect()
         logger.info("[AgentDI] 通道启动完成")
     except Exception as e:
@@ -101,11 +101,23 @@ async def _do_telegram_channel_start(channel_mgr, tg_config):
             whitelist_user_ids=tg_config.get_whitelist_user_ids(),
             whitelist_usernames=tg_config.get_whitelist_usernames(),
         )
-        await channel_mgr.register_adapter(adapter)
+        channel_mgr.register_adapter(adapter)
         await adapter.connect()
         logger.info("[AgentDI] Telegram 通道启动完成")
     except Exception as e:
         logger.error("[AgentDI] Telegram 通道启动失败: %s", e)
+
+
+async def _do_weixin_channel_start(channel_mgr, weixin_config):
+    """启动微信通道"""
+    try:
+        from app.channels.weixin import WeixinAdapter
+        adapter = WeixinAdapter(config=weixin_config)
+        channel_mgr.register_adapter(adapter)
+        await adapter.connect()
+        logger.info("[AgentDI] 微信通道启动完成")
+    except Exception as e:
+        logger.error("[AgentDI] 微信通道启动失败: %s", e)
 
 
 async def _do_feishu_channel_start(channel_mgr, feishu_config):
@@ -402,37 +414,45 @@ def setup_agent_di(
             qq_config = QQChannelConfig()
             qq_config.reload()
             adapter = channel_mgr.get_adapter("qq")
-            if adapter:
+            if not qq_config.should_auto_start():
+                if adapter:
+                    _schedule_async(channel_mgr.unregister_adapter("qq"))
+                    logger.warning("[AgentDI] QQ 通道未启用或凭证缺失，正在移除适配器...")
+            elif adapter:
                 adapter.app_id = qq_config.get_app_id(force_reload=True)
                 adapter.app_secret = qq_config.get_app_secret(force_reload=True)
                 _schedule_async(_do_channel_reconnect(adapter))
                 logger.info("[AgentDI] QQ 通道配置已热更新，正在重连...")
-            elif qq_config.should_auto_start():
+            else:
                 _schedule_async(_do_channel_start(channel_mgr, qq_config))
                 logger.info("[AgentDI] QQ 通道配置已热更新，正在启动...")
-            else:
-                logger.warning("[AgentDI] QQ 通道配置已更新，但凭证缺失或未启用")
 
             tg_config = TelegramChannelConfig()
             tg_config.reload()
             tg_adapter = channel_mgr.get_adapter("telegram")
-            if tg_adapter:
+            if not tg_config.should_auto_start():
+                if tg_adapter:
+                    _schedule_async(channel_mgr.unregister_adapter("telegram"))
+                    logger.warning("[AgentDI] Telegram 通道未启用或凭证缺失，正在移除适配器...")
+            elif tg_adapter:
                 tg_adapter.bot_token = tg_config.get_bot_token(force_reload=True)
                 tg_adapter.whitelist_user_ids = set(tg_config.get_whitelist_user_ids(force_reload=True))
                 tg_adapter.whitelist_usernames = set(u.lower() for u in tg_config.get_whitelist_usernames(force_reload=True))
                 _schedule_async(_do_channel_reconnect(tg_adapter))
                 logger.info("[AgentDI] Telegram 通道配置已热更新，正在重连...")
-            elif tg_config.should_auto_start():
+            else:
                 _schedule_async(_do_telegram_channel_start(channel_mgr, tg_config))
                 logger.info("[AgentDI] Telegram 通道配置已热更新，正在启动...")
-            else:
-                logger.warning("[AgentDI] Telegram 通道配置已更新，但凭证缺失或未启用")
 
             from app.channels.feishu import FeishuChannelConfig
             feishu_config = FeishuChannelConfig()
             feishu_config.reload()
             feishu_adapter = channel_mgr.get_adapter("feishu")
-            if feishu_adapter:
+            if not feishu_config.should_auto_start():
+                if feishu_adapter:
+                    _schedule_async(channel_mgr.unregister_adapter("feishu"))
+                    logger.warning("[AgentDI] 飞书通道未启用或凭证缺失，正在移除适配器...")
+            elif feishu_adapter:
                 new_app_id = feishu_config.get_app_id(force_reload=True)
                 new_app_secret = feishu_config.get_app_secret(force_reload=True)
                 new_whitelist = feishu_config.get_whitelist_users(force_reload=True)
@@ -444,11 +464,21 @@ def setup_agent_di(
                     )
                 )
                 logger.info("[AgentDI] 飞书通道配置已热更新，正在重连...")
-            elif feishu_config.should_auto_start():
+            else:
                 _schedule_async(_do_feishu_channel_start(channel_mgr, feishu_config))
                 logger.info("[AgentDI] 飞书通道配置已热更新，正在启动...")
-            else:
-                logger.warning("[AgentDI] 飞书通道配置已更新，但凭证缺失或未启用")
+
+            from app.channels.weixin import WeixinChannelConfig
+            weixin_config = WeixinChannelConfig()
+            weixin_config.reload()
+            weixin_adapter = channel_mgr.get_adapter("weixin")
+            if not weixin_config.should_auto_start():
+                if weixin_adapter:
+                    _schedule_async(channel_mgr.unregister_adapter("weixin"))
+                    logger.warning("[AgentDI] 微信通道已停用，正在移除适配器...")
+            elif not weixin_adapter:
+                _schedule_async(_do_weixin_channel_start(channel_mgr, weixin_config))
+                logger.info("[AgentDI] 微信通道配置已热更新，正在启动...")
         except Exception as e:
             logger.error("[AgentDI] Channels 配置热更新失败: %s", e, exc_info=True)
 

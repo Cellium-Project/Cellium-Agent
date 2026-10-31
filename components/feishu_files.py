@@ -25,6 +25,7 @@ class FeishuFiles(BaseCell):
     """
 
     cell_name = "feishu_files"
+    required_channel = "feishu"
 
     def __init__(self):
         super().__init__()

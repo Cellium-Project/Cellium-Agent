@@ -23,6 +23,7 @@ class TelegramFiles(BaseCell):
     """
 
     cell_name = "telegram_files"
+    required_channel = "telegram"
 
     def __init__(self):
         super().__init__()

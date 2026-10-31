@@ -24,6 +24,7 @@ class QQFiles(BaseCell):
     """
 
     cell_name = "qq_files"
+    required_channel = "qq"
 
     def __init__(self):
         super().__init__()

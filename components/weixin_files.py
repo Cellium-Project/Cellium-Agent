@@ -22,6 +22,7 @@ class WeixinFiles(BaseCell):
     """
 
     cell_name = "weixin_files"
+    required_channel = "weixin"
 
     def __init__(self):
         super().__init__()
