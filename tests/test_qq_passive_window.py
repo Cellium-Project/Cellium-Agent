@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import unittest
 from unittest import mock
 
@@ -103,6 +104,71 @@ class PassiveWindowTrackerTest(unittest.TestCase):
         self.assertEqual(len(server.requests), 0)
         self.assertTrue(adapter._passive.has_pending("G"))
 
+    def test_markdown_disable_is_per_scene(self):
+        server = FakeGroupServer()
+        server.status_sequence = [400, 200]
+        server.err_code = 50055
+        adapter = _make_adapter()
+        adapter._passive.note_inbound("G", "M1")
+
+        with _patch_client(server):
+            asyncio.run(adapter.send_message("G", "text", "group", msg_id="M1", markdown=True))
+            asyncio.run(adapter.send_message("G", "text", "group", msg_id="M1", markdown=True))
+
+        self.assertEqual(server.payloads()[0]["msg_type"], 2)
+        self.assertEqual(server.payloads()[1]["msg_type"], 0)
+        self.assertEqual(server.payloads()[2]["msg_type"], 0)
+        self.assertFalse(adapter._md_available("group"))
+        self.assertTrue(adapter._md_available("c2c"))
+
+    def test_markdown_retries_after_cooldown(self):
+        server = FakeGroupServer()
+        adapter = _make_adapter()
+        adapter._passive.note_inbound("G", "M1")
+        adapter._md_disabled_until["group"] = time.time() - 1
+
+        with _patch_client(server):
+            ok = asyncio.run(adapter.send_message("G", "text", "group", msg_id="M1", markdown=True))
+
+        self.assertTrue(ok)
+        self.assertEqual(server.payloads()[0]["msg_type"], 2)
+        self.assertTrue(adapter._md_available("group"))
+
+    def test_c2c_window_error_does_not_disable_group_markdown(self):
+        server = FakeGroupServer()
+        server.status = 400
+        server.err_code = 40034128
+        adapter = _make_adapter()
+
+        with _patch_client(server):
+            asyncio.run(adapter.send_message("U", "hi", "c2c", msg_id="M1", markdown=True))
+
+        self.assertEqual(len(server.requests), 1)
+        self.assertTrue(adapter._md_available("group"))
+
+        server.status = 200
+        server.err_code = None
+        adapter._passive.note_inbound("G", "M2")
+        with _patch_client(server):
+            ok = asyncio.run(adapter.send_message("G", "hi", "group", msg_id="M2", markdown=True))
+
+        self.assertTrue(ok)
+        self.assertEqual(server.payloads()[-1]["msg_type"], 2)
+
+    def test_c2c_markdown_failure_only_affects_c2c(self):
+        server = FakeGroupServer()
+        server.status_sequence = [400, 200]
+        server.err_code = 50055
+        adapter = _make_adapter()
+
+        with _patch_client(server):
+            ok = asyncio.run(adapter.send_message("U", "hi", "c2c", msg_id="M1", markdown=True))
+
+        self.assertTrue(ok)
+        self.assertEqual(server.payloads()[1]["msg_type"], 0)
+        self.assertFalse(adapter._md_available("c2c"))
+        self.assertTrue(adapter._md_available("group"))
+
     def test_expired_codes_mark_exhausted_without_markdown_fallback(self):
         for code in (40034005, 40034031, 40034128):
             with self.subTest(code=code):
@@ -120,7 +186,7 @@ class PassiveWindowTrackerTest(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertEqual(len(server.requests), 1)
                 self.assertEqual(adapter._passive.remaining("G"), 0)
-                self.assertFalse(adapter._md_unavailable)
+                self.assertTrue(adapter._md_available("group"))
                 self.assertTrue(adapter._passive.has_pending("G"))
 
     def test_markdown_failure_still_falls_back_to_plain(self):

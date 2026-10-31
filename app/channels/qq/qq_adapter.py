@@ -76,6 +76,9 @@ PASSIVE_REPLY_ERROR_HINTS: Dict[int, str] = {
     40034005: "被动回复的 msg_id 已过期",
 }
 
+# markdown 降级后的冷却时间（秒），到期自动重试 markdown
+MD_RETRY_COOLDOWN_SECONDS = 600
+
 # 上传缓存最大条目数
 MAX_UPLOAD_CACHE_SIZE = 500
 
@@ -280,7 +283,7 @@ class QQAdapter(ChannelAdapter):
 
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0
-        self._md_unavailable: bool = False
+        self._md_disabled_until: Dict[str, float] = {}
         self._msg_seq_counters: Dict[str, int] = {}
         self._passive = PassiveWindowTracker()
         self._maintenance_task: Optional[asyncio.Task] = None
@@ -536,6 +539,31 @@ class QQAdapter(ChannelAdapter):
         except Exception:
             logger.error(f"[QQAdapter] {scene} 发送失败: HTTP {resp.status_code}")
 
+    def _md_available(self, scene: str) -> bool:
+        until = self._md_disabled_until.get(scene, 0.0)
+        if until <= 0:
+            return True
+        if time.time() >= until:
+            self._md_disabled_until.pop(scene, None)
+            logger.info(f"[QQAdapter] {scene} markdown 冷却结束，恢复 markdown 发送")
+            return True
+        return False
+
+    def _disable_md(self, scene: str, err_code: Optional[int], content: str):
+        self._md_disabled_until[scene] = time.time() + MD_RETRY_COOLDOWN_SECONDS
+        logger.warning(
+            f"[QQAdapter] {scene} markdown 发送失败，降级为纯文本"
+            f" | err_code={err_code} len={len(content or '')}"
+            f" | {MD_RETRY_COOLDOWN_SECONDS // 60} 分钟后自动重试 markdown"
+        )
+
+    @staticmethod
+    def _err_code_of(resp: "httpx.Response") -> Optional[int]:
+        try:
+            return int(resp.json().get("err_code"))
+        except Exception:
+            return None
+
     def _next_msg_seq(self, msg_id: str) -> int:
         if not msg_id:
             return 1
@@ -568,7 +596,7 @@ class QQAdapter(ChannelAdapter):
             return False
         if len(content) > 4500:
             content = content[:4500] + "\n…"
-        if is_markdown and self._md_unavailable:
+        if is_markdown and not self._md_available("c2c"):
             is_markdown = False
         payload = self._build_msg_payload(content, msg_id, msg_seq, is_markdown)
 
@@ -576,8 +604,12 @@ class QQAdapter(ChannelAdapter):
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
                 self._log_send_error(resp, "C2C", payload)
+                err_code = self._err_code_of(resp)
                 if is_markdown:
-                    self._md_unavailable = True
+                    if err_code in MARKDOWN_FAIL_CODES:
+                        self._disable_md("c2c", err_code, content)
+                    if err_code in EXPIRED_CODES:
+                        return False
                     return await self._send_c2c_message(token, user_id, content, msg_id, False)
                 return False
             logger.debug(f"[QQAdapter] C2C sent: {resp.json().get('id', 'unknown')}, markdown={is_markdown}")
@@ -592,7 +624,7 @@ class QQAdapter(ChannelAdapter):
             return False, None
         if len(content) > 4500:
             content = content[:4500] + "\n…"
-        if is_markdown and self._md_unavailable:
+        if is_markdown and not self._md_available("group"):
             is_markdown = False
         payload = self._build_msg_payload(content, msg_id, msg_seq, is_markdown)
 
@@ -600,13 +632,9 @@ class QQAdapter(ChannelAdapter):
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
                 self._log_send_error(resp, "Group", payload)
-                err_code = None
-                try:
-                    err_code = int(resp.json().get("err_code"))
-                except Exception:
-                    err_code = None
+                err_code = self._err_code_of(resp)
                 if is_markdown and err_code in MARKDOWN_FAIL_CODES:
-                    self._md_unavailable = True
+                    self._disable_md("group", err_code, content)
                     return await self._send_group_message(token, group_id, content, msg_id, False)
                 return False, err_code
             logger.debug(f"[QQAdapter] Group sent: markdown={is_markdown}")
@@ -618,6 +646,8 @@ class QQAdapter(ChannelAdapter):
         payload = {"msg_id": msg_id}
         if guild_id:
             payload["guild_id"] = guild_id
+        if is_markdown and not self._md_available("guild"):
+            is_markdown = False
         if is_markdown:
             payload.update({"markdown": {"content": content}, "msg_type": 2})
         else:

@@ -252,9 +252,9 @@ class ComponentBuilder(BaseCell):
                 "使用前请用 file.edit 编辑本文件补充实现代码",
                 "调用时必须带 command 字段指定子命令名",
                 "如果不确定如何调用，可先调 help 查看用法",
-                "【调用 Agent 循环】如需启动 Agent 执行任务，可调用 self._run_agent(prompt)",
-                "  示例: result = self._run_agent('帮我分析这个日志文件')",
-                "  返回: {{'success': True, 'session_id': '...', 'status': 'started'}}",
+                "【调用 Agent 循环】如需触发 Agent 执行任务，可调用 self._trigger_agent(message, session_id)",
+                "  示例: result = self._trigger_agent('帮我分析这个日志文件', session_id='<会话ID>')",
+                "  返回: {{'success': True, 'result': {{...}}}}",
             ],
             "_call_format": {{
                 "note": "这是多命令模式工具，每次调用必须带 command 字段",
@@ -374,7 +374,7 @@ class ComponentBuilder(BaseCell):
                 "commands": [{c["name"]: c["desc"]} for c in cmd_list],
                 "has_help_method": True,
                 "has_agent_helper": True,
-                "agent_helper_note": "组件包含 _run_agent(prompt) 方法，可启动 Agent 循环执行任务",
+                "agent_helper_note": "组件包含 _trigger_agent(message, session_id) 方法，可触发 Agent 执行任务",
                 "reload_result": reload_result,
             }
         except Exception as e:
@@ -868,18 +868,18 @@ from app.core.interface.base_cell import BaseCell
 
 
 class MyComponent(BaseCell):
-    ""\u7ec4\u4ef2\u63cf\u8ff0""
+    """\u7ec4\u4ef6\u63cf\u8ff0"""
 
     @property
     def cell_name(self) -> str:
         return "my_component"
 
     def _cmd_do_something(self, input_text: str) -> Dict[str, Any]:
-        ""\u6267\u884c\u64cd\u4f5c""
+        """\u6267\u884c\u64cd\u4f5c"""
         return {"success": True, "result": f"\u5904\u7406\u4e86: {input_text}"}
 
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
-        ""\u67e5\u8be2\u7528\u6cd5\u5e2e\u52a9""
+        """\u67e5\u8be2\u7528\u6cd5\u5e2e\u52a9"""
         cmds = self.get_commands()
         return {"success": True, "name": self.cell_name, "commands": cmds, "notes": ["\u586b\u5199\u8be6\u7ec6\u7528\u6cd5"]}
 '''
@@ -1948,7 +1948,7 @@ class MyIntegration(BaseCell):
                 "info": {
                     "focused_command": topic,
                     "command_description": commands.get(topic),
-                    "hint": '调用示例: {"command":"info","info_name":"<组件名>"}',
+                    "hint": '调用示例: {"command":"info","name":"<组件名>"}',
                 },
                 "reload": {
                     "focused_command": topic,
