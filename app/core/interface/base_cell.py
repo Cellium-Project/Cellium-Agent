@@ -18,6 +18,9 @@ class BaseCell(ICell, metaclass=AutoInjectMeta):
 
     COMMAND_PREFIX = "_cmd_"
 
+    # 声明为后台组件：沙箱模式下启动心跳保活
+    IS_BACKGROUND = False
+
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
     

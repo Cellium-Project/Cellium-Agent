@@ -259,6 +259,7 @@ class ChannelManager:
                     }
                     if message.platform == "qq" and message.msg_id and not message.msg_id.startswith(("scheduler_", "component_")):
                         send_kwargs["msg_id"] = message.msg_id
+                        send_kwargs["user_id"] = message.user_id
                     await self.send_message(
                         message.platform,
                         self._resolve_target_id(message),
@@ -623,6 +624,7 @@ class ChannelManager:
             }
             if message.platform == "qq" and message.msg_id and not message.msg_id.startswith(("scheduler_", "component_")):
                 reply_kwargs["msg_id"] = message.msg_id
+                reply_kwargs["user_id"] = message.user_id
             try:
                 from app.server.task_manager import get_task_manager
                 task_mgr = get_task_manager()
@@ -737,6 +739,7 @@ class ChannelManager:
                     error_content,
                     message.message_type,
                     msg_id=message.msg_id,
+                    user_id=message.user_id,
                     guild_id=message.guild_id,
                     thread_id=message.thread_id,
                 )

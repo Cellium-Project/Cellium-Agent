@@ -2008,7 +2008,7 @@ class CelliumTUI(App):
         if self._is_user_selecting():
             self._pending_render_after_select = True
             return
-        # 50ms 合并窗口：高频 chunk 只触发一次渲染，SSH/低带宽链路下不刷屏
+        # 50ms 合并窗口：高频 chunk 只触发一次渲染
         if getattr(self, "_md_render_timer", None) is None:
             self._md_render_timer = self.set_timer(0.05, self._do_md_render)
 
@@ -2224,6 +2224,30 @@ class CelliumTUI(App):
                 self.chat.scroll_to_follow()
             except Exception:
                 pass
+            await self._enforce_chat_cap()
+        except Exception:
+            pass
+
+    async def _enforce_chat_cap(self, cap: int = 200):
+        """长会话限流：移除最旧的聊天控件，避免布局随对话轮次线性变慢"""
+        try:
+            if not getattr(self.chat, "_following", True):
+                return
+            children = list(self.chat.children)
+            excess = len(children) - cap
+            if excess <= 0:
+                return
+            protected = {
+                self._current_response, self._current_thinking,
+                self._current_reasoning, self._active_tool_card,
+            }
+            old = [w for w in children[:excess] if w not in protected]
+            if old:
+                await self.chat.remove_children(old)
+            live = set(self.chat.children)
+            for cid, card in list(self._tool_cards.items()):
+                if card not in live:
+                    self._tool_cards.pop(cid, None)
         except Exception:
             pass
 

@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import pickle
 import queue
 import sys
 import threading
@@ -138,6 +139,7 @@ def _sandbox_worker(input_queue, output_queue, module_path, class_name, init_arg
         from queue import Empty as QueueEmpty
 
         while True:
+            request = None
             try:
                 has_background = False
                 if hasattr(component, '_running'):
@@ -153,21 +155,35 @@ def _sandbox_worker(input_queue, output_queue, module_path, class_name, init_arg
                     break
 
                 action = request.get("action")
+                req_id = request.get("req_id")
+
+                def _reply(payload: dict):
+                    try:
+                        pickle.dumps(payload)
+                    except Exception as e:
+                        payload = {
+                            "status": "error",
+                            "error": f"结果不可序列化: {e}",
+                            "error_type": "UnpicklableResult",
+                        }
+                    if req_id is not None:
+                        payload["req_id"] = req_id
+                    output_queue.put(payload)
 
                 if action == "execute":
                     command = request.get("command", "")
                     args = request.get("args", [])
                     kwargs = request.get("kwargs", {})
                     result = component.execute(command, *args, **kwargs)
-                    output_queue.put({"status": "ok", "result": result})
+                    _reply({"status": "ok", "result": result})
 
                 elif action == "get_commands":
                     commands = component.get_commands()
-                    output_queue.put({"status": "ok", "commands": commands})
+                    _reply({"status": "ok", "commands": commands})
 
                 elif action == "get_command_params":
                     params_map = component.get_command_params() if hasattr(component, 'get_command_params') else {}
-                    output_queue.put({"status": "ok", "params_map": params_map})
+                    _reply({"status": "ok", "params_map": params_map})
 
                 elif action == "get_commands_meta":
                     commands_meta = {}
@@ -187,36 +203,39 @@ def _sandbox_worker(input_queue, output_queue, module_path, class_name, init_arg
                             except Exception:
                                 meta["params"] = []
                             commands_meta[cmd_name] = meta
-                    output_queue.put({"status": "ok", "commands_meta": commands_meta})
+                    _reply({"status": "ok", "commands_meta": commands_meta})
 
                 elif action == "has_method":
                     method_name = request.get("method_name", "")
                     has_it = hasattr(component, method_name) and callable(getattr(component, method_name))
-                    output_queue.put({"status": "ok", "has": has_it})
+                    _reply({"status": "ok", "has": has_it})
 
                 elif action == "ping":
-                    output_queue.put({"status": "pong"})
+                    _reply({"status": "pong"})
 
                 elif action == "heartbeat":
                     last_heartbeat = time.time()
                     has_bg = False
                     if hasattr(component, '_running'):
                         has_bg = component._running
-                    output_queue.put({"status": "ok", "has_background": has_bg})
+                    _reply({"status": "ok", "has_background": has_bg})
 
                 else:
-                    output_queue.put({"status": "error", "error": f"Unknown action: {action}"})
+                    _reply({"status": "error", "error": f"Unknown action: {action}"})
 
             except QueueEmpty:
                 continue
             except Exception as e:
                 error_str = str(e) or f"{type(e).__name__} (no error message)"
-                output_queue.put({
+                payload = {
                     "status": "error",
                     "error": error_str,
                     "error_type": type(e).__name__,
                     "traceback": traceback.format_exc(),
-                })
+                }
+                if request and isinstance(request, dict) and request.get("req_id") is not None:
+                    payload["req_id"] = request["req_id"]
+                output_queue.put(payload)
 
     except Exception as e:
         error_str = str(e) or f"{type(e).__name__} (no error message)"

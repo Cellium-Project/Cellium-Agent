@@ -15,27 +15,37 @@ class PassiveWindowTracker:
 
     def __init__(self):
         self._windows = {}
+        self._user_windows = {}
         self._usage = {}
         self._used_at = {}
         self._exhausted = set()
         self._pending = {}
         self._queue_mode_until = {}
 
-    def note_inbound(self, group_id: str, msg_id: str):
+    def note_inbound(self, group_id: str, msg_id: str, user_id: str = ""):
         if not group_id or not msg_id:
             return
         if msg_id.startswith(("scheduler_", "component_")):
             return
-        self._windows[group_id] = {"msg_id": msg_id, "received_at": time.time()}
+        now = time.time()
+        self._windows[group_id] = {"msg_id": msg_id, "received_at": now}
+        if user_id:
+            self._user_windows[(group_id, user_id)] = {"msg_id": msg_id, "received_at": now}
         self._queue_mode_until.pop(group_id, None)
-        self._drop_expired_pending(group_id, time.time())
+        self._drop_expired_pending(group_id, now)
 
-    def resolve(self, group_id: str, preferred: str = "") -> str:
+    def resolve(self, group_id: str, preferred: str = "", user_id: str = "") -> str:
         now = time.time()
         if preferred:
             win = self._window_by_msg_id(preferred)
             if win and self._window_valid(win, now):
                 return preferred
+        if user_id:
+            # 只挂同一触发者的消息
+            uwin = self._user_windows.get((group_id, user_id))
+            if uwin and self._window_valid(uwin, now):
+                return uwin["msg_id"]
+            return ""
         win = self._windows.get(group_id)
         if win and self._window_valid(win, now):
             return win["msg_id"]
@@ -64,11 +74,11 @@ class PassiveWindowTracker:
             return
         self._exhausted.add(msg_id)
 
-    def enqueue(self, group_id: str, content: str):
+    def enqueue(self, group_id: str, content: str, user_id: str = ""):
         if not group_id or not (content or "").strip():
             return
         items = self._pending.setdefault(group_id, deque())
-        items.append({"content": content, "created_at": time.time()})
+        items.append({"content": content, "created_at": time.time(), "user_id": user_id})
         while len(items) > PENDING_MAX_ITEMS:
             items.popleft()
         self.set_queue_mode(group_id)
@@ -87,23 +97,46 @@ class PassiveWindowTracker:
         self._queue_mode_until.pop(group_id, None)
         return False
 
-    def has_pending(self, group_id: str) -> bool:
-        return bool(self._pending.get(group_id))
+    def _pending_items(self, group_id: str, user_id: str = "") -> list:
+        return [
+            item for item in self._pending.get(group_id, ())
+            if not item.get("user_id") or item.get("user_id") == user_id
+        ]
 
-    def peek_pending(self, group_id: str) -> list:
-        return [item["content"] for item in self._pending.get(group_id, ())]
+    def has_pending(self, group_id: str, user_id: str = "") -> bool:
+        return bool(self._pending_items(group_id, user_id))
 
-    def replace_pending(self, group_id: str, contents: list):
-        items = [{"content": c, "created_at": time.time()} for c in contents if c]
-        if not items:
+    def peek_pending(self, group_id: str, user_id: str = "") -> list:
+        return [item["content"] for item in self._pending_items(group_id, user_id)]
+
+    def replace_pending(self, group_id: str, contents: list, user_id: str = ""):
+        items = self._pending.get(group_id)
+        kept = deque(
+            item for item in (items or ())
+            if item.get("user_id") and item.get("user_id") != user_id
+        )
+        for c in contents:
+            if c:
+                kept.append({"content": c, "created_at": time.time(), "user_id": user_id})
+        while len(kept) > PENDING_MAX_ITEMS:
+            kept.popleft()
+        if kept:
+            self._pending[group_id] = kept
+        else:
             self._pending.pop(group_id, None)
-            return
-        while len(items) > PENDING_MAX_ITEMS:
-            items.pop(0)
-        self._pending[group_id] = deque(items)
 
-    def clear_pending(self, group_id: str):
-        self._pending.pop(group_id, None)
+    def clear_pending(self, group_id: str, user_id: str = ""):
+        items = self._pending.get(group_id)
+        if not items:
+            return
+        kept = deque(
+            item for item in items
+            if item.get("user_id") and item.get("user_id") != user_id
+        )
+        if kept:
+            self._pending[group_id] = kept
+        else:
+            self._pending.pop(group_id, None)
 
     def purge(self, now=None):
         now = time.time() if now is None else now
@@ -115,6 +148,10 @@ class PassiveWindowTracker:
                 self._usage.pop(msg_id, None)
                 self._used_at.pop(msg_id, None)
                 self._exhausted.discard(msg_id)
+
+        for key, uwin in list(self._user_windows.items()):
+            if now - uwin["received_at"] > 600:
+                self._user_windows.pop(key, None)
 
         for group_id, items in list(self._pending.items()):
             kept = deque(
@@ -131,6 +168,7 @@ class PassiveWindowTracker:
                 self._queue_mode_until.pop(group_id, None)
 
         window_ids = {win["msg_id"] for win in self._windows.values()}
+        window_ids.update(uwin["msg_id"] for uwin in self._user_windows.values())
         for msg_id in list(self._usage.keys()):
             if msg_id in window_ids:
                 continue
@@ -152,6 +190,9 @@ class PassiveWindowTracker:
         for win in self._windows.values():
             if win["msg_id"] == msg_id:
                 return win
+        for uwin in self._user_windows.values():
+            if uwin["msg_id"] == msg_id:
+                return uwin
         return None
 
     def _window_valid(self, win: dict, now: float) -> bool:

@@ -48,6 +48,8 @@ class SandboxProcess:
         self._class_name = None
         self._is_executing = False
         self._ipc_lock = threading.Lock()
+        self._request_seq = 0
+        self._pending_response_id = None
 
     def start(self, module_path: str, class_name: str, init_args: Dict = None, project_root: str = None, retry: int = 2):
         """
@@ -104,9 +106,18 @@ class SandboxProcess:
             raise RuntimeError(f"Sandbox init failed after {retry + 1} attempts: {last_error}")
 
     def _send_and_recv(self, request: Dict, timeout: float = None) -> Dict:
-        """线程安全地发送请求并接收响应"""
+        """线程安全地发送请求并接收响应（请求/响应按 req_id 配对，超时后丢弃迟到响应防错位）"""
+        self._request_seq += 1
+        req_id = self._request_seq
+        request["req_id"] = req_id
         self._input_queue.put(request)
-        return self._output_queue.get(timeout=timeout or self._timeout)
+        while True:
+            response = self._output_queue.get(timeout=timeout or self._timeout)
+            rid = response.get("req_id") if isinstance(response, dict) else None
+            if rid is None or rid == req_id:
+                return response
+            # 陈旧响应（前一个超时请求迟到的结果），丢弃继续等
+            logger.warning("[Sandbox] 丢弃陈旧响应（req_id=%s，等待 %s）", rid, req_id)
 
     def execute(self, command: str, *args, **kwargs) -> Any:
         """
@@ -265,6 +276,7 @@ class SandboxProcess:
 
 # 全局沙箱实例缓存
 _sandbox_instances: Dict[str, 'ComponentSandbox'] = {}
+_persisted_sandbox_states: Dict[str, Any] = {}  # 沙箱回收前保存的组件状态，重初始化时回注
 
 MAX_SANDBOX_COUNT = 15  # 最大沙箱数量
 IDLE_TIMEOUT_SECONDS = 300  # 空闲超时（5分钟）
@@ -275,26 +287,37 @@ _sandbox_cleanup_thread: Optional[threading.Thread] = None
 _sandbox_cleanup_stop_event = threading.Event()
 
 
+def _save_sandbox_state(name: str, sandbox: 'ComponentSandbox'):
+    """回收前尝试导出组件状态"""
+    saved = sandbox.try_call("on_sandbox_save", timeout=10)
+    if isinstance(saved, dict) and saved.get("state") is not None:
+        _persisted_sandbox_states[name] = saved["state"]
+        logger.info("[Sandbox] 已保存沙箱 %s 的组件状态", name)
+
+
 def _cleanup_idle_sandboxes():
-    """后台线程：定期清理空闲沙箱"""
+    """后台线程：定期清理空闲沙箱（销毁前给组件 on_sandbox_save 落状态的机会）"""
     while not _sandbox_cleanup_stop_event.is_set():
         try:
-            time.sleep(60)  
-            
+            time.sleep(60)
+
             with _sandbox_lock:
                 current_time = time.time()
                 to_remove = []
-                
+
                 for name, last_used in list(_sandbox_last_used.items()):
                     if current_time - last_used > IDLE_TIMEOUT_SECONDS:
                         sandbox = _sandbox_instances.get(name)
                         if sandbox and not sandbox.is_busy():
                             to_remove.append(name)
-                
+
                 for name in to_remove:
                     logger.info("[SandboxCleanup] 清理空闲沙箱: %s", name)
+                    sandbox = _sandbox_instances.get(name)
+                    if sandbox:
+                        _save_sandbox_state(name, sandbox)
                     ComponentSandbox.remove_sandbox(name)
-                    
+
         except Exception as e:
             logger.error("[SandboxCleanup] 清理线程错误: %s", e)
 
@@ -349,6 +372,7 @@ class ComponentSandbox(ICell):
         """
         self._name = name
         self._sandbox: Optional[SandboxProcess] = None
+        self._initializing = False  # 初始化中标记：防止 LRU 淘汰掉正在初始化的沙箱
         self._commands_meta: Dict[str, Dict[str, Any]] = {}  # 缓存命令元信息
         self._source_file: Optional[str] = None  # 组件源文件路径
         _start_cleanup_thread()  # 确保清理线程在运行
@@ -367,10 +391,14 @@ class ComponentSandbox(ICell):
             class_name: 组件类名
             init_args: 初始化参数
         """
-        self._sandbox = SandboxProcess()
-        self._sandbox.start(module_path, class_name, init_args)
-        self._commands_meta = self._sandbox.get_commands_meta()
-        self._source_file = module_path
+        self._initializing = True
+        try:
+            self._sandbox = SandboxProcess()
+            self._sandbox.start(module_path, class_name, init_args)
+            self._commands_meta = self._sandbox.get_commands_meta()
+            self._source_file = module_path
+        finally:
+            self._initializing = False
         logger.debug("[ComponentSandbox] 缓存命令元信息: %s", list(self._commands_meta.keys()))
 
     def get_command_meta(self, command_name: str) -> Dict[str, Any]:
@@ -386,6 +414,42 @@ class ComponentSandbox(ICell):
         if not self._sandbox:
             raise RuntimeError("Sandbox not initialized")
         return self._sandbox.execute(command, *args, **kwargs)
+
+    def restore_state(self, state: Any) -> bool:
+        """向沙箱内组件注入状态（组件实现 _cmd_on_sandbox_restore 后生效）"""
+        ipc = self._sandbox
+        if not ipc or not ipc._initialized:
+            return False
+        try:
+            with ipc._ipc_lock:
+                resp = ipc._send_and_recv(
+                    {"action": "execute", "command": "on_sandbox_restore", "args": (), "kwargs": {"state": state}},
+                    timeout=30,
+                )
+            ok = isinstance(resp, dict) and resp.get("status") == "ok"
+            if not ok:
+                logger.warning("[ComponentSandbox] restore_state 失败: %s", resp.get("error") if isinstance(resp, dict) else resp)
+            return ok
+        except Exception as e:
+            logger.warning("[ComponentSandbox] restore_state 失败: %s", e)
+            return False
+
+    def try_call(self, command: str, timeout: float = 10) -> Any:
+        """限时调用组件命令，失败/超时返回 None（用于 save/restore 等管理性回调，避免挂死主流程）"""
+        ipc = self._sandbox
+        if not ipc or not ipc._initialized:
+            return None
+        try:
+            with ipc._ipc_lock:
+                resp = ipc._send_and_recv(
+                    {"action": "execute", "command": command, "args": (), "kwargs": {}},
+                    timeout=timeout,
+                )
+            if isinstance(resp, dict) and resp.get("status") == "ok":
+                return resp.get("result")
+        except Exception:
+            return None
+        return None
 
     def get_commands(self) -> Dict[str, str]:
         """获取支持的命令列表"""
@@ -417,7 +481,9 @@ class ComponentSandbox(ICell):
         return self._sandbox is not None and self._sandbox._process is not None and self._sandbox._process.is_alive()
 
     def is_busy(self) -> bool:
-        """检查沙箱是否正在执行命令"""
+        """检查沙箱是否正在执行命令或初始化中"""
+        if self._initializing:
+            return True
         if not self._sandbox:
             return False
         return self._sandbox.is_busy()
@@ -446,33 +512,34 @@ class ComponentSandbox(ICell):
     def get_sandbox(cls, name: str) -> 'ComponentSandbox':
         """
         获取或创建沙箱实例
-        
+
         Args:
             name: 组件名称
-            
+
         Returns:
             ComponentSandbox 实例
         """
         with _sandbox_lock:
             _sandbox_last_used[name] = time.time()
-            
+
             if name in _sandbox_instances:
                 return _sandbox_instances[name]
-            
+
             if len(_sandbox_instances) >= MAX_SANDBOX_COUNT:
                 sorted_names = sorted(
                     _sandbox_last_used.keys(),
                     key=lambda n: _sandbox_last_used.get(n, 0)
                 )
-                
+
                 for old_name in sorted_names:
                     if old_name != name and old_name in _sandbox_instances:
                         old_sandbox = _sandbox_instances[old_name]
                         if not old_sandbox.is_busy():
                             logger.info("[SandboxLRU] 淘汰旧沙箱: %s", old_name)
+                            _save_sandbox_state(old_name, old_sandbox)
                             cls.remove_sandbox(old_name)
                             break
-            
+
             _sandbox_instances[name] = cls(name)
             return _sandbox_instances[name]
 

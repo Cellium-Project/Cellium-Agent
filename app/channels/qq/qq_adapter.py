@@ -444,7 +444,7 @@ class QQAdapter(ChannelAdapter):
                 if message_type == "c2c":
                     return await self._send_c2c_message(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
                 elif message_type == "group":
-                    return await self._send_group_with_windows(token, target_id, content, kwargs.get("msg_id", ""), is_markdown)
+                    return await self._send_group_with_windows(token, target_id, content, kwargs.get("msg_id", ""), is_markdown, user_id=kwargs.get("user_id", ""))
                 elif message_type == "guild":
                     return await self._send_guild_message(token, target_id, guild_id, content, kwargs.get("msg_id", ""), is_markdown)
             except Exception as e:
@@ -459,14 +459,15 @@ class QQAdapter(ChannelAdapter):
         content: str,
         msg_id: str,
         is_markdown: bool = False,
+        user_id: str = "",
     ) -> bool:
         self._passive.purge()
-        if self._passive.has_pending(group_id) and self._passive.remaining(group_id) > 0:
-            msg_id = await self._flush_pending(group_id, self._passive.resolve(group_id, msg_id), token)
-        msg_id = self._passive.resolve(group_id, msg_id)
+        if self._passive.has_pending(group_id, user_id) and self._passive.remaining(group_id) > 0:
+            msg_id = await self._flush_pending(group_id, self._passive.resolve(group_id, msg_id, user_id), token, user_id)
+        msg_id = self._passive.resolve(group_id, msg_id, user_id)
         if self._passive.queue_mode_active(group_id) or not msg_id:
             if (content or "").strip():
-                self._passive.enqueue(group_id, content)
+                self._passive.enqueue(group_id, content, user_id)
                 logger.warning(
                     f"[QQAdapter] 群 {group_id} 暂无可用被动回复窗口，内容已入队等待下一条消息补发"
                 )
@@ -476,7 +477,7 @@ class QQAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[QQAdapter] 群 {group_id} 发送异常: {e}")
             if (content or "").strip():
-                self._passive.enqueue(group_id, content)
+                self._passive.enqueue(group_id, content, user_id)
             return False
         if ok:
             self._passive.mark_used(msg_id)
@@ -484,17 +485,17 @@ class QQAdapter(ChannelAdapter):
         if err_code in EXPIRED_CODES:
             self._passive.mark_exhausted(msg_id)
             if (content or "").strip():
-                self._passive.enqueue(group_id, content)
+                self._passive.enqueue(group_id, content, user_id)
                 logger.warning(
                     f"[QQAdapter] 群 {group_id} 被动回复窗口失效（err_code={err_code}），内容已入队等待补发"
                 )
         return False
 
-    async def _flush_pending(self, group_id: str, msg_id: str, token: str) -> str:
-        if not self._passive.has_pending(group_id):
+    async def _flush_pending(self, group_id: str, msg_id: str, token: str, user_id: str = "") -> str:
+        if not self._passive.has_pending(group_id, user_id):
             return msg_id
-        text = "".join(self._passive.peek_pending(group_id))
-        self._passive.clear_pending(group_id)
+        text = "".join(self._passive.peek_pending(group_id, user_id))
+        self._passive.clear_pending(group_id, user_id)
         if not text.strip():
             return msg_id
         chunks = split_markdown(text, max_len=4500)
@@ -518,7 +519,7 @@ class QQAdapter(ChannelAdapter):
             logger.error(f"[QQAdapter] 补发排队内容失败: {e}")
         leftover = chunks[sent:]
         if leftover:
-            self._passive.replace_pending(group_id, leftover)
+            self._passive.replace_pending(group_id, leftover, user_id)
             self._passive.set_queue_mode(group_id)
         return current
 
@@ -682,7 +683,10 @@ class QQAdapter(ChannelAdapter):
             atts = self._render_attachments(d.get("attachments") or [])
             if atts:
                 content = f"{content}\n{atts}" if content else atts
-            self._passive.note_inbound(d.get("group_openid", ""), d.get("id", ""))
+            self._passive.note_inbound(
+                d.get("group_openid", ""), d.get("id", ""),
+                user_id=d.get("author", {}).get("member_openid", ""),
+            )
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("author", {}).get("member_openid", ""),
@@ -738,7 +742,10 @@ class QQAdapter(ChannelAdapter):
             content = f"[用户发送了一个文件]\n文件名: {filename}\n大小: {size} bytes"
             if url:
                 content += f"\n下载链接: {url}"
-            self._passive.note_inbound(d.get("group_openid", ""), d.get("id", ""))
+            self._passive.note_inbound(
+                d.get("group_openid", ""), d.get("id", ""),
+                user_id=d.get("user_openid", ""),
+            )
             return UnifiedMessage(
                 platform="qq",
                 user_id=d.get("user_openid", ""),
@@ -1084,14 +1091,12 @@ class QQAdapter(ChannelAdapter):
             if file_size > UPLOAD_HARD_LIMIT:
                 return {"error": f"文件大小超过平台上限 200MB: {file_size / 1024 / 1024:.2f}MB"}
 
-            # 超过软限制时平台会降级为「文件」类型，主动降级以走对应的上传分支
             if file_type != 4 and file_size > UPLOAD_SIZE_LIMITS[file_type]:
                 logger.info(
                     f"[QQAdapter] 文件 {file_name} 超过类型 {file_type} 软限制，降级为文件类型上传"
                 )
                 file_type = 4
 
-            # 后缀不受平台支持时同样降级为文件，避免 850019 错误
             allowed_ext = MEDIA_EXTENSIONS.get(file_type)
             if allowed_ext and file_path_obj.suffix.lower() not in allowed_ext:
                 logger.info(
@@ -1385,7 +1390,8 @@ class QQAdapter(ChannelAdapter):
         file_path: str,
         file_type: int,
         is_group: bool = False,
-        msg_id: Optional[str] = None
+        msg_id: Optional[str] = None,
+        user_id: str = ""
     ) -> Dict[str, Any]:
         """上传并以 msg_type=7 发送富媒体消息，返回详细结果
 
@@ -1395,6 +1401,7 @@ class QQAdapter(ChannelAdapter):
             file_type: 1=图片 2=视频 3=语音 4=文件
             is_group: 是否是群聊
             msg_id: 被动回复的消息 ID；缺失时会按主动消息发送（群聊每月仅 4 条）
+            user_id: 触发者 OpenID（群聊被动窗口失效时优先挂同一触发者的消息）
 
         Returns:
             {"success": True, "message_id": ..., "file_info": ...}
@@ -1410,7 +1417,7 @@ class QQAdapter(ChannelAdapter):
             preferred = ""
             if msg_id and not msg_id.startswith(("scheduler_", "component_")):
                 preferred = msg_id
-            msg_id = self._passive.resolve(target_id, preferred)
+            msg_id = self._passive.resolve(target_id, preferred, user_id)
             if self._passive.remaining(target_id, msg_id) <= 0:
                 return {
                     "success": False,
@@ -1516,12 +1523,13 @@ class QQAdapter(ChannelAdapter):
         file_path: str,
         file_type: int = 4,
         is_group: bool = False,
-        msg_id: Optional[str] = None
+        msg_id: Optional[str] = None,
+        user_id: str = ""
     ) -> Dict[str, Any]:
         """发送富媒体消息（不会抛异常），返回详细结果供上层展示错误原因"""
         try:
             return await self._send_media_message(
-                target_id, file_path, file_type, is_group=is_group, msg_id=msg_id
+                target_id, file_path, file_type, is_group=is_group, msg_id=msg_id, user_id=user_id
             )
         except Exception as e:
             logger.error(f"[QQAdapter] 发送富媒体消息失败: {e}")
@@ -1532,11 +1540,12 @@ class QQAdapter(ChannelAdapter):
         target_id: str,
         file_path: str,
         is_group: bool = False,
-        msg_id: Optional[str] = None
+        msg_id: Optional[str] = None,
+        user_id: str = ""
     ) -> bool:
         """上传并发送文件消息，返回是否成功（详细错误请用 send_media_message）"""
         result = await self.send_media_message(
-            target_id, file_path, file_type=4, is_group=is_group, msg_id=msg_id
+            target_id, file_path, file_type=4, is_group=is_group, msg_id=msg_id, user_id=user_id
         )
         return bool(result.get("success"))
 
@@ -1545,11 +1554,12 @@ class QQAdapter(ChannelAdapter):
         target_id: str,
         image_path: str,
         is_group: bool = False,
-        msg_id: Optional[str] = None
+        msg_id: Optional[str] = None,
+        user_id: str = ""
     ) -> bool:
         """上传并发送图片消息，返回是否成功（详细错误请用 send_media_message）"""
         result = await self.send_media_message(
-            target_id, image_path, file_type=1, is_group=is_group, msg_id=msg_id
+            target_id, image_path, file_type=1, is_group=is_group, msg_id=msg_id, user_id=user_id
         )
         return bool(result.get("success"))
 

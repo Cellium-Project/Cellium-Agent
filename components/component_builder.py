@@ -14,7 +14,7 @@
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 from app.core.interface.base_cell import BaseCell
 from app.core.util.components_loader import (
@@ -851,10 +851,11 @@ def example_function():
     def _cmd_template(self, style: str = "minimal") -> Dict[str, Any]:
         """
         获取组件模板代码
-        
+
         Args:
-            style: minimal / full / example / background
-            
+            style: minimal / full / example / background / permission
+                   permission = 第三方集成权限模板（命令级管控 + 跨组件黑名单），一般组件用不到
+
         Returns:
             {"template": 代码文本, "style": 风格名}
         """
@@ -906,6 +907,9 @@ from app.core.interface.base_cell import BaseCell
 
 class BackgroundMonitor(BaseCell):
     """\u540e\u53f0\u76d1\u63a7\u7ec4\u4ef6"""
+
+    # 后台组件声明：沙箱模式下启动心跳保活，空闲清理线程不会回收本沙箱
+    IS_BACKGROUND = True
 
     def __init__(self):
         super().__init__()
@@ -1039,8 +1043,102 @@ class BackgroundMonitor(BaseCell):
             else:
                 templates["example"] = templates["minimal"]
 
+        if style == "permission":
+            templates["permission"] = '''# -*- coding: utf-8 -*-
+"""
+权限模板 — 仅用于组件对接第三方平台的场景，一般组件不需要
+
+什么时候用这个：
+  你的组件把外部用户（QQ/微信等）的消息转成 Agent 任务时，需要控制
+  "哪些命令谁能调、经这个组件触发的任务能用哪些工具"。
+
+平时自己用的组件（计算器、文件、定时任务等）用 minimal/full 风格模板，
+不要用本模板。
+
+声明方式：把对应段复制进你的组件类即可，全部可选、不声明 = 不限制。
+"""
+
+from typing import Any, Dict
+
+from app.core.interface.base_cell import BaseCell
+
+
+class MyIntegration(BaseCell):
+    """
+    第三方集成组件 — 权限声明示例
+
+    权限分三层，按需取用：
+      1. TOOL_POLICY          本组件内，哪条命令谁能调（命令级）
+      2. TRIGGER_TOOL_POLICY  经本组件触发的 Agent 任务，禁用哪些工具（跨组件）
+      3. is_policy_admin      "admin" 策略的判定依据（用了 admin 策略就必须实现）
+    """
+
+    @property
+    def cell_name(self) -> str:
+        return "my_integration"
+
+    # ================================================================
+    # 第 1 层：本组件命令级权限（谁能调哪条命令）
+    # 键 = 命令名（不带 _cmd_ 前缀）
+    # ================================================================
+
+    TOOL_POLICY = {
+        "reset": "deny",            # 所有人禁用（包括管理员）
+        "add_user": "admin",        # 仅管理员（需实现 is_policy_admin）
+        # 用户黑名单：列表内用户被禁，其他人可用
+        "shutdown": {"mode": "blacklist", "users": ["12345"]},
+        # 用户白名单：仅列表内用户可用
+        "send_private": {"mode": "whitelist", "users": ["10001"]},
+    }
+    TOOL_POLICY_DEFAULT = "allow"   # 未列出的命令默认放行（可改 "admin" 全默认仅管理员）
+
+    def is_policy_admin(self, platform_context=None) -> bool:
+        """
+        "admin" 策略的判定依据 — 用了 "admin" 策略的组件必须实现
+
+        注意：未实现时所有 admin 命令一律拒绝（按非管理员处理）；
+        方法内部报错也会被当作非管理员，不要在这里抛异常。
+        """
+        user_id = str((platform_context or {}).get("user_id") or "")
+        return user_id in {"10001"}  # 换成你的管理员 ID 来源
+
+    # ================================================================
+    # 第 2 层：跨组件触发黑名单（经本组件触发的 Agent 任务禁用哪些工具）
+    # 键支持 "工具名" 或 "工具名.命令名"（精确到命令）
+    # 黑名单模式自动叠加系统默认兜底（shell/component 等本来就禁）
+    # ================================================================
+
+    TRIGGER_TOOL_POLICY = {
+        "mode": "blacklist",
+        "tools": [
+            "sub_agent",               # 禁子 Agent
+            "qq_files.download",       # 禁下载命令（qq_files 其他命令不受影响）
+        ],
+    }
+
+    # ================================================================
+    # 命令示例 — 被上面 TOOL_POLICY 管控的命令
+    # ================================================================
+
+    def _cmd_reset(self, **kwargs) -> Dict[str, Any]:
+        """重置配置（示例：被 deny，所有人都调不到）"""
+        return {"success": True, "message": "reset"}
+
+    def _cmd_add_user(self, user_id: str = "") -> Dict[str, Any]:
+        """添加用户（示例：仅管理员）"""
+        return {"success": True, "added": user_id}
+
+    def _cmd_send_private(self, to: str = "", text: str = "") -> Dict[str, Any]:
+        """发私信（示例：仅白名单用户）"""
+        return {"success": True, "to": to, "sent": text}
+
+    def _cmd_query(self, keyword: str = "") -> Dict[str, Any]:
+        """普通查询（未列入 TOOL_POLICY，走 DEFAULT=allow 所有人可用）"""
+        return {"success": True, "keyword": keyword}
+'''
+
         template = templates.get(style, templates["minimal"])
-        return {"success": True, "template": template, "style": style, "available_styles": ["minimal", "full", "example", "background"]}
+        return {"success": True, "template": template, "style": style, "available_styles": ["minimal", "full", "example", "background", "permission"]}
 
     def _cmd_reload(self) -> Dict[str, Any]:
         """手动触发热重载扫描"""
@@ -1138,89 +1236,6 @@ class BackgroundMonitor(BaseCell):
         elif report.get("sandboxes_skipped") and not force:
             result["hint"] = f"\u6709 {len(report['sandboxes_skipped'])} \u4e2a\u6c99\u7bb1\u6b63\u5728\u8fd0\u884c\u88ab\u8df3\u8fc7\u3002\u5982\u9700\u5f3a\u5236\u6e05\u7406\uff0c\u8bf7\u4f7f\u7528 force=true"
 
-        return result
-
-    def _cmd_install(self, package: str = "", upgrade: bool = False) -> Dict[str, Any]:
-        pkg = (package or "").strip()
-        if not pkg:
-            return {
-                "success": False,
-                "error": "package 为必填",
-                "hint": '示例: {"command":"install","package":"cellium-comp-xxx"} 或 "pkg>=1.0.0"',
-            }
-        if pkg.startswith("-") or any(c in pkg for c in ";|&`$><\\\n\r'\""):
-            return {"success": False, "error": f"无效的包名: {package}"}
-
-        import subprocess
-        import sys as _sys
-
-        components_dir = get_components_dir()
-        try:
-            os.makedirs(components_dir, exist_ok=True)
-        except Exception as e:
-            return {"success": False, "error": f"组件目录不可写: {e}", "target_dir": str(components_dir)}
-
-        cmd = [
-            _sys.executable, "-m", "pip", "install", pkg,
-            "--target", str(components_dir),
-            "--disable-pip-version-check", "--no-input",
-        ]
-        if upgrade:
-            cmd.append("--upgrade")
-
-        def _run(pip_cmd):
-            try:
-                return subprocess.run(
-                    pip_cmd, capture_output=True, text=True,
-                    timeout=600, encoding="utf-8", errors="replace",
-                )
-            except subprocess.TimeoutExpired:
-                return None
-
-        proc = _run(cmd)
-        if proc is None:
-            return {"success": False, "error": "pip install 超时（600s）", "pip_cmd": " ".join(cmd[2:])}
-
-        # Linux 新发行版 PEP 668 系统保护，--target 也可能触发，降级重试
-        if proc.returncode != 0 and "externally-managed-environment" in (proc.stderr or ""):
-            cmd.append("--break-system-packages")
-            proc = _run(cmd)
-            if proc is None:
-                return {"success": False, "error": "pip install 超时（600s）", "pip_cmd": " ".join(cmd[2:])}
-
-        ok = proc.returncode == 0
-        result: Dict[str, Any] = {
-            "success": ok,
-            "package": pkg,
-            "target_dir": str(components_dir),
-            "pip_cmd": " ".join(cmd[2:]),
-            "stdout": (proc.stdout or "")[-3000:],
-            "stderr": (proc.stderr or "")[-2000:],
-        }
-        if not ok:
-            result["error"] = f"pip install 失败（exit={proc.returncode}）"
-            result["hint"] = "已装过同名包可带 upgrade=true 重试，或检查包名/网络"
-            return result
-
-        try:
-            from app.core.util.components_loader import hot_reload
-            from app.core.di.container import get_container as get_di
-            try:
-                container = get_di()
-            except Exception:
-                container = None
-            report = hot_reload(container=container)
-            result["reload"] = report
-            result["new_components"] = [a.get("name") for a in report.get("added", [])]
-            try:
-                from app.core.util.component_tool_registry import get_component_tool_registry
-                get_component_tool_registry().sync_from_components_loader()
-            except Exception:
-                pass
-            result["message"] = f"已安装 {pkg} 到 {components_dir} 并热重载"
-        except Exception as e:
-            result["reload_error"] = str(e)
-            result["message"] = f"已安装 {pkg}，但热重载失败，可手动 component.reload()"
         return result
 
     def _cmd_dir(self) -> Dict[str, Any]:
@@ -1411,6 +1426,425 @@ class BackgroundMonitor(BaseCell):
             result["hint"] = "调用 component.reload 后生效"
         return result
 
+    # ================================================================
+    # 本地组件安装（文件夹 / 压缩包）
+    # ================================================================
+
+    _ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")
+    _MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
+    _MAX_ARCHIVE_FILES = 500
+    _RISKY_PREFIXES = {
+        "os.system": "直接调用系统 shell",
+        "os.popen": "直接调用系统 shell",
+        "subprocess": "启动外部进程",
+        "eval": "动态执行字符串",
+        "exec": "动态执行代码",
+    }
+    _SKIP_DIRS = {"__pycache__", ".git", ".venv", "node_modules"}
+
+    def _cmd_install_local(self, path: str = "", force: bool = False, dry_run: bool = False) -> Dict[str, Any]:
+        """从本地文件夹或压缩包安装组件（先审查再装入）
+
+        支持的来源格式:
+          - 单文件组件: xxx.py
+          - 包组件目录: xxx/ (含 __init__.py 与 .py 模块)
+          - 压缩包: .zip / .tar / .tar.gz / .tgz / .tar.bz2 / .tar.xz（内含上述结构）
+
+        Args:
+            path: 本地路径（文件夹、.py 文件或压缩包）
+            force: 目标已存在时是否覆盖（默认 False）
+            dry_run: 只审查不安装（默认 False）
+
+        Returns:
+            {"success": True, "name": ..., "audit": {...}, "installed": [...]}
+        """
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        raw = (path or "").strip().strip('"').strip("'")
+        if not raw:
+            return {
+                "success": False,
+                "error": "缺少参数 path（文件夹或压缩包路径）",
+                "hint": '示例: {"command":"install_local","path":"D:/downloads/my_comp.zip"}',
+            }
+
+        src = Path(raw).expanduser()
+        if not src.exists():
+            return {"success": False, "error": f"路径不存在: {src}"}
+
+        tmpdir = None
+        try:
+            if src.is_file() and src.name.lower().endswith(self._ARCHIVE_SUFFIXES):
+                tmpdir = tempfile.mkdtemp(prefix="cellium_comp_")
+                err = self._safe_extract(src, Path(tmpdir))
+                if err:
+                    return err
+                work_root = Path(tmpdir)
+            else:
+                work_root = src
+
+            located = self._locate_component(work_root)
+            if isinstance(located, dict):
+                return located
+            kind, comp_path = located
+            name = comp_path.name if kind == "package" else comp_path.stem
+            if not self._valid_component_name(name):
+                return {
+                    "success": False,
+                    "error": f"无效的组件名 '{name}'：必须是 ASCII 合法 Python 标识符且不以 _ 开头",
+                    "hint": "请重命名文件或目录，如 my_comp.py；下划线开头的文件会被加载器忽略，非 ASCII 名无法作为模块导入",
+                }
+
+            audit = self._audit_component(kind, comp_path)
+            if not audit.get("ok"):
+                return {
+                    "success": False,
+                    "error": "审查未通过：未找到 BaseCell 组件类",
+                    "audit": audit,
+                    "hint": "组件类需继承 BaseCell（from app.core.interface.base_cell import BaseCell）",
+                }
+
+            name = comp_path.name if kind == "package" else comp_path.stem
+            components_dir = get_components_dir()
+            target = components_dir / (name if kind == "package" else f"{name}.py")
+            conflict = components_dir / (f"{name}.py" if kind == "package" else name)
+
+            if conflict.exists():
+                return {
+                    "success": False,
+                    "error": f"存在同名但不同格式的组件: {conflict}",
+                    "hint": "包组件与单文件组件不能同名，请改名后再装",
+                }
+            if target.exists() and not force:
+                return {
+                    "success": False,
+                    "error": f"组件已存在: {target}",
+                    "hint": "带 force=true 覆盖，或先删除已有组件",
+                    "audit": audit,
+                }
+
+            result: Dict[str, Any] = {
+                "success": True,
+                "name": name,
+                "kind": kind,
+                "source": str(comp_path),
+                "target": str(target),
+                "dry_run": bool(dry_run),
+                "audit": audit,
+                "overwritten": target.exists(),
+            }
+
+            if dry_run:
+                result["hint"] = "预览模式，未写入。确认无误后去掉 dry_run 再调用"
+                return result
+
+            try:
+                components_dir.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    shutil.rmtree(target) if kind == "package" else target.unlink()
+                if kind == "package":
+                    shutil.copytree(
+                        comp_path, target,
+                        ignore=shutil.ignore_patterns(*self._SKIP_DIRS, "*.pyc"),
+                    )
+                else:
+                    shutil.copy2(comp_path, target)
+            except Exception as e:
+                return {"success": False, "error": f"写入组件目录失败: {e}", "target": str(target)}
+
+            try:
+                reload_result = self._cmd_reload()
+                result["reload"] = reload_result.get("summary")
+                result["tools_registered"] = reload_result.get("tools_registered")
+                result["message"] = f"已安装 {name} 并热重载"
+            except Exception as e:
+                result["reload_error"] = str(e)
+                result["hint"] = "已复制到组件目录，但热重载失败，请手动调用 component.reload"
+
+            try:
+                from app.core.util.components_loader import get_load_errors
+                hit = {k: v for k, v in get_load_errors().items() if name in k}
+                if hit:
+                    result["load_errors"] = hit
+                    result["message"] = f"已安装 {name}，但加载报错，请查看 load_errors"
+            except Exception:
+                pass
+
+            return result
+        finally:
+            if tmpdir:
+                try:
+                    shutil.rmtree(tmpdir)
+                except Exception:
+                    pass
+
+    def _safe_extract(self, archive, dest) -> Optional[Dict[str, Any]]:
+        """安全解压：拦截路径穿越、限制体积与文件数"""
+        import tarfile
+        import zipfile
+        from pathlib import Path
+
+        total = 0
+        count = 0
+        too_big = {
+            "success": False,
+            "error": f"压缩包超限（上限 {self._MAX_ARCHIVE_BYTES // 1024 // 1024}MB / {self._MAX_ARCHIVE_FILES} 文件），拒绝解压",
+        }
+        try:
+            if archive.name.lower().endswith(".zip"):
+                with zipfile.ZipFile(archive) as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        parts = Path(info.filename.replace("\\", "/")).parts
+                        if ".." in parts or info.filename.startswith(("/", "\\")):
+                            return {"success": False, "error": f"压缩包含非法路径: {info.filename}"}
+                        total += info.file_size
+                        count += 1
+                        if total > self._MAX_ARCHIVE_BYTES or count > self._MAX_ARCHIVE_FILES:
+                            return too_big
+                    zf.extractall(dest)
+            else:
+                with tarfile.open(archive) as tf:
+                    for m in tf.getmembers():
+                        if not m.isfile():
+                            continue
+                        parts = Path(m.name).parts
+                        if ".." in parts or m.name.startswith("/"):
+                            return {"success": False, "error": f"压缩包含非法路径: {m.name}"}
+                        total += m.size
+                        count += 1
+                        if total > self._MAX_ARCHIVE_BYTES or count > self._MAX_ARCHIVE_FILES:
+                            return too_big
+                    kwargs = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+                    tf.extractall(dest, **kwargs)
+        except Exception as e:
+            return {"success": False, "error": f"解压失败: {e}"}
+        return None
+
+    @staticmethod
+    def _has_cell_class(py_path) -> bool:
+        """轻量 AST 检测：文件里是否定义了 BaseCell 子类"""
+        import ast
+        try:
+            tree = ast.parse(py_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for b in node.bases:
+                try:
+                    name = getattr(b, "id", "") or getattr(b, "attr", "") or ast.unparse(b)
+                except Exception:
+                    name = ""
+                if "BaseCell" in name:
+                    return True
+        return False
+
+    def _locate_component(self, root):
+        """定位组件根：根层优先，找不到再递归（兼容 src/ 等嵌套结构），只认含 BaseCell 的候选"""
+        from pathlib import Path
+
+        def _is_pkg(p) -> bool:
+            return p.is_dir() and (p / "__init__.py").exists()
+
+        def _pkg_has_cell(p) -> bool:
+            return any(self._has_cell_class(f) for f in p.rglob("*.py"))
+
+        def _skip(p) -> bool:
+            if p.name.startswith("."):
+                return True
+            return any(part in self._SKIP_DIRS for part in p.relative_to(root).parts)
+
+        if root.is_file():
+            return ("file", root) if root.suffix == ".py" else {
+                "success": False, "error": f"不支持的文件类型: {root.name}",
+            }
+        if _is_pkg(root):
+            return ("package", root)
+
+        entries = [e for e in root.iterdir() if not _skip(e)]
+        pkgs = [e for e in entries if _is_pkg(e) and _pkg_has_cell(e)]
+        pys = [
+            e for e in entries
+            if e.is_file() and e.suffix == ".py" and not e.name.startswith("_")
+            and self._has_cell_class(e)
+        ]
+
+        candidates = pkgs + pys
+        if not candidates:
+            found_pkgs = sorted(
+                (d for d in root.rglob("*")
+                 if d.is_dir() and _is_pkg(d) and not _skip(d) and _pkg_has_cell(d)),
+                key=lambda d: len(d.parts),
+            )
+            outer = []
+            for d in found_pkgs:
+                if not any(o in d.parents for o in outer):
+                    outer.append(d)
+            candidates = outer + [
+                p for p in root.rglob("*.py")
+                if not p.name.startswith("_") and not _skip(p)
+                and self._has_cell_class(p)
+                and not any(o in p.parents for o in outer)
+            ]
+
+        if len(candidates) == 1:
+            c = candidates[0]
+            return ("package", c) if c.is_dir() else ("file", c)
+        if not candidates:
+            return {
+                "success": False,
+                "error": "未找到组件：没有含 BaseCell 类的 .py 文件或包",
+                "dir": str(root),
+            }
+        return {
+            "success": False,
+            "error": "包含多个组件，无法确定安装目标",
+            "candidates": [p.relative_to(root).as_posix() for p in candidates],
+            "hint": "请分别打包，或传入具体组件的文件/目录路径",
+        }
+
+    @staticmethod
+    def _valid_component_name(name: str) -> bool:
+        """组件名必须是 ASCII 合法标识符且非下划线开头，否则加载器无法导入"""
+        return bool(name) and name.isascii() and name.isidentifier() and not name.startswith("_")
+
+    def _audit_component(self, kind: str, comp_path) -> Dict[str, Any]:
+        """静态审查：组件类、命令、依赖、危险调用"""
+        import ast
+        import importlib.util
+        import io
+        import sys
+        import tokenize
+        from pathlib import Path
+
+        if kind == "file":
+            py_files = [comp_path]
+            root = comp_path.parent
+        else:
+            py_files = sorted(p for p in comp_path.rglob("*.py") if p.is_file())
+            root = comp_path
+
+        total_bytes = sum(p.stat().st_size for p in py_files)
+        cells: list = []
+        risky: list = []
+        missing_deps: list = []
+        syntax_errors: list = []
+        skipped_modules: list = []
+        stdlib = getattr(sys, "stdlib_module_names", frozenset())
+
+        for py in py_files:
+            rel = py.relative_to(root).as_posix() if kind == "package" else py.name
+            # 与加载器保持一致：非法模块名无法导入，_ 开头的模块会被跳过
+            if kind == "package" and py.stem != "__init__":
+                if not (py.stem.isascii() and py.stem.isidentifier()):
+                    syntax_errors.append({
+                        "file": rel,
+                        "error": "模块文件名不是合法 Python 标识符，加载器无法导入",
+                    })
+                    continue
+                if py.stem.startswith("_"):
+                    skipped_modules.append(rel)
+                    continue
+            try:
+                raw = py.read_bytes()
+                enc, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+                text = raw.decode(enc)
+            except SyntaxError as e:
+                syntax_errors.append({"file": rel, "error": f"编码声明无效: {e}"})
+                continue
+            except UnicodeDecodeError as e:
+                syntax_errors.append({"file": rel, "error": f"文件编码无法解码: {e}"})
+                continue
+
+            try:
+                tree = ast.parse(text)
+            except SyntaxError as e:
+                syntax_errors.append({"file": rel, "error": f"{e.msg} (line {e.lineno})"})
+                continue
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and any(
+                    "BaseCell" in (getattr(b, "id", "") or getattr(b, "attr", "") or ast.unparse(b))
+                    for b in node.bases
+                ):
+                    cmds = [
+                        n.name[5:] for n in node.body
+                        if isinstance(n, ast.FunctionDef) and n.name.startswith("_cmd_")
+                    ]
+                    cells.append({
+                        "class": node.name,
+                        "file": rel,
+                        "cell_name": self._extract_cell_name(node, ast),
+                        "commands": cmds,
+                    })
+
+                if isinstance(node, ast.Call):
+                    fn = node.func
+                    name = fn.id if isinstance(fn, ast.Name) else ast.unparse(fn)
+                    for prefix, why in self._RISKY_PREFIXES.items():
+                        if name == prefix or name.startswith(prefix + "."):
+                            risky.append({"call": name, "file": rel, "why": why})
+                            break
+
+            for node in tree.body:
+                mods = []
+                if isinstance(node, ast.Import):
+                    mods = [a.name.split(".")[0] for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    mods = [node.module.split(".")[0]]
+                for mod in mods:
+                    if mod in stdlib or mod in {"app", "components", "config", "libs"}:
+                        continue
+                    try:
+                        if importlib.util.find_spec(mod) is None:
+                            missing_deps.append({"module": mod, "file": rel})
+                    except (ImportError, ValueError):
+                        missing_deps.append({"module": mod, "file": rel})
+
+        warnings = []
+        if kind == "package" and not (comp_path / "__init__.py").exists():
+            warnings.append("包目录缺少 __init__.py，可能无法被加载")
+        if len(cells) > 1:
+            warnings.append(f"发现 {len(cells)} 个 BaseCell 类，确认是否都需要")
+        if risky:
+            warnings.append(f"检测到 {len(risky)} 处对外部系统/动态执行的调用，请确认来源可信")
+        if missing_deps:
+            warnings.append(f"缺少 {len(set(d['module'] for d in missing_deps))} 个依赖模块，需先安装后再用该组件")
+        if skipped_modules:
+            warnings.append(f"{len(skipped_modules)} 个以 _ 开头的模块被加载器跳过: {skipped_modules}")
+
+        return {
+            "ok": bool(cells) and not syntax_errors,
+            "kind": kind,
+            "root": str(comp_path),
+            "py_files": len(py_files),
+            "total_bytes": total_bytes,
+            "cells": cells,
+            "commands": [c for cell in cells for c in cell["commands"]],
+            "risky_calls": risky,
+            "missing_deps": missing_deps,
+            "syntax_errors": syntax_errors,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _extract_cell_name(node, ast_mod) -> str:
+        for item in node.body:
+            if isinstance(item, ast_mod.Assign):
+                for t in item.targets:
+                    if getattr(t, "id", "") == "cell_name" and isinstance(item.value, ast_mod.Constant):
+                        return str(item.value.value)
+            if isinstance(item, ast_mod.FunctionDef) and item.name == "cell_name":
+                for sub in ast_mod.walk(item):
+                    if isinstance(sub, ast_mod.Return) and isinstance(sub.value, ast_mod.Constant):
+                        return str(sub.value.value)
+        return ""
+
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:
         """查询组件使用帮助（LLM 可通过此命令了解如何正确调用 component 工具）
         
@@ -1433,7 +1867,7 @@ class BackgroundMonitor(BaseCell):
                 {"command": "info", "args": {"name": "<组件名>"}, "description": "查看指定组件详情"},
                 {"command": "reload", "args": {}, "description": "手动触发热重载扫描"},
                 {"command": "dir", "args": {}, "description": "获取组件文件夹真实路径（自动区分 pip/绿色版）"},
-                {"command": "install", "args": {"package": "<pip包名>"}, "description": "pip 安装组件包到组件真实目录并热重载（Windows/Linux 通用）"},
+                {"command": "install_local", "args": {"path": "<文件夹或压缩包路径>"}, "description": "从本地文件夹/zip/tar.gz 安装组件（自动审查结构、组件类、依赖后装入）"},
                 {"command": "cleanup", "args": {"dry_run": True}, "description": "预览/清理组件缓存"},
                 {"command": "sandbox_list", "args": {}, "description": "查看免沙箱白名单（内置+自定义）"},
                 {"command": "sandbox_add", "args": {"name": "<组件名>"}, "description": "把组件加入免沙箱白名单，改后自动热重载"},
@@ -1531,17 +1965,19 @@ class BackgroundMonitor(BaseCell):
                         '路径自动兼容两种模式：绿色版返回项目 components/ 目录，pip 安装返回 cellium/components 数据目录'
                     ),
                 },
-                "install": {
+                "install_local": {
                     "focused_command": topic,
                     "command_description": commands.get(topic),
-                    "required_params": ["package"],
-                    "optional_params": ["upgrade"],
+                    "required_params": ["path"],
+                    "optional_params": ["force", "dry_run"],
                     "hint": (
                         '调用示例:\n'
-                        '  - {"command":"install","package":"cellium-comp-xxx"}\n'
-                        '  - {"command":"install","package":"pkg>=1.0.0","upgrade":true}\n'
-                        '说明: pip install --target=<组件真实目录>，Windows/Linux 通用，\n'
-                        '装完自动热重载并注册为 LLM 工具；已装过的包需带 upgrade=true'
+                        '  - {"command":"install_local","path":"D:/dl/my_comp.zip","dry_run":true}  # 先审查\n'
+                        '  - {"command":"install_local","path":"D:/dl/my_comp"}                     # 装文件夹\n'
+                        '  - {"command":"install_local","path":"D:/dl/my_comp","force":true}         # 覆盖已有\n'
+                        '支持: .py 单文件 / 含 __init__.py 的包目录 / .zip / .tar.gz；\n'
+                        '审查内容: 是否含 BaseCell 组件类、语法错误、第三方依赖缺失、危险调用（os.system/subprocess/eval 等告警）；\n'
+                        '装完自动热重载并注册为 LLM 工具'
                     ),
                 },
                 "cleanup": {

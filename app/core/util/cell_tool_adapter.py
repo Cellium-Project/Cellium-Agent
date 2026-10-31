@@ -439,14 +439,22 @@ class CellToolAdapter(BaseTool):
         if self._use_sandbox:
             from app.core.util.component_sandbox import ComponentSandbox
             sandbox = ComponentSandbox.get_sandbox(self.name)
-            
+
             needs_init = not sandbox._sandbox or not sandbox.is_alive()
             if needs_init:
                 source_file = self._get_component_source()
                 class_name = type(self._cell).__name__
                 if source_file:
                     try:
+                        # 旧实例若有未落盘状态，try_call 导出（限时 10s 防挂死），新实例起来后注入
+                        restore_state = sandbox.try_call("on_sandbox_save", timeout=10) if sandbox._sandbox else None
+                        if not (isinstance(restore_state, dict) and restore_state.get("state") is not None):
+                            from app.core.util.component_sandbox import _persisted_sandbox_states
+                            restore_state = {"state": _persisted_sandbox_states.pop(self.name, None)}
                         sandbox.initialize(source_file, class_name)
+                        state = restore_state.get("state") if isinstance(restore_state, dict) else None
+                        if state is not None:
+                            sandbox.restore_state(state)
                     except Exception as e:
                         logger.warning(
                             "[CellToolAdapter] %s 沙箱初始化失败，回退到直接模式: %s",
@@ -461,6 +469,8 @@ class CellToolAdapter(BaseTool):
                     self._use_sandbox = False
             
             if self._use_sandbox:
+                if getattr(self._cell, "IS_BACKGROUND", False):
+                    self._start_heartbeat()
                 available_cmds = self.get_commands()
                 if cmd_name not in available_cmds:
                     return {
@@ -498,7 +508,6 @@ class CellToolAdapter(BaseTool):
 
         if has_var_keyword:
             cleaned_args = dict(all_args)
-            # _intent 是描述元数据，不应传给组件方法
             cleaned_args.pop("_intent", None)
             if isinstance(cleaned_args.get("kwargs"), dict):
                 extra = cleaned_args.pop("kwargs")

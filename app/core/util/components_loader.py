@@ -735,19 +735,28 @@ def _instantiate_component(module_path: str, purge_cache: bool = False) -> tuple
 
         return instance, info
 
-    import re
-    s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
-    snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
-
+    # 优先用 module_path 携带的真实文件名（兼容类名与文件名不一致的第三方组件），再者按类名推导
+    stem_hint = module_name.split(".")[-1]
     file_path = None
     for scan_dir in scan_dirs:
-        candidate = scan_dir / f"{snake_name}.py"
+        candidate = scan_dir / f"{stem_hint}.py"
         if candidate.exists():
             file_path = candidate
             break
 
     if file_path is None:
-        raise ImportError(f"组件文件不存在: {snake_name}.py (扫描目录: {[str(d) for d in scan_dirs]})")
+        import re
+        s1 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', class_name)
+        snake_name = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s1).lower()
+
+        for scan_dir in scan_dirs:
+            candidate = scan_dir / f"{snake_name}.py"
+            if candidate.exists():
+                file_path = candidate
+                break
+
+    if file_path is None:
+        raise ImportError(f"组件文件不存在: {stem_hint}.py (扫描目录: {[str(d) for d in scan_dirs]})")
 
     old_file = None
     if module_name in sys.modules:
