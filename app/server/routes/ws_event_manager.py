@@ -35,6 +35,7 @@ class WSClient:
         self.client_id = client_id
         self.session_id = session_id
         self._closed = False
+        self.published_ids: set = set()  
 
     async def send(self, message: WSMessage):
         """发送消息到客户端"""
@@ -74,7 +75,6 @@ class WSConnectionManager:
         self._session_clients: Dict[str, Set[str]] = {}
         self._client_counter = 0
         self._cleanup_task: Optional[asyncio.Task] = None
-        self._published_event_ids: set = set()
         self._max_published_ids: int = 10000
 
     @classmethod
@@ -206,35 +206,31 @@ class WSConnectionManager:
 
         logger.debug(f"[WSManager] 广播完成: {message.type}, 客户端数: {len(self._clients)}")
 
-    def _is_duplicate_event(self, event_data: Dict[str, Any]) -> bool:
-        """检查事件是否已经推送过（去重）"""
+    def _client_seen(self, client: WSClient, event_data: Dict[str, Any]) -> bool:
+        """检查该客户端是否已收到过此事件（去重按客户端隔离，回放与实时推送共用）"""
         event_id = event_data.get("event_id")
         if event_id is None:
             return False
 
         session_id = event_data.get("session_id", "global")
         event_key = f"{session_id}:{event_id}"
-        if event_key in self._published_event_ids:
+        if event_key in client.published_ids:
             return True
 
-        self._published_event_ids.add(event_key)
-        if len(self._published_event_ids) > self._max_published_ids:
-            self._published_event_ids = set(list(self._published_event_ids)[-self._max_published_ids:])
+        client.published_ids.add(event_key)
+        if len(client.published_ids) > self._max_published_ids:
+            client.published_ids = set(list(client.published_ids)[-self._max_published_ids:])
         return False
 
     def clear_session_events(self, session_id: str):
-        """清理指定 session 的已推送事件记录"""
+        """清理指定 session 的已推送事件记录（含所有客户端，新任务 event_id 从 1 重启）"""
         prefix = f"{session_id}:"
-        to_remove = [key for key in self._published_event_ids if key.startswith(prefix)]
-        for key in to_remove:
-            self._published_event_ids.discard(key)
+        for client in self._clients.values():
+            for key in [k for k in client.published_ids if k.startswith(prefix)]:
+                client.published_ids.discard(key)
 
     async def send_to_session(self, session_id: str, message: WSMessage):
         """发送到特定 session 的所有客户端"""
-        if self._is_duplicate_event(message.data):
-            logger.debug(f"[WSManager] 事件已推送过，跳过 | session={session_id} | event_id={message.data.get('event_id')}")
-            return
-
         if session_id not in self._session_clients:
             logger.debug(f"[WSManager] session {session_id} 无关联客户端")
             return
@@ -243,6 +239,8 @@ class WSConnectionManager:
         for client_id in list(self._session_clients[session_id]):
             client = self._clients.get(client_id)
             if client:
+                if self._client_seen(client, message.data):
+                    continue
                 try:
                     await client.send(message)
                 except Exception as e:
@@ -259,6 +257,9 @@ class WSConnectionManager:
         client = self._clients.get(client_id)
         if not client:
             logger.warning(f"[WSManager] 客户端不存在: {client_id}")
+            return
+
+        if self._client_seen(client, message.data):
             return
 
         try:

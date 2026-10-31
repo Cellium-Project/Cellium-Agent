@@ -599,6 +599,9 @@ class ChannelManager:
             "target_id": self._resolve_target_id(message),
             "msg_id": message.msg_id,
         }
+        # 通道同名组件声明的跨组件黑名单（TRIGGER_TOOL_POLICY）自动并入
+        from app.core.interface.tool_policy import apply_component_tool_policy
+        session_info.platform_context = apply_component_tool_policy(session_info.platform_context, message.platform)
         if adapter:
             try:
                 is_file = await adapter.handle_file_message(message)

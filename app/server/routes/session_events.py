@@ -13,6 +13,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/session-events", tags=["sessions"])
 
 
+async def _replay_event_history(manager: "WSConnectionManager", client_id: str, session_id: str):
+    """订阅时回放运行中任务的已缓冲事件"""
+    try:
+        from app.server.routes.ws_event_manager import WSMessage
+        from app.server.task_manager import get_task_manager
+        task_mgr = get_task_manager()
+        if not task_mgr.has_running_task(session_id):
+            return
+        history = task_mgr.get_event_history(session_id)
+        if not history:
+            return
+        for event in history:
+            await manager.send_to_client(client_id, WSMessage(type="chat_event", data=event, session_id=session_id))
+        logger.info("[WS] 订阅回放事件历史 | session=%s | 共=%d", session_id, len(history))
+    except Exception as e:
+        logger.warning("[WS] 订阅回放事件历史失败 | session=%s | error=%s", session_id, e)
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -34,7 +52,7 @@ async def websocket_endpoint(
     - {"type": "task_result", "session_id": "xxx", "data": {...}}
     - {"type": "error", "message": "..."}
     """
-    from app.server.routes.ws_event_manager import WSConnectionManager, ws_publish_event
+    from app.server.routes.ws_event_manager import WSConnectionManager, WSMessage, ws_publish_event
 
     manager = await WSConnectionManager.get_instance()
 
@@ -72,6 +90,7 @@ async def websocket_endpoint(
                     target_session = message.get("session_id")
                     if target_session:
                         await manager.update_session(ws_client_id, target_session)
+                        await _replay_event_history(manager, ws_client_id, target_session)
                         await websocket.send_json({
                             "type": "subscribed",
                             "session_id": target_session

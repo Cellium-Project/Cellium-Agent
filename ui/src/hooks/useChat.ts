@@ -186,6 +186,8 @@ export function useChat() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const connectionIdRef = useRef(0);
   const lastEventIdBySessionRef = useRef<Record<string, number>>({});
+
+  const pendingEchoRef = useRef<Record<string, string | null>>({});
   const isManualCloseRef = useRef(false);
   
   const {
@@ -481,6 +483,7 @@ export function useChat() {
 
       case 'done':
         ctx.sawDone = true;
+        pendingEchoRef.current[sessionId] = null;
         // 在完成前刷新所有缓冲的chunk
         flushChunkBuffer(ctx, sessionId, connectionId);
         if (event.tool_traces && event.tool_traces.length > 0) {
@@ -545,10 +548,12 @@ export function useChat() {
       case 'message_received': {
         if (event.message) {
           const msgContent = String(event.message);
-          const existing = useAppStore.getState().messages.some(
-            (m) => m.role === 'user' && m.content === msgContent
-          );
-          if (!existing) {
+          if (pendingEchoRef.current[sessionId] === msgContent) {
+            // 本页自己发的消息：本地已添加，消费回声即可
+            pendingEchoRef.current[sessionId] = null;
+          } else {
+            // 非回声：必须显示，并清除残留回声防止误吞后续同内容消息
+            pendingEchoRef.current[sessionId] = null;
             addMessage({
               role: 'user',
               content: msgContent,
@@ -793,6 +798,7 @@ export function useChat() {
 
     const ctx = buildStreamingContext();
     lastEventIdBySessionRef.current[sessionId] = 0;
+    pendingEchoRef.current[sessionId] = content.trim();
     updateStreamingMessage({
       role: 'assistant',
       content: '',
@@ -820,8 +826,13 @@ export function useChat() {
       if (result.status === 'error') {
         throw new Error(result.error);
       }
+      // 服务端未受理本条消息（如任务被他端占用）：清除回声，避免误吞后续同内容消息
+      if (result.status !== 'started') {
+        pendingEchoRef.current[sessionId] = null;
+      }
 
     } catch (error: any) {
+      pendingEchoRef.current[sessionId] = null;
       if (error.name !== 'AbortError') {
         addMessage({ role: 'assistant', content: `错误: ${error.message}` });
         updateStreamingMessage(null);

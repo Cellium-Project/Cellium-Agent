@@ -2207,6 +2207,13 @@ class AgentLoop:
                 yield done_event
                 return
 
+        except asyncio.CancelledError:
+            try:
+                self._persist_conversation(user_input, None, effective_session, memory=effective_memory)
+            except Exception:
+                pass
+            raise
+
         except Exception as e:
             # Control Loop: 会话结束（异常）
             if self.control_loop and self._loop_state:
@@ -2230,6 +2237,10 @@ class AgentLoop:
                 error_message=str(e),
                 traceback=tb_module.format_exc(),
             )
+            try:
+                self._persist_conversation(user_input, None, effective_session, memory=effective_memory)
+            except Exception:
+                pass
             yield {"type": "error", "error": f"{type(e).__name__}: {str(e)}"}
 
     def _get_tools_definition(self) -> List[Dict]:
@@ -2320,11 +2331,20 @@ class AgentLoop:
             if not user_input and compact_idx >= 0:
                 round_messages = all_messages[compact_idx:]
             else:
+                # 锚定本轮 user_input（补充消息 drain 后会插入更晚的 user 消息，
+                # 盲取最后一条 user 会把本轮原始用户消息排除在归档外）
                 last_user_idx = -1
-                for i in range(len(all_messages) - 1, -1, -1):
-                    if all_messages[i].get("role") == "user" and not all_messages[i].get("_is_compacted_notes"):
-                        last_user_idx = i
-                        break
+                if user_input:
+                    for i in range(len(all_messages) - 1, -1, -1):
+                        m = all_messages[i]
+                        if m.get("role") == "user" and not m.get("_is_compacted_notes") and m.get("content") == user_input:
+                            last_user_idx = i
+                            break
+                if last_user_idx < 0:
+                    for i in range(len(all_messages) - 1, -1, -1):
+                        if all_messages[i].get("role") == "user" and not all_messages[i].get("_is_compacted_notes"):
+                            last_user_idx = i
+                            break
                 if last_user_idx >= 0:
                     round_messages = all_messages[last_user_idx:]
                 elif compact_idx >= 0:

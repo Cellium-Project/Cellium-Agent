@@ -176,7 +176,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         pending_input = task_mgr.get_pending_input(session_id)
 
         from app.server.routes.ws_event_manager import ws_publish_event
-        if pending_input:
+        if pending_input and not any(e.get("type") == "message_received" for e in history):
             ws_publish_event("chat_event", {"type": "message_received", "session_id": session_id, "message": pending_input}, session_id=session_id)
         for event in history:
             ws_publish_event("chat_event", event, session_id=session_id)
@@ -390,6 +390,10 @@ async def component_event(request: ComponentEventRequest):
     
     # 根据是否有 platform_context 选择执行路径
     if platform_context:
+        # 组件声明的跨组件黑名单（TRIGGER_TOOL_POLICY）自动并入
+        from app.core.interface.tool_policy import apply_component_tool_policy
+        platform_context = apply_component_tool_policy(platform_context, request.source)
+        session_info.platform_context = platform_context
         # 外部平台通道（Telegram/QQ等）
         try:
             channel_mgr = ChannelManager.get_instance()

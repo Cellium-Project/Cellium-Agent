@@ -17,9 +17,11 @@ class TestToolPolicy(unittest.TestCase):
         p = ToolPolicy()
         self.assertEqual(p.mode, MODE_BLACKLIST)
         self.assertFalse(p.allows("shell"))
-        self.assertFalse(p.allows("napcat.set_bot_qq"))
+        self.assertTrue(p.allows("napcat.set_bot_qq"))  # napcat 命令已改为组件内 TOOL_POLICY 管理
         self.assertTrue(p.allows("web_query"))
         self.assertFalse(p.allows("scheduler"))
+        self.assertFalse(p.allows("component"))
+        self.assertFalse(p.allows("sub_agent"))
 
     def test_custom_blacklist_merges_default(self):
         p = ToolPolicy(mode=MODE_BLACKLIST, tools={"web_query"})

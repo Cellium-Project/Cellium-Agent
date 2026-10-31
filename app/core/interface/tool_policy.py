@@ -8,17 +8,8 @@ MODE_WHITELIST = "whitelist"
 DEFAULT_BLOCKED_TOOLS: FrozenSet[str] = frozenset({
     "shell", "file", "edit", "read", "ls", "glob", "grep", "memory",
     "config", "web_search", "web_fetch", "scheduler",
-    "napcat.add_user", "napcat.remove_user", "napcat.add_group", "napcat.remove_group",
-    "napcat.subscribe", "napcat.unsubscribe",
-    "napcat.set_bot_qq", "napcat.set_port",
-    "napcat.enable_user_whitelist", "napcat.disable_user_whitelist",
-    "napcat.enable_group_whitelist", "napcat.disable_group_whitelist",
-    "napcat.enable_at", "napcat.disable_at",
-    "napcat.enable_proactive", "napcat.disable_proactive",
-    "napcat.set_proactive_threshold", "napcat.set_proactive_interval",
-    "napcat.add_wake_word", "napcat.remove_wake_word", "napcat.list_wake_words",
-    "component.reload", "component.load", "component.unload",
-    "component.discover", "component.scan",
+    "component", "skill_installer", "skill_manager", "sub_agent",
+    "qq_files", "weixin_files", "telegram_files", "feishu_files",
 })
 
 class ToolPolicy:
@@ -55,6 +46,26 @@ class ToolPolicy:
         if platform_context.get("tool_allowed") is False:
             return cls()
         return None
+
+
+def apply_component_tool_policy(platform_context: Optional[Dict[str, Any]], source_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    """把组件声明的 TRIGGER_TOOL_POLICY 合并进 platform_context。
+
+    组件类上定义 TRIGGER_TOOL_POLICY = {"mode": "blacklist", "tools": [...]}，
+    经该组件触发的 Agent 任务自动携带此策略（调用方显式传入的 tool_policy 优先）。
+    """
+    if not source_name:
+        return platform_context
+    try:
+        from app.core.util.components_loader import get_cell
+        cell = get_cell(source_name)
+        declared = getattr(cell, "TRIGGER_TOOL_POLICY", None) if cell else None
+    except Exception:
+        declared = None
+    if isinstance(declared, dict) and (not platform_context or not platform_context.get("tool_policy")):
+        platform_context = dict(platform_context or {})
+        platform_context["tool_policy"] = declared
+    return platform_context
 
 class CommandPolicy:
 
