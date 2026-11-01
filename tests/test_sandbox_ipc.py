@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 
 sys.path.insert(0, ".")
 
@@ -39,6 +40,31 @@ class SimpleComp(BaseCell):
         """返回不可序列化对象"""
         import threading
         return {"lock": threading.Lock()}
+'''
+
+
+# 日志探针组件：在沙箱进程内回传 handler 配置
+LOGGING_COMP = '''# -*- coding: utf-8 -*-
+import logging
+from app.core.interface.base_cell import BaseCell
+
+class LoggingProbe(BaseCell):
+    @property
+    def cell_name(self):
+        return "logging_probe"
+
+    def _cmd_log_state(self, **kwargs):
+        """回传沙箱进程内的日志 handler"""
+        root = logging.getLogger()
+        return {
+            "root": [type(h).__name__ for h in root.handlers],
+            "paths": [getattr(h, "_path", "") for h in root.handlers],
+        }
+
+    def _cmd_write_marker(self, marker: str = "", **kwargs):
+        """写一条带 marker 的日志"""
+        logging.getLogger("app.components.logging_probe").warning("SANDBOX_LOG_MARKER=%s", marker)
+        return {"ok": True}
 '''
 
 
@@ -223,6 +249,38 @@ class TestSandboxLifecycle(SandboxIPCTestBase):
         ipc._process.join(timeout=3)
         time.sleep(0.2)
         self.assertFalse(ipc.ping())
+
+
+class TestWorkerLogging(SandboxIPCTestBase):
+    """沙箱 worker 必须启用日志（spawn/forkserver 下不继承父进程 handler）"""
+
+    def _start_probe(self):
+        comp_path = _write_comp(self._tmp.name, "logging_probe.py", LOGGING_COMP)
+        self.ipc = SandboxProcess(timeout=10)
+        self.ipc.start(comp_path, "LoggingProbe")
+        return self.ipc.execute("log_state")
+
+    def _require_log_file(self):
+        from app.core.util.logger import _load_logging_config
+        if not _load_logging_config().get("file", ""):
+            self.skipTest("logging.file 未配置或配置不可读")
+
+    def test_worker_logging_configured(self):
+        self._require_log_file()
+        state = self._start_probe()
+        self.assertIn("_WorkerFileHandler", state["root"])
+        self.assertNotIn("RotatingFileHandler", state["root"])
+
+    def test_worker_log_written_to_file(self):
+        self._require_log_file()
+        state = self._start_probe()
+        path = next((p for p in state["paths"] if p), "")
+        self.assertTrue(path)
+
+        marker = f"SANDBOX_LOG_{uuid.uuid4().hex}"
+        self.ipc.execute("write_marker", marker=marker)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            self.assertIn(marker, f.read())
 
 
 if __name__ == "__main__":

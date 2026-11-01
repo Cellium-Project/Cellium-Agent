@@ -48,6 +48,7 @@ Cellium Agent 是一个通用的 AI 助手，可以帮助你完成各种任务�
 | **数据分析** | 处理数据文件，生成报告和可视化 |
 | **自动化任务** | 创建定时任务，如"每天早上8点查询天气" |
 | **组件扩展** | 通过自然语言创建新组件，扩展 Agent 能力 |
+| **组件市场** | 浏览、搜索、安装社区组件，或[提交自己开发的组件](https://components.cellium.top/submit) |
 | **多平台接入** | 支持 WebUI、QQ、Telegram、飞书、微信等多平台对话 |
 
 **使用示例**：
@@ -68,7 +69,7 @@ Cellium Agent 是一个通用的 AI 助手，可以帮助你完成各种任务�
 | 启发式决策引擎 | 规则提取特征 + Bandit 做 tie-break，兼顾可解释性与学习能力 |
 | 工具使用控制 | 动态禁止/推荐工具切换，避免重复调用同一工具陷入循环 |
 | 敏感信息控制 | 自动检测并脱敏私钥、Token、密码等敏感信息，支持写入拦截 |
-| 组件热插拔 | app/components/ 下文件 3 秒自动加载生效 |
+| 组件热插拔 | components/ 下文件 3 秒自动加载生效 |
 | 组件沙箱安全 | 三层防护：进程隔离 + 路径透明映射 + 危险方法拦截 |
 | 事件驱动架构 | 基于 EventBus 的发布-订阅模式，组件松耦合 |
 | Flash 模式 | 跳过记忆注入，加速简单任务 |
@@ -538,6 +539,7 @@ Agent 通过 FeatureExtractor 实时感知运行状态，动态调整决策策�
 | 工具包装 | ComponentToolRegistry 将 BaseCell 包装为 BaseTool，注入 AgentLoop |
 | 信任白名单 | 组件需用户 /trust 确认，持久化到 trusted_components.json |
 | 配置自动维护 | 发现新组件自动追加到 settings.yaml 的 enabled_components |
+| 通道绑定 | qq_files / telegram_files / weixin_files / feishu_files 仅在对应通道就绪后注入；配置保存即热启用，微信还需扫码登录成功 |
 
 **保留工具名**（不可被组件覆盖）：
 - `shell` — ShellTool
@@ -575,6 +577,21 @@ components/
 └── my_tool.py               # Agent 创建的组件（系统级）
 ```
 
+### 组件市场
+
+[![Cellium Components 组件市场](tests/img/components-hub.png)](https://components.cellium.top)
+
+官方组件市场：[components.cellium.top](https://components.cellium.top)（[提交组件](https://components.cellium.top/submit) · [源码与反馈](https://github.com/xiaojinao/cellium-components)）
+
+| 环节 | 方式 |
+|------|------|
+| 浏览 / 搜索 | 网页端按名称、描述、标签搜索，按分类筛选（如 AI），按最近更新排序 |
+| 安装 | 组件包写入 `components/`，ComponentWatcher 3 秒内热加载生效 |
+| 对话内安装 | Agent 内置 `component.market_search` → `market_info` → `market_install`，搜索后直接下载安装 |
+| 分享 | 在[提交页](https://components.cellium.top/submit)上传组件包，审核通过后上架 |
+
+市场安装的组件与本地组件走同一套流程：热加载、信任白名单 `/trust` 确认、`settings.yaml` 自动维护。市场地址默认 `https://components.cellium.top`，可用环境变量 `CELLIUM_COMPONENTS_BASE` 指向镜像。
+
 ### QQBot 文件传输组件 (qq_files)
 
 支持在 QQBot 和本地之间传输文件：
@@ -588,7 +605,7 @@ components/
 
 **文件保存路径**：`workspace/downloads/qq/`
 
-### 原生览器操作组件 (web_fetch)
+### 原生浏览器操作组件 (web_fetch)
 ![操作演示](https://agent.cellium.top/github-assets/qq.png)
 基于 DrissionPage 的无头浏览器组件，支持网页自动化操作：
 

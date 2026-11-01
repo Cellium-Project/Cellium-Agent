@@ -17,8 +17,58 @@ logger = logging.getLogger(__name__)
 SANDBOX_TIMEOUT = 120
 
 
+class _WorkerFileHandler(logging.Handler):
+    """追加写日志：每次写入后关闭句柄，避免多进程持有同一文件导致主进程轮转失败"""
+
+    def __init__(self, path: str, log_format: str, level: int):
+        super().__init__(level)
+        self._path = path
+        self.setFormatter(logging.Formatter(log_format))
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(self.format(record) + "\n")
+        except Exception:
+            self.handleError(record)
+
+
+def _init_worker_logging():
+    try:
+        from app.core.util.logger import LOG_LEVELS, _load_logging_config
+        from app.core.util.runtime_paths import resolve_dir_writable
+
+        cfg = _load_logging_config()
+        level = LOG_LEVELS.get(str(cfg.get("level", "INFO")).upper(), logging.INFO)
+        root = logging.getLogger()
+        root.setLevel(level)
+
+        log_file = cfg.get("file", "")
+        if not log_file:
+            return
+
+        log_path = Path(log_file)
+        if not log_path.is_absolute():
+            log_path = Path(resolve_dir_writable("logs")) / log_path.name
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        for handler in [h for h in root.handlers if isinstance(h, logging.FileHandler)]:
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+        if not any(isinstance(h, _WorkerFileHandler) for h in root.handlers):
+            log_format = cfg.get("format", "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            root.addHandler(_WorkerFileHandler(str(log_path), log_format, level))
+    except Exception:
+        pass
+
+
 def _sandbox_worker(input_queue, output_queue, module_path, class_name, init_args, project_root):
     """沙箱工作进程"""
+    _init_worker_logging()
     try:
         if os.path.isdir(module_path) and os.path.exists(os.path.join(module_path, "__init__.py")):
             pkg_name = os.path.basename(module_path)
@@ -73,6 +123,10 @@ def _sandbox_worker(input_queue, output_queue, module_path, class_name, init_arg
             if component_class is None:
                 raise AttributeError(f"类不存在: {class_name} 在包 {pkg_name}")
         else:
+            module_dir = os.path.dirname(os.path.abspath(module_path))
+            if module_dir not in sys.path:
+                sys.path.insert(0, module_dir)
+
             try:
                 cached = importlib.util.cache_from_source(module_path)
                 if cached and os.path.exists(cached):

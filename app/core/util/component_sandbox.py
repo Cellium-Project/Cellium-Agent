@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.core.interface.icell import ICell
+from .process_context import get_process_context
 from .sandbox_entry import _sandbox_worker, SANDBOX_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -78,10 +79,11 @@ class SandboxProcess:
                 import time
                 time.sleep(0.5)
 
-            self._input_queue = multiprocessing.Queue()
-            self._output_queue = multiprocessing.Queue()
+            ctx = get_process_context()
+            self._input_queue = ctx.Queue()
+            self._output_queue = ctx.Queue()
 
-            self._process = multiprocessing.Process(
+            self._process = ctx.Process(
                 target=_sandbox_worker,
                 args=(self._input_queue, self._output_queue, module_path, class_name, init_args, project_root)
             )

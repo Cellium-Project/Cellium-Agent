@@ -47,6 +47,7 @@ Cellium Agent is a versatile AI assistant that helps you with various tasks:
 | **Data Analysis** | Process data files, generate reports and visualizations |
 | **Automation** | Create scheduled tasks, e.g., "check weather every morning at 8 AM" |
 | **Component Extension** | Create new components via natural language to extend Agent capabilities |
+| **Component Marketplace** | Browse, search and install community components, or [submit your own](https://components.cellium.top/submit) |
 | **Multi-Platform** | Support WebUI, QQ, Telegram, Feishu (Lark), WeChat and other platforms |
 
 **Usage Examples**:
@@ -67,7 +68,7 @@ Cellium Agent is a versatile AI assistant that helps you with various tasks:
 | Heuristic Decision Engine | Rule-based feature extraction + Bandit for tie-breaking, balancing interpretability and learning ability |
 | Tool Usage Control | Dynamic prohibition/recommendation of tool switching, avoiding loops from repeated tool calls |
 | Sensitive Info Control | Auto-detect and redact sensitive info like private keys, tokens, passwords; supports write blocking |
-| Component Hot-Plug | Files in app/components/ automatically load and take effect within 3 seconds |
+| Component Hot-Plug | Files in components/ automatically load and take effect within 3 seconds |
 | Component Sandbox Security | Three-layer protection: Process isolation + transparent path mapping + dangerous method interception |
 | Event-Driven Architecture | Publish-subscribe pattern based on EventBus, loose coupling between components |
 | Flash Mode | Skip memory injection to accelerate simple tasks |
@@ -535,10 +536,58 @@ The memory system has built-in sensitive information detection and protection me
 | Tool Wrapping | ComponentToolRegistry wraps BaseCell as BaseTool, injects into AgentLoop |
 | Trust Whitelist | Components require user /trust confirmation, persisted to trusted_components.json |
 | Config Auto-Maintenance | Auto-append discovered new components to settings.yaml enabled_components |
+| Channel Binding | qq_files / telegram_files / weixin_files / feishu_files are injected only when the matching channel is ready; enabling takes effect on hot reload, and WeChat additionally requires a completed QR login |
 
 **Reserved Tool Names** (cannot be overridden by components):
 - `shell` — ShellTool
 - `memory` — MemoryTool
+- `file` — FileTool
+
+### Native Self-Extension
+
+Cellium Agent supports runtime self-extension: the Agent can create and inject new components while running, without restarting the service — the Agent rebuilds and evolves itself.
+
+**How it works**:
+
+ComponentWatcher scans the `components/` directory every 3 seconds. When a new file appears or an existing one changes, it triggers the load pipeline automatically: scan → instantiate the component class → audit compliance → write config → register into the tool registry → AgentLoop picks it up dynamically. The whole flow is automatic and the new tool is usable immediately.
+
+**Component conventions**:
+
+Components must inherit `BaseCell`, define a unique `cell_name`, and expose command methods prefixed with `_cmd_` plus a docstring. Drop the file into `components/` and it takes effect automatically.
+
+**Component generator**:
+
+The built-in ComponentBuilder component lets the Agent create spec-compliant components via the `component.generate` command, generating the full class skeleton, command methods and help docs.
+
+**Management API**:
+
+Component management APIs cover scanning, hot reload, manual load and unload, so the Agent can manage its own capabilities.
+
+**Directory layout**:
+```
+components/
+├── __init__.py              # package marker
+├── _example_component.py    # reference template
+├── component_builder.py     # component generator (built-in)
+├── skill_installer.py       # skill installer (supports archive install)
+├── skill_manager.py         # skill manager (list, search, detail, uninstall)
+└── my_tool.py               # components created by the Agent (system-level)
+```
+
+### Component Marketplace
+
+[![Cellium Components Marketplace](tests/img/components-hub.png)](https://components.cellium.top)
+
+Official component marketplace: [components.cellium.top](https://components.cellium.top) ([submit a component](https://components.cellium.top/submit) · [source & feedback](https://github.com/xiaojinao/cellium-components))
+
+| Step | How it works |
+|------|--------------|
+| Browse / Search | Search by name, description or tag on the web, filter by category (e.g., AI), sort by recently updated |
+| Install | The component package is written into `components/`, ComponentWatcher hot-loads it within 3 seconds |
+| Install from chat | Built-in `component.market_search` → `market_info` → `market_install` — search, then download and install directly |
+| Share | Upload your component package on the [submit page](https://components.cellium.top/submit), it goes live after review |
+
+Marketplace components follow the same pipeline as local ones: hot-plug, `/trust` whitelist confirmation, and automatic `settings.yaml` maintenance. The marketplace defaults to `https://components.cellium.top`; set the `CELLIUM_COMPONENTS_BASE` environment variable to point at a mirror.
 
 ### QQBot File Transfer Component (qq_files)
 

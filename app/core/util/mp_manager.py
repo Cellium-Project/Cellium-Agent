@@ -14,6 +14,8 @@ from functools import wraps
 from typing import Callable, Any, Optional
 import traceback
 
+from .process_context import get_process_context
+
 logger = logging.getLogger(__name__)
 
 _worker_initializers: list[Callable] = []
@@ -67,7 +69,8 @@ class MultiprocessManager:
         if self._executor is None:
             self._executor = ProcessPoolExecutor(
                 max_workers=multiprocessing.cpu_count(),
-                initializer=_worker_init
+                initializer=_worker_init,
+                mp_context=get_process_context()
             )
             logger.info(f"进程池已启动，使用 {multiprocessing.cpu_count()} 个工作进程")
         return self._executor

@@ -191,10 +191,14 @@ def bootstrap_agent(host: str = None, port: int = None, enable_webapp: bool = Tr
 
     cfg = get_config()
     _host = host or cfg.get("server.host", "127.0.0.1")
-    _port = port or cfg.get("server.port", 18000)
-    _port = _ensure_available_port(_host, _port)
 
     _setup_logging(cfg)
+
+    from app.core.util.fork_guard import install as _install_fork_guard
+    _install_fork_guard()
+
+    _port = _ensure_available_port(_host, port or cfg.get("server.port", 18000))
+
     container = _setup_containers(cfg)
     _setup_session_manager(cfg)
     _setup_components(container)
