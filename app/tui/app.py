@@ -2008,9 +2008,10 @@ class CelliumTUI(App):
         if self._is_user_selecting():
             self._pending_render_after_select = True
             return
-        # 50ms 合并窗口：高频 chunk 只触发一次渲染
         if getattr(self, "_md_render_timer", None) is None:
-            self._md_render_timer = self.set_timer(0.05, self._do_md_render)
+            n = len(self._current_md or "")
+            delay = 0.05 if n < 1500 else (0.08 if n < 5000 else 0.12)
+            self._md_render_timer = self.set_timer(delay, self._do_md_render)
 
     def _is_user_selecting(self) -> bool:
         try:
@@ -2233,6 +2234,8 @@ class CelliumTUI(App):
         try:
             if not getattr(self.chat, "_following", True):
                 return
+            if len(self.chat.children) <= cap:
+                return
             children = list(self.chat.children)
             excess = len(children) - cap
             if excess <= 0:
@@ -2244,6 +2247,7 @@ class CelliumTUI(App):
             old = [w for w in children[:excess] if w not in protected]
             if old:
                 await self.chat.remove_children(old)
+                self._history_specs = None
             live = set(self.chat.children)
             for cid, card in list(self._tool_cards.items()):
                 if card not in live:
@@ -2283,6 +2287,7 @@ class CelliumTUI(App):
         self._tool_cards = {}
         self._active_tool_card = None
         self._restoring_history = False
+        self._history_specs = None
 
     def _history_stale(self, epoch: int) -> bool:
         return epoch != self._session_epoch
@@ -2334,6 +2339,73 @@ class CelliumTUI(App):
         elif isinstance(widget, ReasoningBlock):
             widget.finish()
 
+    async def _append_history_tail(self, plan, mds, meta, was_following, prev_scroll_y, epoch=None) -> bool:
+        """已挂载历史与新计划的公共前缀一致时，只替换尾部，避免整表重建"""
+        prev = getattr(self, "_history_specs", None)
+        if getattr(self, "_history_specs_sid", None) != self.session_id:
+            return False
+        if not prev or len(prev) > len(plan):
+            return False
+        children = list(self.chat.children)
+        if len(children) < len(prev):
+            return False
+        shift = None
+        if plan[:len(prev)] == prev:
+            shift = 0
+        else:
+            starts = [s.get("span", (None,))[0] for s in prev]
+            first = plan[0].get("span", (None,))[0]
+            if first in starts:
+                idx = starts.index(first)
+                if len(prev) - idx <= len(plan) and plan[:len(prev) - idx] == prev[idx:]:
+                    shift = idx
+        if shift is None:
+            return False
+        keep_from = len(prev) - shift
+        drop = children[len(prev):] if shift == 0 else (children[:shift] + children[len(prev):])
+        new_specs = plan[keep_from:]
+        widgets = [self._widget_from_spec(s, md) for s, md in zip(new_specs, mds[keep_from:])]
+        if epoch is not None and self._history_stale(epoch):
+            return False
+        try:
+            with self.batch_update():
+                if drop:
+                    await self.chat.remove_children(drop)
+                if widgets:
+                    await self.chat.mount(*widgets)
+                    for w, s in zip(widgets, new_specs):
+                        self._post_mount(w, s)
+            live = set(self.chat.children)
+            for cid, card in list(self._tool_cards.items()):
+                if card not in live:
+                    self._tool_cards.pop(cid, None)
+        except Exception:
+            return False
+        self._history_specs = list(plan)
+        self._history_specs_sid = self.session_id
+        self._history_meta = meta
+        self._history_has_more = meta.get("has_more", False)
+        self._history_live_start = int(meta.get("end") or 0)
+        try:
+            self.chat.refresh(layout=True)
+        except Exception:
+            pass
+        import asyncio
+        for _ in range(4):
+            await asyncio.sleep(0)
+        if was_following:
+            self.chat.force_scroll_bottom()
+        else:
+            try:
+                self.chat.scroll_to(
+                    y=min(prev_scroll_y, self.chat.max_scroll_y),
+                    animate=False,
+                    immediate=True,
+                )
+            except Exception:
+                pass
+        return True
+
     async def _load_history(self):
         epoch = self._session_epoch
         self._history_ready.clear()
@@ -2368,6 +2440,15 @@ class CelliumTUI(App):
             )
             if self._history_stale(epoch):
                 return
+            if plan and await self._append_history_tail(plan, mds, meta, was_following, prev_scroll_y, epoch):
+                self.set_timer(0.15, self._scroll_history_done)
+                self._restoring_history = False
+                self._history_ready.set()
+                self._bootstrap_ready.set()
+                self._set_terminal_title()
+                if not self._busy:
+                    self.input.focus()
+                return
             with self.batch_update():
                 await self.chat.remove_children()
             self._history_meta = meta
@@ -2381,6 +2462,8 @@ class CelliumTUI(App):
                     await self.chat.mount(*widgets)
                     for w, s in zip(widgets, plan):
                         self._post_mount(w, s)
+                self._history_specs = list(plan)
+                self._history_specs_sid = self.session_id
                 try:
                     self.chat.refresh(layout=True)
                 except Exception:
@@ -2406,6 +2489,8 @@ class CelliumTUI(App):
                 if not self._busy:
                     self.input.focus()
                 return
+            self._history_specs = []
+            self._history_specs_sid = self.session_id
             self._restoring_history = False
             self._history_ready.set()
             self._bootstrap_ready.set()
@@ -2558,6 +2643,9 @@ class CelliumTUI(App):
                 await self.chat.mount(*widgets, before=first_widget)
                 for w, s in zip(widgets, plan):
                     self._post_mount(w, s)
+            prev_specs = getattr(self, "_history_specs", None)
+            self._history_specs = (list(plan) + prev_specs) if prev_specs is not None else None
+            self._history_specs_sid = self.session_id
             try:
                 for _ in range(5):
                     await asyncio.sleep(0)
@@ -2592,6 +2680,7 @@ class CelliumTUI(App):
                         await w.remove()
                     except Exception:
                         pass
+            self._history_specs = None
             return new_offset
         except Exception:
             return new_offset

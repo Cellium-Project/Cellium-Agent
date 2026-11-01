@@ -18,7 +18,7 @@ from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
 from textual import on, events
 from textual.suggester import Suggester
-from textual.visual import RichVisual
+from textual.visual import RichVisual, RenderOptions, Visual
 from textual.widgets import OptionList, Static, TextArea
 from textual.widgets._option_list import Option
 
@@ -721,6 +721,47 @@ def _normalize_md(markdown: str) -> str:
             out.append(line)
     return "\n".join(out)
 
+_BLOCK_STREAM_MIN = 1000
+_BLOCK_MARKER = object()
+
+
+def split_md_blocks(markdown: str) -> list:
+    """按顶层块切分 markdown（空行/围栏边界），供流式增量渲染使用"""
+    blocks = []
+    cur = []
+    in_fence = False
+    blank_run = 0
+    for line in markdown.split("\n"):
+        if _FENCE_START.match(line):
+            if blank_run and cur:
+                blocks.append("\n".join(cur))
+                cur = []
+            blank_run = 0
+            cur.append(line)
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            cur.append(line)
+            continue
+        if not line.strip():
+            blank_run += 1
+            continue
+        if blank_run:
+            if cur and (line.startswith("  ") or line.startswith("\t")):
+                cur.append("")
+                cur.append(line)
+            else:
+                if cur:
+                    blocks.append("\n".join(cur))
+                cur = [line]
+            blank_run = 0
+        else:
+            cur.append(line)
+    if cur:
+        blocks.append("\n".join(cur))
+    return [b for b in blocks if b.strip()]
+
+
 def _build_rich_md(markdown: str):
     from rich.markdown import Markdown as RichMarkdown
 
@@ -897,6 +938,123 @@ def _stylize_strip_range(strip, start: int, end: int, style) -> object:
         x = seg_end
     return Strip(output, strip.cell_length)
 
+_LIST_START = re.compile(r"^([-*+]|\d+\.)[ \t]")
+
+
+def _md_block_kind(text: str) -> str:
+    first = text.lstrip()
+    if first.startswith("```") or first.startswith("~~~"):
+        return "fence"
+    if first.startswith("|"):
+        return "table"
+    if _LIST_START.match(first):
+        return "list"
+    return "para"
+
+
+class _BlocksRichVisual(Visual):
+    """按块缓存渲染结果：流式更新时只重绘变化的那一块"""
+
+    def __init__(self, widget, blocks):
+        self._widget = widget
+        self._blocks = list(blocks)
+        self._block_cache = {}
+        self._base_key = None
+        self._base_strips = None
+        self._sel_cache = {}
+        self._sel_style = None
+
+    def set_blocks(self, blocks):
+        if blocks == self._blocks:
+            return
+        self._blocks = list(blocks)
+        self._base_key = None
+        self._base_strips = None
+
+    def _theme_key(self):
+        try:
+            theme = self._widget.app.theme
+        except Exception:
+            return ""
+        return theme if isinstance(theme, str) else str(theme)
+
+    def _build_base(self, width, style, options):
+        theme = self._theme_key()
+        base_key = (width, theme)
+        if self._base_key == base_key and self._base_strips is not None:
+            return self._base_strips
+        from textual.strip import Strip
+        no_sel = RenderOptions(options.get_style, options.rules, None, None)
+        strips = []
+        cache = {}
+        for i, text in enumerate(self._blocks):
+            key = (i, text, width, theme)
+            cached = self._block_cache.get(key)
+            if cached is None:
+                cached = _SelectableRichVisual(
+                    self._widget, _build_rich_md(text)
+                ).render_strips(width, None, style, no_sel)
+            cache[key] = cached
+            # rich 单独渲染列表/表格时会自带前导空行，正好等价于块间空行；
+            # 代码围栏的前导空行是额外行，仍需补一个块间空行
+            if i:
+                starts_blank = bool(cached) and not cached[0].text.strip()
+                kind = _md_block_kind(text)
+                if not (starts_blank and kind in ("list", "table")):
+                    strips.append(Strip.blank(width))
+            strips.extend(cached)
+        self._block_cache = cache
+        self._base_key = base_key
+        self._base_strips = strips
+        return strips
+
+    def render_strips(self, width, height, style, options):
+        strips = self._build_base(width, style, options)
+        if height is not None:
+            strips = strips[:height]
+        selection = options.selection
+        if selection is None:
+            return strips
+        get_span = selection.get_span
+        sel_rich = getattr(options.selection_style, "rich_style", options.selection_style)
+        if self._sel_cache and self._sel_style != sel_rich:
+            self._sel_cache = {}
+        self._sel_style = sel_rich
+        result = []
+        cache = self._sel_cache
+        for y, strip in enumerate(strips):
+            span = get_span(y)
+            if span is None:
+                result.append(strip)
+                continue
+            start, end = span
+            line_text = strip.text
+            start = _chars_to_cells(line_text, start)
+            if end == -1:
+                end = strip.cell_length
+            else:
+                end = _chars_to_cells(line_text, end)
+            cache_key = (sel_rich, y, start, end)
+            styled = cache.get(cache_key)
+            if styled is None:
+                if len(cache) > 2048:
+                    cache.clear()
+                styled = _stylize_strip_range(strip, start, end, sel_rich)
+                cache[cache_key] = styled
+            result.append(styled)
+        return result
+
+    def get_height(self, rules, width):
+        try:
+            options = RenderOptions(self._widget._get_style, rules, None, None)
+            return len(self._build_base(width, self._widget.visual_style, options))
+        except Exception:
+            return 0
+
+    def get_optimal_width(self, rules, container_width):
+        return container_width
+
+
 class HistoryMarkdown(Static):
 
     def __init__(self, text=""):
@@ -973,6 +1131,46 @@ class HistoryMarkdown(Static):
 
 
 class AssistantMessage(HistoryMarkdown):
+    """流式回复：长文本按块增量渲染，只重绘变化的尾块"""
+
+    def __init__(self, text=""):
+        super().__init__(text)
+        self._blocks = None
+
+    def update(self, markdown="", layout=True):
+        if markdown and len(markdown) >= _BLOCK_STREAM_MIN:
+            self._source = markdown
+            self._md = _BLOCK_MARKER
+            blocks = split_md_blocks(markdown)
+            if isinstance(self._visual, _BlocksRichVisual):
+                self._visual.set_blocks(blocks)
+            else:
+                self._visual = _BlocksRichVisual(self, blocks)
+            self._blocks = blocks
+            if layout and self._is_selecting():
+                layout = False
+            self.refresh(layout=layout)
+            from textual.await_complete import AwaitComplete
+            return AwaitComplete.nothing()
+        self._blocks = None
+        if self._md is _BLOCK_MARKER:
+            self._md = None
+        return super().update(markdown, layout)
+
+    def render(self):
+        if self._blocks:
+            if not isinstance(self._visual, _BlocksRichVisual):
+                self._visual = _BlocksRichVisual(self, self._blocks)
+            return self._visual
+        return super().render()
+
+    def refresh_theme(self):
+        if self._blocks:
+            self._visual = None
+            self._blocks = split_md_blocks(self._source)
+            self.refresh(layout=False)
+            return
+        super().refresh_theme()
 
     def append(self, markdown):
         return self.update(markdown)

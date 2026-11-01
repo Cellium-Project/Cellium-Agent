@@ -146,12 +146,14 @@ def split_content_with_thinking(content: str) -> list:
     return result
 
 
-def load_session_messages(session_id: str, limit: int = 500, record_cap: int = 0) -> list:
+_ARCHIVE_CACHE = {}
+_ARCHIVE_CACHE_MAX = 8
+
+
+def _resolve_archive():
     from app.agent.loop.session_manager import get_session_manager
     mgr = get_session_manager()
-    raw_msgs = []
     archive = None
-
     if mgr and mgr.three_layer_memory:
         archive = mgr.three_layer_memory.archive
     if archive is None:
@@ -171,6 +173,34 @@ def load_session_messages(session_id: str, limit: int = 500, record_cap: int = 0
             archive = ArchiveStore(str(base))
         except Exception:
             archive = None
+    return mgr, archive
+
+
+def _archive_signature(archive):
+    base = getattr(archive, "base_dir", None)
+    if not base:
+        return None
+    try:
+        files = [f for f in os.listdir(base) if f.endswith(".jsonl")]
+        if not files:
+            return None
+        newest = max(files, key=lambda f: os.stat(os.path.join(base, f)).st_mtime_ns)
+        st = os.stat(os.path.join(base, newest))
+    except OSError:
+        return None
+    return (len(files), newest, st.st_mtime_ns, st.st_size)
+
+
+def load_session_messages(session_id: str, limit: int = 500, record_cap: int = 0) -> list:
+    mgr, archive = _resolve_archive()
+    raw_msgs = []
+    sig = _archive_signature(archive) if archive is not None else None
+    cache_key = (session_id, int(limit), int(record_cap), sig) if sig is not None else None
+
+    if cache_key is not None:
+        cached = _ARCHIVE_CACHE.get(cache_key)
+        if cached is not None:
+            return list(cached)
 
     try:
         if archive:
@@ -193,6 +223,11 @@ def load_session_messages(session_id: str, limit: int = 500, record_cap: int = 0
                 raw_msgs = list(reversed(all_messages))
     except Exception:
         raw_msgs = []
+
+    if cache_key is not None and raw_msgs:
+        if len(_ARCHIVE_CACHE) >= _ARCHIVE_CACHE_MAX:
+            _ARCHIVE_CACHE.clear()
+        _ARCHIVE_CACHE[cache_key] = list(raw_msgs)
 
     if not raw_msgs:
         try:
