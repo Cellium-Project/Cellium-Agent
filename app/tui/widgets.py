@@ -774,6 +774,28 @@ def _build_rich_md(markdown: str):
 
     return CelliumRichMarkdown(_normalize_md(markdown))
 
+def _stamp_line_offsets(strips):
+    """按整篇行号给每行打上 meta offset。
+
+    Textual 8.x 的拖选坐标来自每行 segment 的 meta["offset"]；整行没有
+    任何 segment 时（空行），命中测试拿不到坐标，会退化成「整个控件全选」。
+    这里给空行补一个零宽 segment，只用来承载 offset，不参与文本提取。
+    """
+    from rich.segment import Segment
+    from rich.style import Style
+    from textual.strip import Strip
+
+    stamped = []
+    for y, strip in enumerate(strips):
+        if len(strip):
+            stamped.append(strip.apply_offsets(0, y))
+        else:
+            stamped.append(
+                Strip([Segment("", Style.from_meta({"offset": (0, y)}))], 0)
+            )
+    return stamped
+
+
 class _SelectableRichVisual(RichVisual):
 
     def __init__(self, widget, md):
@@ -812,9 +834,7 @@ class _SelectableRichVisual(RichVisual):
             base_strips = self._cached_strips
         else:
             base_strips = super().render_strips(width, height, style, options)
-            base_strips = [
-                strip.apply_offsets(0, y) for y, strip in enumerate(base_strips)
-            ]
+            base_strips = _stamp_line_offsets(base_strips)
             self._render_cache_key = cache_key
             self._cached_strips = base_strips
             self._styled_cache = {}
@@ -1003,6 +1023,9 @@ class _BlocksRichVisual(Visual):
                 if not (starts_blank and kind in ("list", "table")):
                     strips.append(Strip.blank(width))
             strips.extend(cached)
+        # 块是各自独立渲染的，meta 里的行号是块内局部行号；
+        # 重新按整篇行号打点，否则鼠标拖选坐标会塌缩到块内，复制变成整段
+        strips = _stamp_line_offsets(strips)
         self._block_cache = cache
         self._base_key = base_key
         self._base_strips = strips
