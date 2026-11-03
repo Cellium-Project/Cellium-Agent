@@ -1270,7 +1270,8 @@ def _strip_ansi(text):
 
 
 _LEXER_CACHE: dict = {}
-_MONOKAI_THEME = "monokai"
+_DARK_SYNTAX_THEME = "monokai"
+_LIGHT_SYNTAX_THEME = "xcode"  
 
 
 def _lexer_for_filename(path: str):
@@ -1288,14 +1289,14 @@ def _lexer_for_filename(path: str):
     return lexer
 
 
-def _highlight_segments(code: str, lexer, bg: str) -> list:
+def _highlight_segments(code: str, lexer, bg: str, syntax_theme: str = _DARK_SYNTAX_THEME) -> list:
     if not code:
         return []
     if lexer is None:
         return [(code, Style(bgcolor=bg) if bg else None)]
     try:
         from rich.syntax import Syntax
-        highlighted = Syntax(code, lexer, theme=_MONOKAI_THEME, word_wrap=False).highlight(code)
+        highlighted = Syntax(code, lexer, theme=syntax_theme, word_wrap=False).highlight(code)
         plain = highlighted.plain
         spans = sorted(highlighted.spans, key=lambda s: s.start)
     except Exception:
@@ -1745,11 +1746,16 @@ class ToolCallCard(Static):
     def _highlight(self, content: str, lexer, bg: str) -> list:
         if not content:
             return []
-        key = (bg, getattr(lexer, "name", "text") if lexer else "text", content)
+        try:
+            theme_name = str(getattr(self.app, "theme", ""))
+        except Exception:
+            theme_name = ""
+        syntax_theme = _DARK_SYNTAX_THEME if theme_name.endswith("dark") else _LIGHT_SYNTAX_THEME
+        key = (bg, syntax_theme, getattr(lexer, "name", "text") if lexer else "text", content)
         cached = self._highlight_cache.get(key)
         if cached is not None:
             return cached
-        segments = _highlight_segments(content, lexer, bg)
+        segments = _highlight_segments(content, lexer, bg, syntax_theme)
         if len(self._highlight_cache) > 4096:
             self._highlight_cache.clear()
         self._highlight_cache[key] = segments
