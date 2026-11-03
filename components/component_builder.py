@@ -1856,6 +1856,8 @@ class MyIntegration(BaseCell):
     _MARKET_CACHE_TTL = 300          # 索引缓存秒数，与线上 5 分钟发布节奏一致
     _MARKET_TIMEOUT = 20             # 单次网络请求超时
     _MARKET_MAX_BYTES = 50 * 1024 * 1024
+    _MARKET_RETRIES = 3              # 网络抖动重试次数（下载支持断点续传）
+    _MARKET_RECORD = ".market_installed.json"   # 市场安装记录（slug → 组件文件）
     _market_cache: Dict[str, Any] = {"base": "", "at": 0.0, "data": None}
 
     def _market_base(self) -> str:
@@ -1881,8 +1883,9 @@ class MyIntegration(BaseCell):
         import re
         return bool(re.match(r"^[a-z0-9][a-z0-9_-]{1,39}$", slug))
 
-    @staticmethod
-    def _market_http_json(url: str, timeout: float) -> Any:
+    @classmethod
+    def _market_http_json(cls, url: str, timeout: float) -> Any:
+        import time
         import urllib.error
         import urllib.request
 
@@ -1893,20 +1896,27 @@ class MyIntegration(BaseCell):
                 "Accept": "application/json",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = getattr(resp, "status", 200)
-                if status != 200:
-                    raise RuntimeError(f"HTTP {status}")
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                raise RuntimeError("组件不存在（404）") from e
-            raise RuntimeError(f"HTTP {e.code}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"网络不可达: {e.reason}") from e
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"返回内容不是合法 JSON: {e}") from e
+        last: Optional[Exception] = None
+        for attempt in range(cls._MARKET_RETRIES):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    status = getattr(resp, "status", 200)
+                    if status != 200:
+                        raise RuntimeError(f"HTTP {status}")
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    raise RuntimeError("组件不存在（404）") from e
+                if e.code < 500:
+                    raise RuntimeError(f"HTTP {e.code}") from e
+                last = RuntimeError(f"HTTP {e.code}")
+            except (urllib.error.URLError, OSError) as e:
+                last = RuntimeError(f"网络不可达: {getattr(e, 'reason', e)}")
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"返回内容不是合法 JSON: {e}") from e
+            if attempt + 1 < cls._MARKET_RETRIES:
+                time.sleep(0.6 * (2 ** attempt))
+        raise last or RuntimeError("网络请求失败")
 
     def _market_index(self, refresh: bool = False) -> Dict[str, Any]:
         """拉取市场索引 /data/index.json（带 5 分钟内存缓存）"""
@@ -1961,46 +1971,117 @@ class MyIntegration(BaseCell):
         return ".zip"
 
     def _market_download(self, url: str, dest) -> Dict[str, Any]:
-        """下载安装包到本地，边下边算 sha256，超限即停"""
+        """下载安装包到本地，失败断点续传重试，超限即停"""
         import hashlib
+        import os
+        import time
         import urllib.error
         import urllib.request
 
+        last: Optional[Exception] = None
+        for attempt in range(self._MARKET_RETRIES):
+            offset = os.path.getsize(dest) if os.path.exists(dest) else 0
+            headers = {"User-Agent": "Cellium-Agent/component-builder"}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=self._MARKET_TIMEOUT) as resp:
+                    status = getattr(resp, "status", 200)
+                    if offset and status == 206:
+                        mode = "ab"
+                    else:
+                        offset = 0
+                        mode = "wb"
+                    total = offset
+                    with open(dest, mode) as f:
+                        while True:
+                            chunk = resp.read(256 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > self._MARKET_MAX_BYTES:
+                                raise RuntimeError(
+                                    f"安装包超过 {self._MARKET_MAX_BYTES // 1024 // 1024}MB 上限，已中止"
+                                )
+                            f.write(chunk)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 416 and offset:
+                    break
+                if e.code < 500:
+                    raise RuntimeError(f"下载失败 HTTP {e.code}") from e
+                last = RuntimeError(f"下载失败 HTTP {e.code}")
+            except (urllib.error.URLError, OSError) as e:
+                last = RuntimeError(f"下载失败，网络不可达: {getattr(e, 'reason', e)}")
+            if os.path.exists(dest) and os.path.getsize(dest) > self._MARKET_MAX_BYTES:
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+            if attempt + 1 < self._MARKET_RETRIES:
+                time.sleep(0.8 * (2 ** attempt))
+        else:
+            raise last or RuntimeError("下载失败")
+
+        if not os.path.exists(dest):
+            raise RuntimeError("下载失败，文件不存在")
         sha = hashlib.sha256()
-        total = 0
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Cellium-Agent/component-builder"}
-        )
+        with open(dest, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                sha.update(block)
+        return {
+            "size": os.path.getsize(dest),
+            "sha256": sha.hexdigest(),
+            "attempts": attempt + 1,
+        }
+
+    def _market_records(self) -> Dict[str, Any]:
         try:
-            with urllib.request.urlopen(req, timeout=self._MARKET_TIMEOUT) as resp:
-                status = getattr(resp, "status", 200)
-                if status != 200:
-                    raise RuntimeError(f"HTTP {status}")
-                with open(dest, "wb") as f:
-                    while True:
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if total > self._MARKET_MAX_BYTES:
-                            raise RuntimeError(
-                                f"安装包超过 {self._MARKET_MAX_BYTES // 1024 // 1024}MB 上限，已中止"
-                            )
-                        sha.update(chunk)
-                        f.write(chunk)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"下载失败 HTTP {e.code}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"下载失败，网络不可达: {e.reason}") from e
-        return {"size": total, "sha256": sha.hexdigest()}
+            with open(get_components_dir() / self._MARKET_RECORD, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _market_record_install(self, slug: str, name: str, target: str, version: str) -> None:
+        records = self._market_records()
+        records[slug] = {
+            "name": name,
+            "target": target,
+            "version": version,
+            "installed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            path = get_components_dir() / self._MARKET_RECORD
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(records, f, ensure_ascii=False, indent=2, sort_keys=True)
+        except OSError:
+            pass
+
+    def _market_installed_target(self, slug: str) -> str:
+        """市场 slug 与组件文件名常常不同（cellium-vision → vision.py），按记录 + 候选名查找"""
+        from pathlib import Path
+
+        record = self._market_records().get(slug) or {}
+        target = str(record.get("target") or "")
+        if target and Path(target).exists():
+            return target
+
+        components_dir = get_components_dir()
+        names = {slug, slug.replace("-", "_")}
+        for prefix in ("cellium-", "cellium_"):
+            if slug.startswith(prefix):
+                rest = slug[len(prefix):]
+                names.update({rest, rest.replace("-", "_")})
+        for name in names:
+            for p in (components_dir / f"{name}.py", components_dir / name):
+                if p.exists():
+                    return str(p)
+        return ""
 
     def _market_is_installed(self, slug: str) -> bool:
-        """slug（可能带 -）与组件文件名（Python 标识符，可能用 _）都算已安装"""
-        components_dir = get_components_dir()
-        for name in {slug, slug.replace("-", "_")}:
-            if (components_dir / f"{name}.py").exists() or (components_dir / name).exists():
-                return True
-        return False
+        return bool(self._market_installed_target(slug))
 
     def _cmd_market_search(
         self,
@@ -2312,10 +2393,18 @@ class MyIntegration(BaseCell):
                 "install_url": install_url,
                 "sha256": got["sha256"],
                 "size": got["size"],
+                "attempts": got.get("attempts", 1),
                 "sha256_verified": bool(expected_sha),
+                "size_verified": bool(isinstance(expected_size, int) and expected_size > 0),
                 "dry_run": bool(dry_run),
             }
             if result.get("success") and not dry_run:
+                self._market_record_install(
+                    str(meta.get("slug") or target),
+                    str(result.get("name") or ""),
+                    str(result.get("target") or ""),
+                    ver,
+                )
                 result["message"] = f"已从市场安装 {result.get('name') or target} v{ver} 并热重载"
             return result
         finally:
