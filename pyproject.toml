@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellium-agent"
-version = "1.4.4.post3"
+version = "1.4.4.post4"
 description = "Cellium Agent - 桌面 AI 助手"
 readme = "README_en.md"
 requires-python = ">=3.12"
@@ -44,9 +44,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Cellium-Project/Cellium-Agent"
+Homepage = "https://agent.cellium.top/"
 Repository = "https://github.com/Cellium-Project/Cellium-Agent"
-Documentation = "https://github.com/Cellium-Project/Cellium-Agent/blob/main/README_en.md"
+Documentation = "https://agent.cellium.top/docs"
 Changelog = "https://github.com/Cellium-Project/Cellium-Agent/releases"
 Issues = "https://github.com/Cellium-Project/Cellium-Agent/issues"
 
