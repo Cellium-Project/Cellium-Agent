@@ -134,9 +134,12 @@ class ActionBandit:
             stats = self._stats[action]
 
             try:
-                import numpy as np
-                sample = np.random.beta(stats.alpha, stats.beta)
-            except ImportError:
+                # Beta(alpha, beta) 采样：Gamma 构造法，标准库实现，避免引入 numpy（~25MB）
+                g1 = random.gammavariate(max(stats.alpha, 1e-9), 1.0)
+                g2 = random.gammavariate(max(stats.beta, 1e-9), 1.0)
+                total = g1 + g2
+                sample = g1 / total if total > 0 else 0.5
+            except (ValueError, ZeroDivisionError):
                 mean = stats.alpha / (stats.alpha + stats.beta) if (stats.alpha + stats.beta) > 0 else 0.5
                 noise = random.gauss(0, 0.1)
                 sample = max(0, min(1, mean + noise))
