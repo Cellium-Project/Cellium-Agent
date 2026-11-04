@@ -2458,10 +2458,17 @@ class CelliumTUI(App):
                 widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
                 if self._history_stale(epoch):
                     return
-                with self.batch_update():
-                    await self.chat.mount(*widgets)
-                    for w, s in zip(widgets, plan):
-                        self._post_mount(w, s)
+                _batch = 20
+                for _i in range(0, len(widgets), _batch):
+                    _wc = widgets[_i:_i + _batch]
+                    _sc = plan[_i:_i + _batch]
+                    with self.batch_update():
+                        await self.chat.mount(*_wc)
+                        for w, s in zip(_wc, _sc):
+                            self._post_mount(w, s)
+                    await asyncio.sleep(0)
+                    if self._history_stale(epoch):
+                        return
                 self._history_specs = list(plan)
                 self._history_specs_sid = self.session_id
                 try:

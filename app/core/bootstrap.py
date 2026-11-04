@@ -186,7 +186,7 @@ def _print_event_system_info():
         logger.info("  %s %s (%d subscribers)", marker, et.value, count)
 
 
-def bootstrap_agent(host: str = None, port: int = None, enable_webapp: bool = True, auto_open_browser: bool = True) -> BootstrapResult:
+def bootstrap_agent(host: str = None, port: int = None, enable_webapp: bool = True, auto_open_browser: bool = True, defer_web_app: bool = False) -> BootstrapResult:
     from app.core.util.agent_config import get_config
 
     cfg = get_config()
@@ -204,7 +204,8 @@ def bootstrap_agent(host: str = None, port: int = None, enable_webapp: bool = Tr
     _setup_components(container)
     _setup_watcher()
     _setup_config_watcher()
-    app = _setup_web_app(auto_open_browser=auto_open_browser) if enable_webapp else None
+    # defer_web_app：跳过同步创建 FastAPI app（约 760ms），由调用方在后台线程补建，避免阻塞就绪信号
+    app = _setup_web_app(auto_open_browser=auto_open_browser) if (enable_webapp and not defer_web_app) else None
     _print_event_system_info()
 
     logger.info("=" * 50)

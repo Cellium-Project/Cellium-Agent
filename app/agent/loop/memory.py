@@ -225,35 +225,6 @@ class MemoryManager:
             logger.debug(f"[MemoryManager] 移除了 {removed_count} 条 Gene 评估提示")
         return removed_count
 
-    def _smart_truncate(self, messages: List[Dict], max_count: int) -> List[Dict]:
-        if len(messages) <= max_count:
-            return messages
-        
-        start_idx = len(messages) - max_count
-        
-        while start_idx > 0 and messages[start_idx].get("role") == "tool":
-            tool_call_id = messages[start_idx].get("tool_call_id", "")
-            
-            found = False
-            for j in range(start_idx - 1, -1, -1):
-                msg = messages[j]
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    for tc in msg["tool_calls"]:
-                        if tc.get("id") == tool_call_id:
-                            start_idx = j
-                            found = True
-                            break
-                if found:
-                    break
-            
-            if not found:
-                break
-        
-        while start_idx < len(messages) and messages[start_idx].get("role") not in ("user", "system"):
-            start_idx += 1
-        
-        return messages[start_idx:] if start_idx < len(messages) else messages[-max_count:]
-
     def _fix_message_sequence(self, messages: List[Dict]) -> List[Dict]:
         if not messages:
             return messages

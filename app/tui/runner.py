@@ -71,6 +71,23 @@ def _start_web_server(app, result):
     except Exception:
         pass
 
+def _deferred_web_setup(app, result):
+    """后台补建 FastAPI"""
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            from app.core.bootstrap import _setup_web_app
+            result.fastapi_app = _setup_web_app(auto_open_browser=False)
+        _silence_console_logging()
+        _start_web_server(app, result)
+        try:
+            app.call_from_thread(app._refresh_status) 
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _bootstrap_in_thread(app, host, port, enable_webapp):
     # 先静音控制台日志，避免 bootstrap 期间日志污染 TUI 终端
     _silence_console_logging()
@@ -78,9 +95,12 @@ def _bootstrap_in_thread(app, host, port, enable_webapp):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             from app.core.bootstrap import bootstrap_agent
-            result = bootstrap_agent(host=host, port=port, enable_webapp=enable_webapp, auto_open_browser=False)
+            # TUI 模式下延后创建 FastAPI app，核心初始化完成即放行就绪信号
+            result = bootstrap_agent(
+                host=host, port=port, enable_webapp=enable_webapp,
+                auto_open_browser=False, defer_web_app=enable_webapp,
+            )
         _silence_console_logging()
-        _start_web_server(app, result)
         try:
             app.call_from_thread(_apply_bootstrap, result)
         except Exception:
@@ -89,6 +109,13 @@ def _bootstrap_in_thread(app, host, port, enable_webapp):
             except Exception:
                 app.bootstrap = result
                 app._bootstrap_ready.set()
+        if enable_webapp:
+            threading.Thread(
+                target=_deferred_web_setup,
+                args=(app, result),
+                daemon=True,
+                name="webui-deferred-init",
+            ).start()
     except Exception as e:
         app._bootstrap_error = str(e)
         try:

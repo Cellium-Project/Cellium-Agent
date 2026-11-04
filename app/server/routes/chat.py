@@ -1003,6 +1003,8 @@ async def save_session_message(session_id: str, req: SaveMessageRequest):
     if req.tool_traces:
         tool_calls_data = []
         for trace in req.tool_traces:
+            if trace.get("truncated") or trace.get("folded"):
+                continue
             tool_name = trace.get("tool", "")
             arguments = trace.get("arguments", {})
             result = trace.get("result", {})

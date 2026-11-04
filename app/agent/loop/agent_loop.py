@@ -43,6 +43,83 @@ from .loop_event_publisher import LoopEventPublisher
 
 logger = logging.getLogger(__name__)
 
+_TRACE_ARGS_LIMIT = 16 * 1024
+_TRACE_RESULT_LIMIT = 8 * 1024
+_TRACE_LIST_LIMIT = 20
+_TRACE_MAX_DEPTH = 3
+_TRACE_KEEP_RECENT = 20
+_TRACE_FOLD_TRIGGER = 30
+_TRACE_FOLD_LIMIT = 500
+_TRACE_FOLD_ERROR_LIMIT = 1000
+_TRACE_UNTOUCHED_KEYS = {"error", "message", "success", "status", "tool", "name", "id", "error_type"}
+
+
+def _slim_trace_value(v, limit, flag, depth=0, key=None):
+    if isinstance(v, str):
+        if key in _TRACE_UNTOUCHED_KEYS or len(v) <= limit:
+            return v
+        flag[0] = True
+        return v[:limit] + f"...[截断,原长{len(v)}]"
+    if isinstance(v, (int, float, bool)) or v is None:
+        return v
+    if depth >= _TRACE_MAX_DEPTH:
+        flag[0] = True
+        return "..."
+    if isinstance(v, dict):
+        return {k: _slim_trace_value(val, limit, flag, depth + 1, k) for k, val in v.items()}
+    if isinstance(v, list):
+        if len(v) > _TRACE_LIST_LIMIT:
+            flag[0] = True
+        return [_slim_trace_value(x, limit, flag, depth + 1) for x in v[:_TRACE_LIST_LIMIT]]
+    s = str(v)
+    if len(s) > limit:
+        flag[0] = True
+        return s[:limit] + f"...[截断,原长{len(s)}]"
+    return s
+
+
+def _slim_trace(trace: Dict, args_limit: int = None, result_limit: int = None) -> Dict:
+    """工具 trace 存摘要而非完整结果：单轮内的 traces 会持有到整轮结束，大结果全量持有会撑爆内存。
+
+    发生过截断时带 truncated 标记，调用方（save-message）据此避免把残缺结果写回记忆。
+    """
+    args_limit = args_limit or _TRACE_ARGS_LIMIT
+    result_limit = result_limit or _TRACE_RESULT_LIMIT
+    flag = [False]
+    slim = {
+        "tool": trace.get("tool", ""),
+        "arguments": _slim_trace_value(trace.get("arguments", {}), args_limit, flag),
+        "result": _slim_trace_value(trace.get("result", {}), result_limit, flag),
+        "duration_ms": trace.get("duration_ms", 0),
+        "success": trace.get("success", False),
+    }
+    if flag[0]:
+        slim["truncated"] = True
+    return slim
+
+
+def _fold_trace(trace: Dict) -> Dict:
+    """老 trace 深度折叠：留成败与定位信息，正文压到几百字符"""
+    slim = _slim_trace(trace, args_limit=_TRACE_FOLD_LIMIT, result_limit=_TRACE_FOLD_LIMIT)
+    result = slim.get("result")
+    if isinstance(result, dict):
+        err = result.get("error")
+        if isinstance(err, str) and len(err) > _TRACE_FOLD_ERROR_LIMIT:
+            result["error"] = err[:_TRACE_FOLD_ERROR_LIMIT] + f"...[截断,原长{len(err)}]"
+            slim["truncated"] = True
+    slim["folded"] = True
+    return slim
+
+
+def _fold_old_traces(traces: List[Dict]) -> None:
+    """长任务防爆：单轮 trace 超过阈值时只保留最近 N 条完整，其余折叠（幂等）"""
+    if len(traces) <= _TRACE_FOLD_TRIGGER:
+        return
+    cutoff = len(traces) - _TRACE_KEEP_RECENT
+    for i in range(cutoff):
+        if not traces[i].get("folded"):
+            traces[i] = _fold_trace(traces[i])
+
 
 class AgentLoop:
     """Agent 主循环"""
@@ -1865,15 +1942,16 @@ class AgentLoop:
                             success = not isinstance(result, dict) or (
                                 result.get("success") is not False and result.get("error") is None
                             )
-                            trace_item = {
+                            trace_item = _slim_trace({
                                 "tool": tool_name,
                                 "arguments": arguments,
                                 "result": result,
                                 "duration_ms": duration_ms,
                                 "success": success,
-                            }
+                            })
                             iteration_traces.append(trace_item)
                             tool_traces.append(trace_item)  # 同时添加到累积的 traces
+                            _fold_old_traces(tool_traces)
                             
                             # 记录错误信息到 LoopState
                             if not success and self._loop_state:
