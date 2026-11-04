@@ -21,6 +21,10 @@ class ContextOverflowError(RuntimeError):
     """API 返回 400 且报文表明上下文溢出"""
 
 
+class StreamOptionsUnsupportedError(RuntimeError):
+    """网关不认识 stream_options 参数"""
+
+
 class RetryableAPIError(RuntimeError):
     def __init__(self, status_code: int, message: str = "", retry_after: float = 0.0):
         super().__init__(message or f"LLM API 返回 {status_code}")
@@ -107,6 +111,8 @@ class OpenAICompatTransport:
             body = ""
         if resp.status_code == 400 and _is_overflow_body(body):
             raise ContextOverflowError(f"LLM API 返回 400 (上下文溢出): {body[:500]}")
+        if resp.status_code == 400 and "stream_options" in body.lower():
+            raise StreamOptionsUnsupportedError(f"网关不支持 stream_options: {body[:300]}")
         if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
             raise RetryableAPIError(resp.status_code, f"LLM API 返回 {resp.status_code}: {body[:500]}", _retry_after_seconds(resp))
         raise RuntimeError(f"LLM API 返回 {resp.status_code}: {body[:500]}")
@@ -125,6 +131,8 @@ class OpenAICompatTransport:
             body = ""
         if resp.status_code == 400 and _is_overflow_body(body):
             raise ContextOverflowError(f"LLM API 返回 400 (上下文溢出): {body[:500]}")
+        if resp.status_code == 400 and "stream_options" in body.lower():
+            raise StreamOptionsUnsupportedError(f"网关不支持 stream_options: {body[:300]}")
         if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
             raise RetryableAPIError(resp.status_code, f"LLM API 返回 {resp.status_code}: {body[:500]}", _retry_after_seconds(resp))
         raise RuntimeError(f"LLM API 返回 {resp.status_code}: {body[:500]}")
@@ -161,12 +169,23 @@ class OpenAICompatTransport:
         return self.parse_response(self._parse_json(resp))
 
     async def chat_stream(self, body: Dict):
+        payload = {**body, "stream": True, "stream_options": {"include_usage": True}}
+        try:
+            async for item in self._iter_sse(payload):
+                yield item
+        except StreamOptionsUnsupportedError:
+            logger.warning("[LLM] 网关不支持 stream_options，降级为无 usage 流式请求")
+            payload.pop("stream_options", None)
+            async for item in self._iter_sse(payload):
+                yield item
+
+    async def _iter_sse(self, payload: Dict):
         client = self._ensure_async_client()
         async with client.stream(
             "POST",
             f"{self.base_url}/chat/completions",
             headers=self._headers,
-            json={**body, "stream": True},
+            json=payload,
         ) as resp:
             await self._raise_for_status_stream(resp)
             async for line in resp.aiter_lines():
@@ -308,11 +327,8 @@ class OpenAICompatTransport:
                 usage = {}
                 resp_usage = raw_response.get("usage") or {}
                 if resp_usage:
-                    usage = {
-                        "prompt_tokens": resp_usage.get("prompt_tokens", 0),
-                        "completion_tokens": resp_usage.get("completion_tokens", 0),
-                        "total_tokens": resp_usage.get("total_tokens", 0),
-                    }
+                    # 保留完整 usage dict：基础字段 + prompt_tokens_details 等缓存命中明细
+                    usage = dict(resp_usage)
 
                 return ChatResponse(
                     content=content,

@@ -626,10 +626,10 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             stream, first_item = await _chat_stream_with_retry(transport, params)
             try:
                 async for item in _first_and_rest(stream, first_item):
+                    if item.get("usage"):
+                        usage = item.get("usage")
                     choices = item.get("choices") or []
                     if not choices:
-                        if item.get("usage"):
-                            usage = item.get("usage")
                         continue
                     choice0 = choices[0] or {}
                     delta = choice0.get("delta") or {}
