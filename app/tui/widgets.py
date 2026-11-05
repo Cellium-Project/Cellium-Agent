@@ -1015,16 +1015,12 @@ class _BlocksRichVisual(Visual):
                     self._widget, _build_rich_md(text)
                 ).render_strips(width, None, style, no_sel)
             cache[key] = cached
-            # rich 单独渲染列表/表格时会自带前导空行，正好等价于块间空行；
-            # 代码围栏的前导空行是额外行，仍需补一个块间空行
             if i:
                 starts_blank = bool(cached) and not cached[0].text.strip()
                 kind = _md_block_kind(text)
                 if not (starts_blank and kind in ("list", "table")):
-                    strips.append(Strip.blank(width))
+                    strips.append(Strip.blank(width, style.rich_style))
             strips.extend(cached)
-        # 块是各自独立渲染的，meta 里的行号是块内局部行号；
-        # 重新按整篇行号打点，否则鼠标拖选坐标会塌缩到块内，复制变成整段
         strips = _stamp_line_offsets(strips)
         self._block_cache = cache
         self._base_key = base_key
