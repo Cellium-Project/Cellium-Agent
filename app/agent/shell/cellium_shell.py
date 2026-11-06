@@ -717,6 +717,7 @@ class CelliumShell:
         self._background_tasks: Dict[str, Any] = {}
         self._sessions: Dict[str, ShellSession] = {}
         self._cwd = initial_cwd if initial_cwd and os.path.isdir(initial_cwd) else os.getcwd()
+        self._session_cwd: Dict[str, str] = {}
         self.security = security_policy
 
         try:
@@ -887,14 +888,16 @@ class CelliumShell:
         command: Union[str, Dict[str, Any]] = "",
     ) -> Dict[str, Any]:
         if isinstance(command, dict):
+            session_id = command.get("session_id")
             cmd_value = command.get("cmd", command.get("command", ""))
+            cwd = command.get("cwd") or self._resolve_session_cwd(session_id)
             if isinstance(cmd_value, list):
                 logger.info("[Shell] execute(array) | cmd=%s", cmd_value[:5])
                 return self._run_argv(
                     cmd_value,
                     timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
                     run_in_background=command.get("run_in_background", False),
-                    cwd=command.get("cwd", self._cwd),
+                    cwd=cwd,
                 )
             cmd_str = cmd_value
             logger.info("[Shell] execute(string) | cmd=%s", cmd_str[:200] if cmd_str else "(空)")
@@ -902,7 +905,8 @@ class CelliumShell:
                 cmd_str,
                 timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
                 run_in_background=command.get("run_in_background", False),
-                cwd=command.get("cwd", self._cwd),
+                cwd=cwd,
+                session_id=session_id,
             )
 
         if isinstance(command, str) and command.strip():
@@ -916,14 +920,16 @@ class CelliumShell:
         command: Union[str, Dict[str, Any]] = "",
     ) -> Dict[str, Any]:
         if isinstance(command, dict):
+            session_id = command.get("session_id")
             cmd_value = command.get("cmd", command.get("command", ""))
+            cwd = command.get("cwd") or self._resolve_session_cwd(session_id)
             if isinstance(cmd_value, list):
                 logger.info("[Shell] execute_async(array) | cmd=%s", cmd_value[:5])
                 return self._run_argv(
                     cmd_value,
                     timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
                     run_in_background=command.get("run_in_background", False),
-                    cwd=command.get("cwd", self._cwd),
+                    cwd=cwd,
                 )
             cmd_str = cmd_value
             logger.info("[Shell] execute_async(string) | cmd=%s", cmd_str[:200] if cmd_str else "(空)")
@@ -931,8 +937,9 @@ class CelliumShell:
                 cmd_str,
                 timeout=command.get("timeout", DEFAULT_TIMEOUT_SECONDS),
                 run_in_background=command.get("run_in_background", False),
-                cwd=command.get("cwd", self._cwd),
+                cwd=cwd,
                 on_progress=command.get("on_progress"),
+                session_id=session_id,
             )
 
         if isinstance(command, str) and command.strip():
@@ -996,7 +1003,12 @@ class CelliumShell:
         """获取当前工作目录"""
         return self._cwd
 
-    def _update_cwd(self, cmd: str, exit_code: int, stdout: str) -> None:
+    def _resolve_session_cwd(self, session_id: str = None) -> str:
+        if session_id and self._session_cwd.get(session_id):
+            return self._session_cwd[session_id]
+        return self._cwd
+
+    def _update_cwd(self, cmd: str, exit_code: int, stdout: str, session_id: str = None) -> None:
         """更新当前目录（跟踪 cd 命令）"""
         if exit_code != 0:
             return
@@ -1005,22 +1017,30 @@ class CelliumShell:
         if not cmd:
             return
 
+        base = (self._session_cwd.get(session_id) if session_id else None) or self._cwd
+
+        def apply(new_path: str) -> None:
+            if not new_path or new_path == ".":
+                return
+            target = new_path if os.path.isabs(new_path) else os.path.join(base, new_path)
+            if not os.path.isdir(target):
+                return
+            resolved = os.path.abspath(target)
+            if session_id:
+                self._session_cwd[session_id] = resolved
+            else:
+                self._cwd = resolved
+
         if self._platform == "win32":
             if cmd.lower().startswith("cd ") or cmd.lower().startswith("chdir "):
                 parts = cmd.split(None, 1)
                 if len(parts) > 1:
-                    new_path = parts[1].strip()
-                    if new_path and new_path != ".":
-                        if os.path.isdir(new_path):
-                            self._cwd = os.path.abspath(new_path)
+                    apply(parts[1].strip())
         else:
             if cmd.startswith("cd ") or cmd.startswith("cd\t"):
                 parts = cmd.split(None, 1)
                 if len(parts) > 1:
-                    new_path = parts[1].strip()
-                    if new_path and new_path != ".":
-                        if os.path.isdir(new_path):
-                            self._cwd = os.path.abspath(new_path)
+                    apply(parts[1].strip())
 
     def _track_env_assignments(self, cmd: str) -> None:
         if not cmd:
@@ -1051,6 +1071,7 @@ class CelliumShell:
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         run_in_background: bool = False,
         cwd: str = None,
+        session_id: str = None,
     ) -> Dict[str, Any]:
         """同步执行命令的主路径"""
         if not cmd or not cmd.strip():
@@ -1084,7 +1105,7 @@ class CelliumShell:
         elif run_in_background:
             result = self._run_background(effective_cmd, effective_timeout, cwd)
         else:
-            result = self._execute_sync(effective_cmd, effective_timeout, cwd, cmd_type)
+            result = self._execute_sync(effective_cmd, effective_timeout, cwd, cmd_type, session_id)
 
         if security_message and result.get("success"):
             result["security_note"] = security_message
@@ -1337,6 +1358,7 @@ class CelliumShell:
         run_in_background: bool = False,
         cwd: str = None,
         on_progress: Optional[Callable] = None,
+        session_id: str = None,
     ) -> Dict[str, Any]:
         """异步执行命令的主路径"""
         if not cmd or not cmd.strip():
@@ -1360,7 +1382,7 @@ class CelliumShell:
         if run_in_background:
             return self._run_background(cmd, effective_timeout, cwd)
 
-        return await self._execute_async(cmd, effective_timeout, cwd, cmd_type, on_progress)
+        return await self._execute_async(cmd, effective_timeout, cwd, cmd_type, on_progress, session_id)
 
     def _execute_sync(
         self,
@@ -1368,6 +1390,7 @@ class CelliumShell:
         timeout: int,
         cwd: str,
         cmd_type: CommandType,
+        session_id: str = None,
     ) -> Dict[str, Any]:
         shell_cmd, shell_args = self._resolve_shell(cmd)
         if self._platform == "win32" and "powershell" not in shell_cmd.lower():
@@ -1462,7 +1485,7 @@ class CelliumShell:
                 if process.returncode != 0:
                     result["error"] = stderr_str or f"Exit code: {process.returncode}"
 
-                self._update_cwd(cmd, process.returncode, stdout_str)
+                self._update_cwd(cmd, process.returncode, stdout_str, session_id)
                 return result
 
             except subprocess.TimeoutExpired:
@@ -1501,6 +1524,7 @@ class CelliumShell:
         cwd: str,
         cmd_type: CommandType,
         on_progress: Optional[Callable] = None,
+        session_id: str = None,
     ) -> Dict[str, Any]:
         shell_cmd, shell_args = self._resolve_shell(cmd)
         if self._platform == "win32" and "powershell" not in shell_cmd.lower():
@@ -1590,7 +1614,7 @@ class CelliumShell:
                         result["truncated"] = True
                     if process.returncode != 0:
                         result["error"] = stderr_str or f"Exit code: {process.returncode}"
-                    self._update_cwd(cmd, process.returncode, stdout_str)
+                    self._update_cwd(cmd, process.returncode, stdout_str, session_id)
                     return result
 
                 except asyncio.TimeoutError:
@@ -1670,7 +1694,7 @@ class CelliumShell:
                 if process.returncode != 0:
                     result["error"] = stderr_str or f"Exit code: {process.returncode}"
 
-                self._update_cwd(cmd, process.returncode, stdout_str)
+                self._update_cwd(cmd, process.returncode, stdout_str, session_id)
                 return result
 
             except asyncio.TimeoutError:

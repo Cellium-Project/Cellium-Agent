@@ -3,15 +3,26 @@
 FTS5 记忆搜索器 - 支持中文分词增强
 """
 
+import functools
 import os
 import sqlite3
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from .chinese_tokenizer import get_tokenizer
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class FTS5MemorySearcher:
@@ -24,7 +35,9 @@ class FTS5MemorySearcher:
         self.cursor: Optional[sqlite3.Cursor] = None
         self._initialized = False
         self.tokenizer = get_tokenizer()
+        self._lock = threading.RLock()
 
+    @_locked
     def _ensure_connected(self):
         """延迟连接：首次调用时才建立 SQLite 连接"""
         if self.conn is not None:
@@ -36,10 +49,13 @@ class FTS5MemorySearcher:
         self.conn.row_factory = sqlite3.Row
         self.conn.text_factory = str
         self.cursor = self.conn.cursor()
+        self.cursor.execute("PRAGMA journal_mode=WAL")
+        self.cursor.execute("PRAGMA busy_timeout=5000")
         self._init_db()
         self._migrate_if_needed()
         logger.debug("[FTS5] SQLite 连接已建立: %s", self.db_path)
 
+    @_locked
     def _init_db(self):
         """初始化 FTS5 虚拟表"""
         self.cursor.execute(
@@ -84,6 +100,7 @@ class FTS5MemorySearcher:
 
         self.conn.commit()
 
+    @_locked
     def _migrate_if_needed(self):
         """迁移旧数据：为已有记录生成分词字段"""
         try:
@@ -112,6 +129,7 @@ class FTS5MemorySearcher:
         except Exception as e:
             logger.warning("[FTS5] 迁移检查失败: %s", e)
 
+    @_locked
     def _re_tokenize_all(self):
         """用新版分词器重新生成所有记录的 tokens（bigram 迁移）"""
         try:
@@ -126,6 +144,7 @@ class FTS5MemorySearcher:
         except Exception as e:
             logger.warning("[FTS5] 重新分词失败: %s", e)
 
+    @_locked
     def _rebuild_with_tokens(self):
         """重建表以添加分词字段"""
         try:
@@ -167,6 +186,7 @@ class FTS5MemorySearcher:
     # 写入/更新
     # ============================================================
 
+    @_locked
     def insert_memory(
         self,
         title: str,
@@ -223,6 +243,7 @@ class FTS5MemorySearcher:
         logger.debug("[FTS5] 新增记忆 | rowid=%s | title=%s", fts_rowid, normalized_title[:30])
         return fts_rowid
 
+    @_locked
     def update_memory(
         self,
         source_file: str,
@@ -274,6 +295,7 @@ class FTS5MemorySearcher:
     # 读取 / 搜索
     # ============================================================
 
+    @_locked
     def get_memory(self, *, rowid: Optional[int] = None, source_file: Optional[str] = None) -> Optional[Dict[str, Any]]:
         self._ensure_connected()
         if rowid is None and not source_file:
@@ -302,6 +324,7 @@ class FTS5MemorySearcher:
             "created_at": row["created_at"],
         }
 
+    @_locked
     def list_memories(
         self,
         limit: Optional[int] = 1000,
@@ -346,6 +369,7 @@ class FTS5MemorySearcher:
             result.append(item)
         return result
 
+    @_locked
     def get_max_updated_at(self) -> Optional[str]:
         self._ensure_connected()
         try:
@@ -361,6 +385,7 @@ class FTS5MemorySearcher:
             return None
         return str(row[0])
 
+    @_locked
     def search(
         self,
         query: str,
@@ -427,6 +452,7 @@ class FTS5MemorySearcher:
                 variants.append(keyword)
         return variants[:5]
 
+    @_locked
     def _fts5_search(
         self, query: str, top_k: int, category: str, note_type: str,
         use_usage_boost: bool, use_time_decay: bool,
@@ -540,6 +566,7 @@ class FTS5MemorySearcher:
             logger.warning("[FTS5] 搜索异常: %s", e)
             return []
 
+    @_locked
     def _fallback_search(
         self,
         query: str,
@@ -627,6 +654,7 @@ class FTS5MemorySearcher:
     # 统计
     # ============================================================
 
+    @_locked
     def increment_usage(self, source_file: Optional[str] = None, rowid: Optional[int] = None):
         self._ensure_connected()
         now = datetime.now().isoformat()
@@ -654,6 +682,7 @@ class FTS5MemorySearcher:
             )
         self.conn.commit()
 
+    @_locked
     def get_usage_stats(self) -> Dict:
         self._ensure_connected()
         self.cursor.execute(
@@ -671,6 +700,7 @@ class FTS5MemorySearcher:
             "avg_usage": row["avg_usage"] or 0,
         }
 
+    @_locked
     def get_stats(self) -> Dict:
         self._ensure_connected()
         self.cursor.execute("SELECT COUNT(*) as count FROM memory_index")
@@ -692,6 +722,7 @@ class FTS5MemorySearcher:
                 escaped += char
         return escaped or query
 
+    @_locked
     def close(self):
         if self.conn is not None:
             self.conn.close()

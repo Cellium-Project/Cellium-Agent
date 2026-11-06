@@ -1190,10 +1190,12 @@ class AgentLoop:
         effective_session = session_id or self.session_id
         start_time = time.time()
 
-        from app.core.security.run_mode import normalize_mode, plan_injection, run_injection, PLAN
+        from app.core.security.run_mode import (
+            normalize_mode, plan_injection, run_injection, get_plan_habit, PLAN,
+        )
         self._run_mode = normalize_mode(mode)
         # 两种模式都显式声明当前状态
-        _mode_text = plan_injection() if self._run_mode == PLAN else run_injection()
+        _mode_text = plan_injection(get_plan_habit()) if self._run_mode == PLAN else run_injection()
         system_injection = f"{system_injection}\n\n{_mode_text}" if system_injection else _mode_text
 
         # 本轮循环的停止事件（stop() 可跨线程 set，asyncio.Event.set 线程安全）

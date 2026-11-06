@@ -110,6 +110,14 @@ def _run_coro_on_main_loop(coro, timeout=None):
 _SUBAGENTS: Dict[str, Dict[str, Any]] = {}
 
 
+def _sub_key(session_id: str = None, name: str = "") -> str:
+    return f"{session_id or 'default'}::{name}"
+
+
+def _sub_scope(session_id: str = None) -> str:
+    return _sub_key(session_id, "")
+
+
 class SubAgent(BaseCell):
     """子 Agent 编排器 — 主 Agent 定义并行子 Agent"""
 
@@ -370,7 +378,8 @@ class SubAgent(BaseCell):
         te.execute = _guarded_execute
         te.execute_sync = _guarded_execute_sync
 
-        _SUBAGENTS[name] = {
+        sub_key = _sub_key(parent_session_id, name)
+        _SUBAGENTS[sub_key] = {
             "name": name, "task": task, "tools": tools_list,
             "persona": persona, "constraints": constraints,
             "loop": loop, "engine": engine,
@@ -393,9 +402,9 @@ class SubAgent(BaseCell):
                     result = {"type": "error", "content": "", "error": event.get("error", "unknown")}
         finally:
             await _cleanup()
-            if name in _SUBAGENTS:
-                _SUBAGENTS[name]["status"] = "done"
-                _SUBAGENTS[name]["finished_at"] = time.time()
+            if sub_key in _SUBAGENTS:
+                _SUBAGENTS[sub_key]["status"] = "done"
+                _SUBAGENTS[sub_key]["finished_at"] = time.time()
 
         tool_traces = result.get("tool_traces", []) or []
         return {
@@ -517,16 +526,19 @@ class SubAgent(BaseCell):
             "total_duration_s": round(time.time() - t0, 2),
         }
 
-    def _cmd_list(self) -> Dict[str, Any]:
+    def _cmd_list(self, session_id: str = None) -> Dict[str, Any]:
         """列出所有已创建的子 Agent 及其状态
 
         Returns:
             {"success", "count", "subagents": [{name, status, task, tools, started_at}]}
         """
+        prefix = _sub_scope(session_id)
         items = []
-        for name, info in _SUBAGENTS.items():
+        for key, info in _SUBAGENTS.items():
+            if not key.startswith(prefix):
+                continue
             items.append({
-                "name": name,
+                "name": info.get("name", key[len(prefix):]),
                 "status": info.get("status"),
                 "task": info.get("task", "")[:80],
                 "tools": info.get("tools", []),
@@ -534,7 +546,7 @@ class SubAgent(BaseCell):
             })
         return {"success": True, "count": len(items), "subagents": items}
 
-    def _cmd_status(self, name: str = "") -> Dict[str, Any]:
+    def _cmd_status(self, name: str = "", session_id: str = None) -> Dict[str, Any]:
         """查看子 Agent 运行状态
 
         Args:
@@ -544,10 +556,15 @@ class SubAgent(BaseCell):
             指定子 Agent 的状态详情（status/task/tools/persona/constraints/时间戳）
         """
         if not name:
-            return self._cmd_list()
-        info = _SUBAGENTS.get(name)
+            return self._cmd_list(session_id=session_id)
+        prefix = _sub_scope(session_id)
+        info = _SUBAGENTS.get(_sub_key(session_id, name))
         if not info:
-            return {"success": False, "error": f"子 Agent 不存在: {name}", "available": list(_SUBAGENTS.keys())}
+            return {
+                "success": False,
+                "error": f"子 Agent 不存在: {name}",
+                "available": [k[len(prefix):] for k in _SUBAGENTS if k.startswith(prefix)],
+            }
         return {
             "success": True,
             "name": name,
@@ -560,7 +577,7 @@ class SubAgent(BaseCell):
             "finished_at": info.get("finished_at"),
         }
 
-    def _cmd_cancel(self, name: str = "") -> Dict[str, Any]:
+    def _cmd_cancel(self, name: str = "", session_id: str = None) -> Dict[str, Any]:
         """取消/移除子 Agent（仅标记，运行中的无法强停）
 
         Args:
@@ -571,16 +588,17 @@ class SubAgent(BaseCell):
         """
         if not name:
             return {"success": False, "error": "name 必填"}
-        if name not in _SUBAGENTS:
+        key = _sub_key(session_id, name)
+        info = _SUBAGENTS.get(key)
+        if not info:
             return {"success": False, "error": f"子 Agent 不存在: {name}"}
-        info = _SUBAGENTS[name]
         loop = info.get("loop")
         if loop:
             try:
                 loop.stop()
             except Exception:
                 pass
-        _SUBAGENTS.pop(name, None)
+        _SUBAGENTS.pop(key, None)
         return {"success": True, "message": f"已移除子 Agent: {name}"}
 
     def _cmd_help(self, topic: str = "") -> Dict[str, Any]:

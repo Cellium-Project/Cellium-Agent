@@ -105,7 +105,7 @@ class TestCommandMatch(unittest.TestCase):
 
     def test_single_letter_only_prefix(self):
         self.assertEqual(self._slashes("r"), ["run"])
-        self.assertEqual(self._slashes("p"), ["plan"])
+        self.assertEqual(self._slashes("p"), ["plan", "plan-habit"])
         self.assertEqual(self._slashes("t"), ["theme"])
 
     def test_alias_needs_full_prefix(self):
@@ -116,6 +116,10 @@ class TestCommandMatch(unittest.TestCase):
     def test_multi_prefix(self):
         self.assertEqual(self._slashes("se"), ["session", "settings"])
         self.assertEqual(self._slashes("s"), ["settings"])
+
+    def test_plan_habit_command(self):
+        self.assertEqual(self._slashes("plan-h"), ["plan-habit"])
+        self.assertEqual(self._slashes("plan"), ["plan"])
 
 
 class TestModeBadge(unittest.TestCase):
@@ -159,6 +163,305 @@ class TestLogoAnimation(unittest.TestCase):
         self.assertLess(mid, 1.0, "切换应为渐变而非瞬变")
         self.assertEqual(final, 1.0)
         self.assertIsNone(timer, "动画结束必须停表")
+
+
+class TestTuiKeySafety(unittest.TestCase):
+
+    def test_exit_on_ctrl_d(self):
+        from app.tui.app import CelliumTUI
+        bindings = {b.key: b for b in CelliumTUI.BINDINGS}
+        self.assertEqual(bindings["ctrl+d"].action, "stop_or_exit")
+        self.assertTrue(bindings["ctrl+d"].priority, "需 priority 才能压过输入框的 delete_right")
+        self.assertEqual(bindings["ctrl+q"].action, "stop_or_exit")
+
+    def test_no_delete_session_binding(self):
+        from app.tui.app import CelliumTUI
+        self.assertNotIn("delete_session", {b.action for b in CelliumTUI.BINDINGS})
+
+    def test_picker_delete_key_removed(self):
+        from app.tui.session_picker import SessionPickerScreen
+        self.assertFalse(hasattr(SessionPickerScreen, "key_delete"))
+
+    def test_delete_confirm_screen(self):
+        from app.tui.session_picker import DeleteConfirmScreen
+        keys = {b[0] for b in DeleteConfirmScreen.BINDINGS}
+        self.assertIn("y", keys)
+        self.assertIn("n", keys)
+        self.assertIn("escape", keys)
+
+    def test_i18n_no_delete_hint(self):
+        from app.tui.i18n import STRINGS
+        for lang in STRINGS:
+            self.assertNotIn("Delete", STRINGS[lang]["session.picker_footer"])
+            self.assertIn("session.delete_confirm", STRINGS[lang])
+            self.assertIn("common.copied_selection", STRINGS[lang])
+            self.assertIn("Ctrl+D", STRINGS[lang]["hint"])
+            self.assertNotIn("Ctrl+Q", STRINGS[lang]["hint"])
+
+    def test_priority_beats_input_delete_right(self):
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.widgets import Input
+
+        hits = []
+
+        class _A(App):
+            BINDINGS = [Binding("ctrl+d", "mark", "mark", priority=True)]
+
+            def compose(self) -> ComposeResult:
+                yield Input("abc")
+
+            def action_mark(self):
+                hits.append(True)
+
+        async def _run():
+            app = _A()
+            async with app.run_test() as pilot:
+                inp = app.query_one(Input)
+                inp.focus()
+                inp.cursor_position = 1
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                return inp.value, len(hits)
+
+        value, count = asyncio.run(_run())
+        self.assertEqual(count, 1, "priority 绑定应触发 App 动作")
+        self.assertEqual(value, "abc", "输入框不应再吃掉 ctrl+d")
+
+    def test_confirm_screen_yes_and_cancel(self):
+        from textual.app import App
+        from app.tui.session_picker import DeleteConfirmScreen
+
+        async def _run(key):
+            result = []
+            app = App()
+            async with app.run_test() as pilot:
+                app.push_screen(DeleteConfirmScreen("确认删除？", "删除", "取消"), callback=result.append)
+                await pilot.pause()
+                await pilot.press(key)
+                await pilot.pause()
+            return result
+
+        self.assertEqual(asyncio.run(_run("y")), [True])
+        self.assertEqual(asyncio.run(_run("escape")), [False])
+
+
+class TestRightClickCopy(unittest.TestCase):
+
+    class _Screen:
+        def __init__(self, text):
+            self.text = text
+            self.cleared = False
+
+        def get_selected_text(self):
+            return self.text
+
+        def clear_selection(self):
+            self.cleared = True
+
+    class _App:
+        def __init__(self, text):
+            self.screen = TestRightClickCopy._Screen(text)
+            self.copied = None
+            self.notes = []
+
+        def copy_to_clipboard(self, text):
+            self.copied = text
+
+        def tr(self, key, *args):
+            return key
+
+        def notify(self, message, **kwargs):
+            self.notes.append((message, kwargs))
+
+    class _Event:
+        def __init__(self, button):
+            self.button = button
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    def test_copy_selection(self):
+        from app.tui.app import copy_selection_if_any
+        app = self._App("hello")
+        self.assertTrue(copy_selection_if_any(app))
+        self.assertEqual(app.copied, "hello")
+        self.assertTrue(app.screen.cleared)
+        self.assertEqual(app.notes[0][0], "common.copied_selection")
+
+    def test_empty_selection(self):
+        from app.tui.app import copy_selection_if_any
+        app = self._App("")
+        self.assertFalse(copy_selection_if_any(app))
+        self.assertIsNone(app.copied)
+        self.assertEqual(app.notes, [])
+
+    def test_right_click_copies(self):
+        from app.tui.app import CelliumTUI
+        app = self._App("hello")
+        event = self._Event(3)
+        CelliumTUI.on_mouse_down(app, event)
+        self.assertEqual(app.copied, "hello")
+        self.assertTrue(event.stopped)
+
+    def test_left_click_no_copy(self):
+        from app.tui.app import CelliumTUI
+        app = self._App("hello")
+        event = self._Event(1)
+        CelliumTUI.on_mouse_down(app, event)
+        self.assertIsNone(app.copied)
+        self.assertFalse(event.stopped)
+
+
+class TestSelectionReflow(unittest.TestCase):
+
+    @staticmethod
+    def _strip(text, bg="#121212"):
+        from rich.segment import Segment
+        from rich.style import Style
+        from textual.strip import Strip
+        return Strip([Segment(text, Style(bgcolor=bg))], len(text))
+
+    def test_code_wrap_joins_without_padding(self):
+        from textual.selection import Selection
+        from app.tui.widgets import _reflow_selection
+        strips = [self._strip(" abcde", "#272822"), self._strip(" fghij", "#272822")]
+        text = _reflow_selection(strips, Selection(None, None), 7, "#121212")
+        self.assertEqual(text, "abcdefghij")
+
+    def test_hard_newline_kept(self):
+        from textual.selection import Selection
+        from app.tui.widgets import _reflow_selection
+        strips = [self._strip("abc"), self._strip("def")]
+        text = _reflow_selection(strips, Selection(None, None), 20, "#121212")
+        self.assertEqual(text, "abc\ndef")
+
+    def test_partial_last_row_not_joined(self):
+        from textual.selection import Selection
+        from app.tui.widgets import _reflow_selection
+        strips = [
+            self._strip(" abcdefgh", "#272822"),
+            self._strip(" abcdefgh", "#272822"),
+            self._strip(" ijk", "#272822"),
+        ]
+        text = _reflow_selection(strips, Selection(None, None), 10, "#121212")
+        self.assertEqual(text, "abcdefghabcdefghijk")
+
+    def test_prose_wrap_restores_space(self):
+        from textual.selection import Selection
+        from app.tui.widgets import _reflow_selection
+        strips = [self._strip("a" * 20), self._strip("b" * 10)]
+        text = _reflow_selection(strips, Selection(None, None), 20, "#121212")
+        self.assertEqual(text, "a" * 20 + " " + "b" * 10)
+
+    def test_out_of_range_selection_returns_empty(self):
+        from textual.geometry import Offset
+        from textual.selection import Selection
+        from app.tui.widgets import _reflow_selection
+        sel = Selection(Offset(5, 5), Offset(6, 6))
+        self.assertEqual(_reflow_selection([self._strip("abc")], sel, 20, "#121212"), "")
+
+    def test_widget_copy_keeps_code_line(self):
+        from textual.app import App, ComposeResult
+        from textual.selection import Selection
+        from app.tui.widgets import HistoryMarkdown
+
+        code = "print('" + "x" * 60 + "')"
+        md = "```python\n" + code + "\n```"
+
+        class _A(App):
+            CSS = "HistoryMarkdown { width: 20; height: auto; }"
+
+            def compose(self) -> ComposeResult:
+                yield HistoryMarkdown(md)
+
+        async def _run():
+            app = _A()
+            async with app.run_test(size=(30, 30)) as pilot:
+                await pilot.pause()
+                widget = app.query_one(HistoryMarkdown)
+                text, _ = widget.get_selection(Selection(None, None))
+                return text
+
+        text = asyncio.run(_run())
+        self.assertIn(code, text, "复制应保持代码原始长度，不被折行打断")
+
+    def test_copy_ignores_selection_styling(self):
+        from unittest.mock import PropertyMock, patch
+        from textual.app import App, ComposeResult
+        from textual.selection import Selection
+        from textual.widget import Widget
+        from app.tui.widgets import HistoryMarkdown
+
+        code = "print('" + "x" * 60 + "')"
+        md = "```python\n" + code + "\n```"
+
+        class _A(App):
+            CSS = "HistoryMarkdown { width: 20; height: auto; }"
+
+            def compose(self) -> ComposeResult:
+                yield HistoryMarkdown(md)
+
+        async def _run():
+            app = _A()
+            async with app.run_test(size=(30, 30)) as pilot:
+                await pilot.pause()
+                widget = app.query_one(HistoryMarkdown)
+                with patch.object(Widget, "text_selection", new_callable=PropertyMock) as mocked:
+                    mocked.return_value = Selection(None, None)
+                    text, _ = widget.get_selection(Selection(None, None))
+                return text
+
+        text = asyncio.run(_run())
+        self.assertIn(code, text, "选中高亮不应干扰复制内容")
+
+
+class TestSourceMatch(unittest.TestCase):
+
+    def test_code_block_restores_original(self):
+        from app.tui.widgets import _source_code_selection
+        src = "```python\n    x = 1  \n    y = 2\n```"
+        text = "    x = 1\n    y = 2"
+        self.assertEqual(_source_code_selection(src, text), "    x = 1  \n    y = 2")
+
+    def test_partial_line(self):
+        from app.tui.widgets import _source_code_selection
+        src = "```python\n    x = 1  \n    y = 2\n```"
+        self.assertEqual(_source_code_selection(src, "x = 1"), "x = 1")
+
+    def test_no_block_returns_none(self):
+        from app.tui.widgets import _source_code_selection
+        self.assertIsNone(_source_code_selection("普通文本", "普通"))
+
+    def test_mismatch_returns_none(self):
+        from app.tui.widgets import _source_code_selection
+        self.assertIsNone(_source_code_selection("```\nabc\n```", "xyz"))
+
+    def test_widget_copy_from_source(self):
+        from textual.app import App, ComposeResult
+        from textual.selection import Selection
+        from app.tui.widgets import HistoryMarkdown
+
+        md = "```python\nfoo  \nbar\n```"
+
+        class _A(App):
+            CSS = "HistoryMarkdown { width: 20; height: auto; }"
+
+            def compose(self) -> ComposeResult:
+                yield HistoryMarkdown(md)
+
+        async def _run():
+            app = _A()
+            async with app.run_test(size=(30, 30)) as pilot:
+                await pilot.pause()
+                widget = app.query_one(HistoryMarkdown)
+                text, _ = widget.get_selection(Selection(None, None))
+                return text
+
+        text = asyncio.run(_run())
+        self.assertIn("foo  ", text, "应以源码为准，保留行尾空格")
+        self.assertIn("bar", text)
 
 
 if __name__ == "__main__":

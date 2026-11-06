@@ -53,7 +53,6 @@ EXEMPTED_NAMES: Set[str] = {
     "component",
     "skill_installer",
     "skill_manager",
-    "web_query",
     "web_search",
     "qq_files",
     "telegram_files",
@@ -62,6 +61,18 @@ EXEMPTED_NAMES: Set[str] = {
     "web_fetch",
     "scheduler",
     "sub_agent",
+}
+
+SERIALIZED_NAMES: Set[str] = {
+    "component",
+    "config",
+    "skill_installer",
+    "skill_manager",
+    "scheduler",
+    "qq_files",
+    "telegram_files",
+    "feishu_files",
+    "weixin_files",
 }
 
 # 是否启用沙箱模式（可通过配置关闭）
@@ -185,6 +196,8 @@ class CellToolAdapter(BaseTool):
         
         self._cached_params_map: Optional[Dict[str, list]] = None  # 缓存参数签名
 
+        self._exec_lock = threading.RLock()
+
         super().__init__()
         
 
@@ -304,101 +317,102 @@ class CellToolAdapter(BaseTool):
 
     def _execute_direct(self, command, *args, **kwargs) -> Dict[str, Any]:
         """直接执行组件命令"""
-        _ensure_libs_in_path()
-        
-        try:
-            if isinstance(command, dict):
-                # ── LLM 模式：自行处理（不走 super）──
-                all_args = dict(command)
-                cmd_name = all_args.pop("command", None)
-                if cmd_name:
-                    cmd_name = cmd_name.strip()
+        with self._exec_lock:
+            _ensure_libs_in_path()
 
-                if not cmd_name:
-                    cmd_name = self._infer_command(all_args)
+            try:
+                if isinstance(command, dict):
+                    # ── LLM 模式：自行处理（不走 super）──
+                    all_args = dict(command)
+                    cmd_name = all_args.pop("command", None)
+                    if cmd_name:
+                        cmd_name = cmd_name.strip()
 
-                logger.info(
-                    "[CellToolAdapter] dict 模式 | 提取 command=%s | 原始 keys=%s",
-                    cmd_name, list(all_args.keys()),
-                )
+                    if not cmd_name:
+                        cmd_name = self._infer_command(all_args)
 
-                target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}" if cmd_name else None
-                if not target_method_name or not hasattr(self._cell, target_method_name):
-                    available_cmds = list(self.get_commands().keys())
-                    error_msg = f"[ToolError] {self.tool_name}: unknown command '{cmd_name or 'none'}'. Available: {available_cmds}"
-                    raise ValueError(error_msg)
+                    logger.info(
+                        "[CellToolAdapter] dict 模式 | 提取 command=%s | 原始 keys=%s",
+                        cmd_name, list(all_args.keys()),
+                    )
 
-                target_method = getattr(self._cell, target_method_name)
-                sig = inspect.signature(target_method)
-                valid_params = {p for p in sig.parameters if p != "self"}
+                    target_method_name = f"{self.COMMAND_PREFIX}{cmd_name}" if cmd_name else None
+                    if not target_method_name or not hasattr(self._cell, target_method_name):
+                        available_cmds = list(self.get_commands().keys())
+                        error_msg = f"[ToolError] {self.tool_name}: unknown command '{cmd_name or 'none'}'. Available: {available_cmds}"
+                        raise ValueError(error_msg)
 
-                has_var_keyword = any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD
-                    for p_name, p in sig.parameters.items()
-                    if p_name != "self"
-                )
-                if has_var_keyword:
-                    cleaned_args = dict(all_args)
-                    cleaned_args.pop("_intent", None)
+                    target_method = getattr(self._cell, target_method_name)
+                    sig = inspect.signature(target_method)
+                    valid_params = {p for p in sig.parameters if p != "self"}
+
+                    has_var_keyword = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p_name, p in sig.parameters.items()
+                        if p_name != "self"
+                    )
+                    if has_var_keyword:
+                        cleaned_args = dict(all_args)
+                        cleaned_args.pop("_intent", None)
+                    else:
+                        cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
+
+                    logger.info(
+                        "[CellToolAdapter] 调用命令 | 命令=%s | 参数=%s",
+                        cmd_name, list(cleaned_args.keys()),
+                    )
+                    result = self._cell.execute(cmd_name, **cleaned_args)
                 else:
-                    cleaned_args = {k: v for k, v in all_args.items() if k in valid_params}
+
+                    result = self._cell.execute(command, *args, **kwargs)
+
+                if not isinstance(result, dict):
+                    result = {"result": result}
+
+                result.setdefault("_source", f"component:{self.name}")
 
                 logger.info(
-                    "[CellToolAdapter] 调用命令 | 命令=%s | 参数=%s",
-                    cmd_name, list(cleaned_args.keys()),
+                    "[CellToolAdapter] %s.%s OK | 返回 keys=%s",
+                    self.name,
+                    command if not isinstance(command, dict) else command.get("command", "?"),
+                    list(result.keys()),
                 )
-                result = self._cell.execute(cmd_name, **cleaned_args)
-            else:
+                return result
 
-                result = self._cell.execute(command, *args, **kwargs)
+            except Exception as e:
+                import traceback
+                tb_str = traceback.format_exc()
+                logger.error(
+                    "[CellToolAdapter] %s.execute 失败: %s\n%s",
+                    self.name, e, tb_str,
+                )
 
-            if not isinstance(result, dict):
-                result = {"result": result}
+                error_msg = str(e)
+                error_type = type(e).__name__
 
-            result.setdefault("_source", f"component:{self.name}")
+                hint = ""
+                if "not found" in error_msg.lower() or "找不到" in error_msg:
+                    hint = f"可用的命令: {list(self.get_commands().keys())}"
+                elif "missing" in error_msg.lower() or "缺少" in error_msg:
+                    hint = "请提供所有必填参数"
+                elif "invalid" in error_msg.lower() or "无效" in error_msg:
+                    hint = "请检查参数格式是否正确"
+                elif "timeout" in error_msg.lower() or "超时" in error_msg:
+                    hint = "操作超时，请稍后重试或检查网络连接"
+                elif "connection" in error_msg.lower() or "连接" in error_msg:
+                    hint = "连接失败，请检查网络或URL是否正确"
+                else:
+                    hint = "请检查命令名称和参数是否正确"
 
-            logger.info(
-                "[CellToolAdapter] %s.%s OK | 返回 keys=%s",
-                self.name,
-                command if not isinstance(command, dict) else command.get("command", "?"),
-                list(result.keys()),
-            )
-            return result
-
-        except Exception as e:
-            import traceback
-            tb_str = traceback.format_exc()
-            logger.error(
-                "[CellToolAdapter] %s.execute 失败: %s\n%s",
-                self.name, e, tb_str,
-            )
-
-            error_msg = str(e)
-            error_type = type(e).__name__
-
-            hint = ""
-            if "not found" in error_msg.lower() or "找不到" in error_msg:
-                hint = f"可用的命令: {list(self.get_commands().keys())}"
-            elif "missing" in error_msg.lower() or "缺少" in error_msg:
-                hint = "请提供所有必填参数"
-            elif "invalid" in error_msg.lower() or "无效" in error_msg:
-                hint = "请检查参数格式是否正确"
-            elif "timeout" in error_msg.lower() or "超时" in error_msg:
-                hint = "操作超时，请稍后重试或检查网络连接"
-            elif "connection" in error_msg.lower() or "连接" in error_msg:
-                hint = "连接失败，请检查网络或URL是否正确"
-            else:
-                hint = "请检查命令名称和参数是否正确"
-
-            return {
-                "success": False,
-                "error": error_msg,
-                "error_type": error_type,
-                "hint": hint,
-                "command": cmd_name if isinstance(command, dict) else command,
-                "_source": f"component:{self.name}",
-                "status": "error",
-            }
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "error_type": error_type,
+                    "hint": hint,
+                    "command": cmd_name if isinstance(command, dict) else command,
+                    "_source": f"component:{self.name}",
+                    "status": "error",
+                }
 
     def execute_with_context(self, arguments: Dict[str, Any], session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """带上下文执行命令（由 ToolExecutor 调用）
@@ -531,7 +545,11 @@ class CellToolAdapter(BaseTool):
                 sandbox = ComponentSandbox.get_sandbox(self.name)
                 result = sandbox.execute(cmd_name, **cleaned_args)
             else:
-                result = self._cell.execute(cmd_name, **cleaned_args)
+                if self.name in SERIALIZED_NAMES:
+                    with self._exec_lock:
+                        result = self._cell.execute(cmd_name, **cleaned_args)
+                else:
+                    result = self._cell.execute(cmd_name, **cleaned_args)
             
             if not isinstance(result, dict):
                 result = {"result": result}

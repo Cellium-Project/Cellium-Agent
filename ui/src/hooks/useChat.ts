@@ -896,6 +896,10 @@ export function useChat() {
     if (prevSessionIdRef.current && prevSessionIdRef.current !== currentSessionId) {
       console.log('[WS] Session changed, disconnecting old connection');
       disconnectWebSocket();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
       hasReconnectedRef.current = false;
     }
     prevSessionIdRef.current = currentSessionId;
@@ -927,6 +931,10 @@ export function useChat() {
           timeline: [],
         });
         setIsStreaming(true);
+      } else {
+        updateStreamingMessage(null);
+        setIsStreaming(false);
+        setHasRunningTask(false);
       }
       // 始终连接 ws 订阅当前 session：即使无任务，也能实时接收
       // 对端（TUI/外部平台）发起的消息

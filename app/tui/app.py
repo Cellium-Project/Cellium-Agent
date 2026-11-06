@@ -389,17 +389,31 @@ def _theme_pref_path_impl() -> str:
     return _THEME_PREF_FILE
 
 
+def copy_selection_if_any(app) -> bool:
+    """复制当前选区；无选区返回 False"""
+    try:
+        selection = app.screen.get_selected_text()
+    except Exception:
+        return False
+    if not selection:
+        return False
+    app.copy_to_clipboard(selection)
+    app.screen.clear_selection()
+    app.notify(app.tr("common.copied_selection"), severity="information")
+    return True
+
+
 class CelliumTUI(App):
     ENABLE_SELECT_AUTO_SCROLL = True  
     TITLE = "Cellium Agent"
     CSS = CSS
     BINDINGS = [
-        Binding("ctrl+q", "stop_or_exit", "退出", priority=True),
+        Binding("ctrl+q", "stop_or_exit", "退出", priority=True, show=False),
+        Binding("ctrl+d", "stop_or_exit", "退出", priority=True),
         Binding("ctrl+c", "copy_text", "复制", show=False),
         Binding("ctrl+y", "copy_selection", "复制选区", show=False),
         Binding("ctrl+t", "toggle_theme", "切换主题"),
         Binding("ctrl+n", "new_session", "新建会话"),
-        Binding("ctrl+d", "delete_session", "删除会话"),
         Binding("ctrl+s", "open_settings", "设置"),
         Binding("ctrl+l", "clear_chat", "清屏"),
         Binding("shift+tab", "toggle_run_mode", "Plan/Run 切换", show=False, priority=True),
@@ -1204,6 +1218,24 @@ class CelliumTUI(App):
         except Exception as e:
             await self._append_system(self.tr("session.delete_failed", e))
 
+    def _request_delete(self, target: str = None):
+        """删除前弹出确认"""
+        target = (target or self.session_id).strip()
+        if target in ("default", "tui"):
+            self._post(self._append_system(self.tr("session.protected")))
+            return
+        from app.tui.session_picker import DeleteConfirmScreen
+        self.push_screen(
+            DeleteConfirmScreen(
+                self.tr("session.delete_confirm", target),
+                self.tr("common.delete"),
+                self.tr("common.cancel"),
+            ),
+            callback=lambda ok: self._post(
+                self._delete_session_by_arg(f"delete {target}")
+            ) if ok else None,
+        )
+
     # ---- 事件处理 ----
 
     def _submit_input(self):
@@ -1470,13 +1502,13 @@ class CelliumTUI(App):
         elif cmd == "/session":
             if arg:
                 if arg.startswith("delete"):
-                    self._post(self._delete_session_by_arg(arg))
+                    self._request_delete(arg[6:].strip() or None)
                 else:
                     self._post(self._switch_session(arg))
             else:
                 self._post(self._open_session_picker())
         elif cmd == "/delete":
-            self.action_delete_session()
+            self._request_delete()
         elif cmd == "/new":
             self.action_new_session()
         elif cmd in ("/model", "/models"):
@@ -1486,6 +1518,8 @@ class CelliumTUI(App):
                 self.action_open_model_picker()
         elif cmd == "/plan":
             self._set_run_mode("plan")
+        elif cmd == "/plan-habit":
+            self._handle_plan_habit(arg)
         elif cmd == "/run":
             self._set_run_mode("run")
         else:
@@ -1536,9 +1570,6 @@ class CelliumTUI(App):
             sessions.append((meta.session_id, title))
 
         def on_result(result):
-            if isinstance(result, tuple) and result[0] == "__delete__":
-                self._post(self._delete_session_by_arg("delete " + result[1]))
-                return
             if isinstance(result, tuple) and result[0] == "__renamed__":
                 self._post(self._load_sessions())
                 return
@@ -1638,15 +1669,16 @@ class CelliumTUI(App):
 
     def action_copy_selection(self):
         """Ctrl+Y 复制当前选区"""
-        selection = None
-        try:
-            selection = self.screen.get_selected_text()
-        except Exception:
-            selection = None
-        if selection:
-            self.copy_to_clipboard(selection)
-            self.screen.clear_selection()
-            self.notify("已复制选区", severity="information")
+        if copy_selection_if_any(self):
+            return
+
+    def on_mouse_down(self, event):
+        """右键复制选区"""
+        if getattr(event, "button", 0) == 3 and copy_selection_if_any(self):
+            try:
+                event.stop()
+            except Exception:
+                pass
 
     def action_toggle_run_mode(self):
         self._set_run_mode("plan" if self._run_mode == "run" else "run")
@@ -1677,6 +1709,22 @@ class CelliumTUI(App):
         except Exception:
             pass
         self._refresh_status()
+
+    def _handle_plan_habit(self, arg):
+        """查看/设置 Plan 模式自定义习惯（记忆库 + 配置镜像）"""
+        from app.core.security.run_mode import get_plan_habit, set_plan_habit
+        if not arg:
+            habit = get_plan_habit()
+            msg = self.tr("plan.habit_current", habit) if habit else self.tr("plan.habit_empty")
+            self._post(self._append_system(msg))
+            return
+
+        value = "" if arg.strip().lower() in ("reset", "clear", "-") else arg.strip()
+        if not set_plan_habit(value):
+            self._post(self._append_system(self.tr("plan.habit_failed", "记忆系统未初始化")))
+            return
+        msg = self.tr("plan.habit_reset") if not value else self.tr("plan.habit_saved")
+        self._post(self._append_system(msg))
 
     def action_toggle_theme(self):
         self.theme = "cellium-light" if self.theme == "cellium-dark" else "cellium-dark"
@@ -1712,9 +1760,6 @@ class CelliumTUI(App):
 
     def action_new_session(self):
         self._post(self._create_session())
-
-    def action_delete_session(self):
-        self._post(self._delete_current_session())
 
     def action_open_settings(self):
         from app.tui.settings_screen import SettingsScreen

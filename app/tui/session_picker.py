@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """会话选择与重命名"""
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets._option_list import Option
@@ -95,6 +95,63 @@ class SessionRenameScreen(ModalScreen):
 
     def key_escape(self):
         self.app.pop_screen()
+
+
+class DeleteConfirmScreen(ModalScreen):
+    """删除会话确认"""
+
+    BINDINGS = [
+        ("y", "confirm", "确认删除"),
+        ("n", "cancel", "取消"),
+        ("escape", "cancel", "取消"),
+    ]
+
+    CSS = """
+    DeleteConfirmScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.6);
+    }
+
+    #delete-confirm-panel {
+        width: 52;
+        max-width: 85%;
+        height: auto;
+        background: $surface;
+    }
+
+    #delete-confirm-body {
+        height: auto;
+        padding: 2;
+    }
+
+    #delete-confirm-actions {
+        height: 3;
+        padding: 0 2;
+        align-horizontal: right;
+    }
+    """
+
+    def __init__(self, message: str, confirm_label: str = "", cancel_label: str = "", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._message = message
+        self._confirm_label = confirm_label
+        self._cancel_label = cancel_label
+
+    def compose(self):
+        with Vertical(id="delete-confirm-panel"):
+            yield Static(self._message, id="delete-confirm-body")
+            with Horizontal(id="delete-confirm-actions"):
+                yield Button(self._cancel_label, id="cancel")
+                yield Button(self._confirm_label, id="confirm", variant="error")
+
+    def on_button_pressed(self, event):
+        self.dismiss(event.button.id == "confirm")
+
+    def action_confirm(self):
+        self.dismiss(True)
+
+    def action_cancel(self):
+        self.dismiss(False)
 
 
 class SessionPickerScreen(ModalScreen):
@@ -221,13 +278,3 @@ class SessionPickerScreen(ModalScreen):
         if " (" in title:
             title = title.split(" (")[0]
         self.app.push_screen(SessionRenameScreen(sid, initial=title))
-
-    def key_delete(self):
-        """删除选中的会话（保护 default/tui）"""
-        sid = self._selected_session()
-        if not sid:
-            return
-        if sid in ("default", "tui"):
-            self.app.notify(self.app.tr("session.protected"), severity="warning")
-            return
-        self.dismiss(("__delete__", sid))

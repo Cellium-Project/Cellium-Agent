@@ -70,6 +70,12 @@ class TestPlanBlock(unittest.TestCase):
         self.assertIn("Plan 模式禁止", plan_block_reason("memory", {}))
         self.assertIsNone(plan_block_reason("memory", {"command": "search"}))
 
+    def test_memory_profile_writes_blocked(self):
+        self.assertIsNone(plan_block_reason("memory", {"command": "profile", "subcommand": "get"}))
+        self.assertIsNone(plan_block_reason("memory", {"command": "profile"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("memory", {"command": "profile", "subcommand": "set_plan_habit"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("memory", {"command": "profile", "subcommand": "set_persona"}))
+
     def test_unknown_tool_blocked(self):
         self.assertIn("Plan 模式禁止", plan_block_reason("scheduler", {"command": "add"}))
 
@@ -82,8 +88,69 @@ class TestPlanBlock(unittest.TestCase):
         self.assertEqual(normalize_mode("bad"), "run")
         self.assertIn("PLAN（只读）", plan_injection())
         self.assertLess(len(plan_injection()), 360, "提示词应保持精简")
+        self.assertIn("<user_habit>", plan_injection("计划不超过 5 步，优先 pytest"))
+        self.assertNotIn("<user_habit>", plan_injection())
         self.assertIn("RUN（正常执行）", run_injection())
         self.assertIn("请忽略", run_injection())
+
+
+def _fake_memory(value=""):
+    class _Repo:
+        def __init__(self):
+            self.value = value
+
+        def get_by_memory_key(self, key, schema_type=None):
+            return {"content": self.value} if self.value else None
+
+    class _Mem:
+        def __init__(self):
+            self.repository = _Repo()
+            self.calls = []
+
+        def upsert_memory(self, **kwargs):
+            self.calls.append(("upsert", kwargs))
+            self.repository.value = kwargs.get("content", "")
+
+        def delete_memory(self, **kwargs):
+            self.calls.append(("delete", kwargs))
+            self.repository.value = ""
+
+    return _Mem()
+
+
+class TestPlanHabitStore(unittest.TestCase):
+
+    def test_memory_read(self):
+        from app.core.security.run_mode import get_plan_habit
+        mem = _fake_memory("记忆里的习惯")
+        self.assertEqual(get_plan_habit(mem), "记忆里的习惯")
+
+    def test_set_writes_memory(self):
+        from app.core.security.run_mode import set_plan_habit
+        mem = _fake_memory()
+        self.assertTrue(set_plan_habit("先给结论", memory=mem))
+        self.assertEqual(mem.calls[0][1]["memory_key"], "profile:plan_habit")
+        self.assertEqual(mem.calls[0][1]["content"], "先给结论")
+        self.assertTrue(mem.calls[0][1]["allow_protected"])
+
+    def test_clear_removes_memory(self):
+        from app.core.security.run_mode import set_plan_habit
+        mem = _fake_memory("旧习惯")
+        self.assertTrue(set_plan_habit("", memory=mem))
+        self.assertEqual(mem.calls[0][0], "delete")
+        self.assertTrue(mem.calls[0][1]["allow_protected"])
+
+    def test_no_memory_returns_empty(self):
+        from app.core.security import run_mode
+        self.assertEqual(run_mode.get_plan_habit(object()), "")
+        self.assertFalse(run_mode.set_plan_habit("x", memory=object()))
+
+    def test_memory_tool_profile_sets_habit(self):
+        from app.agent.tools.memory_tool import MemoryTool
+        mem = _fake_memory()
+        result = MemoryTool(mem)._cmd_profile(subcommand="set_plan_habit", plan_habit="优先 pytest")
+        self.assertTrue(result["success"])
+        self.assertEqual(mem.calls[0][1]["content"], "优先 pytest")
 
 
 class _MockToolCall:

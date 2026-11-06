@@ -8,6 +8,7 @@
 """
 
 import array
+import functools
 import hashlib
 import json
 import logging
@@ -16,6 +17,7 @@ import os
 import re
 import sqlite3
 import struct
+import threading
 from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +27,17 @@ from .chinese_tokenizer import get_tokenizer
 
 logger = logging.getLogger(__name__)
 
+
+def _locked(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+PROTECTED_MEMORY_KEYS = frozenset({"profile:plan_habit"})
 
 class MemoryRepository:
     """长期记忆统一仓库。"""
@@ -65,6 +78,7 @@ class MemoryRepository:
         self.vector_db_path = os.path.join(memory_dir, "memory_vectors_api.db")
         os.makedirs(memory_dir, exist_ok=True)
         self._catalog: Dict[str, Any] = {"version": 1, "records": {}}
+        self._lock = threading.RLock()
         self._load_catalog()
         self._embedding_config = self._load_embedding_config()
         self._embedding_dimensions = self._embedding_config.get("dimensions", 0)
@@ -355,17 +369,28 @@ class MemoryRepository:
         logger.info("[MemoryRepository] 后台向量迁移线程已启动")
 
     def _save_catalog(self):
-        catalog_copy = {
-            "version": self._catalog.get("version", 1),
-            "_meta": self._catalog.get("_meta", {}),
-            "records": {}
-        }
-        for record_id, record in self._catalog.get("records", {}).items():
-            clean_record = {k: v for k, v in record.items() if k != "embedding"}
-            catalog_copy["records"][record_id] = clean_record
-        with open(self.catalog_path, "w", encoding="utf-8") as f:
-            json.dump(catalog_copy, f, ensure_ascii=False, indent=2)
+        with self._lock:
+            catalog_copy = {
+                "version": self._catalog.get("version", 1),
+                "_meta": self._catalog.get("_meta", {}),
+                "records": {}
+            }
+            for record_id, record in self._catalog.get("records", {}).items():
+                clean_record = {k: v for k, v in record.items() if k != "embedding"}
+                catalog_copy["records"][record_id] = clean_record
+            tmp_path = f"{self.catalog_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(catalog_copy, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self.catalog_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
 
+    @_locked
     def _backfill_from_index(self):
         changed = False
         records = self._catalog.setdefault("records", {})
@@ -451,6 +476,7 @@ class MemoryRepository:
     # Public API
     # ============================================================
 
+    @_locked
     def upsert_memory(
         self,
         *,
@@ -465,6 +491,7 @@ class MemoryRepository:
         metadata: Optional[Dict[str, Any]] = None,
         allow_sensitive: Optional[bool] = None,
         merge_strategy: str = "merge",
+        allow_protected: bool = False,
     ) -> Dict[str, Any]:
         title = (title or "").strip()
         content = (content or "").strip()
@@ -495,6 +522,8 @@ class MemoryRepository:
             schema_type=schema_type,
             metadata=metadata,
         )
+        if memory_key in PROTECTED_MEMORY_KEYS and not allow_protected:
+            return {"success": False, "error": "受保护的记忆键，请使用 profile 接口"}
 
         existing = None
         if memory_key and merge_strategy != "create_new":
@@ -694,11 +723,12 @@ class MemoryRepository:
             source=source,
         )
         filtered_fts = []
-        for result in fts_results:
-            record = self._get_catalog_record(result.get("rowid"))
-            if not self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
-                continue
-            filtered_fts.append(result)
+        with self._lock:
+            for result in fts_results:
+                record = self._get_catalog_record(result.get("rowid"))
+                if not self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
+                    continue
+                filtered_fts.append(result)
 
         embedding_results = self._embedding_search(
             query,
@@ -874,21 +904,25 @@ class MemoryRepository:
         """列表查询记忆，返回 {"items": [...], "total": N}"""
         self._backfill_from_index()
         items = []
-        for record_id, record in self._catalog.get("records", {}).items():
-            if not include_deleted and record.get("status") != "active":
-                continue
-            if category and record.get("category") != category:
-                continue
-            if schema_type and record.get("schema_type") != schema_type:
-                continue
-            if not include_sensitive and record.get("sensitive"):
-                continue
-            items.append(self._public_record(record_id))
+        with self._lock:
+            for record_id, record in self._catalog.get("records", {}).items():
+                if not include_deleted and record.get("status") != "active":
+                    continue
+                if category and record.get("category") != category:
+                    continue
+                if schema_type and record.get("schema_type") != schema_type:
+                    continue
+                if not include_sensitive and record.get("sensitive"):
+                    continue
+                if self._is_protected(record):
+                    continue
+                items.append(self._public_record(record_id))
 
         items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         total = len(items)
         return {"items": items[offset : offset + limit], "total": total}
 
+    @_locked
     def update_memory(
         self,
         *,
@@ -902,12 +936,15 @@ class MemoryRepository:
         schema_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         allow_sensitive: bool = False,
+        allow_protected: bool = False,
     ) -> Dict[str, Any]:
         found = self._resolve_record(identifier=identifier, source=source, memory_key=memory_key, schema_type=schema_type)
         if not found:
             return {"success": False, "error": "未找到可更新的记忆"}
 
         record_id, record = found
+        if self._is_protected(record) and not allow_protected:
+            return {"success": False, "error": "受保护的记忆，请使用 profile 接口"}
         new_title = (title if title is not None else record.get("title", "")).strip()
         new_content = (content if content is not None else record.get("content", "")).strip()
         new_category = category or record.get("category", "general")
@@ -974,6 +1011,7 @@ class MemoryRepository:
         self._save_catalog()
         return {"success": True, "id": record_id, "source": record.get("source_file")}
 
+    @_locked
     def delete_memory(
         self,
         *,
@@ -981,12 +1019,15 @@ class MemoryRepository:
         source: Optional[str] = None,
         memory_key: Optional[str] = None,
         reason: str = "deleted",
+        allow_protected: bool = False,
     ) -> Dict[str, Any]:
         found = self._resolve_record(identifier=identifier, source=source, memory_key=memory_key)
         if not found:
             return {"success": False, "error": "未找到可删除的记忆"}
 
         record_id, record = found
+        if self._is_protected(record) and not allow_protected:
+            return {"success": False, "error": "受保护的记忆不可删除，请使用 profile 接口"}
         record["status"] = "deleted"
         record["deleted_reason"] = reason
         record["updated_at"] = datetime.now().isoformat()
@@ -994,6 +1035,7 @@ class MemoryRepository:
         self._save_catalog()
         return {"success": True, "id": record_id, "source": record.get("source_file")}
 
+    @_locked
     def forget_memories(
         self,
         *,
@@ -1001,6 +1043,7 @@ class MemoryRepository:
         source: Optional[str] = None,
         memory_key: Optional[str] = None,
         all_matches: bool = False,
+        allow_protected: bool = False,
     ) -> Dict[str, Any]:
         targets: List[Tuple[str, Dict[str, Any]]] = []
         if query:
@@ -1018,6 +1061,9 @@ class MemoryRepository:
                 return {"success": False, "error": "未找到可遗忘的记忆"}
             targets.append(found)
 
+        if not allow_protected and any(self._is_protected(record) for _, record in targets):
+            return {"success": False, "error": "受保护的记忆不可遗忘，请使用 profile 接口"}
+
         changed = []
         for record_id, record in targets:
             record["status"] = "forgotten"
@@ -1026,15 +1072,19 @@ class MemoryRepository:
         self._save_catalog()
         return {"success": True, "forgotten": changed}
 
+    @_locked
     def merge_conflicts(
         self,
         *,
         memory_key: Optional[str] = None,
         schema_type: Optional[str] = None,
+        allow_protected: bool = False,
     ) -> Dict[str, Any]:
         groups: Dict[Tuple[str, str], List[Tuple[str, Dict[str, Any]]]] = {}
         for record_id, record in self._catalog.get("records", {}).items():
             if record.get("status") != "active":
+                continue
+            if not allow_protected and self._is_protected(record):
                 continue
             current_key = record.get("memory_key")
             current_schema = record.get("schema_type", "general")
@@ -1121,6 +1171,9 @@ class MemoryRepository:
         return None
 
     def get_record(self, identifier: str) -> Optional[Dict[str, Any]]:
+        record = self._get_catalog_record(str(identifier))
+        if self._is_protected(record):
+            return None
         return self._public_record(str(identifier))
 
     def get_by_memory_key(self, memory_key: str, schema_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1216,6 +1269,9 @@ class MemoryRepository:
             return record_id, record
         return None
 
+    def _is_protected(self, record: Optional[Dict[str, Any]]) -> bool:
+        return bool(record) and record.get("memory_key") in PROTECTED_MEMORY_KEYS
+
     def _is_record_searchable(
         self,
         record: Optional[Dict[str, Any]],
@@ -1227,6 +1283,8 @@ class MemoryRepository:
         if not record:
             return False
         if record.get("status") != "active":
+            return False
+        if self._is_protected(record):
             return False
         if category and record.get("category") != category:
             return False
@@ -1250,9 +1308,10 @@ class MemoryRepository:
             return []
 
         valid_record_ids = []
-        for record_id, record in self._catalog.get("records", {}).items():
-            if self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
-                valid_record_ids.append(record_id)
+        with self._lock:
+            for record_id, record in self._catalog.get("records", {}).items():
+                if self._is_record_searchable(record, category=category, schema_type=schema_type, include_sensitive=include_sensitive):
+                    valid_record_ids.append(record_id)
 
         existing_ids, existing_flat, dim = self._load_vectors_batch(valid_record_ids, expected_dim=len(query_vector))
 
@@ -1305,7 +1364,8 @@ class MemoryRepository:
 
 
     def _get_catalog_record(self, record_id: Any) -> Optional[Dict[str, Any]]:
-        return self._catalog.get("records", {}).get(str(record_id))
+        with self._lock:
+            return self._catalog.get("records", {}).get(str(record_id))
 
     def _build_catalog_entry(
         self,

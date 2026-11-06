@@ -257,6 +257,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       historyOffset: 0,
       hasMoreHistory: false,  // 切换会话时先设为 false，等 fetchMessages 返回后再更新
       streamingMessage: null,
+      isStreaming: false,
+      hasRunningTask: false,
     });
 
     await fetchMessages(sessionId, 0);

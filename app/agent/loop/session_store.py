@@ -61,6 +61,8 @@ class SessionStore:
         self._listeners: Dict[int, Any] = {}  # 进程内会话变更监听（id -> 回调）
         self._listener_seq = 0
         self._listener_lock = threading.Lock()
+        self._rw_lock = threading.RLock()
+        self._write_seq = 0
         self._ensure_store()
 
     @classmethod
@@ -153,43 +155,62 @@ class SessionStore:
             self._write_store(store)
             logger.info("[SessionStore] 从 archive 导入 %d 个会话", len(discovered))
 
-    def _read_store(self) -> Dict:
+    def _read_store(self, notify: bool = True) -> Dict:
         """读取存储"""
-        try:
-            mtime = os.path.getmtime(self.store_path)
-        except OSError:
-            mtime = 0.0
-
-        if self._cache is not None and mtime != self._store_mtime:
+        reloaded = False
+        with self._rw_lock:
             try:
-                with open(self.store_path, "r", encoding="utf-8") as f:
-                    self._cache = json.load(f)
-                self._store_mtime = mtime
-                self._notify_listeners()
-            except (json.JSONDecodeError, FileNotFoundError):
-                pass
+                mtime = os.path.getmtime(self.store_path)
+            except OSError:
+                mtime = 0.0
 
-        if self._cache is not None:
-            return self._cache
-        try:
-            with open(self.store_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            data = {"sessions": [], "last_active_session": None}
-        self._cache = data
-        self._store_mtime = mtime
+            if self._cache is not None and mtime != self._store_mtime:
+                try:
+                    with open(self.store_path, "r", encoding="utf-8") as f:
+                        self._cache = json.load(f)
+                    self._store_mtime = mtime
+                    reloaded = True
+                except (json.JSONDecodeError, FileNotFoundError):
+                    pass
+
+            if self._cache is not None:
+                data = self._cache
+            else:
+                try:
+                    with open(self.store_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, FileNotFoundError):
+                    data = {"sessions": [], "last_active_session": None}
+                self._cache = data
+                self._store_mtime = mtime
+
+        if reloaded and notify:
+            self._notify_listeners()
         return data
 
     def _write_store(self, data: Dict):
-        """写入存储（同步写文件 + 更新缓存）"""
-        with open(self.store_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        self._cache = data
-        try:
-            self._store_mtime = os.path.getmtime(self.store_path)
-        except OSError:
-            pass
-        self._notify_listeners("session_updated", data)
+        """原子写入存储（同步写文件 + 更新缓存）"""
+        with self._rw_lock:
+            self._write_seq += 1
+            tmp_path = "%s.%d.%d.%d.tmp" % (
+                self.store_path, os.getpid(), threading.get_ident(), self._write_seq
+            )
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self.store_path)
+            except Exception:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
+            self._cache = data
+            try:
+                self._store_mtime = os.path.getmtime(self.store_path)
+            except OSError:
+                pass
 
     def add_listener(self, callback) -> int:
         """注册进程内会话变更监听。返回监听器 id。"""
@@ -237,8 +258,8 @@ class SessionStore:
         Returns:
             SessionMeta
         """
-        with self._lock:
-            store = self._read_store()
+        with self._rw_lock:
+            store = self._read_store(notify=False)
             sessions = store.get("sessions", [])
             sessions_dict = {s["session_id"]: s for s in sessions}
 
@@ -248,56 +269,59 @@ class SessionStore:
                 store["last_active_session"] = session_id
                 self._write_store(store)
                 self._publish_event("session_updated", meta)
-                return SessionMeta(**meta)
-
-            if session_id is None:
-                import uuid
-                session_id = f"sess_{uuid.uuid4().hex[:12]}"
-                title = None
-            elif session_id.startswith("qq:"):
-                parts = session_id.split(":")
-                if len(parts) >= 3 and parts[1] == "group":
-                    title = f"QQ群-{parts[2][:8]}"
-                else:
-                    title = f"QQ-{parts[1][:8]}"
-            elif session_id.startswith("telegram:"):
-                parts = session_id.split(":")
-                if len(parts) >= 3 and parts[1] == "group":
-                    title = f"TG群-{parts[2][:8]}"
-                else:
-                    title = f"TG-{parts[1][:8]}"
-            elif session_id.startswith("feishu:"):
-                parts = session_id.split(":")
-                if len(parts) >= 3 and parts[1] == "group":
-                    title = f"飞书群-{parts[2][:8]}"
-                else:
-                    uid = parts[1] if len(parts) >= 2 else ""
-                    title = f"飞书私聊-{uid[:8]}"
-            elif session_id.startswith("weixin:"):
-                # weixin:user_id@xxx 格式
-                uid_part = session_id.split(":")[1] if ":" in session_id else ""
-                uid = uid_part.split("@")[0] if "@" in uid_part else uid_part
-                title = f"微信-{uid[:8]}"
+                result = SessionMeta(**meta)
             else:
-                title = None
+                if session_id is None:
+                    import uuid
+                    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+                    title = None
+                elif session_id.startswith("qq:"):
+                    parts = session_id.split(":")
+                    if len(parts) >= 3 and parts[1] == "group":
+                        title = f"QQ群-{parts[2][:8]}"
+                    else:
+                        title = f"QQ-{parts[1][:8]}"
+                elif session_id.startswith("telegram:"):
+                    parts = session_id.split(":")
+                    if len(parts) >= 3 and parts[1] == "group":
+                        title = f"TG群-{parts[2][:8]}"
+                    else:
+                        title = f"TG-{parts[1][:8]}"
+                elif session_id.startswith("feishu:"):
+                    parts = session_id.split(":")
+                    if len(parts) >= 3 and parts[1] == "group":
+                        title = f"飞书群-{parts[2][:8]}"
+                    else:
+                        uid = parts[1] if len(parts) >= 2 else ""
+                        title = f"飞书私聊-{uid[:8]}"
+                elif session_id.startswith("weixin:"):
+                    # weixin:user_id@xxx 格式
+                    uid_part = session_id.split(":")[1] if ":" in session_id else ""
+                    uid = uid_part.split("@")[0] if "@" in uid_part else uid_part
+                    title = f"微信-{uid[:8]}"
+                else:
+                    title = None
 
-            now = datetime.now().isoformat()
-            meta = SessionMeta(
-                session_id=session_id,
-                created_at=now,
-                last_active=now,
-                message_count=0,
-                title=title,
-            )
+                now = datetime.now().isoformat()
+                meta = SessionMeta(
+                    session_id=session_id,
+                    created_at=now,
+                    last_active=now,
+                    message_count=0,
+                    title=title,
+                )
 
-            sessions.append(meta.to_dict())
-            store["sessions"] = sessions
-            store["last_active_session"] = session_id
-            self._write_store(store)
+                sessions.append(meta.to_dict())
+                store["sessions"] = sessions
+                store["last_active_session"] = session_id
+                self._write_store(store)
 
-            self._publish_event("session_created", meta.to_dict())
-            logger.info("[SessionStore] 创建新会话: %s", session_id)
-            return meta
+                self._publish_event("session_created", meta.to_dict())
+                logger.info("[SessionStore] 创建新会话: %s", session_id)
+                result = meta
+
+        self._notify_listeners("session_updated", store)
+        return result
 
     def _publish_event(self, event_type: str, data: Dict):
         """发布会话事件到 SSE 订阅者"""
@@ -311,8 +335,8 @@ class SessionStore:
     def update_message_count(self, session_id: str, delta: int = 1):
         """更新消息计数"""
         target = None
-        with self._lock:
-            store = self._read_store()
+        with self._rw_lock:
+            store = self._read_store(notify=False)
             sessions = store.get("sessions", [])
 
             for s in sessions:
@@ -326,13 +350,14 @@ class SessionStore:
             store["last_active_session"] = session_id
             self._write_store(store)
 
+        self._notify_listeners("session_updated", store)
         if target is not None:
             self._notify_messages_changed(session_id, target)
 
     def set_session_title(self, session_id: str, title: str):
         """设置会话标题"""
-        with self._lock:
-            store = self._read_store()
+        with self._rw_lock:
+            store = self._read_store(notify=False)
             sessions = store.get("sessions", [])
 
             for s in sessions:
@@ -342,6 +367,8 @@ class SessionStore:
                     break
 
             self._write_store(store)
+
+        self._notify_listeners("session_updated", store)
 
     def get_last_active_session(self) -> Optional[str]:
         """获取最后活跃的 session_id"""
@@ -370,8 +397,8 @@ class SessionStore:
 
     def delete_session(self, session_id: str) -> bool:
         """删除会话"""
-        with self._lock:
-            store = self._read_store()
+        with self._rw_lock:
+            store = self._read_store(notify=False)
             sessions = store.get("sessions", [])
 
             new_sessions = [s for s in sessions if s["session_id"] != session_id]
@@ -386,7 +413,9 @@ class SessionStore:
 
             self._write_store(store)
             self._publish_event("session_deleted", {"session_id": session_id})
-            return True
+
+        self._notify_listeners("session_updated", store)
+        return True
 
     def session_exists(self, session_id: str) -> bool:
         """检查会话是否存在"""

@@ -5,6 +5,7 @@ import os
 import pathlib
 import shutil
 import sys
+import threading
 from typing import Dict, Any, List
 
 from .base_tool import BaseTool
@@ -112,6 +113,7 @@ class ShellTool(BaseTool):
     def __init__(self, shell=None):
         super().__init__()
         self.shell = shell
+        self._tls = threading.local()
 
     # ================================================================
     #  LLM 接口层 — definition（覆写 BaseTool）
@@ -203,6 +205,9 @@ class ShellTool(BaseTool):
             }
             if timeout:
                 payload["timeout"] = timeout
+            session_id = getattr(self._tls, "session_id", None)
+            if session_id:
+                payload["session_id"] = session_id
             result = self.shell.execute(payload)
 
             if background and result.get("status") == "background_started":
@@ -400,6 +405,13 @@ class ShellTool(BaseTool):
     # ================================================================
     #  兼容旧接口
     # ================================================================
+
+    def execute_with_context(self, arguments, session_id=None, platform_context=None) -> Dict[str, Any]:
+        self._tls.session_id = session_id
+        try:
+            return self.execute(arguments)
+        finally:
+            self._tls.session_id = None
 
     def execute(self, command="", *args, **kwargs) -> Dict[str, Any]:
         """

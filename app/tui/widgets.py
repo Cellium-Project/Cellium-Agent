@@ -1196,6 +1196,168 @@ class _BlocksRichVisual(Visual):
         return container_width
 
 
+_CODE_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+
+
+def _iter_code_blocks(source: str):
+    blocks, cur, fence = [], None, None
+    for line in source.split("\n"):
+        m = _CODE_FENCE.match(line)
+        if m:
+            token = m.group(1)
+            if fence is None:
+                fence, cur = token, []
+                continue
+            if token[0] == fence[0] and len(token) >= len(fence) and line.strip() == token:
+                blocks.append(cur)
+                fence, cur = None, None
+                continue
+        if fence is not None:
+            cur.append(line)
+    if fence is not None and cur:
+        blocks.append(cur)
+    return [b for b in blocks if any(ln.strip() for ln in b)]
+
+def _source_code_selection(source: str, text: str) -> str | None:
+    if not source or not text:
+        return None
+    blocks = _iter_code_blocks(source)
+    if not blocks:
+        return None
+
+    sel = text.split("\n")
+    while sel and not sel[0].strip():
+        sel.pop(0)
+    while sel and not sel[-1].strip():
+        sel.pop()
+    if not sel:
+        return None
+
+    def kind(src, want):
+        a, b = src.rstrip(), want.rstrip()
+        if a == b:
+            return "full"
+        if b and b in a:
+            return "part"
+        if a and a in b:
+            return "full"
+        return None
+
+    best = None
+    for block in blocks:
+        for i in range(len(block)):
+            if not kind(block[i], sel[0]):
+                continue
+            mapping = []
+            j = i
+            for want in sel:
+                if j >= len(block):
+                    break
+                match = kind(block[j], want)
+                if not match:
+                    break
+                mapping.append((j, want, match))
+                j += 1
+            if len(mapping) == len(sel) and (best is None or len(mapping) >= len(best[1])):
+                best = (block, mapping)
+    if best is None:
+        return None
+
+    block, mapping = best
+    out = []
+    for j, want, match in mapping:
+        src = block[j]
+        if match == "full":
+            out.append(src)
+            continue
+        fragment = want.rstrip()
+        idx = src.find(fragment)
+        out.append(src[idx:idx + len(fragment)] if idx >= 0 else fragment)
+    return "\n".join(out)
+
+
+def _strip_bg(strip):
+    for seg in getattr(strip, "_segments", ()):
+        if seg.text:
+            style = seg.style
+            return getattr(style, "bgcolor", None) if style else None
+    return None
+
+
+def _bg_key(bg):
+    try:
+        from rich.color import Color
+        return (bg if isinstance(bg, Color) else Color.parse(str(bg))).triplet
+    except Exception:
+        return bg
+
+
+def _reflow_selection(strips, selection, width: int, base_bg=None) -> str | None:
+    if not strips or width <= 0:
+        return None
+
+    rows = []
+    for strip in strips:
+        raw = strip.text
+        bg = _strip_bg(strip)
+        block = base_bg is not None and bg is not None and _bg_key(bg) != _bg_key(base_bg)
+        if block and raw.startswith(" "):
+            raw = raw[1:]
+        rows.append((raw.rstrip(), block))
+
+    n = len(rows)
+    spans = [selection.get_span(y) for y in range(n)]
+    first = next((y for y in range(n) if spans[y] is not None), None)
+    last = next((y for y in range(n - 1, -1, -1) if spans[y] is not None), None)
+    if first is None or last is None:
+        return ""
+
+    def piece(y):
+        start, end = spans[y]
+        raw = strips[y].text
+        if end == -1:
+            end = len(raw)
+        a = max(0, min(start, len(raw)))
+        b = max(a, min(end, len(raw)))
+        cut = raw[a:b]
+        _, block = rows[y]
+        if block:
+            if a == 0 and cut.startswith(" "):
+                cut = cut[1:]
+            if b >= len(raw.rstrip()):
+                cut = cut.rstrip()
+        return cut
+
+    def folded(y):
+        text, block = rows[y]
+        limit = width - 2 if block else width
+        start, end = spans[y]
+        covers_end = end == -1 or end >= len(strips[y].text.rstrip())
+        return covers_end and len(text) >= limit
+
+    out = ""
+    for y in range(first, last + 1):
+        if spans[y] is None:
+            out += "\n"
+            continue
+        chunk = piece(y)
+        prev_block = rows[y - 1][1] if y > first else False
+        if y == first or not folded(y - 1):
+            out += ("\n" if y != first else "") + chunk
+        else:
+            if (
+                not prev_block
+                and out
+                and chunk
+                and not out.endswith(" ")
+                and not chunk.startswith(" ")
+                and ord(out[-1]) < 0x2E80
+                and ord(chunk[0]) < 0x2E80
+            ):
+                out += " "
+            out += chunk
+    return out
+
 class HistoryMarkdown(Static):
 
     def __init__(self, text=""):
@@ -1251,9 +1413,21 @@ class HistoryMarkdown(Static):
                 return None
             from textual.visual import Visual as _V
             v = self._render()
-            strips = _V.to_strips(self, v, self.size.width, None, self.visual_style)
-            text = "\n".join(strip.text for strip in strips)
-            return selection.extract(text), "\n"
+            strips = _V.to_strips(
+                self, v, self.size.width, None, self.visual_style, apply_selection=False
+            )
+            try:
+                base_bg = self.visual_style.rich_style.bgcolor
+            except Exception:
+                base_bg = None
+            text = _reflow_selection(strips, selection, self.size.width, base_bg)
+            if text is None:
+                text = selection.extract("\n".join(s.text for s in strips))
+            elif text:
+                matched = _source_code_selection(self._source, text)
+                if matched is not None:
+                    text = matched
+            return text, "\n"
         except Exception:
             return None
 
@@ -1269,7 +1443,6 @@ class HistoryMarkdown(Static):
             except Exception:
                 self._md = None
         self.refresh(layout=False)
-
 
 class AssistantMessage(HistoryMarkdown):
     """流式回复：长文本按块增量渲染，只重绘变化的尾块"""

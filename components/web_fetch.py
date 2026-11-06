@@ -12,6 +12,7 @@ import base64
 import concurrent.futures
 import hashlib
 import threading
+from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple
 
 import httpx
@@ -54,19 +55,26 @@ class WebFetch(BaseCell):
     IDLE_TIMEOUT = 300  # 空闲超时时间（秒），5分钟
     HEALTH_CHECK_TIMEOUT = 5  # 健康检查超时时间（秒）
 
+    MAX_HTTP_CACHE_SESSIONS = 64
+    MAX_POOL_PAGES = 3
+
     def __init__(self):
         super().__init__()
         self._page = None
+        self._page_map: "OrderedDict[str, Any]" = OrderedDict()
+        self._page_last_used: Dict[str, float] = {}
+        self._pool_lock = threading.Lock()
+        self._browser_lock = threading.RLock()
         self._browser = None
         self._headless = True
         self._current_url = None
         self._working_browser_path: Optional[str] = None
-        self._http_content_cache: Optional[Dict[str, Any]] = None
+        self._http_caches: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._http_cache_lock = threading.RLock()
         self._working_browser_name: Optional[str] = None
         self._browser_probe_failed = False
         self._browser_port = None
         self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
-        self._lock = threading.RLock()
         self._last_used_time: float = 0
         self._idle_timer: Optional[threading.Thread] = None
         self._idle_stop_event = threading.Event()
@@ -80,10 +88,31 @@ class WebFetch(BaseCell):
         command = command.strip().strip('>"\'')
         method_name = f"_cmd_{command}"
         if hasattr(self, method_name):
-            with self._lock:
-                return getattr(self, method_name)(*args, **kwargs)
+            return getattr(self, method_name)(*args, **kwargs)
         from app.core.exception import CommandNotFoundError
         raise CommandNotFoundError(command, self.cell_name)
+
+    def _http_cache_key(self, session_id: str = None) -> str:
+        return session_id or "default"
+
+    def _get_http_cache(self, session_id: str = None):
+        key = self._http_cache_key(session_id)
+        with self._http_cache_lock:
+            cache = self._http_caches.get(key)
+            if cache is not None:
+                self._http_caches.move_to_end(key)
+            return cache
+
+    def _set_http_cache(self, session_id: str = None, data: Optional[Dict[str, Any]] = None):
+        key = self._http_cache_key(session_id)
+        with self._http_cache_lock:
+            if data is None:
+                self._http_caches.pop(key, None)
+                return
+            self._http_caches[key] = data
+            self._http_caches.move_to_end(key)
+            while len(self._http_caches) > self.MAX_HTTP_CACHE_SESSIONS:
+                self._http_caches.popitem(last=False)
 
     def _is_generic_class(self, class_name: str) -> bool:
         """判断类名是否过于通用，不适合作为选择器"""
@@ -293,7 +322,7 @@ class WebFetch(BaseCell):
             "reason": "fall_back_to_http",
         }
 
-    def _http_fetch_text(self, url: str, timeout: int = 20) -> dict:
+    def _http_fetch_text(self, url: str, timeout: int = 20, session_id: str = None) -> dict:
         try:
             import random
 
@@ -334,7 +363,7 @@ class WebFetch(BaseCell):
 
             if total_size > self.MAX_HTTP_CACHE_SIZE:
                 logger.warning(f"[WebFetch] HTTP 内容过大 ({total_size/1024/1024:.1f}MB > {self.MAX_HTTP_CACHE_SIZE/1024/1024:.0f}MB)，跳过缓存")
-                self._http_content_cache = None
+                self._set_http_cache(session_id, None)
                 return {
                     "success": True,
                     "url": str(response.url),
@@ -345,12 +374,12 @@ class WebFetch(BaseCell):
                     "hint": f"内容过大 ({total_size/1024/1024:.1f}MB)，仅返回前 2000 字符",
                 }
             else:
-                self._http_content_cache = {
+                self._set_http_cache(session_id, {
                     "url": str(response.url),
                     "title": title,
                     "chunks": chunks,
                     "current_page": 0,
-                }
+                })
                 return {
                     "success": True,
                     "url": str(response.url),
@@ -377,54 +406,32 @@ class WebFetch(BaseCell):
             
             logger.info(f"[WebFetch] 模式切换: {old_mode} → {new_mode}，浏览器已关闭")
 
-    def _get_page(self, force_recreate: bool = False, max_retries: int = 3):
-        """获取或创建页面（带复用、健康检查和重试机制）
+    def _ensure_browser(self):
+        with self._browser_lock:
+            if self._browser is not None:
+                return self._browser
 
-        Args:
-            force_recreate: 强制重建浏览器页面
-            max_retries: 最大重试次数
-        """
-        with self._lock:
-            if force_recreate:
-                self._close_page_internal()
-                self._stop_idle_timer()
-
-            if self._page is not None:
-                if self._health_check():
-                    self._update_last_used_time()
-                    self._start_idle_timer()
-                    return self._page
-                else:
-                    logger.info("[WebFetch] 健康检查失败，关闭旧实例准备重建")
-                    self._close_page_internal()
-
-            self._close_page_internal()
             browser_path = self._get_working_browser_path()
             if not browser_path:
                 raise RuntimeError("没有可用的浏览器后端")
 
             last_error = None
-            for attempt in range(max_retries):
+            for attempt in range(3):
                 try:
                     from DrissionPage import Chromium
 
+                    browser = None
                     if attempt == 0 and self._browser_port:
                         try:
-                            self._browser = Chromium(f"127.0.0.1:{self._browser_port}")
-                            self._page = self._browser.latest_tab
-                            if self._health_check():
-                                logger.info(f"[WebFetch] 复用已有浏览器 (端口: {self._browser_port})")
-                                self._update_last_used_time()
-                                self._start_idle_timer()
-                                return self._page
-                            else:
-                                logger.warning("[WebFetch] 复用的浏览器健康检查失败")
-                                self._close_page_internal()
+                            browser = Chromium(f"127.0.0.1:{self._browser_port}")
+                            if not self._health_check(browser.latest_tab):
+                                raise RuntimeError("复用的浏览器健康检查失败")
+                            logger.info(f"[WebFetch] 复用已有浏览器 (端口: {self._browser_port})")
                         except Exception as e:
                             logger.debug(f"[WebFetch] 连接已有浏览器失败: {e}")
-                            self._close_page_internal()
+                            browser = None
                     elif attempt > 0:
-                        logger.info(f"[WebFetch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
+                        logger.info(f"[WebFetch] 浏览器重试 ({attempt + 1}/3)，使用新端口...")
                         self._browser_port = None
                         self._working_browser_path = None
                         self._working_browser_name = None
@@ -433,64 +440,58 @@ class WebFetch(BaseCell):
                             raise RuntimeError("重试时未找到可用浏览器")
                         time.sleep(1)
 
-                    co = self._build_options(browser_path=browser_path)
-                    self._browser = Chromium(addr_or_opts=co)
-                    if self._browser is None:
+                    if browser is None:
+                        co = self._build_options(browser_path=browser_path)
+                        browser = Chromium(addr_or_opts=co)
+                    if browser is None:
                         raise RuntimeError("Chromium 浏览器创建失败")
-                    
+
                     browser_ready = False
                     for warmup in range(3):
                         try:
                             time.sleep(0.3)
-                            test_url = self._browser.address
-                            if not test_url:
+                            if not browser.address:
                                 continue
-                            _ = self._browser.latest_tab
+                            tab = browser.latest_tab
+                            if tab is None:
+                                continue
+                            _ = tab.driver
                             if self._page is None:
-                                self._page = self._browser.latest_tab
-                            test_page_url = self._page.url if self._page else None
-                            if self._page and hasattr(self._page, 'driver'):
-                                _ = self._page.driver
+                                self._page = tab
                             browser_ready = True
                             break
                         except (AttributeError, TypeError) as we:
                             logger.debug(f"[WebFetch] 浏览器预热 {warmup+1}/3: {we}")
                             continue
-                    
+
                     if not browser_ready:
                         raise RuntimeError("浏览器启动后无法建立连接")
-                    
+
                     try:
-                        if hasattr(self._browser, 'address') and self._browser.address:
-                            addr_parts = self._browser.address.split(':')
+                        if browser.address:
+                            addr_parts = browser.address.split(':')
                             if len(addr_parts) == 2:
                                 self._browser_port = int(addr_parts[1])
                     except Exception as e:
                         logger.debug(f"[WebFetch] 获取端口失败: {e}")
-                    
-                    if self._page is None:
-                        self._page = self._browser.latest_tab
-                    if self._page is None:
-                        self._page = self._browser.new_tab()
-                        if self._page is None:
-                            raise RuntimeError("无法获取浏览器标签页")
-                    
+
+                    self._browser = browser
                     self._creation_count += 1
                     self._update_last_used_time()
                     self._start_idle_timer()
-                    logger.info(f"[WebFetch] 浏览器页面创建成功 (端口: {self._browser_port}, 累计创建: {self._creation_count})")
-                    return self._page
+                    logger.info(f"[WebFetch] 浏览器创建成功 (端口: {self._browser_port}, 累计创建: {self._creation_count})")
+                    return self._browser
                 except AttributeError as e:
                     last_error = e
-                    logger.warning(f"[WebFetch] 浏览器创建失败 AttributeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(f"[WebFetch] 浏览器创建失败 AttributeError (尝试 {attempt + 1}/3): {e}")
                     self._close_page_internal()
                 except TypeError as e:
                     last_error = e
-                    logger.warning(f"[WebFetch] 浏览器创建失败 TypeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(f"[WebFetch] 浏览器创建失败 TypeError (尝试 {attempt + 1}/3): {e}")
                     self._close_page_internal()
                 except Exception as e:
                     last_error = e
-                    logger.warning(f"[WebFetch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(f"[WebFetch] 浏览器创建失败 (尝试 {attempt + 1}/3): {e}")
                     self._close_page_internal()
 
             logger.error(f"[WebFetch] 浏览器创建最终失败: {last_error}")
@@ -499,35 +500,140 @@ class WebFetch(BaseCell):
             self._browser_probe_failed = False
             raise RuntimeError(f"浏览器初始化失败: {last_error}")
 
-    def _is_page_alive(self) -> bool:
+    def _peek_page(self, session_id: str = None):
+        with self._pool_lock:
+            return self._page_map.get(session_id or "default")
+
+    def _touch_page(self, session_id: str = None):
+        key = session_id or "default"
+        with self._pool_lock:
+            if key in self._page_map:
+                self._page_last_used[key] = time.time()
+                self._page_map.move_to_end(key)
+        self._update_last_used_time()
+
+    def _evict_oldest(self, exclude_key: str = None):
+        victim_key = None
+        victim_page = None
+        with self._pool_lock:
+            if len(self._page_map) >= self.MAX_POOL_PAGES:
+                candidates = [(self._page_last_used.get(k, 0), k) for k in self._page_map if k != exclude_key]
+                if candidates:
+                    victim_key = min(candidates, key=lambda item: item[0])[1]
+                    victim_page = self._page_map.pop(victim_key, None)
+                    self._page_last_used.pop(victim_key, None)
+        if victim_page is not None:
+            with self._browser_lock:
+                try:
+                    victim_page.close()
+                except Exception as e:
+                    logger.debug(f"[WebFetch] 淘汰标签页失败: {e}")
+            logger.info(f"[WebFetch] 淘汰最久未用标签页: {victim_key}")
+        return victim_key
+
+    def _drop_page(self, session_id_or_page):
+        page = None
+        with self._pool_lock:
+            if isinstance(session_id_or_page, str):
+                page = self._page_map.pop(session_id_or_page, None)
+                self._page_last_used.pop(session_id_or_page, None)
+            else:
+                page = session_id_or_page
+                for key, value in list(self._page_map.items()):
+                    if value is page:
+                        self._page_map.pop(key, None)
+                        self._page_last_used.pop(key, None)
+        if page is None:
+            return
+        if self._page is page:
+            self._page = None
+        with self._browser_lock:
+            try:
+                page.close()
+            except Exception as e:
+                logger.debug(f"[WebFetch] 关闭标签页失败: {e}")
+
+    def _new_tab(self):
+        with self._browser_lock:
+            page = self._page
+            self._page = None
+            if page is None:
+                page = self._browser.new_tab()
+            if page is None:
+                raise RuntimeError("无法获取浏览器标签页")
+            try:
+                page.run_js("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+                    window.chrome = {runtime: {}};
+                """)
+            except Exception as js_e:
+                logger.debug(f"[WebFetch] 注入反检测脚本失败: {js_e}")
+            return page
+
+    def _get_page(self, session_id: str = None, force_recreate: bool = False):
+        key = session_id or "default"
+
+        if force_recreate:
+            with self._browser_lock:
+                self._close_page_internal()
+                self._stop_idle_timer()
+
+        page = self._peek_page(key)
+        if page is not None:
+            if self._health_check(page):
+                self._touch_page(key)
+                self._start_idle_timer()
+                return page
+            logger.info(f"[WebFetch] 会话 {key} 页面健康检查失败，丢弃重建")
+            self._drop_page(key)
+
+        self._evict_oldest(exclude_key=key)
+        self._ensure_browser()
+
+        page = self._new_tab()
+
+        with self._pool_lock:
+            self._page_map[key] = page
+            self._page_last_used[key] = time.time()
+            self._page_map.move_to_end(key)
+
+        self._start_idle_timer()
+        logger.info(f"[WebFetch] 会话 {key} 标签页就绪 (池占用: {len(self._page_map)}/{self.MAX_POOL_PAGES})")
+        return page
+
+    def _is_page_alive(self, page=None) -> bool:
         """检查页面是否仍然可用"""
+        page = page if page is not None else self._page
         try:
-            if self._page:
-                _ = self._page.url
-                _ = self._page.driver
+            if page:
+                _ = page.url
+                _ = page.driver
                 return True
         except Exception as e:
             logger.debug(f"[WebFetch] 页面连接检查失败: {e}")
         return False
 
-    def _health_check(self) -> bool:
+    def _health_check(self, page=None) -> bool:
         """健康检查：ping 浏览器实例是否正常响应
         
         Returns:
             True: 浏览器健康可用
             False: 浏览器异常，需要重建
         """
-        if self._page is None or self._browser is None:
+        page = page if page is not None else self._page
+        if page is None:
             logger.debug("[WebFetch] 健康检查：无浏览器实例")
             return False
         
         try:
-            url = self._page.url
+            url = page.url
             if url is None:
                 logger.debug("[WebFetch] 健康检查：url 为 None")
                 return False
             
-            _ = self._page.driver
+            _ = page.driver
             logger.debug("[WebFetch] 健康检查通过")
             return True
         except AttributeError as e:
@@ -556,15 +662,32 @@ class WebFetch(BaseCell):
                 time.sleep(60)
                 if self._idle_stop_event.is_set():
                     break
-                
-                with self._lock:
-                    if self._page is None:
+
+                now = time.time()
+                expired = []
+                with self._pool_lock:
+                    for key, last_used in list(self._page_last_used.items()):
+                        if now - last_used > self.IDLE_TIMEOUT:
+                            expired.append(key)
+
+                for key in expired:
+                    logger.info(f"[WebFetch] 会话 {key} 标签页空闲超时，自动关闭")
+                    self._drop_page(key)
+
+                with self._pool_lock:
+                    has_page = bool(self._page_map)
+                if has_page:
+                    continue
+
+                with self._browser_lock:
+                    with self._pool_lock:
+                        has_page = bool(self._page_map)
+                    if has_page:
                         continue
-                    
-                    idle_time = time.time() - self._last_used_time
-                    if idle_time > self.IDLE_TIMEOUT:
-                        logger.info("[WebFetch] 浏览器空闲超时 (%.0f秒)，自动关闭", idle_time)
-                        self._close_page_internal()
+                    if self._browser is None and self._page is None:
+                        continue
+                    logger.info("[WebFetch] 所有标签页空闲超时，自动关闭浏览器")
+                    self._close_page_internal()
         
         self._idle_timer = threading.Thread(target=_idle_monitor, daemon=True, name="WebFetchIdleMonitor")
         self._idle_timer.start()
@@ -579,13 +702,18 @@ class WebFetch(BaseCell):
 
     def _close_page_internal(self):
         """内部关闭方法（不加锁，由调用者保证线程安全）"""
-        if self._page:
+        with self._pool_lock:
+            pages = list(self._page_map.values())
+            self._page_map.clear()
+            self._page_last_used.clear()
+        if self._page is not None and self._page not in pages:
+            pages.append(self._page)
+        self._page = None
+        for page in pages:
             try:
-                self._page.quit()
+                page.close()
             except Exception as e:
                 logger.debug("[WebFetch] 关闭页面失败: %s", e)
-            finally:
-                self._page = None
         if self._browser:
             try:
                 self._browser.quit()
@@ -598,7 +726,7 @@ class WebFetch(BaseCell):
 
     def _close_page(self):
         """关闭浏览器页面（公开方法，带锁）"""
-        with self._lock:
+        with self._browser_lock:
             self._stop_idle_timer()
             self._close_page_internal()
 
@@ -606,7 +734,7 @@ class WebFetch(BaseCell):
         """析构时确保关闭浏览器"""
         try:
             self._stop_idle_timer()
-            if self._page or self._browser:
+            if self._page_map or self._page or self._browser:
                 self._close_page_internal()
         except Exception:
             pass
@@ -634,10 +762,6 @@ class WebFetch(BaseCell):
         except Exception as e:
             logger.warning("[WebFetch] 操作失败: %s", e)
             return None
-
-    def _new_page(self):
-        """创建新页面（强制新建）"""
-        return self._get_page(force_recreate=True)
 
     def _clean_text(self, text):
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
@@ -682,17 +806,17 @@ class WebFetch(BaseCell):
         }
         logger.info(f"[WebFetch] 缓存页面: {url}")
 
-    def _cmd_read(self, url: str = None, action: str = "open", keyword: str = None, wait_time: int = 3) -> dict:
+    def _cmd_read(self, url: str = None, action: str = "open", keyword: str = None, wait_time: int = 3, session_id: str = None) -> dict:
         """
         统一的页面阅读命令
 
         Args:
             url: 页面URL（action="open"时必填）
             action: 操作类型（默认 "open"）
-                    "open" - 打开URL，返回摘要（会缓存页面）
-                    "scroll" - 向下滚动，返回新视口内容（复用缓存）
-                    "find" - 搜索关键词并定位（复用缓存）
-                    "structure" - 获取页面目录结构（复用缓存）
+                    "open" - 打开URL，返回摘要
+                    "scroll" - 向下滚动，返回新视口内容
+                    "find" - 搜索关键词并定位
+                    "structure" - 获取页面目录结构
             keyword: 搜索关键词（action="find"时必填）
             wait_time: 等待秒数（默认 3）
 
@@ -715,47 +839,40 @@ class WebFetch(BaseCell):
                 if not url.startswith('http'):
                     return {"success": False, "error": f"无效URL: {url}"}
 
-                cached_page, is_cached = self._get_cached_page(url)
-                if is_cached:
-                    page = cached_page
-                    self._page = page
-                    self._current_url = url
-                else:
-                    browser_path = self._get_working_browser_path()
-                    if not browser_path:
+                browser_path = self._get_working_browser_path()
+                if not browser_path:
+                    return {
+                        "success": False,
+                        "error": "浏览器不可用，请使用 fetch 命令（HTTP 模式）获取页面内容",
+                        "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
+                        "url": url,
+                    }
+                try:
+                    page = self._get_page(session_id)
+                    if page is None:
+                        logger.warning("[WebFetch] 浏览器页面获取失败")
                         return {
                             "success": False,
-                            "error": "浏览器不可用，请使用 fetch 命令（HTTP 模式）获取页面内容",
+                            "error": "浏览器启动失败，请使用 fetch 命令（HTTP 模式）获取页面内容",
                             "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
                             "url": url,
                         }
+                    page.get(url, timeout=15)
                     try:
-                        page = self._get_page()
-                        if page is None:
-                            logger.warning("[WebFetch] 浏览器页面获取失败")
-                            return {
-                                "success": False,
-                                "error": "浏览器启动失败，请使用 fetch 命令（HTTP 模式）获取页面内容",
-                                "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
-                                "url": url,
-                            }
-                        page.get(url, timeout=15)
-                        try:
-                            page.wait.doc_loaded(timeout=10)
-                        except Exception:
-                            pass
-                        page.wait(wait_time)
-                        self._current_url = url
-                        self._cache_page(url, page)
-                    except Exception as e:
-                        logger.error(f"[WebFetch] 浏览器操作失败: {e}")
-                        self._close_page()
-                        return {
-                            "success": False,
-                            "error": f"浏览器操作失败: {e}，请使用 fetch 命令（HTTP 模式）",
-                            "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
-                            "url": url,
-                        }
+                        page.wait.doc_loaded(timeout=10)
+                    except Exception:
+                        pass
+                    page.wait(wait_time)
+                    self._current_url = url
+                except Exception as e:
+                    logger.error(f"[WebFetch] 浏览器操作失败: {e}")
+                    self._drop_page(session_id)
+                    return {
+                        "success": False,
+                        "error": f"浏览器操作失败: {e}，请使用 fetch 命令（HTTP 模式）",
+                        "hint": "提示：fetch 命令会以 HTTP 方式获取页面文本（无 JavaScript/交互支持）",
+                        "url": url,
+                    }
 
                 # 返回摘要 - 使用 JS 高效获取内容
                 try:
@@ -777,8 +894,8 @@ class WebFetch(BaseCell):
                 }
 
             elif action == "scroll":
-                page = self._page
-                if not page or not self._current_url:
+                page = self._peek_page(session_id)
+                if not page:
                     if not self._get_working_browser_path():
                         return self._browser_unavailable_error()
                     return {"success": False, "error": "没有可滚动的页面，请先执行 read(action='open', url='...')"}
@@ -807,8 +924,8 @@ class WebFetch(BaseCell):
                 if not keyword:
                     return {"success": False, "error": "find 操作需要提供 keyword"}
 
-                page = self._page
-                if not page or not self._current_url:
+                page = self._peek_page(session_id)
+                if not page:
                     if not self._get_working_browser_path():
                         return self._browser_unavailable_error()
                     return {"success": False, "error": "没有可搜索的页面，请先执行 read(action='open', url='...')"}
@@ -834,8 +951,8 @@ class WebFetch(BaseCell):
                 }
 
             elif action == "structure":
-                page = self._page
-                if not page or not self._current_url:
+                page = self._peek_page(session_id)
+                if not page:
                     if not self._get_working_browser_path():
                         return self._browser_unavailable_error()
                     return {"success": False, "error": "没有可分析的页面，请先执行 read(action='open', url='...')"}
@@ -855,7 +972,7 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_fetch(self, url: str = None, action: str = "open", page: int = None, keyword: str = None, wait_time: int = 3) -> dict:
+    def _cmd_fetch(self, url: str = None, action: str = "open", page: int = None, keyword: str = None, wait_time: int = 3, session_id: str = None) -> dict:
         """fetch 命令 - HTTP 模式获取页面内容"""
         if action == "open":
             if not url:
@@ -863,9 +980,9 @@ class WebFetch(BaseCell):
             url = url.strip().strip('`"\'')
             if not url.startswith('http'):
                 return {"success": False, "error": f"无效URL: {url}"}
-            return self._http_fetch_text(url)
+            return self._http_fetch_text(url, session_id=session_id)
 
-        cache = self._http_content_cache
+        cache = self._get_http_cache(session_id)
         if not cache:
             return {"success": False, "error": "没有缓存的 HTTP 内容，请先使用 fetch(url='...') 获取页面"}
 
@@ -954,7 +1071,7 @@ class WebFetch(BaseCell):
         else:
             return {"success": False, "error": f"未知操作: {action}，支持: open/next/prev/goto/search"}
 
-    def _cmd_fetch_many(self, urls: list, wait_time: int = 3, max_workers: int = 3) -> dict:
+    def _cmd_fetch_many(self, urls: list, wait_time: int = 3, max_workers: int = 3, session_id: str = None) -> dict:
         """
         并行抓取多个 URL（单浏览器多标签模式）
 
@@ -989,36 +1106,29 @@ class WebFetch(BaseCell):
                 wait_time = 0
 
             logger.info("[WebFetch] 启动单浏览器多标签抓取，共 %d 个 URL", len(urls))
-            browser = None
-            try:
-                browser = self._get_page()
-                results = []
+            browser = self._ensure_browser()
+            results = []
 
-                def _task(url):
-                    tab = None
-                    try:
+            def _task(url):
+                tab = None
+                try:
+                    with self._browser_lock:
                         tab = browser.new_tab(url)
-                        tab.wait(wait_time)
-                        title = tab.title
-                        text = self._clean_text(tab.ele('tag:body').text)
-                        return {"url": url, "title": title, "text": text[:5000], "success": True}
-                    except Exception as e:
-                        return {"url": url, "success": False, "error": str(e)}
-                    finally:
-                        if tab:
-                            try:
-                                tab.close()
-                            except Exception:
-                                pass
+                    tab.wait(wait_time)
+                    title = tab.title
+                    text = self._clean_text(tab.ele('tag:body').text)
+                    return {"url": url, "title": title, "text": text[:5000], "success": True}
+                except Exception as e:
+                    return {"url": url, "success": False, "error": str(e)}
+                finally:
+                    if tab:
+                        try:
+                            tab.close()
+                        except Exception:
+                            pass
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    results = list(executor.map(_task, urls))
-            finally:
-                if browser:
-                    try:
-                        browser.quit()
-                    except Exception:
-                        pass
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(_task, urls))
 
             success_count = sum(1 for r in results if r['success'])
             fail_count = len(results) - success_count
@@ -1035,7 +1145,7 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_insight(self, url: str = None, mode: str = "auto", query: str = None) -> Dict[str, Any]:
+    def _cmd_insight(self, url: str = None, mode: str = "auto", query: str = None, session_id: str = None) -> Dict[str, Any]:
         if not url:
             url = self._current_url
             logger.info(f"[WebFetch:insight] 未提供url，使用当前页面: {url}")
@@ -1043,7 +1153,6 @@ class WebFetch(BaseCell):
         if not url:
             return {"success": False, "error": "缺少 url 参数，且没有当前页面。请先使用 fetch(url='...') 打开一个页面。"}
 
-        page = None
         try:
             if not self._get_working_browser_path():
                 return {
@@ -1051,11 +1160,11 @@ class WebFetch(BaseCell):
                     "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
                 }
 
-            if url == self._current_url and self._page and self._is_page_alive():
-                page = self._page
+            page = self._peek_page(session_id)
+            if url == self._current_url and page and self._is_page_alive(page):
                 logger.info(f"[WebFetch:insight] 复用当前页面: {url}")
             else:
-                page = self._new_page()
+                page = self._get_page(session_id)
                 page.get(url, timeout=15)
                 try:
                     page.wait.doc_loaded(timeout=10)
@@ -1083,12 +1192,6 @@ class WebFetch(BaseCell):
             error_str = str(e)
             logger.error(f"[WebFetch:insight] 浏览器操作失败: {error_str}")
             return {"success": False, "error": f"Insight failed: {error_str}"}
-        finally:
-            if page and page != self._page:
-                try:
-                    page.quit()
-                except Exception:
-                    pass
 
     def _extract_page_structure(self, page) -> Dict[str, Any]:
         """提取页面结构：heading树 + 链接统计（带ID和xpath便于Agent跳转）"""
@@ -1180,7 +1283,7 @@ class WebFetch(BaseCell):
             }
         }
 
-    def _cmd_get_viewport_text(self) -> dict:
+    def _cmd_get_viewport_text(self, session_id: str = None) -> dict:
         """
         仅获取当前视口（屏幕显示区域）内的可见文本
         实现"分页"阅读，避免一次性返回全文
@@ -1191,9 +1294,9 @@ class WebFetch(BaseCell):
                     **self._browser_unavailable_error(),
                     "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
                 }
-            page = self._get_page()
+            page = self._get_page(session_id)
             
-            if not self._current_url and not page.url:
+            if not page.url:
                 return {
                     "success": False,
                     "error": "没有打开的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
@@ -1236,7 +1339,7 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_find_in_page(self, keyword: str) -> dict:
+    def _cmd_find_in_page(self, keyword: str, session_id: str = None) -> dict:
         """
         在页面中搜索关键词，并自动滚动到该位置，返回上下文
         实现"关键字定位"而非全文抓取
@@ -1251,7 +1354,7 @@ class WebFetch(BaseCell):
                     **self._browser_unavailable_error(),
                     "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
                 }
-            page = self._get_page()
+            page = self._get_page(session_id)
             
             # 方法1：优先使用 DrissionPage 的 text 定位
             try:
@@ -1376,12 +1479,15 @@ class WebFetch(BaseCell):
                 }
             return {"success": False, "error": f"搜索失败: {error_msg}"}
 
-    def _cmd_close(self) -> dict:
+    def _cmd_close(self, session_id: str = None) -> dict:
         """关闭浏览器，释放资源"""
+        if session_id:
+            self._drop_page(session_id)
+            return {"success": True, "message": "会话页面已关闭"}
         self._close_page()
         return {"success": True, "message": "浏览器已关闭"}
 
-    def _cmd_set_mode(self, headless: bool = True) -> dict:
+    def _cmd_set_mode(self, headless: bool = True, session_id: str = None) -> dict:
         """
         设置浏览器模式（headless 或可视化）
 
@@ -1392,41 +1498,42 @@ class WebFetch(BaseCell):
             {"success": bool, "headless": bool, "message": str}
         """
         try:
-            # 检查是否已经是目标模式
-            if self._headless == headless:
+            with self._browser_lock:
+                # 检查是否已经是目标模式
+                if self._headless == headless:
+                    mode = "headless（后台）" if headless else "可视化（显示窗口）"
+                    return {
+                        "success": True,
+                        "headless": headless,
+                        "message": f"已经是 {mode} 模式，无需切换",
+                        "note": "如果浏览器已打开，需要关闭后重新打开才能生效"
+                    }
+
+                # 检查是否有打开的页面需要关闭
+                had_open_page = bool(self._page_map) or self._page is not None
+
+                self._set_headless(headless)
                 mode = "headless（后台）" if headless else "可视化（显示窗口）"
+
+                try:
+                    self._ensure_browser()
+                    browser_info = f" (端口: {self._browser_port})" if self._browser_port else ""
+                    message = f"✅ 已切换到 {mode} 模式，浏览器已启动{browser_info}"
+                except Exception as e:
+                    message = f"✅ 已切换到 {mode} 模式，浏览器已关闭"
+                    message += f"\n⚠️ 预启动浏览器失败: {str(e)}"
+                    message += "\n下次使用命令时会自动以新模式启动浏览器"
+
                 return {
                     "success": True,
                     "headless": headless,
-                    "message": f"已经是 {mode} 模式，无需切换",
-                    "note": "如果浏览器已打开，需要关闭后重新打开才能生效"
+                    "message": message,
+                    "had_open_page": had_open_page
                 }
-            
-            # 检查是否有打开的页面需要关闭
-            had_open_page = self._page is not None
-            
-            self._set_headless(headless)
-            mode = "headless（后台）" if headless else "可视化（显示窗口）"
-            
-            try:
-                page = self._get_page(force_recreate=True)
-                browser_info = f" (端口: {self._browser_port})" if self._browser_port else ""
-                message = f"✅ 已切换到 {mode} 模式，浏览器已启动{browser_info}"
-            except Exception as e:
-                message = f"✅ 已切换到 {mode} 模式，浏览器已关闭"
-                message += f"\n⚠️ 预启动浏览器失败: {str(e)}"
-                message += "\n下次使用命令时会自动以新模式启动浏览器"
-            
-            return {
-                "success": True,
-                "headless": headless,
-                "message": message,
-                "had_open_page": had_open_page
-            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_get_screenshot(self, full_page: bool = False, selector: str = None) -> dict:
+    def _cmd_get_screenshot(self, full_page: bool = False, selector: str = None, session_id: str = None) -> dict:
         import concurrent.futures
 
         if not self._get_working_browser_path():
@@ -1435,7 +1542,8 @@ class WebFetch(BaseCell):
                 "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
             }
 
-        if not self._page or not self._current_url:
+        page = self._peek_page(session_id)
+        if not page or not page.url:
             return {
                 "success": False,
                 "error": "没有可截图的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
@@ -1443,7 +1551,7 @@ class WebFetch(BaseCell):
             }
 
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
         except Exception as e:
             return {"success": False, "error": f"浏览器不可用: {str(e)}"}
 
@@ -1508,12 +1616,12 @@ class WebFetch(BaseCell):
                 return result
         except concurrent.futures.TimeoutError:
             logger.error("[WebFetch] 截图超时")
-            self._close_page()
+            self._drop_page(session_id)
             return {"success": False, "error": "截图超时（30秒），浏览器已重置"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_find_qrcode(self) -> dict:
+    def _cmd_find_qrcode(self, session_id: str = None) -> dict:
         import concurrent.futures
 
         if not self._get_working_browser_path():
@@ -1522,7 +1630,8 @@ class WebFetch(BaseCell):
                 "hint": "该命令需要浏览器操控能力。若确认本机没有可用浏览器，可在最后一步提示下载内置 runtime。",
             }
 
-        if not self._page or not self._current_url:
+        page = self._peek_page(session_id)
+        if not page or not page.url:
             return {
                 "success": False,
                 "error": "没有可查找的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
@@ -1530,7 +1639,7 @@ class WebFetch(BaseCell):
             }
 
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
         except Exception as e:
             return {"success": False, "error": f"浏览器不可用: {str(e)}"}
 
@@ -1626,12 +1735,12 @@ class WebFetch(BaseCell):
                 return future.result(timeout=10)
         except concurrent.futures.TimeoutError:
             logger.error("[WebFetch] 查找二维码超时，浏览器可能无响应")
-            self._close_page()
+            self._drop_page(session_id)
             return {"success": False, "error": "查找二维码超时（10秒），浏览器已重置"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_control(self, action: str, selector: str = None, value: str = None, x: int = None, y: int = None, wait_after: float = 1.0) -> dict:
+    def _cmd_control(self, action: str, selector: str = None, value: str = None, x: int = None, y: int = None, wait_after: float = 1.0, session_id: str = None) -> dict:
         """
         浏览器页面操控命令（点击、输入、滚动等）
 
@@ -1646,16 +1755,16 @@ class WebFetch(BaseCell):
             {"success": bool, "current_url": str, "error": str, "buttons": list}
         """
         if action == 'find_qrcode':
-            return self._cmd_find_qrcode()
+            return self._cmd_find_qrcode(session_id=session_id)
         if action == 'find_button':
-            return self._cmd_find_button(keyword=value)
+            return self._cmd_find_button(keyword=value, session_id=session_id)
         if action == 'execute_script':
-            return self._cmd_execute_script(value, wait_after)
+            return self._cmd_execute_script(value, wait_after, session_id=session_id)
         if action == 'js_action':
-            return self._cmd_js_action(selector, action=value, wait_after=wait_after)
-        return self._control_action(action, selector, value, x, y, wait_after)
+            return self._cmd_js_action(selector, action=value, wait_after=wait_after, session_id=session_id)
+        return self._control_action(action, selector, value, x, y, wait_after, session_id=session_id)
 
-    def _cmd_js_action(self, selector: str = None, action: str = None, wait_after: float = 1.0) -> dict:
+    def _cmd_js_action(self, selector: str = None, action: str = None, wait_after: float = 1.0, session_id: str = None) -> dict:
         """
         统一的 JS 操作命令（纯 JS 实现，最可靠）
 
@@ -1674,7 +1783,7 @@ class WebFetch(BaseCell):
             return {"success": False, "error": "需要提供 action 参数"}
 
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
 
             if action == 'click':
                 return self._js_click(page, selector, wait_after)
@@ -1920,7 +2029,7 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_execute_script(self, script: str = None, wait_after: float = 1.0) -> dict:
+    def _cmd_execute_script(self, script: str = None, wait_after: float = 1.0, session_id: str = None) -> dict:
         """
         执行 JavaScript 代码
 
@@ -1935,7 +2044,7 @@ class WebFetch(BaseCell):
             return {"success": False, "error": "需要提供 script 参数"}
 
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
             result = page.run_js(script)
             
             result_type = type(result).__name__
@@ -1993,7 +2102,7 @@ class WebFetch(BaseCell):
             
             return {"success": False, "error": error_msg, "hint": hint}
 
-    def _cmd_find_button(self, keyword: str = None) -> dict:
+    def _cmd_find_button(self, keyword: str = None, session_id: str = None) -> dict:
         """
         智能查找页面中的按钮/可点击元素
 
@@ -2011,14 +2120,15 @@ class WebFetch(BaseCell):
                 "hint": "该命令需要浏览器操控能力。",
             }
 
-        if not self._page or not self._current_url:
+        page = self._peek_page(session_id)
+        if not page or not page.url:
             return {
                 "success": False,
                 "error": "没有可查找的页面。请先使用 fetch(url='...') 或 open(url='...') 打开一个页面",
             }
 
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
         except Exception as e:
             return {"success": False, "error": f"浏览器不可用: {str(e)}"}
 
@@ -2270,10 +2380,10 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e), "buttons": []}
 
-    def _control_action(self, action: str, selector: str = None, value: str = None, x: int = None, y: int = None, wait_after: float = 1.0) -> dict:
+    def _control_action(self, action: str, selector: str = None, value: str = None, x: int = None, y: int = None, wait_after: float = 1.0, session_id: str = None) -> dict:
         """实际操控逻辑"""
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
             if action == 'click':
                 if selector:
                     element = None
@@ -2493,7 +2603,7 @@ class WebFetch(BaseCell):
                 error_msg = f"Element not found: {selector or f'coords=({x},{y})'}"
             return {"success": False, "error": error_msg}
 
-    def _cmd_get_element_tree(self) -> dict:
+    def _cmd_get_element_tree(self, session_id: str = None) -> dict:
         """
         获取简化版 DOM 树（交互元素）
 
@@ -2501,7 +2611,7 @@ class WebFetch(BaseCell):
             {"elements": [{"tag": str, "text": str, "selector": str}]}
         """
         try:
-            page = self._get_page()
+            page = self._get_page(session_id)
             interactive_elements = []
             for tag in ['button', 'input', 'a', 'select']:
                 for el in page.eles(f'tag:{tag}'):
@@ -2515,26 +2625,28 @@ class WebFetch(BaseCell):
         except Exception as e:
             return {"success": False, "error": str(e), "elements": []}
 
-    def _cmd_save_cookies(self, path: str = "cookies.json") -> dict:
+    def _cmd_save_cookies(self, path: str = "cookies.json", session_id: str = None) -> dict:
         """保存当前会话 Cookie 到文件"""
         try:
-            page = self._get_page()
-            cookies = page.cookies(as_dict=True)
+            with self._browser_lock:
+                page = self._get_page(session_id)
+                cookies = page.cookies(as_dict=True)
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(cookies, f)
             return {"success": True, "path": path, "count": len(cookies)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _cmd_load_cookies(self, path: str = "cookies.json") -> dict:
+    def _cmd_load_cookies(self, path: str = "cookies.json", session_id: str = None) -> dict:
         """从文件加载 Cookie 到当前会话"""
         try:
             if not os.path.exists(path):
                 return {"success": False, "error": f"Cookie 文件不存在: {path}"}
-            page = self._get_page()
             with open(path, 'r', encoding='utf-8') as f:
                 cookies = json.load(f)
-            page.set.cookies(cookies)
+            with self._browser_lock:
+                page = self._get_page(session_id)
+                page.set.cookies(cookies)
             return {"success": True, "count": len(cookies)}
         except Exception as e:
             return {"success": False, "error": str(e)}

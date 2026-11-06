@@ -2,6 +2,7 @@
 
 import os
 import logging
+import threading
 from typing import Dict, Any, Optional, Tuple
 
 from .base_tool import BaseTool
@@ -148,7 +149,7 @@ def _count_lines_in_file(file_path: str) -> int:
     return max(count, 1)
 
 
-def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str = "utf-8") -> Dict[str, Any]:
+def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str = "utf-8", session_id: str = None) -> Dict[str, Any]:
     with open(file_path, 'rb') as f:
         f.seek(0, os.SEEK_END)
         total_bytes = f.tell()
@@ -206,7 +207,8 @@ def _read_file_streaming(file_path: str, offset: int, limit: int, encoding: str 
     cache_read(file_path, full_text,
                offset=None if not is_partial else offset,
                limit=None if not is_partial else limit,
-               encoding=encoding)
+               encoding=encoding,
+               session_id=session_id)
 
     result = {
         "success": True,
@@ -242,11 +244,24 @@ class ReadTool(BaseTool):
     def __init__(self, allowed_roots=None):
         super().__init__()
         self._allowed_roots = allowed_roots or []
+        self._tls = threading.local()
+
+    def execute_with_context(self, arguments, session_id=None, platform_context=None):
+        self._tls.session_id = session_id
+        try:
+            return self.execute(arguments)
+        finally:
+            self._tls.session_id = None
+
+    def _session_id(self):
+        return getattr(self._tls, "session_id", None)
+
     def _check_dedup(self, abs_path: str, offset: int, limit: int) -> Optional[Dict[str, Any]]:
-        cached = get_read_state(abs_path)
+        session_id = self._session_id()
+        cached = get_read_state(abs_path, session_id=session_id)
         if not cached:
             return None
-        if not is_file_read(abs_path):
+        if not is_file_read(abs_path, session_id=session_id):
             return None
         cached_offset = cached.get("offset")
         cached_limit = cached.get("limit")
@@ -341,7 +356,8 @@ class ReadTool(BaseTool):
         cache_read(file_path, context,
                    offset=result["line_offset"],
                    limit=len(context.split('\n')),
-                   encoding=encoding)
+                   encoding=encoding,
+                   session_id=self._session_id())
 
         return {
             "success": True,
@@ -364,7 +380,7 @@ class ReadTool(BaseTool):
     ) -> Dict[str, Any]:
         if file_size > _CHUNK * 4:
             encoding = self._detect_encoding(abs_path)
-            return _read_file_streaming(abs_path, offset, limit, encoding=encoding)
+            return _read_file_streaming(abs_path, offset, limit, encoding=encoding, session_id=self._session_id())
 
         encoding = self._detect_encoding(abs_path)
         with open(abs_path, "r", encoding=encoding, errors="replace") as f:
@@ -374,7 +390,7 @@ class ReadTool(BaseTool):
         total_lines = len(lines)
 
         is_partial = (offset is not None and offset > 0) or (limit is not None and limit < total_lines)
-        cache_read(abs_path, content, offset=None if not is_partial else offset, limit=None if not is_partial else limit, encoding=encoding)
+        cache_read(abs_path, content, offset=None if not is_partial else offset, limit=None if not is_partial else limit, encoding=encoding, session_id=self._session_id())
 
         if target:
             target_lower = target.lower()

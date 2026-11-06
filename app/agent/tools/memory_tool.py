@@ -44,9 +44,10 @@ class MemoryTool(BaseTool):
                             "description": "要执行的命令",
                             "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration", "profile"],
                         },
-                        "subcommand": {"type": "string", "description": "[profile] 子命令：get / set_agent_name / set_user_name / set_persona"},
+                        "subcommand": {"type": "string", "description": "[profile] 子命令：get / set_agent_name / set_user_name / set_persona / set_plan_habit"},
                         "name": {"type": "string", "description": "[profile] set_agent_name/set_user_name 时的名称值"},
                         "persona": {"type": "string", "description": "[profile] set_persona 时的人格补充内容（如性格特征、说话风格等）"},
+                        "plan_habit": {"type": "string", "description": "[profile] set_plan_habit 时的 Plan 模式行为习惯；传空字符串则清除"},
                         "entry_id": {"type": "string", "description": "[read_archive] Archive entry ID，用于读取完整对话历史"},
                         "page": {"type": "integer", "description": "[read_archive] 页码，默认 1"},
                         "page_size": {"type": "integer", "description": "[read_archive] 每页字符数，默认 2000"},
@@ -580,13 +581,13 @@ class MemoryTool(BaseTool):
     _PROFILE_USER_KEY = "profile:user_name"
     _PROFILE_PERSONA_KEY = "profile:persona"
 
-    def _cmd_profile(self, subcommand: str = "get", name: str = "", persona: str = "") -> dict:
+    def _cmd_profile(self, subcommand: str = "get", name: str = "", persona: str = "", plan_habit: str = "") -> dict:
         if not self._check_memory():
             return {"success": False, "error": "长期记忆系统未初始化"}
 
         sub = (subcommand or "get").strip().lower()
-        if sub not in ("get", "set_agent_name", "set_user_name", "set_persona"):
-            return {"success": False, "error": f"未知子命令: {subcommand}，支持 get/set_agent_name/set_user_name/set_persona"}
+        if sub not in ("get", "set_agent_name", "set_user_name", "set_persona", "set_plan_habit"):
+            return {"success": False, "error": f"未知子命令: {subcommand}，支持 get/set_agent_name/set_user_name/set_persona/set_plan_habit"}
 
         try:
             repo = self.memory.repository if hasattr(self.memory, 'repository') else self.memory
@@ -595,15 +596,23 @@ class MemoryTool(BaseTool):
                 agent_rec = repo.get_by_memory_key(self._PROFILE_AGENT_KEY, schema_type="profile")
                 user_rec = repo.get_by_memory_key(self._PROFILE_USER_KEY, schema_type="profile")
                 persona_rec = repo.get_by_memory_key(self._PROFILE_PERSONA_KEY, schema_type="profile")
+                from app.core.security.run_mode import get_plan_habit
                 return {
                     "success": True,
                     "agent_name": agent_rec.get("content", "").strip() if agent_rec else "",
                     "user_name": user_rec.get("content", "").strip() if user_rec else "",
                     "persona": persona_rec.get("content", "").strip() if persona_rec else "",
-                    "message": "助手名字、用户称呼和人格补充" if (agent_rec or user_rec or persona_rec) else "尚未设置 profile",
+                    "plan_habit": get_plan_habit(self.memory),
+                    "message": "助手名字、用户称呼、人格补充与 Plan 习惯",
                 }
 
-            if sub == "set_persona":
+            if sub == "set_plan_habit":
+                from app.core.security.run_mode import set_plan_habit
+                if not set_plan_habit(plan_habit, memory=self.memory):
+                    return {"success": False, "error": "保存失败"}
+                logger.info("[MemoryTool] profile set_plan_habit | len=%d", len((plan_habit or "").strip()))
+
+            elif sub == "set_persona":
                 if not persona or not persona.strip():
                     return {"success": False, "error": "persona 不能为空"}
                 persona_clean = persona.strip()

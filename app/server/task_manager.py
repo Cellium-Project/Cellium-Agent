@@ -66,6 +66,16 @@ class BackgroundTaskManager:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._normalizers: Dict[str, StreamNormalizer] = {}
         self._auto_tasks: Dict[str, asyncio.Task] = {}
+        self._gates: Dict[str, threading.Lock] = {}
+        self._gates_guard = threading.Lock()
+
+    def _get_gate(self, session_id: str) -> threading.Lock:
+        with self._gates_guard:
+            gate = self._gates.get(session_id)
+            if gate is None:
+                gate = threading.Lock()
+                self._gates[session_id] = gate
+            return gate
 
     def _ensure_cleanup_task(self):
         if self._cleanup_task is None or self._cleanup_task.done():
@@ -176,52 +186,65 @@ class BackgroundTaskManager:
             logger.warning("[TaskManager] session=%s 已有运行中的任务", session_id)
             return False
 
-        self._ensure_cleanup_task()
-        # 重置任务状态，保留常驻订阅者
-        self.broker.clear_session(session_id)
-        queue = self.broker.ensure_queue(session_id)
-        with self._supplement_lock:
-            _leftover = self._supplement_messages.get(session_id)
-            if not _leftover:
-                self._supplement_messages[session_id] = []
-        if _leftover:
-            logger.warning(
-                "[TaskManager] 上次任务遗留 %d 条未消费补充消息，将随新任务注入", len(_leftover)
-            )
+        gate = self._get_gate(session_id)
+        if not gate.acquire(blocking=False):
+            logger.warning("[TaskManager] session=%s 并发启动竞争失败", session_id)
+            return False
 
-        from app.core.util.logger import clear_status_history, clear_runtime_status
-        clear_status_history()
-        clear_runtime_status()
-
-        from app.server.routes.ws_event_manager import WSConnectionManager
         try:
-            ws_manager = WSConnectionManager.get_instance_sync()
-            ws_manager.clear_session_events(session_id)
-        except Exception:
-            pass
+            self._ensure_cleanup_task()
+            # 重置任务状态，保留常驻订阅者
+            self.broker.clear_session(session_id)
+            queue = self.broker.ensure_queue(session_id)
+            with self._supplement_lock:
+                _leftover = self._supplement_messages.get(session_id)
+                if not _leftover:
+                    self._supplement_messages[session_id] = []
+            if _leftover:
+                logger.warning(
+                    "[TaskManager] 上次任务遗留 %d 条未消费补充消息，将随新任务注入", len(_leftover)
+                )
 
-        info = TaskInfo(
-            session_id=session_id,
-            status=TaskStatus.PENDING,
-            created_at=time.time(),
-            user_input=user_input,
-        )
-        self._info[session_id] = info
+            from app.core.util.logger import clear_status_history, clear_runtime_status
+            clear_status_history()
+            clear_runtime_status()
 
-        self._pending_inputs[session_id] = user_input
+            from app.server.routes.ws_event_manager import WSConnectionManager
+            try:
+                ws_manager = WSConnectionManager.get_instance_sync()
+                ws_manager.clear_session_events(session_id)
+            except Exception:
+                pass
 
-        task = asyncio.create_task(
-            self._run_agent_loop(
+            info = TaskInfo(
                 session_id=session_id,
-                agent_loop=agent_loop,
+                status=TaskStatus.PENDING,
+                created_at=time.time(),
                 user_input=user_input,
-                memory=memory,
-                queue=queue,
-                system_injection=system_injection,
-                mode=mode,
             )
-        )
-        self._tasks[session_id] = task
+            self._info[session_id] = info
+
+            self._pending_inputs[session_id] = user_input
+
+            task = asyncio.create_task(
+                self._run_agent_loop(
+                    session_id=session_id,
+                    agent_loop=agent_loop,
+                    user_input=user_input,
+                    memory=memory,
+                    queue=queue,
+                    system_injection=system_injection,
+                    mode=mode,
+                    gate=gate,
+                )
+            )
+            self._tasks[session_id] = task
+        except BaseException:
+            try:
+                gate.release()
+            except RuntimeError:
+                pass
+            raise
 
         logger.info("[TaskManager] 后台任务已启动 | session=%s | input=%s", session_id, user_input[:50] if user_input else "(空)")
         return True
@@ -235,6 +258,7 @@ class BackgroundTaskManager:
         queue: asyncio.Queue,
         system_injection: Optional[str] = None,
         mode: Optional[str] = None,
+        gate: Optional[threading.Lock] = None,
     ):
         """
         运行 Agent 循环（后台任务）
@@ -310,6 +334,11 @@ class BackgroundTaskManager:
             logger.error("[TaskManager] 任务出错 | session=%s | error=%s", session_id, e, exc_info=True)
 
         finally:
+            if gate is not None:
+                try:
+                    gate.release()
+                except RuntimeError:
+                    pass
             try:
                 for norm in normalizer.finish():
                     self.broker.publish(session_id, norm)
@@ -448,6 +477,8 @@ class BackgroundTaskManager:
             with self._supplement_lock:
                 self._supplement_messages.pop(session_id, None)
             self._normalizers.pop(session_id, None)
+            with self._gates_guard:
+                self._gates.pop(session_id, None)
             self.broker.clear_session(session_id)
 
         if to_cleanup:

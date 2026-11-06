@@ -11,11 +11,64 @@ AgentLoopManager - 多 Session 并发 AgentLoop 管理器
 
 import asyncio
 import logging
+import threading
 import time
+from collections import deque
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+class SessionLock:
+    __slots__ = ("_guard", "_locked", "_waiters")
+
+    def __init__(self):
+        self._guard = threading.Lock()
+        self._locked = False
+        self._waiters = deque()
+
+    async def acquire(self):
+        with self._guard:
+            if not self._locked:
+                self._locked = True
+                return True
+            loop = asyncio.get_running_loop()
+            waiter = (loop, asyncio.Event())
+            self._waiters.append(waiter)
+
+        try:
+            await waiter[1].wait()
+        except asyncio.CancelledError:
+            with self._guard:
+                try:
+                    self._waiters.remove(waiter)
+                except ValueError:
+                    self._wake_next()
+            raise
+        return True
+
+    def release(self):
+        with self._guard:
+            self._wake_next()
+
+    def _wake_next(self):
+        while self._waiters:
+            loop, event = self._waiters.popleft()
+            try:
+                loop.call_soon_threadsafe(event.set)
+                return
+            except RuntimeError:
+                continue
+        self._locked = False
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
+        return False
 
 
 @dataclass
@@ -31,7 +84,8 @@ class AgentLoopManager:
 
     def __init__(self):
         self._loops: Dict[str, LoopMetadata] = {}
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._locks: Dict[str, SessionLock] = {}
+        self._locks_guard = threading.Lock()
         self._max_loops = 50
         self._session_timeout = 3600
 
@@ -161,14 +215,17 @@ class AgentLoopManager:
             logger.warning(f"[AgentLoopManager] Cleanup error for {session_id}: {e}")
 
         del self._loops[session_id]
-        if session_id in self._locks:
-            del self._locks[session_id]
+        with self._locks_guard:
+            self._locks.pop(session_id, None)
         logger.info(f"[AgentLoopManager] Evicted oldest session: {session_id}")
 
-    async def get_lock(self, session_id: str) -> asyncio.Lock:
-        if session_id not in self._locks:
-            self._locks[session_id] = asyncio.Lock()
-        return self._locks[session_id]
+    async def get_lock(self, session_id: str) -> SessionLock:
+        with self._locks_guard:
+            lock = self._locks.get(session_id)
+            if lock is None:
+                lock = SessionLock()
+                self._locks[session_id] = lock
+            return lock
 
     async def run_with_lock(self, session_id: str, user_input: str) -> Dict[str, Any]:
         # 降级模式：LLM 未配置时直接返回友好提示，不创建 AgentLoop
@@ -259,7 +316,8 @@ class AgentLoopManager:
             except Exception as e:
                 logger.warning(f"[AgentLoopManager] Cleanup error for {session_id}: {e}")
         self._loops.clear()
-        self._locks.clear()
+        with self._locks_guard:
+            self._locks.clear()
         logger.info("[AgentLoopManager] All sessions cleaned up")
 
     def update_all_loops(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None, intent_llm=None, intent_enabled=None, builtin_tools: Dict = None, refresh_profile: bool = False):

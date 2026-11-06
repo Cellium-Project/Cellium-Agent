@@ -7,9 +7,14 @@ _MAX_ENTRIES = 100
 _read_file_cache = OrderedDict()
 
 
-def cache_read(path: str, content: str, offset: int = None, limit: int = None, encoding: str = None):
+def _session_key(path: str, session_id: str = None) -> str:
+    return f"{session_id or 'default'}::{os.path.normpath(path)}"
+
+
+def cache_read(path: str, content: str, offset: int = None, limit: int = None, encoding: str = None, session_id: str = None):
     norm_path = os.path.normpath(path)
-    _read_file_cache[norm_path] = {
+    key = _session_key(norm_path, session_id)
+    _read_file_cache[key] = {
         "path": norm_path,
         "content": content,
         "timestamp": _safe_mtime(norm_path),
@@ -17,40 +22,41 @@ def cache_read(path: str, content: str, offset: int = None, limit: int = None, e
         "limit": limit,
         "encoding": encoding,
     }
-    _read_file_cache.move_to_end(norm_path)
+    _read_file_cache.move_to_end(key)
     _evict_if_needed()
 
 
-def get_read_state(path: str):
-    norm_path = os.path.normpath(path)
-    state = _read_file_cache.get(norm_path)
+def get_read_state(path: str, session_id: str = None):
+    key = _session_key(path, session_id)
+    state = _read_file_cache.get(key)
     if state:
-        _read_file_cache.move_to_end(norm_path)
+        _read_file_cache.move_to_end(key)
     return state
 
 
-def is_file_read(path: str) -> bool:
-    norm_path = os.path.normpath(path)
-    state = _read_file_cache.get(norm_path)
+def is_file_read(path: str, session_id: str = None) -> bool:
+    key = _session_key(path, session_id)
+    state = _read_file_cache.get(key)
     if not state:
         return False
-    _read_file_cache.move_to_end(norm_path)
+    _read_file_cache.move_to_end(key)
     try:
         return not _has_been_modified_externally(state)
     except Exception:
         return False
 
 
-def is_partial_view(path: str) -> bool:
-    norm_path = os.path.normpath(path)
-    state = _read_file_cache.get(norm_path)
+def is_partial_view(path: str, session_id: str = None) -> bool:
+    key = _session_key(path, session_id)
+    state = _read_file_cache.get(key)
     if not state:
         return False
     return bool(state.get("offset") is not None or state.get("limit") is not None)
 
 
-def touch_read_state(path: str, new_content: str, encoding: str = None):
+def touch_read_state(path: str, new_content: str, encoding: str = None, session_id: str = None):
     norm_path = os.path.normpath(path)
+    key = _session_key(norm_path, session_id)
     entry = {
         "path": norm_path,
         "content": new_content,
@@ -59,8 +65,8 @@ def touch_read_state(path: str, new_content: str, encoding: str = None):
         "limit": None,
         "encoding": encoding,
     }
-    _read_file_cache[norm_path] = entry
-    _read_file_cache.move_to_end(norm_path)
+    _read_file_cache[key] = entry
+    _read_file_cache.move_to_end(key)
     _evict_if_needed()
 
 

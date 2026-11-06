@@ -313,5 +313,71 @@ class TestMemoryRepositoryList(unittest.TestCase):
         self.assertEqual(result["total"], 10)
 
 
+class TestProtectedMemoryKey(unittest.TestCase):
+    """profile:plan_habit 只允许 profile 接口访问"""
+
+    KEY = "profile:plan_habit"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.test_dir = tempfile.mkdtemp()
+        cls.searcher = FTS5MemorySearcher(cls.test_dir)
+        cls.repo = MemoryRepository(cls.test_dir, cls.searcher)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.searcher.close()
+        shutil.rmtree(cls.test_dir, ignore_errors=True)
+
+    def setUp(self):
+        self.repo.delete_memory(memory_key=self.KEY, allow_protected=True)
+        result = self.repo.upsert_memory(
+            title="Plan 习惯",
+            content="计划不超过五步",
+            category="user_info",
+            schema_type="profile",
+            memory_key=self.KEY,
+            metadata={"field": "plan_habit"},
+            merge_strategy="replace",
+            allow_protected=True,
+        )
+        self.assertTrue(result["success"])
+        self.record_id = result["id"]
+
+    def test_hidden_from_list(self):
+        items = self.repo.list_memories(limit=50)["items"]
+        self.assertFalse(any(item.get("title") == "Plan 习惯" for item in items))
+
+    def test_get_record_blocked(self):
+        self.assertIsNone(self.repo.get_record(self.record_id))
+
+    def test_hidden_from_search(self):
+        results = self.repo.search("计划不超过五步", top_k=10)
+        self.assertFalse(any(item.get("title") == "Plan 习惯" for item in results))
+
+    def test_generic_delete_blocked(self):
+        result = self.repo.delete_memory(memory_key=self.KEY)
+        self.assertFalse(result["success"])
+        self.assertTrue(self.repo.get_by_memory_key(self.KEY, schema_type="profile"))
+
+    def test_generic_update_blocked(self):
+        result = self.repo.update_memory(memory_key=self.KEY, content="被改写")
+        self.assertFalse(result["success"])
+
+    def test_generic_upsert_blocked(self):
+        result = self.repo.upsert_memory(
+            title="覆盖", content="被改写", schema_type="profile", memory_key=self.KEY,
+        )
+        self.assertFalse(result["success"])
+
+    def test_generic_forget_blocked(self):
+        result = self.repo.forget_memories(memory_key=self.KEY)
+        self.assertFalse(result["success"])
+
+    def test_profile_delete_allowed(self):
+        result = self.repo.delete_memory(memory_key=self.KEY, allow_protected=True)
+        self.assertTrue(result["success"])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -14,8 +14,10 @@ import tempfile
 import urllib.parse
 import hashlib
 import threading
+import queue
+import contextlib
 from functools import lru_cache
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 
 from app.core.interface.base_cell import BaseCell
 from app.core.util.browser_utils import find_browser_path
@@ -122,6 +124,15 @@ class WebSearch(BaseCell):
         self._search_cache = {}
         self._user_agent = None
         self._lock = threading.RLock()
+        self._browser_lock = threading.RLock()
+        self._pool_lock = threading.Lock()
+        self._page_pool: queue.Queue = queue.Queue()
+        self._pool_size = 0
+        self._page_last_used: Dict[int, dict] = {}
+        self._token_buckets: Dict[str, list] = {}
+        self._token_lock = threading.Lock()
+        self._cache_lock = threading.RLock()
+        self._health_lock = threading.Lock()
         self._browser_port = None
         self._browser_path = None
         self._instance_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
@@ -130,6 +141,9 @@ class WebSearch(BaseCell):
         self._idle_stop_event = threading.Event()
         self._creation_count = 0
 
+    MAX_POOL_PAGES = 3
+    SEARCH_RATE_LIMIT = 2
+    SEARCH_RATE_INTERVAL = 5
     IDLE_TIMEOUT = 300
     HEALTH_CHECK_TIMEOUT = 5
 
@@ -141,14 +155,18 @@ class WebSearch(BaseCell):
         command = command.strip().strip('>"\'')
         method_name = f"_cmd_{command}"
         if hasattr(self, method_name):
-            with self._lock:
-                return getattr(self, method_name)(*args, **kwargs)
+            return getattr(self, method_name)(*args, **kwargs)
         from app.core.exception import CommandNotFoundError
         raise CommandNotFoundError(command, self.cell_name)
 
     def get_engine_health(self) -> dict:
         """获取搜索引擎健康状态"""
-        return self._engine_health.copy()
+        with self._health_lock:
+            return self._engine_health.copy()
+
+    def _set_engine_health(self, engine: str, status: str):
+        with self._health_lock:
+            self._engine_health[engine] = status
 
     def _get_cache_key(self, keywords: str, engine: str) -> str:
         """生成缓存键"""
@@ -158,22 +176,26 @@ class WebSearch(BaseCell):
     def _get_cached_result(self, keywords: str, engine: str) -> dict:
         """获取缓存的搜索结果"""
         cache_key = self._get_cache_key(keywords, engine)
-        if cache_key in self._search_cache:
-            cached = self._search_cache[cache_key]
+        with self._cache_lock:
+            cached = self._search_cache.get(cache_key)
+            if not cached:
+                return None
             age = time.time() - cached.get('_cached_at', 0)
-            if age < 300:
-                logger.info(f"[WebSearch:cache] 命中缓存 (key={cache_key[:8]}, age={age:.1f}s)")
-                return cached.get('data')
-        return None
+            if age >= 300:
+                return None
+            data = dict(cached.get('data') or {})
+        logger.info(f"[WebSearch:cache] 命中缓存 (key={cache_key[:8]}, age={age:.1f}s)")
+        return data
 
     def _set_cached_result(self, keywords: str, engine: str, data: dict):
         """设置搜索结果缓存"""
         cache_key = self._get_cache_key(keywords, engine)
-        data['_cached_at'] = time.time()
-        self._search_cache[cache_key] = data
-        if len(self._search_cache) > 100:
-            oldest = min(self._search_cache.items(), key=lambda x: x[1].get('_cached_at', 0))
-            del self._search_cache[oldest[0]]
+        with self._cache_lock:
+            data['_cached_at'] = time.time()
+            self._search_cache[cache_key] = data
+            if len(self._search_cache) > 100:
+                oldest = min(self._search_cache.items(), key=lambda x: x[1].get('_cached_at', 0))
+                del self._search_cache[oldest[0]]
 
     async def _search_async(self, keywords: str, max_results: int = 10, wait_time: int = 1, engine: str = 'auto') -> dict:
         """异步搜索入口"""
@@ -202,13 +224,15 @@ class WebSearch(BaseCell):
     def _select_best_engine(self) -> str:
         """自动选择最佳的可用搜索引擎"""
         priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
+        with self._health_lock:
+            health_snapshot = dict(self._engine_health)
 
         for engine in priority_order:
             if engine not in self.SEARCH_ENGINES:
                 continue
             if not self._check_engine_accessible(engine):
                 continue
-            health = self._engine_health.get(engine, 'unknown')
+            health = health_snapshot.get(engine, 'unknown')
             if health == 'green':
                 logger.info(f"[WebSearch:auto] 选择 {engine} (状态: green)")
                 return engine
@@ -218,7 +242,7 @@ class WebSearch(BaseCell):
                 continue
             if not self._check_engine_accessible(engine):
                 continue
-            health = self._engine_health.get(engine, 'unknown')
+            health = health_snapshot.get(engine, 'unknown')
             if health in ('unknown', 'red'):
                 logger.info(f"[WebSearch:auto] 选择 {engine} (状态: {health}, 尝试搜索)")
                 return engine
@@ -308,129 +332,211 @@ class WebSearch(BaseCell):
             logger.warning("[WebSearch] 操作失败: %s", e)
             return None
 
-    def _get_or_create_page(self, force_recreate: bool = False, max_retries: int = 3):
-        with self._lock:
-            if force_recreate:
-                self._close_page_internal()
-                self._stop_idle_timer()
+    def _ensure_browser(self):
+        with self._browser_lock:
+            if self._browser is not None:
+                return self._browser
 
-            if self._page is not None:
-                if self._health_check():
-                    self._update_last_used_time()
-                    self._start_idle_timer()
-                    return self._page
-                else:
-                    logger.info("[WebSearch] 健康检查失败，关闭旧实例准备重建")
-                    self._close_page_internal()
-
-            self._close_page_internal()
             last_error = None
-
-            for attempt in range(max_retries):
+            for attempt in range(3):
                 try:
-                    from DrissionPage import Chromium, ChromiumOptions
+                    from DrissionPage import Chromium
 
                     if attempt > 0:
-                        logger.info(f"[WebSearch] 浏览器重试 ({attempt + 1}/{max_retries})，使用新端口...")
+                        logger.info(f"[WebSearch] 浏览器重试 ({attempt + 1}/3)，使用新端口...")
                         self._browser_port = None
                         self._browser_path = None
                         time.sleep(1)
 
                     co = self._get_options()
-                    self._browser = Chromium(addr_or_opts=co)
-                    if self._browser is None:
+                    browser = Chromium(addr_or_opts=co)
+                    if browser is None:
                         raise RuntimeError("Chromium 浏览器创建失败")
-                    
+
                     browser_ready = False
                     for warmup in range(2):
                         try:
                             time.sleep(0.2)
-                            test_url = self._browser.address
-                            if not test_url:
+                            if not browser.address:
                                 continue
-                            _ = self._browser.latest_tab
+                            latest = browser.latest_tab
+                            if latest is None:
+                                continue
                             if self._page is None:
-                                self._page = self._browser.latest_tab
-                            test_page_url = self._page.url if self._page else None
-                            if self._page and hasattr(self._page, 'driver'):
-                                _ = self._page.driver
+                                self._page = latest
+                            _ = latest.driver
                             browser_ready = True
                             break
                         except (AttributeError, TypeError) as we:
-                            logger.debug(f"[WebSearch] 浏览器预热 {warmup+1}/2: {we}")
+                            logger.debug(f"[WebSearch] 浏览器预热 {warmup + 1}/2: {we}")
                             continue
-                    
+
                     if not browser_ready:
+                        try:
+                            browser.quit()
+                        except Exception:
+                            pass
                         raise RuntimeError("浏览器启动后无法建立连接")
-                    
+
                     try:
-                        if hasattr(self._browser, 'address') and self._browser.address:
-                            addr_parts = self._browser.address.split(':')
+                        if browser.address:
+                            addr_parts = browser.address.split(':')
                             if len(addr_parts) == 2:
                                 self._browser_port = int(addr_parts[1])
                     except Exception as e:
                         logger.debug(f"[WebSearch] 获取端口失败: {e}")
-                    
-                    if self._page is None:
-                        self._page = self._browser.latest_tab
-                    if self._page is None:
-                        self._page = self._browser.new_tab()
-                        if self._page is None:
-                            raise RuntimeError("无法获取浏览器标签页")
 
-                    try:
-                        self._page.run_js("""
-                            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                            Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
-                            window.chrome = {runtime: {}};
-                        """)
-                    except Exception as js_e:
-                        logger.debug(f"[WebSearch] 注入反检测脚本失败: {js_e}")
-
+                    self._browser = browser
                     self._creation_count += 1
                     self._update_last_used_time()
                     self._start_idle_timer()
-                    logger.info(f"[WebSearch] 浏览器页面创建成功 (端口: {self._browser_port}, 累计创建: {self._creation_count})")
-                    return self._page
+                    logger.info(f"[WebSearch] 浏览器创建成功 (端口: {self._browser_port}, 累计创建: {self._creation_count})")
+                    return self._browser
                 except AttributeError as e:
                     last_error = e
-                    logger.warning(f"[WebSearch] 浏览器创建失败 AttributeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(f"[WebSearch] 浏览器创建失败 AttributeError (尝试 {attempt + 1}/3): {e}")
                     self._close_page_internal()
                 except TypeError as e:
                     last_error = e
-                    logger.warning(f"[WebSearch] 浏览器创建失败 TypeError (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(f"[WebSearch] 浏览器创建失败 TypeError (尝试 {attempt + 1}/3): {e}")
                     self._close_page_internal()
                 except Exception as e:
                     last_error = e
-                    logger.warning(f"[WebSearch] 浏览器创建失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.warning(f"[WebSearch] 浏览器创建失败 (尝试 {attempt + 1}/3): {e}")
                     self._close_page_internal()
 
             logger.error(f"[WebSearch] 浏览器创建最终失败: {last_error}")
             raise last_error
 
-    def _is_page_alive(self) -> bool:
-        """检查页面是否仍然可用"""
+    def _create_pool_page(self):
+        with self._browser_lock:
+            browser = self._ensure_browser()
+            page = None
+            if self._page is not None:
+                page = self._page
+                self._page = None
+            if page is None:
+                page = browser.new_tab()
+            if page is None:
+                raise RuntimeError("无法创建新标签页")
+
+            try:
+                page.run_js("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+                    window.chrome = {runtime: {}};
+                """)
+            except Exception as js_e:
+                logger.debug(f"[WebSearch] 注入反检测脚本失败: {js_e}")
+
+            with self._pool_lock:
+                self._page_last_used[id(page)] = {'page': page, 'last_used': time.time()}
+            logger.info(f"[WebSearch] 标签页创建成功 (池占用: {self._pool_size}/{self.MAX_POOL_PAGES})")
+            return page
+
+    def _acquire_page(self):
+        while True:
+            try:
+                page = self._page_pool.get_nowait()
+            except queue.Empty:
+                page = None
+            if page is not None:
+                self._touch_page(page)
+                return page
+
+            reserve = False
+            with self._pool_lock:
+                if self._pool_size < self.MAX_POOL_PAGES:
+                    self._pool_size += 1
+                    reserve = True
+
+            if reserve:
+                try:
+                    page = self._create_pool_page()
+                except Exception:
+                    with self._pool_lock:
+                        self._pool_size -= 1
+                    raise
+                self._touch_page(page)
+                return page
+
+            try:
+                page = self._page_pool.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if page is not None:
+                self._touch_page(page)
+                return page
+
+    def _touch_page(self, page):
+        now = time.time()
+        with self._pool_lock:
+            entry = self._page_last_used.get(id(page))
+            if entry is None:
+                self._page_last_used[id(page)] = {'page': page, 'last_used': now}
+            else:
+                entry['last_used'] = now
+        self._update_last_used_time()
+
+    def _release_page(self, page):
+        if page is None:
+            return
+        with self._pool_lock:
+            entry = self._page_last_used.get(id(page))
+            if entry is None:
+                return
+            entry['last_used'] = time.time()
+        self._page_pool.put(page)
+
+    def _drop_page(self, page):
+        if page is None:
+            return
+        with self._pool_lock:
+            entry = self._page_last_used.pop(id(page), None)
+            if entry is not None and self._pool_size > 0:
+                self._pool_size -= 1
+        if self._page is page:
+            self._page = None
+        with self._browser_lock:
+            try:
+                page.close()
+            except Exception as e:
+                logger.debug("[WebSearch] 关闭标签页失败: %s", e)
+        logger.info(f"[WebSearch] 已丢弃异常标签页 (池占用: {self._pool_size}/{self.MAX_POOL_PAGES})")
+
+    @contextlib.contextmanager
+    def _page_slot(self):
+        page = self._acquire_page()
         try:
-            if self._page is None:
+            yield page
+        finally:
+            self._release_page(page)
+
+    def _is_page_alive(self, page=None) -> bool:
+        """检查页面是否仍然可用"""
+        page = self._page if page is None else page
+        try:
+            if page is None:
                 return False
-            _ = self._page.url
-            _ = self._page.driver
+            _ = page.url
+            _ = page.driver
             return True
         except Exception as e:
             logger.debug(f"[WebSearch] 页面连接检查失败: {e}")
             return False
 
-    def _health_check(self) -> bool:
-        if self._page is None or self._browser is None:
+    def _health_check(self, page=None) -> bool:
+        page = self._page if page is None else page
+        if page is None or self._browser is None:
             logger.debug("[WebSearch] 健康检查：无浏览器实例")
             return False
         try:
-            url = self._page.url
+            url = page.url
             if url is None:
                 logger.debug("[WebSearch] 健康检查：url 为 None")
                 return False
-            _ = self._page.driver
+            _ = page.driver
             logger.debug("[WebSearch] 健康检查通过")
             return True
         except AttributeError as e:
@@ -455,16 +561,48 @@ class WebSearch(BaseCell):
                 time.sleep(60)
                 if self._idle_stop_event.is_set():
                     break
-                with self._lock:
-                    if self._page is None:
-                        continue
-                    idle_time = time.time() - self._last_used_time
-                    if idle_time > self.IDLE_TIMEOUT:
-                        logger.info("[WebSearch] 浏览器空闲超时 (%.0f秒)，自动关闭", idle_time)
+                try:
+                    all_idle = self._reclaim_idle_pages()
+                except Exception as e:
+                    logger.debug("[WebSearch] 空闲回收异常: %s", e)
+                    continue
+                if all_idle:
+                    logger.info("[WebSearch] 全部标签页空闲超时，自动关闭浏览器")
+                    with self._lock:
                         self._close_page_internal()
+                    break
         self._idle_timer = threading.Thread(target=_idle_monitor, daemon=True, name="WebSearchIdleMonitor")
         self._idle_timer.start()
         logger.debug("[WebSearch] 空闲监控线程已启动")
+
+    def _reclaim_idle_pages(self) -> bool:
+        pooled = []
+        while True:
+            try:
+                pooled.append(self._page_pool.get_nowait())
+            except queue.Empty:
+                break
+
+        now = time.time()
+        idle_ids = set()
+        kept = []
+        with self._pool_lock:
+            for page in pooled:
+                entry = self._page_last_used.get(id(page))
+                if entry is None or now - entry.get('last_used', 0) > self.IDLE_TIMEOUT:
+                    idle_ids.add(id(page))
+                else:
+                    kept.append(page)
+
+        for page in pooled:
+            if id(page) in idle_ids:
+                logger.info("[WebSearch] 标签页空闲超时，回收")
+                self._drop_page(page)
+        for page in kept:
+            self._page_pool.put(page)
+
+        with self._pool_lock:
+            return self._pool_size <= 0
 
     def _stop_idle_timer(self):
         if self._idle_timer is not None and self._idle_timer.is_alive():
@@ -473,22 +611,37 @@ class WebSearch(BaseCell):
             logger.debug("[WebSearch] 空闲监控线程已停止")
 
     def _close_page_internal(self):
-        if self._page:
-            try:
-                self._page.quit()
-            except Exception as e:
-                logger.debug("[WebSearch] 关闭页面失败: %s", e)
-            finally:
-                self._page = None
-        if self._browser:
-            try:
-                self._browser.quit()
-            except Exception as e:
-                logger.debug("[WebSearch] 关闭浏览器失败: %s", e)
-            finally:
-                self._browser = None
-        self._browser_port = None
-        self._last_used_time = 0
+        with self._browser_lock:
+            drained = []
+            while True:
+                try:
+                    drained.append(self._page_pool.get_nowait())
+                except queue.Empty:
+                    break
+            with self._pool_lock:
+                self._page_last_used.clear()
+                self._pool_size = 0
+            for page in drained:
+                try:
+                    page.close()
+                except Exception as e:
+                    logger.debug("[WebSearch] 关闭标签页失败: %s", e)
+            if self._page:
+                try:
+                    self._page.quit()
+                except Exception as e:
+                    logger.debug("[WebSearch] 关闭页面失败: %s", e)
+                finally:
+                    self._page = None
+            if self._browser:
+                try:
+                    self._browser.quit()
+                except Exception as e:
+                    logger.debug("[WebSearch] 关闭浏览器失败: %s", e)
+                finally:
+                    self._browser = None
+            self._browser_port = None
+            self._last_used_time = 0
 
     def _extract_links_generic(self, page, engine: str):
         """通用链接提取方法，适用于所有搜索引擎"""
@@ -777,6 +930,27 @@ class WebSearch(BaseCell):
                 pass
             return short_url
 
+    def _wait_search_slot(self, engine: str):
+        key = engine or 'auto'
+        capacity = float(self.SEARCH_RATE_LIMIT)
+        interval = float(self.SEARCH_RATE_INTERVAL)
+        while True:
+            with self._token_lock:
+                now = time.time()
+                bucket = self._token_buckets.get(key)
+                if bucket is None:
+                    bucket = [capacity, now]
+                    self._token_buckets[key] = bucket
+                else:
+                    bucket[0] = min(capacity, bucket[0] + (now - bucket[1]) * capacity / interval)
+                    bucket[1] = now
+                if bucket[0] >= 1.0:
+                    bucket[0] -= 1.0
+                    return
+                wait_needed = (1.0 - bucket[0]) * interval / capacity
+            logger.info("[WebSearch:%s] 令牌桶限流，等待 %.2f 秒", key, wait_needed)
+            time.sleep(max(0.01, min(wait_needed, 0.5)))
+
     def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", engine: str = "auto", **kwargs) -> dict:
         """
         用搜索引擎搜索关键词，返回链接列表
@@ -797,15 +971,6 @@ class WebSearch(BaseCell):
         Returns:
             {"success": bool, "results": [...]}
         """
-        import time
-        current_time = time.time()
-        elapsed = current_time - self._last_search_time
-        if elapsed < self._min_search_interval:
-            wait_needed = self._min_search_interval - elapsed
-            logger.info("[WebSearch] 搜索频率限制，需等待 %.1f 秒", wait_needed)
-            time.sleep(wait_needed)
-        self._last_search_time = time.time()
-
         if not keywords or not keywords.strip():
             return {"success": False, "error": "缺少必填参数 'keywords'"}
 
@@ -833,47 +998,70 @@ class WebSearch(BaseCell):
         if cached:
             cached['from_cache'] = True
             return cached
-        
+
         logger.info(f"[WebSearch] 将尝试以下引擎: {engines_to_try}")
 
         last_error = None
-        for idx, engine in enumerate(engines_to_try):
-            try:
-                logger.info(f"[WebSearch] 尝试使用引擎: {engine}")
-                force_recreate = idx > 0
-                result = self._search_with_engine(keywords, max_results, wait_time, time_range, engine, force_recreate_page=force_recreate)
+        for engine in engines_to_try:
+            self._wait_search_slot(engine)
+            logger.info(f"[WebSearch] 尝试使用引擎: {engine}")
+            result = None
+            for attempt in range(2):
+                page = None
+                try:
+                    page = self._acquire_page()
+                    if not self._health_check(page):
+                        logger.info("[WebSearch] 标签页健康检查失败，丢弃后重新取页")
+                        self._drop_page(page)
+                        page = None
+                        continue
+                    result = self._search_with_engine(keywords, max_results, wait_time, time_range, engine, page)
+                except Exception as e:
+                    logger.error(f"[WebSearch] 引擎 {engine} 页面异常 (尝试 {attempt + 1}/2): {e}")
+                    if page is not None:
+                        self._drop_page(page)
+                        page = None
+                    result = {"success": False, "error": str(e), "page_error": True}
 
-                if result.get('success') and result.get('results'):
-                    logger.info(f"[WebSearch] 引擎 {engine} 搜索成功，返回 {len(result['results'])} 条结果")
-                    self._engine_health[engine] = 'green'
-                    result['engine'] = engine
-                    result['tried_engines'] = engines_to_try[:engines_to_try.index(engine) + 1]
-                    self._set_cached_result(keywords, engine, result)
-                    return result
-                else:
-                    logger.warning(f"[WebSearch] 引擎 {engine} 返回空结果或失败: {result.get('error', '未知错误')}")
-                    self._engine_health[engine] = 'red'
-                    last_error = result.get('error', f'{engine} 返回空结果')
+                if result.get('page_error'):
+                    if page is not None:
+                        self._drop_page(page)
+                        page = None
+                    continue
 
-            except Exception as e:
-                logger.error(f"[WebSearch] 引擎 {engine} 异常: {e}")
-                self._engine_health[engine] = 'red'
-                last_error = str(e)
-                continue
-        
+                if page is not None:
+                    self._release_page(page)
+                    page = None
+                break
+
+            result = result or {"success": False, "error": f"{engine} 未获得可用标签页"}
+
+            if result.get('success') and result.get('results'):
+                logger.info(f"[WebSearch] 引擎 {engine} 搜索成功，返回 {len(result['results'])} 条结果")
+                self._set_engine_health(engine, 'green')
+                result.pop('page_error', None)
+                result['engine'] = engine
+                result['tried_engines'] = engines_to_try[:engines_to_try.index(engine) + 1]
+                self._set_cached_result(keywords, engine, result)
+                return result
+
+            logger.warning(f"[WebSearch] 引擎 {engine} 返回空结果或失败: {result.get('error', '未知错误')}")
+            self._set_engine_health(engine, 'red')
+            last_error = result.get('error', f'{engine} 返回空结果')
+
         return {
-            "success": False, 
+            "success": False,
             "error": f"所有搜索引擎均失败，最后错误: {last_error}",
             "tried_engines": engines_to_try,
-            "engine_health": self._engine_health.copy()
+            "engine_health": self.get_engine_health()
         }
 
-    def _search_with_engine(self, keywords: str, max_results: int, wait_time: int, time_range: str, engine: str, force_recreate_page: bool = False) -> dict:
+    def _search_with_engine(self, keywords: str, max_results: int, wait_time: int, time_range: str, engine: str, page) -> dict:
         """
         使用指定引擎执行搜索
 
         Args:
-            force_recreate_page: 是否强制重建页面（引擎切换时需要）
+            page: 页池分配的标签页
 
         Returns:
             {"success": bool, "results": [...], "error": str}
@@ -885,7 +1073,6 @@ class WebSearch(BaseCell):
             if not clean_keywords:
                 clean_keywords = keywords
 
-            page = self._get_or_create_page(force_recreate=force_recreate_page)
             search_query = clean_keywords
             encoded_query = urllib.parse.quote(search_query)
 
@@ -1045,7 +1232,8 @@ class WebSearch(BaseCell):
             }
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.warning(f"[WebSearch:{engine}] 搜索异常，标签页将被丢弃: {e}")
+            return {"success": False, "error": str(e), "page_error": True}
 
     def _cmd_close(self) -> dict:
         """关闭浏览器，释放资源"""

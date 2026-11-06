@@ -94,6 +94,11 @@ def plan_block_reason(tool_name: str, arguments: Any) -> Optional[str]:
         return None
 
     if tool_name == "memory":
+        if sub == "profile":
+            action = str(args.get("subcommand") or "get").strip().lower()
+            if action == "get":
+                return None
+            return f"{_BLOCK_PREFIX}：Plan 模式禁止写入 profile（含 Plan 习惯），请把结论写进计划。"
         if sub in PLAN_BLACKLISTED_MEMORY_CMDS:
             return f"{_BLOCK_PREFIX}：Plan 模式禁止写入记忆，请把结论写进计划。"
         if not sub:
@@ -114,8 +119,62 @@ edit、file(fs create/delete/mkdir)、记忆写入等会被拒绝。
 </plan_mode>"""
 
 
-def plan_injection() -> str:
-    return _PLAN_INJECTION
+PLAN_HABIT_MEMORY_KEY = "profile:plan_habit"
+
+
+def _manager_memory():
+    """主记忆实例（AgentLoopManager 持有，子 Agent 同进程可用）"""
+    try:
+        from app.agent.loop.agent_loop_manager import AgentLoopManager
+        return getattr(AgentLoopManager.get_instance(), "_three_layer_memory", None)
+    except Exception:
+        return None
+
+
+def get_plan_habit(memory=None) -> str:
+    """自定义 Plan 习惯（记忆库 profile:plan_habit）"""
+    mem = memory if memory is not None else _manager_memory()
+    repo = getattr(mem, "repository", None) if mem else None
+    if repo is None:
+        return ""
+    try:
+        rec = repo.get_by_memory_key(PLAN_HABIT_MEMORY_KEY, schema_type="profile")
+        return (rec.get("content") or "").strip() if rec else ""
+    except Exception:
+        return ""
+
+
+def set_plan_habit(value: str, memory=None) -> bool:
+    """写 Plan 习惯到记忆库；空值即清除"""
+    mem = memory if memory is not None else _manager_memory()
+    if mem is None:
+        return False
+    value = (value or "").strip()
+    try:
+        if value:
+            mem.upsert_memory(
+                title="Plan 自定义习惯",
+                content=value,
+                category="user_info",
+                schema_type="profile",
+                memory_key=PLAN_HABIT_MEMORY_KEY,
+                metadata={"field": "plan_habit"},
+                merge_strategy="replace",
+                allow_protected=True,
+            )
+        else:
+            mem.delete_memory(memory_key=PLAN_HABIT_MEMORY_KEY, allow_protected=True)
+        return True
+    except Exception:
+        return False
+
+
+def plan_injection(habit: str = "") -> str:
+    text = _PLAN_INJECTION
+    habit = (habit or "").strip()
+    if habit:
+        text = f"{text}\n<user_habit>\n{habit}\n</user_habit>"
+    return text
 
 
 _RUN_INJECTION = """<run_mode>
