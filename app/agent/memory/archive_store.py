@@ -134,11 +134,12 @@ class ArchiveStore:
 
     @staticmethod
     def _message_key(msg: Dict) -> tuple:
-        """消息级去重键：role + content + tool_call_id + tool_calls"""
+        """消息级去重键：role + content + timestamp + tool_call_id + tool_calls"""
         tool_calls = msg.get("tool_calls")
         return (
             msg.get("role", ""),
             msg.get("content"),
+            msg.get("timestamp", ""),
             msg.get("tool_call_id", ""),
             json.dumps(tool_calls, ensure_ascii=False, sort_keys=True) if tool_calls else None,
         )

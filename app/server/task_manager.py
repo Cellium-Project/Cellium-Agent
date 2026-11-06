@@ -157,6 +157,7 @@ class BackgroundTaskManager:
         memory,
         three_layer_memory=None,
         system_injection: Optional[str] = None,
+        mode: Optional[str] = None,
     ) -> bool:
         """
         启动后台任务
@@ -217,6 +218,7 @@ class BackgroundTaskManager:
                 memory=memory,
                 queue=queue,
                 system_injection=system_injection,
+                mode=mode,
             )
         )
         self._tasks[session_id] = task
@@ -232,6 +234,7 @@ class BackgroundTaskManager:
         memory,
         queue: asyncio.Queue,
         system_injection: Optional[str] = None,
+        mode: Optional[str] = None,
     ):
         """
         运行 Agent 循环（后台任务）
@@ -261,6 +264,7 @@ class BackgroundTaskManager:
                 memory=memory,
                 session_id=session_id,
                 system_injection=system_injection,
+                mode=mode,
             ):
                 for norm in normalizer.feed(raw_event):
                     if terminal_hit:
@@ -327,9 +331,10 @@ class BackgroundTaskManager:
                 from app.agent.loop.session_store import get_session_store
                 store = get_session_store()
                 store.update_message_count(session_id, delta=1)
-            self._auto_continue_if_supplement(session_id, agent_loop, memory, system_injection)
+            self._auto_continue_if_supplement(session_id, agent_loop, memory, system_injection, mode)
 
-    def _auto_continue_if_supplement(self, session_id: str, agent_loop, memory, system_injection=None):
+    def _auto_continue_if_supplement(self, session_id: str, agent_loop, memory, system_injection=None,
+                                     mode: Optional[str] = None):
         """任务自然结束后若有遗留补充消息，自动触发新任务继续"""
         try:
             info = self._info.get(session_id)
@@ -348,7 +353,7 @@ class BackgroundTaskManager:
                 len(leftover), session_id,
             )
             task = asyncio.create_task(
-                self._run_auto_continue(session_id, agent_loop, content, memory, leftover, system_injection)
+                self._run_auto_continue(session_id, agent_loop, content, memory, leftover, system_injection, mode)
             )
             self._auto_tasks[session_id] = task
         except Exception as e:
@@ -362,6 +367,7 @@ class BackgroundTaskManager:
         memory,
         leftover: List[Dict[str, Any]],
         system_injection=None,
+        mode: Optional[str] = None,
     ):
         try:
             self._auto_tasks.pop(session_id, None)
@@ -372,6 +378,7 @@ class BackgroundTaskManager:
                 user_input=user_input,
                 memory=memory,
                 system_injection=system_injection,
+                mode=mode,
             )
             if not started:
                 self._requeue_supplement(session_id, leftover)

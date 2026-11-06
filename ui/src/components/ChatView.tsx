@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChat } from '../hooks/useChat';
 import { useAppStore } from '../stores/appStore';
+import { API, fetchJSON, postJSON } from '../utils/api';
 import { Icons } from './Icons';
 import { ChatMessage } from './ChatMessage';
 import type { Attachment, Message } from '../types';
@@ -137,7 +138,42 @@ export const ChatView: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming } = useChat();
-  const { statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages, toggleMobileSidebar } = useAppStore();
+  const {
+    statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages,
+    toggleMobileSidebar, agentMode, setAgentMode,
+  } = useAppStore();
+  const planMode = agentMode === 'plan';
+
+  // 模式实时同步：初始拉取 + 订阅后端广播（TUI/WebUI 任一端口切换都会推送）
+  useEffect(() => {
+    if (!currentSessionId) return;
+    fetchJSON<{ mode: string }>(API.sessionMode(currentSessionId))
+      .then(r => setAgentMode(r.mode === 'plan' ? 'plan' : 'run'))
+      .catch(() => {});
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(
+      `${protocol}//${window.location.host}/api/session-events/ws?session_id=${encodeURIComponent(currentSessionId)}`
+    );
+    const heartbeat = window.setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+    }, 25000);
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'subscribe', session_id: currentSessionId }));
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'chat_event' && msg.data?.type === 'mode_changed') {
+          setAgentMode(msg.data.mode === 'plan' ? 'plan' : 'run');
+        }
+      } catch {
+        // 非 JSON 消息忽略
+      }
+    };
+    return () => {
+      window.clearInterval(heartbeat);
+      ws.close();
+    };
+  }, [currentSessionId, setAgentMode]);
 
   const handleFileSelect = () => {
     fileInputRef.current?.click();
@@ -187,7 +223,15 @@ export const ChatView: React.FC = () => {
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
+  const toggleMode = () => {
+    const next = planMode ? 'run' : 'plan';
+    setAgentMode(next);
+    const sid = currentSessionId || 'default';
+    postJSON(API.sessionMode(sid), { mode: next }).catch(() => {});
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Tab' && e.shiftKey) { e.preventDefault(); toggleMode(); return; }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
@@ -205,6 +249,13 @@ export const ChatView: React.FC = () => {
         <h1 className="chat-header-title">{t('chat.title')}</h1>
         <span className={`status ${statusOnline ? '' : 'error'}`}>{statusOnline ? t('common.online') : t('common.offline')}</span>
         <div className="chat-header-actions">
+          <button
+            className={`btn-mode mobile-only${planMode ? ' plan' : ''}`}
+            onClick={toggleMode}
+            title={planMode ? t('chat.modePlanTitle') : t('chat.modeRunTitle')}
+          >
+            {planMode ? t('chat.modePlan') : t('chat.modeRun')}
+          </button>
           <button
             className="icon-btn mobile-only"
             onClick={toggleMobileSidebar}
@@ -272,6 +323,13 @@ export const ChatView: React.FC = () => {
             rows={1}
           />
           <div className="input-actions">
+            <button
+              className={`btn-mode mode-desktop${planMode ? ' plan' : ''}`}
+              onClick={toggleMode}
+              title={planMode ? t('chat.modePlanTitle') : t('chat.modeRunTitle')}
+            >
+              {planMode ? t('chat.modePlan') : t('chat.modeRun')}
+            </button>
             <button
               className="btn-upload"
               onClick={handleFileSelect}

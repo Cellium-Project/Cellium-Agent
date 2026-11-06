@@ -23,6 +23,9 @@ interface AppState {
   streamingMessage: Message | null;
   hasRunningTask: boolean;
 
+  // Agent mode (plan / run)
+  agentMode: 'run' | 'plan';
+
   // Models
   savedModels: ModelConfig[];
   currentModelId: string | null;
@@ -55,6 +58,7 @@ interface AppState {
   setIsStreaming: (streaming: boolean) => void;
   setIsLoadingMessages: (loading: boolean) => void;
   setHasRunningTask: (running: boolean) => void;
+  setAgentMode: (mode: 'run' | 'plan') => void;
 
   setSavedModels: (models: ModelConfig[]) => void;
   setCurrentModelId: (id: string | null) => void;
@@ -90,7 +94,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   historyOffset: 0,
   isStreaming: false,
   streamingMessage: null,
-  hasRunningTask: false, 
+  hasRunningTask: false,
+  agentMode: 'run',
   savedModels: [],
   currentModelId: null,
   sidebarCollapsed: false,
@@ -132,6 +137,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setIsLoadingMessages: (loading) => set({ isLoadingMessages: loading }),
   setHasRunningTask: (running) => set({ hasRunningTask: running }),
+  setAgentMode: (mode) => set({ agentMode: mode }),
 
   setSavedModels: (models) => set({ savedModels: models }),
   setCurrentModelId: (id) => set({ currentModelId: id }),

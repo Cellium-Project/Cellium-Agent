@@ -203,6 +203,7 @@ export function useChat() {
     fetchSessions,
     checkTaskStatus,
     stopTask,
+    setAgentMode,
   } = useAppStore();
 
   function buildStreamingContext() {
@@ -326,6 +327,11 @@ export function useChat() {
       }
     }
     switch (event.type) {
+      case 'mode_changed': {
+        // 会话模式由后端广播，TUI/WebUI 实时同步
+        setAgentMode(event.mode === 'plan' ? 'plan' : 'run');
+        return;
+      }
       case 'thinking':
       case 'thinking_streaming': {
         // 只显示来自 LLM reasoning 的 thinking，过滤系统默认消息
@@ -597,7 +603,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((

@@ -28,6 +28,17 @@ from app.core.interface.base_cell import BaseCell
 logger = logging.getLogger(__name__)
 
 
+def _resolve_parent_mode(session_id: str = None) -> str:
+    """子 Agent 继承父会话的 Plan/Run 模式"""
+    if not session_id:
+        return "run"
+    try:
+        from app.server.session_mode import get_mode
+        return get_mode(session_id)
+    except Exception:
+        return "run"
+
+
 def _resolve_engine_clone():
     from app.core.di.container import get_container
     from app.agent.llm.engine import OpenAICompatibleEngine, BaseLLMEngine
@@ -113,8 +124,7 @@ class SubAgent(BaseCell):
         return "sub_agent"
 
     def _build_system_injection(self, persona: str, constraints: str, tools: List[str]) -> str:
-        parts = []
-        parts.append("[子 Agent 任务身份] 你是主 Agent 委派的子 Agent，负责完成指定子任务。")
+        parts = ["[子 Agent 任务身份] 你是主 Agent 委派的子 Agent，只完成指定子任务，不要请求主 Agent 协助。"]
         if persona and persona.strip():
             parts.append(f"[人格设定]\n{persona.strip()}")
         if constraints and constraints.strip():
@@ -123,76 +133,20 @@ class SubAgent(BaseCell):
         effective_tools = list(dict.fromkeys(list(tools or []) + list(self.DEFAULT_AUTO_TOOLS)))
         tool_rules = self._extract_tool_rules(effective_tools)
         if tool_rules:
-            parts.append(f"[工具使用规则]\n{tool_rules}")
+            parts.append(f"[工具规则]\n{tool_rules}")
 
-        parts.append("[协作要求]\n- 独立完成子任务，不要请求主 Agent 协助\n- 完成任务后给出简洁的结论总结")
+        parts.append("[输出要求] 给结论（发现+判断）、依据（文件:行）与建议；不要复述无关内容。")
         return "\n\n".join(parts)
 
     _TOOL_RULE_FRAGMENTS = {
-        "read": (
-            "**read 工具** - 读取文件内容\n"
-            "| 参数 | 用途 |\n"
-            "| file_path | 文件路径（必填） |\n"
-            "| offset | 起始行号 |\n"
-            "| limit | 读取行数 |\n"
-            "| target | 搜索字符串，读取附近内容 |\n"
-            "| needle | 精准匹配字符串，返回 ±3 行上下文 + 行号 |\n"
-            "铁律: 读取文件必须用 read，禁止用 shell(cat/type/Get-Content)；大文件用 offset/limit 分页；编辑前用 needle 精准定位"
-        ),
-        "edit": (
-            "**edit 工具** - 精确字符串替换\n"
-            "| 参数 | 用途 |\n"
-            "| file_path | 文件路径（必填） |\n"
-            "| old_string | 要替换的文本（必填） |\n"
-            "| new_string | 替换后的文本（必填） |\n"
-            "| replace_all | 是否替换所有出现 |\n"
-            "铁律: 编辑前必须先 read；old_string 必须唯一（除非 replace_all）；禁止用 shell 修改文件"
-        ),
-        "grep": (
-            "**grep 工具** - 搜索文件内容\n"
-            "| 参数 | 用途 |\n"
-            "| pattern | 正则表达式（必填） |\n"
-            "| path | 搜索目录 |\n"
-            "| glob | 文件名过滤 |\n"
-            "| output_mode | content/files_with_matches/count |\n"
-            "| head_limit | 结果上限 |\n"
-            "铁律: 搜索内容必须用 grep，禁止用 shell grep/findstr；先 files_with_matches 找文件，再 content 看细节"
-        ),
-        "file": (
-            "**file 工具** - 文件系统操作\n"
-            "fs 子命令: mkdir(创建目录, parents=true 建父目录) / delete(删除, 非空目录需 recursive=true) / "
-            "exists(检查存在) / create(批量创建文件, files 为 dict[str,str])\n"
-            "insight 子命令: structure(查看结构) / symbol(搜索符号, 必填 query)\n"
-            "铁律: 文件操作优先用 file，禁止用 shell 直接操作"
-        ),
-        "shell": (
-            "**shell 工具** - 执行命令\n"
-            "决策: Python/脚本命令用 argv(数组)；需要 pipe/&&/>/通配符才用 cmd\n"
-            "| 参数 | 适用场景 | 示例 |\n"
-            "| argv | Python、git、单命令 | [\"python\",\"-c\",\"print(1)\"] |\n"
-            "| cmd | pipe、&&、重定向 | \"python a.py | grep ok\" |\n"
-            "铁律: 执行 Python 必须用 argv；argv 无引号解析问题；只有 shell 特性才用 cmd"
-        ),
-        "ls": (
-            "**ls 工具** - 列出目录内容\n"
-            "| 参数 | 用途 |\n"
-            "| path | 目录路径 |\n"
-            "| ignore | 忽略模式数组 |\n"
-            "铁律: 列目录用 ls，禁止用 shell(ls/dir)；隐藏文件自动跳过"
-        ),
-        "glob": (
-            "**glob 工具** - 按文件名模式搜索\n"
-            "| 参数 | 用途 |\n"
-            "| pattern | glob 模式（必填，如 **/*.py） |\n"
-            "| path | 搜索根目录 |\n"
-            "| limit | 结果上限 |\n"
-            "铁律: 按文件名找文件用 glob；搜内容用 grep 不是 glob"
-        ),
-        "memory": (
-            "**memory 工具** - 长期记忆\n"
-            "命令: search(搜索记忆) / store(保存记忆) / profile(管理名字/称呼/人格) / read_archive(读存档)\n"
-            "铁律: 上下文缺失时先 search 再回复；关联问题时优先检索记忆"
-        ),
+        "read": "read：读文件用 read（禁止 shell cat/type）；大文件用 offset/limit；定位用 needle",
+        "edit": "edit：先 read 再 edit；old_string 必须唯一（除非 replace_all）",
+        "grep": "grep：搜内容用 grep（禁止 shell grep/findstr）；先 files_with_matches 再 content",
+        "file": "file：fs=mkdir/delete/exists/create；insight=structure/symbol",
+        "shell": "shell：Python/脚本用 argv；需要管道/重定向才用 cmd",
+        "ls": "ls：列目录用 ls（禁止 shell ls/dir）",
+        "glob": "glob：按文件名找文件用 glob，搜内容用 grep",
+        "memory": "memory：上下文缺失先 search；store/profile/read_archive 按需用",
     }
 
     def _extract_tool_rules(self, tools: List[str]) -> str:
@@ -204,7 +158,7 @@ class SubAgent(BaseCell):
             rule = self._TOOL_RULE_FRAGMENTS.get(name)
             if rule:
                 selected.append(rule)
-        return "\n\n".join(selected)
+        return "\n".join(selected)
 
     DEFAULT_AUTO_TOOLS = ("read", "ls", "glob", "grep")
 
@@ -285,13 +239,14 @@ class SubAgent(BaseCell):
 
         return result
 
-    async def _run_one(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+    async def _run_one(self, spec: Dict[str, Any], parent_session_id: str = None) -> Dict[str, Any]:
         """运行单个子 Agent"""
         name = str(spec.get("name", f"sub_{uuid.uuid4().hex[:6]}"))
         task = str(spec.get("task", "")).strip()
         if not task:
             return {"name": name, "success": False, "error": "task 不能为空"}
 
+        mode = _resolve_parent_mode(parent_session_id)
         tools_list = self._allowed_tool_names(spec.get("tools"))
         persona = str(spec.get("persona", "") or "")
         constraints = str(spec.get("constraints", "") or "")
@@ -427,7 +382,9 @@ class SubAgent(BaseCell):
 
         result = {"type": "error", "content": "", "iterations": 0, "tool_traces": []}
         try:
-            async for event in loop.run_stream(task, session_id=session_id, system_injection=system_injection):
+            async for event in loop.run_stream(
+                task, session_id=session_id, system_injection=system_injection, mode=mode,
+            ):
                 if event.get("type") == "done":
                     result = event
                 elif event.get("type") in {"stopped", "control_loop_stop", "heuristic_stop"}:
@@ -490,6 +447,7 @@ class SubAgent(BaseCell):
         self,
         tasks: List[Dict[str, Any]],
         timeout: float = 0,
+        session_id: str = None,
     ) -> Dict[str, Any]:
         """
         并行执行子 Agent（单任务传单元素数组），每个子 Agent 可独立定义工具/人格/约束
@@ -524,7 +482,7 @@ class SubAgent(BaseCell):
 
         async def _run_all():
             return await asyncio.gather(
-                *[self._run_one(s) for s in specs],
+                *[self._run_one(s, parent_session_id=session_id) for s in specs],
                 return_exceptions=True,
             )
 

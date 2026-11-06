@@ -17,6 +17,7 @@ export const API = {
   sessionDelete: (sessionId: string) => `${API_BASE}/session/${sessionId}`,
   sessionRename: (sessionId: string) => `${API_BASE}/session/${sessionId}/title`,
   sessionSaveMessage: (sessionId: string) => `${API_BASE}/session/${sessionId}/save-message`,
+  sessionMode: (sessionId: string) => `${API_BASE}/session/${sessionId}/mode`,
 
   // Config
   configStatus: `${API_BASE}/config/status`,

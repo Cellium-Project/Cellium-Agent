@@ -84,12 +84,20 @@ class TestArchiveMessageDedup(ArchiveDirTest):
         self.assertEqual(id1, id2, "相同消息应幂等返回同一 id")
         self.assertEqual(len(arch.get_by_session("s1", 100)), 1, "相同消息不应重复归档")
 
-    def test_same_content_different_timestamp_dedup(self):
+    def test_same_content_repeated_input_kept(self):
+        """用户重复发送同一句话必须各自存档，否则历史里的用户输入会丢"""
         arch = self._archive()
         arch.append_messages("s1", [{"role": "user", "content": "你好", "timestamp": "t1"}])
         arch.append_messages("s1", [{"role": "user", "content": "你好", "timestamp": "t2"}])
-        self.assertEqual(len(arch.get_by_session("s1", 100)), 1,
-                         "去重键不含 timestamp，相同内容应合并")
+        self.assertEqual(len(arch.get_by_session("s1", 100)), 2,
+                         "不同 timestamp 的相同内容应分别保留")
+
+    def test_same_round_repersist_still_dedup(self):
+        arch = self._archive()
+        msgs = [{"role": "user", "content": "你好", "timestamp": "t1"}]
+        arch.append_messages("s1", msgs)
+        arch.append_messages("s1", list(msgs))
+        self.assertEqual(len(arch.get_by_session("s1", 100)), 1, "同一轮重复归档仍应幂等")
 
     def test_different_messages_kept(self):
         arch = self._archive()

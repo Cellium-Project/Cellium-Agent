@@ -30,6 +30,11 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = "default"
     last_event_id: int = 0
     attachments: Optional[List[dict]] = []
+    mode: Optional[str] = None
+
+
+class ModeRequest(BaseModel):
+    mode: str
 
 
 class SupplementRequest(BaseModel):
@@ -197,11 +202,14 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 attachment_info += f"  本地路径: {local_path}\n"
         user_input = user_input + attachment_info
 
+    from app.server.session_mode import get_mode, set_mode
+    mode = set_mode(session_id, request.mode) if request.mode else get_mode(session_id)
     started = await task_mgr.start_task(
         session_id=session_id,
         agent_loop=agent_loop,
         user_input=user_input,
         memory=session_memory,
+        mode=mode,
     )
 
     if not started:
@@ -269,11 +277,13 @@ async def supplement_chat(request: SupplementRequest):
         if agent_loop is None:
             return {"status": "error", "error": "Agent 未初始化", "session_id": session_id}
         session_info = get_session_manager().get_or_create(session_id)
+        from app.server.session_mode import get_mode
         started = await task_mgr.start_task(
             session_id=session_id,
             agent_loop=agent_loop,
             user_input=message,
             memory=session_info.memory,
+            mode=get_mode(session_id),
         )
         if not started:
             re_queued = task_mgr.enqueue_supplement_message(session_id, {
@@ -987,6 +997,20 @@ async def rename_session(session_id: str, req: RenameSessionRequest):
         return {"error": "Session not found", "session_id": session_id}
     store.set_session_title(session_id, req.title)
     return {"status": "ok", "session_id": session_id, "title": req.title}
+
+
+@router.get("/session/{session_id}/mode")
+async def get_session_mode(session_id: str):
+    from app.server.session_mode import get_mode
+    return {"session_id": session_id, "mode": get_mode(session_id)}
+
+
+@router.post("/session/{session_id}/mode")
+async def update_session_mode(session_id: str, req: ModeRequest):
+    from app.server.session_mode import set_mode
+    mode = set_mode(session_id, req.mode)
+    logger.info("[chat] 会话模式切换 | session=%s | mode=%s", session_id, mode)
+    return {"status": "ok", "session_id": session_id, "mode": mode}
 
 
 @router.post("/session/{session_id}/save-message")

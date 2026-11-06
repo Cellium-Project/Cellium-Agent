@@ -36,7 +36,11 @@
   --accent-danger-hover: #b31412;
   --accent-success: #188038;
   --accent-warning: #f9ab00;
-  
+
+  /* Run 模式标识色：与 logo 中间薄荷绿同色系，浅色主题下调深保证可读 */
+  --mode-run: #0b8a63;
+  --mode-plan: #7c5cff;
+
   /* Shadow */
   --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.1);
   --shadow-md: 0 2px 6px rgba(60, 64, 67, 0.15);
@@ -165,6 +169,10 @@
   --accent-danger-hover: #ff7b72;
   --accent-success: #3fb950;
   --accent-warning: #d29922;
+
+  /* Run 模式标识色：logo 中间的薄荷绿 */
+  --mode-run: #2ff0ab;
+  --mode-plan: #a78bfa;
 
   /* Shadow */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -450,6 +458,35 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.btn-mode {
+  background: var(--bg-tertiary);
+  border: none;
+  color: var(--mode-run);
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-mode.plan {
+  color: var(--mode-plan);
+}
+
+.btn-mode:hover {
+  background: var(--bg-hover);
+  color: var(--mode-run);
+}
+
+.btn-mode.plan:hover {
+  color: var(--mode-plan);
+}
+
+
 
 /* 加载动画 */
 @keyframes spin {

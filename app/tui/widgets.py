@@ -532,12 +532,126 @@ LOGO_INDEX_B85 = (
 class LogoImage(Static):
     """终端 Logo"""
     ALLOW_SELECT = False
+    ANIM_FPS = 40
+    ANIM_DURATION = 0.32
+    SWEEP_SPREAD = 5
+    ANIM_KICK = 0.18
+    RIM_STRENGTH = 0.45
 
     def __init__(self, width=18):
         super().__init__("")
         self.add_class("logo")
         self._width = width
         self._cached = None
+        self._plan = False
+        self._mix = 0.0
+        self._anim_from = 0.0
+        self._anim_timer = None
+        self._anim_start = 0.0
+
+    def set_plan(self, plan, animate=True):
+        """Plan 模式 logo"""
+        plan = bool(plan)
+        if plan == self._plan:
+            return
+        self._plan = plan
+        if animate:
+            self._start_anim()
+            return
+        self._mix = 1.0 if plan else 0.0
+        self._cached = None
+        self.refresh()
+
+    def on_unmount(self):
+        self._stop_anim()
+
+    def _start_anim(self):
+        self._stop_anim()
+        import time
+        target = 1.0 if self._plan else 0.0
+        self._mix = self._mix + (target - self._mix) * self.ANIM_KICK
+        self._anim_from = self._mix
+        self._cached = None
+        self.refresh()
+        self._anim_start = time.monotonic()
+        try:
+            self._anim_timer = self.set_interval(1 / self.ANIM_FPS, self._tick_anim)
+        except Exception:
+            self._mix = 1.0 if self._plan else 0.0
+            self._cached = None
+            self.refresh()
+
+    def _stop_anim(self):
+        if self._anim_timer is not None:
+            try:
+                self._anim_timer.stop()
+            except Exception:
+                pass
+            self._anim_timer = None
+
+    def _tick_anim(self):
+        import time
+        p = min(1.0, (time.monotonic() - self._anim_start) / self.ANIM_DURATION)
+        eased = 1 - (1 - p) ** 2
+        target = 1.0 if self._plan else 0.0
+        self._mix = self._anim_from + (target - self._anim_from) * eased
+        self._cached = None
+        self.refresh()
+        if p >= 1.0:
+            self._mix = target
+            self._stop_anim()
+
+    @classmethod
+    def _sweep_factor(cls, mix, x, width):
+        spread = cls.SWEEP_SPREAD
+        center = (width - 1) / 2
+        dist = abs(x - center)
+        return max(0.0, min(1.0, (mix * (center + spread) - dist) / spread))
+
+    @staticmethod
+    def _rim(k):
+        if k <= 0.0 or k >= 1.0:
+            return 0.0
+        return 4.0 * k * (1.0 - k)
+
+    @staticmethod
+    def _brighten(pixel, amount):
+        if amount <= 0:
+            return pixel
+        r, g, b, a = pixel
+        return (
+            min(255, round(r + (255 - r) * amount)),
+            min(255, round(g + (255 - g) * amount)),
+            min(255, round(b + (255 - b) * amount)),
+            a,
+        )
+
+    @staticmethod
+    def _blend(a, b, k):
+        if k <= 0 or a == b:
+            return a
+        if k >= 1:
+            return b
+        return (
+            round(a[0] + (b[0] - a[0]) * k),
+            round(a[1] + (b[1] - a[1]) * k),
+            round(a[2] + (b[2] - a[2]) * k),
+            a[3],
+        )
+
+    @staticmethod
+    def _plan_color(pixel):
+        import colorsys
+        r, g, b, a = pixel
+        if a < 16:
+            return pixel
+        h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+        if not 70 <= h * 360 <= 190:
+            return pixel
+        s2 = min(0.70, s * 0.9)
+        l2 = min(1.0, l * 0.9 + 0.12)
+        r2, g2, b2 = colorsys.hls_to_rgb(258 / 360, l2, s2)
+        return (round(r2 * 255), round(g2 * 255), round(b2 * 255), a)
 
     def _render_pixels(self):
         try:
@@ -560,6 +674,14 @@ class LogoImage(Static):
                     top = LOGO_PALETTE[index[off]]
                     bot = LOGO_PALETTE[index[off + 1]]
                     off += 2
+                    k = self._sweep_factor(self._mix, _x, w)
+                    if k > 0:
+                        top = self._blend(top, self._plan_color(top), k)
+                        bot = self._blend(bot, self._plan_color(bot), k)
+                        rim = self._rim(k) * self.RIM_STRENGTH
+                        if rim > 0:
+                            top = self._brighten(top, rim)
+                            bot = self._brighten(bot, rim)
                     row.append((top, bot))
                 cells.append(row)
             return cells

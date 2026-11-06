@@ -286,10 +286,10 @@ class TestSubAgentComponent(unittest.TestCase):
     def test_tools_rule_extraction(self):
         c = SubAgent()
         rules = c._extract_tool_rules(["read", "config", "ls"])
-        self.assertIn("**read 工具**", rules)
-        self.assertIn("**ls 工具**", rules)
-        self.assertNotIn("**config 工具**", rules, "config 已从工具铁律移除")
-        self.assertNotIn("**shell 工具**", rules, "未授权工具不注入铁律")
+        self.assertIn("read：", rules)
+        self.assertIn("ls：", rules)
+        self.assertNotIn("config", rules, "config 已从工具铁律移除")
+        self.assertNotIn("shell：", rules, "未授权工具不注入铁律")
 
     def test_normalize_tasks(self):
         c = SubAgent()
@@ -312,8 +312,10 @@ class TestSubAgentComponent(unittest.TestCase):
         self.assertIn("[子 Agent 任务身份]", inj)
         self.assertIn("你是审查专家", inj)
         self.assertIn("只读", inj)
-        self.assertIn("**read 工具**", inj)
-        self.assertIn("**grep 工具**", inj)
+        self.assertIn("read：", inj)
+        self.assertIn("grep：", inj)
+        self.assertIn("[输出要求]", inj)
+        self.assertLess(len(inj), 400, "子 Agent 提示词应保持精简")
 
     def test_help_list_status_cancel(self):
         c = SubAgent()
@@ -492,11 +494,120 @@ class TestSubAgentIsolation(unittest.TestCase):
         self.assertNotIn("你是用户的交互式桌面 AI 助手", sys_prompt)
         # 子 Agent 身份和工具铁律注入
         self.assertIn("[子 Agent 任务身份]", sys_prompt)
-        self.assertIn("**read 工具**", sys_prompt)
-        self.assertIn("**ls 工具**", sys_prompt)
+        self.assertIn("read：", sys_prompt)
+        self.assertIn("ls：", sys_prompt)
         # 未授权工具不注入
-        self.assertNotIn("**shell 工具**", sys_prompt)
-        self.assertNotIn("**edit 工具**", sys_prompt)
+        self.assertNotIn("shell：", sys_prompt)
+        self.assertNotIn("edit：", sys_prompt)
+
+
+class _RecordingEngine:
+    """记录可用工具，先调用 edit 再回复"""
+
+    def __init__(self):
+        self.call_count = 0
+        self.visible_tools = None
+
+    async def chat(self, messages, tools=None, **kwargs):
+        self.call_count += 1
+        if self.call_count == 1:
+            self.visible_tools = [d["function"]["name"] for d in (tools or [])]
+            return MockResponse(
+                content="先改文件",
+                tool_calls=[MockToolCall("edit", {"file_path": "x.py", "old_string": "a", "new_string": "b"}, "c1")],
+                finish_reason="tool_calls",
+            )
+        return MockResponse(content="子任务完成", finish_reason="stop")
+
+    @property
+    def model_info(self):
+        from app.agent.llm.engine import ModelInfo
+        return ModelInfo(8192, 4096, True)
+
+    @property
+    def context_window(self):
+        return 8192
+
+    async def health_check(self):
+        return True
+
+    async def close(self):
+        pass
+
+
+class TestPlanModeInheritance(unittest.TestCase):
+    """子 Agent 必须继承父会话 Plan 权限"""
+
+    def _setup(self):
+        executed = []
+        engine = _RecordingEngine()
+
+        def collect(self, allowed_names):
+            out = {}
+            for n in ("read", "edit"):
+                if n not in allowed_names:
+                    continue
+                tool = FakeTool(n)
+                if n == "edit":
+                    def _exec(args, session_id=None, platform_context=None):
+                        executed.append("edit")
+                        return {"success": True}
+                    tool.execute_with_context = _exec
+                out[n] = tool
+            return out
+
+        c = setup_subagent(lambda: engine, tool_collect=collect)
+        return c, engine, executed
+
+    def test_parallel_accepts_session_id(self):
+        import inspect
+        params = inspect.signature(SubAgent._cmd_parallel).parameters
+        self.assertIn("session_id", params, "适配层需要 session_id 才能继承父会话模式")
+
+    def test_plan_blocks_edit_in_subagent(self):
+        from app.server.session_mode import set_mode
+        c, engine, executed = self._setup()
+        set_mode("parent_plan_mode", "plan", broadcast=False)
+
+        r = call_cmd(lambda: c._cmd_parallel(
+            tasks=[{"name": "p", "task": "只读调查", "tools": ["edit", "read"]}],
+            session_id="parent_plan_mode",
+        ))
+        item = r["results"][0]
+        self.assertNotIn("edit", engine.visible_tools or [], "Plan 模式下 edit 不应下发")
+        self.assertNotIn("edit", executed, "Plan 模式下 edit 不应真正执行")
+        traces = item.get("tool_traces") or []
+        self.assertTrue(
+            any("Plan 模式禁止" in str(t.get("result", {})) for t in traces),
+            f"应返回拦截原因: {traces}",
+        )
+
+    def test_adapter_passes_parent_session(self):
+        """真实链路：CellToolAdapter 必须把父会话 id 传到 _cmd_parallel"""
+        from app.core.util.cell_tool_adapter import CellToolAdapter
+        from app.server.session_mode import set_mode
+
+        c, _, executed = self._setup()
+        set_mode("parent_adapter_plan", "plan", broadcast=False)
+        adapter = CellToolAdapter(c)
+        adapter.execute_with_context(
+            {"command": "parallel", "tasks": [{"name": "p", "task": "调查", "tools": ["edit", "read"]}]},
+            session_id="parent_adapter_plan",
+        )
+        self.assertNotIn("edit", executed, "适配层未传 session_id 会导致子 Agent 越权")
+
+    def test_run_allows_edit_in_subagent(self):
+        from app.server.session_mode import set_mode
+        c, engine, executed = self._setup()
+        set_mode("parent_run_mode", "run", broadcast=False)
+
+        r = call_cmd(lambda: c._cmd_parallel(
+            tasks=[{"name": "p", "task": "改文件", "tools": ["edit", "read"]}],
+            session_id="parent_run_mode",
+        ))
+        item = r["results"][0]
+        self.assertIn("edit", engine.visible_tools or [], "Run 模式应下发 edit")
+        self.assertIn("edit", executed, "Run 模式下 edit 应正常执行")
 
 
 class TestSubAgentMainChain(unittest.TestCase):

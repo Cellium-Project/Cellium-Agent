@@ -5,6 +5,8 @@ COMMANDS: List[Dict] = [
     {"slash": "help",    "desc_key": "cmd.desc.help",    "aliases": ["h"]},
     {"slash": "clear",   "desc_key": "cmd.desc.clear",   "aliases": []},
     {"slash": "theme",   "desc_key": "cmd.desc.theme",   "aliases": []},
+    {"slash": "plan",    "desc_key": "cmd.desc.plan",    "aliases": []},
+    {"slash": "run",     "desc_key": "cmd.desc.run",     "aliases": []},
     {"slash": "models",  "desc_key": "cmd.desc.models",  "aliases": ["model"]},
     {"slash": "session", "desc_key": "cmd.desc.session", "aliases": []},
     {"slash": "delete",  "desc_key": "cmd.desc.delete",  "aliases": ["rm"]},
@@ -30,8 +32,29 @@ def fuzzy_score(query: str, text: str) -> int:
     return 500 - ti
 
 def match_commands(query: str, limit: int = 10) -> List[Dict]:
+    """精确/前缀优先，避免 /r 把别名 rm 和模糊命中的其它命令带出来"""
+    query = (query or "").lower().strip()
     if not query:
         return [c for c in COMMANDS[:limit]]
+
+    exact = [
+        c for c in COMMANDS
+        if c["slash"] == query or query in [a.lower() for a in c.get("aliases", [])]
+    ]
+    if exact:
+        return exact[:limit]
+
+    prefix = [c for c in COMMANDS if c["slash"].startswith(query)]
+    if prefix:
+        return prefix[:limit]
+
+    alias_prefix = [
+        c for c in COMMANDS
+        if any(a.lower().startswith(query) for a in c.get("aliases", []))
+    ]
+    if alias_prefix:
+        return alias_prefix[:limit]
+
     scored = []
     for cmd in COMMANDS:
         best = fuzzy_score(query, cmd["slash"])

@@ -565,9 +565,10 @@ class AgentLoop:
             logger.warning("[AgentLoop] 工具刷新失败，使用内置工具: %s", e)
             self.tools = dict(self._builtin_tools)
 
-    async def run(self, user_input: str, memory: MemoryManager = None, session_id: str = None) -> Dict[str, Any]:
+    async def run(self, user_input: str, memory: MemoryManager = None, session_id: str = None,
+                  mode: str = None) -> Dict[str, Any]:
         result = {"type": "error", "content": "", "iterations": 0, "tool_traces": []}
-        async for event in self.run_stream(user_input, memory=memory, session_id=session_id):
+        async for event in self.run_stream(user_input, memory=memory, session_id=session_id, mode=mode):
             if event["type"] == "done":
                 result = event
             elif event["type"] in {"stopped", "control_loop_stop", "heuristic_stop"}:
@@ -933,6 +934,21 @@ class AgentLoop:
         if self._loop_controller.is_stop_requested or (self._stop_event and self._stop_event.is_set()):
             return {"_stopped_by_user": True, "error": "stopped_by_user"}
 
+        if getattr(self, "_run_mode", "run") == "plan":
+            from app.core.security.run_mode import plan_block_reason
+            name = getattr(tool_call, "name", "") or (
+                tool_call.get("name", "") if isinstance(tool_call, dict) else ""
+            )
+            args = getattr(tool_call, "arguments", None) if not isinstance(tool_call, dict) \
+                else tool_call.get("arguments")
+            reason = plan_block_reason(name, args)
+            if reason:
+                logger.warning("[AgentLoop] Plan 模式拦截工具 | tool=%s", name)
+                return {
+                    "success": False, "error": reason,
+                    "blocked": True, "_tool_blocked": True, "plan_mode": True,
+                }
+
         stop_event = self._stop_event
         if stop_event is None:
             # 未进入 run_stream（直接执行工具）：就地创建停止事件，保证可被停止
@@ -1166,12 +1182,19 @@ class AgentLoop:
         yield done_event
 
 
-    async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None, system_injection: str = None):
+    async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None,
+                         system_injection: str = None, mode: str = None):
 
         """流式执行 Agent 循环"""
         effective_memory = memory or self.memory
         effective_session = session_id or self.session_id
         start_time = time.time()
+
+        from app.core.security.run_mode import normalize_mode, plan_injection, run_injection, PLAN
+        self._run_mode = normalize_mode(mode)
+        # 两种模式都显式声明当前状态
+        _mode_text = plan_injection() if self._run_mode == PLAN else run_injection()
+        system_injection = f"{system_injection}\n\n{_mode_text}" if system_injection else _mode_text
 
         # 本轮循环的停止事件（stop() 可跨线程 set，asyncio.Event.set 线程安全）
         self._stop_event = asyncio.Event()
@@ -2321,8 +2344,12 @@ class AgentLoop:
                 pass
             yield {"type": "error", "error": f"{type(e).__name__}: {str(e)}"}
 
+        finally:
+            # 模式只作用于本轮，避免污染后续任务
+            self._run_mode = "run"
+
     def _get_tools_definition(self) -> List[Dict]:
-        """获取所有工具的 LLM 定义"""
+        """获取所有工具的 LLM 定义（Plan 模式只下发只读工具）"""
         self._refresh_tools()
         definitions = []
         for tname, tool in self.tools.items():
@@ -2330,6 +2357,13 @@ class AgentLoop:
                 definitions.append(tool.definition)
             elif hasattr(tool, "__dict__") and "definition" in tool.__dict__:
                 definitions.append(tool.definition)
+
+        if getattr(self, "_run_mode", "run") == "plan":
+            from app.core.security.run_mode import PLAN_TOOLS
+            definitions = [
+                d for d in definitions
+                if (d.get("function") or {}).get("name") in PLAN_TOOLS
+            ]
 
         builtin_count = len(self._builtin_tools)
         comp_count = len(definitions) - builtin_count

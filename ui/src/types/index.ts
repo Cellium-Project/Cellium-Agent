@@ -70,6 +70,7 @@ export type SSEEventType =
   | 'heuristic_redirect'
   | 'message_received'
   | 'supplement_injected'
+  | 'mode_changed'
   | 'hybrid_phase';
 
 export interface SSEEvent {
@@ -90,6 +91,8 @@ export interface SSEEvent {
   suggestions?: string[];
   // Hybrid 状态
   phase?: string;
+  // Plan/Run 模式
+  mode?: 'run' | 'plan';
   // 定时任务标记
   scheduler_task?: boolean;
   // 定时任务信息

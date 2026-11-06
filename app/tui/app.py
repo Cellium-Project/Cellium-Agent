@@ -368,6 +368,15 @@ ToastRack {
 }
 """
 
+def mode_badge_markup(mode: str, dark: bool = True) -> str:
+    """侧栏收起时的模式标识"""
+    if mode == "plan":
+        color = "#a78bfa" if dark else "#7c5cff"
+        return f"[bold {color}]PLAN[/]"
+    color = "#2ff0ab" if dark else "#0b8a63"
+    return f"[bold {color}]RUN[/]"
+
+
 _THEME_PREF_FILE = None
 
 
@@ -393,6 +402,7 @@ class CelliumTUI(App):
         Binding("ctrl+d", "delete_session", "删除会话"),
         Binding("ctrl+s", "open_settings", "设置"),
         Binding("ctrl+l", "clear_chat", "清屏"),
+        Binding("shift+tab", "toggle_run_mode", "Plan/Run 切换", show=False, priority=True),
     ]
 
     def __init__(self, bootstrap=None, session_id=None):
@@ -440,6 +450,7 @@ class CelliumTUI(App):
         self._tool_count = 0
         self._last_esc = 0.0
         self._show_thinking = True
+        self._run_mode = "run"
         self._show_sidebar = True
         self._palette_active = False
         self._file_panel_active = False
@@ -578,6 +589,7 @@ class CelliumTUI(App):
         self._bootstrap_timer = self.set_interval(0.2, self._check_bootstrap)
         self._register_session_listener()
         self._apply_rich_md_theme()
+        self._apply_store_mode()
         self._setup_select_scope()
         # 全局 blink timer，所有 spinner 共享
         self._global_blink_timer = self.set_interval(0.5, self._tick_global_blink)
@@ -822,8 +834,15 @@ class CelliumTUI(App):
         right = ""
         if web:
             right = f"[dim]| {self.tr('header.webui')} {web}[/dim]"
+        # 侧栏收起时 logo 不可见，用状态栏补一个模式标识
+        if not self._sidebar_visible():
+            tag = mode_badge_markup(self._run_mode, self.theme == "cellium-dark")
+            right = f"{right}  {tag}" if right else tag
         if self.status_right:
             self.status_right.update(right)
+
+    def _sidebar_visible(self) -> bool:
+        return self.size.width >= 120
 
     def _prompt_cache_status(self) -> str:
         try:
@@ -851,7 +870,7 @@ class CelliumTUI(App):
     def _apply_responsive_sidebar(self):
         if not self.sidebar:
             return
-        hide = self.size.width < 120
+        hide = not self._sidebar_visible()
         if hide and self.sidebar.styles.display != "none":
             self.sidebar.styles.display = "none"
             self.sidebar.display = False
@@ -1115,6 +1134,7 @@ class CelliumTUI(App):
         self._pending_text = ""
         self._tool_cards = {}
         self._tool_count = 0
+        self._apply_store_mode()
         self._refresh_status()
         await self._load_sessions()
         await self._load_history()
@@ -1464,6 +1484,10 @@ class CelliumTUI(App):
                 self._post(self._handle_model_command(arg))
             else:
                 self.action_open_model_picker()
+        elif cmd == "/plan":
+            self._set_run_mode("plan")
+        elif cmd == "/run":
+            self._set_run_mode("run")
         else:
             self._post(self._append_system(self.tr("commands.unknown", cmd)))
 
@@ -1624,6 +1648,36 @@ class CelliumTUI(App):
             self.screen.clear_selection()
             self.notify("已复制选区", severity="information")
 
+    def action_toggle_run_mode(self):
+        self._set_run_mode("plan" if self._run_mode == "run" else "run")
+
+    def _apply_store_mode(self):
+        """按后端会话模式同步本地状态（启动/切会话时，不播放动画）"""
+        try:
+            from app.server.session_mode import get_mode
+            mode = get_mode(self.session_id)
+        except Exception:
+            mode = self._run_mode
+        self._run_mode = mode
+        try:
+            self.query_one(LogoImage).set_plan(mode == "plan", animate=False)
+        except Exception:
+            pass
+
+    def _set_run_mode(self, mode, sync=True, animate=True):
+        from app.server.session_mode import set_mode
+        mode = "plan" if mode == "plan" else "run"
+        if sync:
+            mode = set_mode(self.session_id, mode)
+        if mode == self._run_mode:
+            return
+        self._run_mode = mode
+        try:
+            self.query_one(LogoImage).set_plan(mode == "plan", animate=animate)
+        except Exception:
+            pass
+        self._refresh_status()
+
     def action_toggle_theme(self):
         self.theme = "cellium-light" if self.theme == "cellium-dark" else "cellium-dark"
         self.save_theme_pref(self.theme)
@@ -1725,11 +1779,13 @@ class CelliumTUI(App):
                 from app.server.task_manager import get_task_manager
                 task_mgr = get_task_manager()
 
+                from app.server.session_mode import get_mode
                 started = await task_mgr.start_task(
                     session_id=self.session_id,
                     agent_loop=loop,
                     user_input=text,
                     memory=memory,
+                    mode=get_mode(self.session_id),
                 )
                 if not started:
                     if not task_mgr.enqueue_supplement_message(self.session_id, {
@@ -1791,7 +1847,9 @@ class CelliumTUI(App):
 
     async def _handle_event(self, evt):
         t = evt.get("type")
-        if t == "status":
+        if t == "mode_changed":
+            self._set_run_mode(evt.get("mode"), sync=False)
+        elif t == "status":
             self._refresh_status()
         elif t == "message_received":
             # 对端（WebUI/外部平台）发起的消息：立即显示用户消息

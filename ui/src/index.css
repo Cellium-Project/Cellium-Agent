@@ -5377,6 +5377,29 @@ input:focus, select:focus, textarea:focus {
         height: 40px;
     }
 
+    /* 手机端模式按钮移到顶部状态栏，输入区只留上传/发送 */
+    .mode-desktop {
+        display: none;
+    }
+
+    .input-footer {
+        display: none;
+    }
+
+    .chat-header-actions .btn-mode {
+        padding: 6px 10px;
+        font-size: 11px;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .chat-header-actions .btn-mode:hover,
+    .chat-header-actions .btn-mode:active {
+        background: transparent;
+    }
+
     .settings-page {
         padding: 0;
     }
