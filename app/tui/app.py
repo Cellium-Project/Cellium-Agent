@@ -703,20 +703,29 @@ class CelliumTUI(App):
             self._refresh_status()
             self._apply_responsive_sidebar()
 
-    def on_unmount(self) -> None:
-        """退出时关闭常驻后台事件循环"""
-        self._app_closing = True
-        loop = getattr(self, "_agent_loop", None)
-        if loop is not None:
-            try:
-                loop.call_soon_threadsafe(loop.stop)
-                import threading as _threading
-                th = getattr(self, "_agent_loop_thread", None)
-                if th is not None and th.is_alive():
-                    th.join(timeout=2)
-                loop.close()
-            except Exception:
-                pass
+    def _converge_runtime(self) -> None:
+        try:
+            import sys as _sys
+            mod = _sys.modules.get("app.agent.loop.agent_loop_manager")
+            if mod is None:
+                return
+            mgr = mod.AgentLoopManager.get_instance()
+            for meta in list(getattr(mgr, "_loops", {}).values()):
+                agent_loop = getattr(meta, "agent_loop", None)
+                if agent_loop is None:
+                    continue
+                try:
+                    agent_loop.stop()
+                except Exception:
+                    pass
+                shell = getattr(agent_loop, "shell", None)
+                if shell is not None:
+                    try:
+                        shell.terminate()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def on_app_focus(self, event):
         if self.input is not None:
@@ -1081,6 +1090,18 @@ class CelliumTUI(App):
             pass
 
     def on_unmount(self):
+        self._app_closing = True
+        self._converge_runtime()
+        loop = getattr(self, "_agent_loop", None)
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+                th = getattr(self, "_agent_loop_thread", None)
+                if th is not None and th.is_alive():
+                    th.join(timeout=0.5)
+                loop.close()
+            except Exception:
+                pass
         try:
             timer = getattr(self, "_msg_refresh_timer", None)
             if timer is not None:

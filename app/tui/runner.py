@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import io
 import logging
+import os
 import sys
 import threading
 
@@ -23,7 +24,7 @@ def _silence_console_logging():
                 if isinstance(h, logging.StreamHandler):
                     lg.removeHandler(h)
 
-def _run_uvicorn(fastapi_app, host, port):
+def _run_uvicorn(fastapi_app, host, port, holder=None):
     import asyncio
     import io
     import logging
@@ -49,6 +50,8 @@ def _run_uvicorn(fastapi_app, host, port):
             access_log=False,
         )
         server = uvicorn.Server(config)
+        if holder is not None:
+            holder.append(server)
         await server.serve()
 
     try:
@@ -60,9 +63,11 @@ def _start_web_server(app, result):
     if getattr(result, "fastapi_app", None) is None:
         return
     try:
+        holder = []
+        app._server_holder = holder
         t = threading.Thread(
             target=_run_uvicorn,
-            args=(result.fastapi_app, result.host, result.port),
+            args=(result.fastapi_app, result.host, result.port, holder),
             daemon=True,
             name="webui-server",
         )
@@ -70,6 +75,37 @@ def _start_web_server(app, result):
         app._server_thread = t
     except Exception:
         pass
+
+
+def _stop_web_server(app):
+    """通知 uvicorn 退出；不可等待的连接直接放弃"""
+    for srv in (getattr(app, "_server_holder", None) or []):
+        try:
+            srv.should_exit = True
+        except Exception:
+            pass
+
+
+def fast_exit(code: int = 0):
+    """flush 后直接退出，跳过解释器对遗留线程的等待"""
+    try:
+        root = logging.getLogger()
+        handlers = list(root.handlers)
+        for name in list(logging.root.manager.loggerDict):
+            handlers.extend(logging.getLogger(name).handlers)
+        for h in handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
 
 def _deferred_web_setup(app, result):
     """后台补建 FastAPI"""
@@ -170,9 +206,16 @@ async def _run_tui_inner(host=None, port=None, session_id=None, enable_webapp=Tr
     try:
         await app.run_async()
     finally:
+        _stop_web_server(app)
         server_thread = getattr(app, "_server_thread", None)
         if server_thread:
             try:
-                server_thread.join(timeout=2)
+                server_thread.join(timeout=0.5)
             except Exception:
                 pass
+            if server_thread.is_alive():
+                for srv in (getattr(app, "_server_holder", None) or []):
+                    try:
+                        srv.force_exit = True
+                    except Exception:
+                        pass

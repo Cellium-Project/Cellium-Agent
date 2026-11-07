@@ -45,13 +45,32 @@ def main_tui():
     parser.add_argument("--no-webui", action="store_true", help="不启动 WebUI 服务")
     args = parser.parse_args()
 
-    from app.tui.runner import run_tui
-    asyncio.run(run_tui(
-        host=args.host,
-        port=args.port,
-        session_id=args.session,
-        enable_webapp=not args.no_webui,
-    ))
+    from app.tui.runner import run_tui, fast_exit
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(run_tui(
+            host=args.host,
+            port=args.port,
+            session_id=args.session,
+            enable_webapp=not args.no_webui,
+        ))
+    finally:
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True), timeout=1.0
+                ))
+        except Exception:
+            pass
+        try:
+            loop.close()
+        except Exception:
+            pass
+    fast_exit()
 
 if __name__ == "__main__":
     if "--tui" in sys.argv:

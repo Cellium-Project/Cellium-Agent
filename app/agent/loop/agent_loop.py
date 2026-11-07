@@ -2361,10 +2361,10 @@ class AgentLoop:
                 definitions.append(tool.definition)
 
         if getattr(self, "_run_mode", "run") == "plan":
-            from app.core.security.run_mode import PLAN_TOOLS
+            from app.core.security.run_mode import PLAN_BLOCKED_TOOLS
             definitions = [
                 d for d in definitions
-                if (d.get("function") or {}).get("name") in PLAN_TOOLS
+                if (d.get("function") or {}).get("name") not in PLAN_BLOCKED_TOOLS
             ]
 
         builtin_count = len(self._builtin_tools)

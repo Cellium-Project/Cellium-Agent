@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Plan / Run 模式：白名单、工具裁剪与执行拦截"""
+"""Plan / Run 模式：黑名单拦截与执行限制"""
 import asyncio
 import os
 import sys
@@ -9,45 +9,97 @@ from unittest.mock import Mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.security.run_mode import (
-    is_verify_command, normalize_mode, plan_block_reason, plan_injection, run_injection,
+    normalize_mode, plan_block_reason, plan_injection, run_injection, shell_block_reason,
 )
 
 
-class TestVerifyCommand(unittest.TestCase):
+class TestShellBlacklist(unittest.TestCase):
 
-    def test_allowed(self):
+    def test_readonly_allowed(self):
         for cmd in [
             "pytest -q",
             "python -m pytest tests",
+            "python -m unittest",
             "npm test",
             "npm run lint",
             "git status",
             "git diff HEAD",
+            "git branch -a",
+            "git tag -l",
+            "git stash list",
+            "git stash show",
+            "git clean -n",
+            "git config --get user.name",
+            "git log | head -5",
+            "git log; git diff",
+            "Get-ChildItem | Select-Object -First 5",
+            "rg foo src",
+            "rg git commit src",
+            "find . -name test.py",
+            "cat a 2>/dev/null",
+            "echo hi >&2",
+            "curl -s https://example.com",
+            "wget -O - https://example.com",
+            "tar -tzf a.tar",
+            "docker ps",
+            "docker compose ps",
+            "kubectl get pods",
             "ruff check .",
             "tsc --noEmit",
             "ls -la",
+            "wc -l a.txt",
         ]:
-            self.assertTrue(is_verify_command(cmd), cmd)
+            self.assertIsNone(shell_block_reason(cmd), cmd)
 
-    def test_blocked(self):
+    def test_write_blocked(self):
         for cmd in [
             "rm -rf build",
-            "python script.py",
-            "python -c \"open('x','w').write('1')\"",
-            "git commit -m x",
-            "pip install requests",
+            "del a.txt",
+            "mv a b",
             "pytest && rm -rf build",
+            "sleep 10 & rm -rf x",
             "pytest | tee out.log",
             "cat a > b",
-            "",
+            "cat a >> b",
+            "python -c \"open('x','w').write('1')\"",
+            "bash -c 'echo hi'",
+            "powershell -Command Remove-Item x",
+            "& notepad.exe",
+            "git commit -m x",
+            "git checkout main",
+            "git stash",
+            "git clean -fdx",
+            "git push origin main",
+            "git branch -D foo",
+            "git tag -d v1",
+            "pip install requests",
+            "python -m pip install requests",
+            "npm i lodash",
+            "docker compose up -d",
+            "docker-compose up -d",
+            "sed -i 's/a/b/' x",
+            "find . -name x -delete",
+            "find . -exec rm {} ;",
+            "tar -xzf a.tar",
+            "tar -czf out.tar src",
+            "unzip a.zip",
+            "curl -o out.html https://x",
+            "curl -Lo out.html https://x",
+            "wget https://x/a.zip",
+            "Invoke-WebRequest -OutFile x https://y",
+            "iwr https://y -OutFile x",
+            "Get-Content a | Set-Content b",
+            "Start-Process notepad",
+            "echo $(git rev-parse HEAD)",
         ]:
-            self.assertFalse(is_verify_command(cmd), cmd)
+            self.assertIsNotNone(shell_block_reason(cmd), cmd)
 
 
 class TestPlanBlock(unittest.TestCase):
 
     def test_edit_blocked(self):
         self.assertIn("Plan 模式禁止", plan_block_reason("edit", {"path": "a.py"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("skill_installer", {"command": "install"}))
 
     def test_file_write_blocked_insight_allowed(self):
         self.assertIn("Plan 模式禁止", plan_block_reason("file", {"command": "fs", "action": "create"}))
@@ -55,20 +107,26 @@ class TestPlanBlock(unittest.TestCase):
         self.assertIsNone(plan_block_reason("file", {"command": "fs", "action": "exists"}))
         self.assertIsNone(plan_block_reason("file", {"command": "insight", "mode": "structure"}))
 
-    def test_shell_only_verify(self):
+    def test_shell_blacklist(self):
         self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": "pytest -q"}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": "git log | head -5"}))
         self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "run", "cmd": "rm -rf x"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "run", "cmd": "python -c \"1\""}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "list"}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "output", "task_id": "t"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "kill", "task_id": "t"}))
         self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "session"}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "session", "action": "list"}))
 
     def test_shell_simple_mode(self):
-        """shell 兼容写法：command 直接是命令内容"""
         self.assertIsNone(plan_block_reason("shell", {"command": "git status"}))
         self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "rm -rf x"}))
 
     def test_memory_write_blocked(self):
         self.assertIn("Plan 模式禁止", plan_block_reason("memory", {"command": "store"}))
-        self.assertIn("Plan 模式禁止", plan_block_reason("memory", {}))
         self.assertIsNone(plan_block_reason("memory", {"command": "search"}))
+        self.assertIsNone(plan_block_reason("memory", {"command": "list"}))
+        self.assertIsNone(plan_block_reason("memory", {}))
 
     def test_memory_profile_writes_blocked(self):
         self.assertIsNone(plan_block_reason("memory", {"command": "profile", "subcommand": "get"}))
@@ -76,8 +134,21 @@ class TestPlanBlock(unittest.TestCase):
         self.assertIn("Plan 模式禁止", plan_block_reason("memory", {"command": "profile", "subcommand": "set_plan_habit"}))
         self.assertIn("Plan 模式禁止", plan_block_reason("memory", {"command": "profile", "subcommand": "set_persona"}))
 
-    def test_unknown_tool_blocked(self):
-        self.assertIn("Plan 模式禁止", plan_block_reason("scheduler", {"command": "add"}))
+    def test_query_tools_allowed(self):
+        self.assertIsNone(plan_block_reason("config", {"command": "list_models"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("config", {"command": "add_model"}))
+        self.assertIsNone(plan_block_reason("component", {"command": "list"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("component", {"command": "sandbox_add"}))
+        self.assertIsNone(plan_block_reason("component", {"command": "cleanup", "dry_run": True}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("component", {"command": "cleanup", "force": True}))
+        self.assertIsNone(plan_block_reason("scheduler", {"command": "list"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("scheduler", {"command": "create_interval"}))
+        self.assertIsNone(plan_block_reason("skill_manager", {"command": "list"}))
+        self.assertIsNone(plan_block_reason("qq_files", {"command": "list"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("qq_files", {"command": "send_file"}))
+
+    def test_unknown_tool_allowed(self):
+        self.assertIsNone(plan_block_reason("some_custom_tool", {"command": "query"}))
 
     def test_sub_agent_allowed_in_plan(self):
         self.assertIsNone(plan_block_reason("sub_agent", {"command": "parallel", "tasks": []}))
@@ -87,7 +158,7 @@ class TestPlanBlock(unittest.TestCase):
         self.assertEqual(normalize_mode("PLAN"), "plan")
         self.assertEqual(normalize_mode("bad"), "run")
         self.assertIn("PLAN（只读）", plan_injection())
-        self.assertLess(len(plan_injection()), 360, "提示词应保持精简")
+        self.assertLess(len(plan_injection()), 420, "提示词应保持精简")
         self.assertIn("<user_habit>", plan_injection("计划不超过 5 步，优先 pytest"))
         self.assertNotIn("<user_habit>", plan_injection())
         self.assertIn("RUN（正常执行）", run_injection())
