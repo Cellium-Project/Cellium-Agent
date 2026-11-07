@@ -51,6 +51,7 @@ interface AppState {
   setMessages: (messages: Message[]) => void;
   addMessage: (message: Message) => void;
   prependMessages: (messages: Message[]) => void;
+  upsertMessage: (message: Message) => void;
   updateStreamingMessage: (message: Message | null) => void;
   setHasMoreHistory: (hasMore: boolean) => void;
   setHistoryOffset: (offset: number) => void;
@@ -130,6 +131,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   prependMessages: (messages) => set((state) => ({
     messages: [...messages, ...state.messages],
   })),
+  upsertMessage: (message) => set((state) => {
+    const idx = state.messages.findIndex((m) => m.id === message.id);
+    if (idx < 0) {
+      return { messages: [...state.messages, message] };
+    }
+    const next = [...state.messages];
+    next[idx] = message;
+    return { messages: next };
+  }),
   updateStreamingMessage: (message) => set({ streamingMessage: message }),
   setHasMoreHistory: (hasMore) => set({ hasMoreHistory: hasMore }),
   setHistoryOffset: (offset) => set({ historyOffset: offset }),

@@ -314,6 +314,31 @@ async def stop_chat(request: StopRequest):
     return {"status": "not_found", "session_id": session_id}
 
 
+@router.get("/chat/subagents")
+async def get_subagents_status(session_id: str = Query("default")):
+    """返回当前会话的子 Agent 运行状态（用于前端兜底收尾）"""
+    try:
+        from components import sub_agent as sa
+        prefix = sa._sub_scope(session_id)
+        items = []
+        for key, info in sa._SUBAGENTS.items():
+            if not key.startswith(prefix):
+                continue
+            items.append({
+                "name": info.get("name", key[len(prefix):]),
+                "status": info.get("status"),
+                "tool_calls": info.get("tool_calls", 0),
+                "current_tool": info.get("current_tool"),
+                "last_tool": info.get("last_tool"),
+                "tools_used": info.get("tools_used", []),
+                "error": info.get("error"),
+                "elapsed_s": sa._elapsed_seconds(info),
+            })
+        return {"session_id": session_id, "subagents": items}
+    except Exception as e:
+        return {"session_id": session_id, "subagents": [], "error": str(e)}
+
+
 @router.post("/component/event")
 async def component_event(request: ComponentEventRequest):
     """

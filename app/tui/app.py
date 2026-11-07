@@ -371,7 +371,7 @@ ToastRack {
 def mode_badge_markup(mode: str, dark: bool = True) -> str:
     """侧栏收起时的模式标识"""
     if mode == "plan":
-        color = "#a78bfa" if dark else "#7c5cff"
+        color = "#b8860b" if dark else "#8a6d1f"
         return f"[bold {color}]PLAN[/]"
     color = "#2ff0ab" if dark else "#0b8a63"
     return f"[bold {color}]RUN[/]"
@@ -460,6 +460,7 @@ class CelliumTUI(App):
         self._pending_text = ""       # 待定文本
         self._md_render_timer = None  # Markdown 流式渲染节流定时器
         self._tool_cards = {}
+        self._subagent_cards = {}
         self._active_tool_card = None
         self._tool_count = 0
         self._last_esc = 0.0
@@ -605,6 +606,7 @@ class CelliumTUI(App):
         self._apply_rich_md_theme()
         self._apply_store_mode()
         self._setup_select_scope()
+        self.set_interval(2.0, self._sync_subagent_cards)
         # 全局 blink timer，所有 spinner 共享
         self._global_blink_timer = self.set_interval(0.5, self._tick_global_blink)
         # 常驻订阅 broker：空闲时也能实时收到对端（WebUI/外部平台）发起的消息
@@ -995,7 +997,9 @@ class CelliumTUI(App):
                     if self.session_id != current:
                         _b_logger.info("[BrokerListener] 会话切换(b) | %s→%s", current, self.session_id)
                         break
-                    if self._history_stale(self._session_epoch):
+                    if self._history_stale(self._session_epoch) and evt.get("type") not in (
+                        "subagent_progress", "subagent_done",
+                    ):
                         continue
                     if evt.get("type") == "message_received":
                         msg = evt.get("message") or evt.get("content") or ""
@@ -1168,6 +1172,7 @@ class CelliumTUI(App):
         self._thought_fenced = False
         self._pending_text = ""
         self._tool_cards = {}
+        self._subagent_cards = {}
         self._tool_count = 0
         self._apply_store_mode()
         self._refresh_status()
@@ -1960,6 +1965,10 @@ class CelliumTUI(App):
         elif t == "tool_result":
             self._touch_busy()
             self._update_tool_card(evt)
+        elif t == "subagent_progress":
+            await self._update_subagent_card(evt)
+        elif t == "subagent_done":
+            await self._finish_subagent_card(evt)
         elif t == "done":
             await self._finalize_render()
             self._finish_response()
@@ -2309,11 +2318,25 @@ class CelliumTUI(App):
         if self._active_tool_card is None or not same_round:
             self._active_tool_card = ToolCallCard()
             await self.chat.mount(self._active_tool_card)
+        tool_name = evt.get("tool", "")
+        arguments = evt.get("arguments", {})
+        description = evt.get("description", "")
+        if tool_name == "sub_agent" and isinstance(arguments, dict):
+            tasks = arguments.get("tasks") if isinstance(arguments.get("tasks"), list) else []
+            names = [
+                str(item.get("name") or item.get("task") or "?")[:24]
+                for item in tasks if isinstance(item, dict)
+            ]
+            description = description or (
+                f"{arguments.get('command', 'parallel')} · {len(tasks)} 个子 Agent"
+                + (f": {', '.join(names)}" if names else "")
+            )
+            arguments = {"command": arguments.get("command", ""), "tasks": names}
         self._active_tool_card.add_call(
             call_id,
-            tool=evt.get("tool", ""),
-            description=evt.get("description", ""),
-            arguments=evt.get("arguments", {}),
+            tool=tool_name,
+            description=description,
+            arguments=arguments,
         )
         self._tool_cards[call_id] = self._active_tool_card
         self._tool_count += 1
@@ -2323,6 +2346,102 @@ class CelliumTUI(App):
         card = self._tool_cards.get(evt.get("call_id", ""))
         if card:
             card.update_call(evt.get("call_id", ""), evt.get("result"), evt.get("duration_ms", 0))
+
+    @staticmethod
+    def _subagent_label(evt):
+        parts = [str(evt.get("name") or "subagent"), str(evt.get("status") or "running")]
+        tool = evt.get("current_tool") or evt.get("last_tool")
+        used = [t for t in (evt.get("tools_used") or []) if t]
+        if tool:
+            parts.append(f"工具 {tool}")
+        elif used:
+            parts.append(f"工具 {', '.join(used)}")
+        if evt.get("tool_calls"):
+            parts.append(f"第 {evt['tool_calls']} 次")
+        elapsed = evt.get("elapsed_s")
+        if not elapsed:
+            elapsed = evt.get("duration_s")
+        if elapsed:
+            parts.append(f"{float(elapsed):.0f}s")
+        preview = evt.get("last_result_preview")
+        if preview:
+            parts.append(str(preview)[:80])
+        if evt.get("error"):
+            parts.append(str(evt["error"])[:60])
+        return " · ".join(parts)
+
+    async def _update_subagent_card(self, evt):
+        name = str(evt.get("name") or "subagent")
+        key = f"subagent:{name}"
+        desc = self._subagent_label(evt)
+        card = self._subagent_cards.get(key)
+        if card is None:
+            card = ToolCallCard()
+            await self.chat.mount(card)
+            card.add_call(key, tool="sub_agent", description=desc,
+                          arguments={"name": name, "task": evt.get("task", "")})
+            self._subagent_cards[key] = card
+        else:
+            card.set_call_description(key, desc)
+        self.chat.scroll_to_follow()
+
+    async def _finish_subagent_card(self, evt):
+        name = str(evt.get("name") or "subagent")
+        key = f"subagent:{name}"
+        desc = self._subagent_label(evt)
+        card = self._subagent_cards.pop(key, None)
+        if card is None:
+            card = ToolCallCard()
+            await self.chat.mount(card)
+            card.add_call(key, tool="sub_agent", description=desc, arguments={"name": name})
+        else:
+            card.set_call_description(key, desc)
+        card.update_call(
+            key,
+            {"success": evt.get("success", True), "error": evt.get("error"),
+             "content": evt.get("content")},
+            int(float(evt.get("duration_s") or 0) * 1000),
+        )
+        card.finish()
+        self.chat.scroll_to_follow()
+
+    def _sync_subagent_cards(self):
+        """兜底：注册表已结束但卡片仍显示 running 时自动收尾"""
+        if not self._subagent_cards:
+            return
+        try:
+            from components import sub_agent as sa
+        except Exception:
+            return
+        for key in list(self._subagent_cards.keys()):
+            name = key.split("subagent:", 1)[-1]
+            info = sa._SUBAGENTS.get(sa._sub_key(self.session_id, name)) or {}
+            status = info.get("status")
+            if info and status not in ("done", "error", "cancelled"):
+                continue
+            card = self._subagent_cards.pop(key, None)
+            if card is None:
+                continue
+            final_status = status if status in ("done", "error", "cancelled") else "done"
+            content = info.get("result_content", "") or ""
+            try:
+                card.set_call_description(key, self._subagent_label({
+                    "name": name, "status": final_status,
+                    "last_tool": info.get("last_tool"),
+                    "tool_calls": info.get("tool_calls", 0),
+                    "tools_used": info.get("tools_used", []),
+                    "elapsed_s": sa._elapsed_seconds(info),
+                    "error": info.get("error"),
+                }))
+                card.update_call(
+                    key,
+                    {"success": final_status == "done", "content": content,
+                     "error": None if final_status == "done" else final_status},
+                    0,
+                )
+                card.finish()
+            except Exception:
+                pass
 
     async def _append_system(self, content, markup=False):
         await self.chat.mount(Static(content, classes="system-msg", markup=markup))
@@ -2409,6 +2528,7 @@ class CelliumTUI(App):
         self._thought_fenced = False
         self._pending_text = ""
         self._tool_cards = {}
+        self._subagent_cards = {}
         self._active_tool_card = None
         self._restoring_history = False
         self._history_specs = None

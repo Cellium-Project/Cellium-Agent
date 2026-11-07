@@ -352,6 +352,7 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
       | { kind: 'tool-batch'; items: ToolSegment[] }
+      | { kind: 'tool-single'; item: ToolSegment }
       | ThinkingSegment
       | ReasoningSegment;
 
@@ -370,6 +371,10 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
       } else if (segment.kind === 'reasoning') {
         groups.push(segment as ReasoningSegment);
       } else if (segment.kind === 'tool') {
+        if (segment.tool === 'sub_agent') {
+          groups.push({ kind: 'tool-single', item: segment as ToolSegment });
+          continue;
+        }
         const last = groups[groups.length - 1];
         if (last && last.kind === 'tool-batch') {
           last.items.push(segment as ToolSegment);
@@ -392,6 +397,22 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
           }
           if (group.kind === 'reasoning') {
             return <ReasoningBlock key={idx} content={group.content} startedAt={group.startedAt} durationMs={group.durationMs} streaming={isStreaming && idx === groups.length - 1} />;
+          }
+          if (group.kind === 'tool-single') {
+            const seg = group.item;
+            return (
+              <ToolTraceCard
+                key={idx}
+                trace={{
+                  tool: seg.tool,
+                  arguments: seg.arguments,
+                  result: seg.result,
+                  duration_ms: seg.duration_ms,
+                  description: seg.description,
+                }}
+                status={seg.status}
+              />
+            );
           }
           // tool batch
           return <ToolBatchCard key={idx} items={group.items} />;
@@ -584,7 +605,9 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact })
       >
         <span className={`tool-state-dot ${status || 'done'}`} />
         <span className="tool-trace-name">{String(trace.tool || 'unknown')}</span>
-        {keyArg && (
+        {trace.tool === 'sub_agent' && trace.description ? (
+          <span className="tool-trace-arg">{String(trace.description)}</span>
+        ) : keyArg && (
           <span className="tool-trace-arg">{keyArg.length > 48 ? keyArg.slice(0, 48) + '…' : keyArg}</span>
         )}
         <span className="tool-trace-spacer" />
@@ -619,7 +642,11 @@ const ToolGroupItem: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
       >
         <span className={`tool-state-dot ${status || 'done'}`} />
-        <span className="tool-group-item-arg">{keyArg || String(trace.tool || 'unknown')}</span>
+        <span className="tool-group-item-arg">
+          {trace.tool === 'sub_agent' && trace.description
+            ? `sub_agent · ${trace.description}`
+            : (keyArg || String(trace.tool || 'unknown'))}
+        </span>
         {err && <span className="tool-group-item-err">{err.length > 40 ? err.slice(0, 40) + '…' : err}</span>}
         <span className="tool-trace-spacer" />
         <span className="tool-group-item-time">{durStr}</span>
@@ -705,7 +732,7 @@ const ToolBatchCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }
   const errCount = items.filter(i => i.result?.error).length;
   const totalMs = items.reduce((s, i) => s + (i.duration_ms || 0), 0);
 
-  const wasRunning = useRef(running);
+  const wasRunning = useRef(false);
   const showBody = useCollapseMount(expanded);
   useEffect(() => {
     if (running && !wasRunning.current) setExpanded(true);

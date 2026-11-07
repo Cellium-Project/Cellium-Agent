@@ -84,6 +84,60 @@ class ToolDescriptionGenerator:
             "set_intent_model": "正在配置意图感知模型：{model}",
             "_default":         "正在管理配置：{command}",
         },
+        "sub_agent": {
+            "parallel":  "正在并行运行 {task_count} 个子 Agent{agent_suffix}",
+            "spawn":     "正在后台运行 {task_count} 个子 Agent{agent_suffix}",
+            "list":      "正在查看子 Agent 列表",
+            "status":    "正在查看子 Agent 状态{agent_suffix}",
+            "results":   "正在读取子 Agent 结论{agent_suffix}",
+            "cancel":    "正在取消子 Agent{agent_suffix}",
+            "_default":  "正在调度子 Agent{agent_suffix}",
+        },
+        "ls": {
+            "_default":  "正在列出目录：{dir_label}",
+        },
+        "glob": {
+            "_default":  "正在查找文件{glob_suffix}",
+        },
+        "feishu_files": {
+            "download":          "正在从飞书下载文件{file_suffix}",
+            "download_pending":  "正在检查飞书待下载文件",
+            "send_file":         "正在发送文件到飞书{file_suffix}",
+            "send_image":        "正在发送图片到飞书{file_suffix}",
+            "list":              "正在列出飞书下载文件",
+            "_default":          "正在处理飞书文件",
+        },
+        "telegram_files": {
+            "download":     "正在从 Telegram 下载文件{file_suffix}",
+            "send_file":    "正在发送文件到 Telegram{file_suffix}",
+            "send_image":   "正在发送图片到 Telegram{file_suffix}",
+            "list":         "正在列出 Telegram 下载文件",
+            "_default":     "正在处理 Telegram 文件",
+        },
+        "scheduler": {
+            "create_interval": "正在创建间隔定时任务{task_suffix}",
+            "create_daily":    "正在创建每日定时任务{task_suffix}",
+            "create_weekly":   "正在创建每周定时任务{task_suffix}",
+            "list":            "正在查看定时任务列表",
+            "delete":          "正在删除定时任务{task_id_suffix}",
+            "enable":          "正在启用定时任务{task_id_suffix}",
+            "disable":         "正在停用定时任务{task_id_suffix}",
+            "run_now":         "正在立即执行定时任务{task_id_suffix}",
+            "_default":        "正在管理定时任务：{command}",
+        },
+        "skill_installer": {
+            "install":       "正在安装 Skill{skill_suffix}",
+            "uninstall":     "正在卸载 Skill{skill_suffix}",
+            "update":        "正在更新 Skill{skill_suffix}",
+            "refresh_index": "正在刷新 Skill 索引",
+            "_default":      "正在管理 Skill：{command}",
+        },
+        "skill_manager": {
+            "list":      "正在查看 Skill 列表",
+            "get_info":  "正在查看 Skill 详情{skill_suffix}",
+            "search":    "正在搜索 Skill：{query}",
+            "_default":  "正在查询 Skill：{command}",
+        },
         "_default":    "正在调用 {tool_name}：{param_value}",
     }
 
@@ -233,8 +287,12 @@ class ToolDescriptionGenerator:
         else:
             ctx["url_count"] = "?"
 
-        # QQ/WeChat Files
-        ctx["filename"] = os.path.basename(arguments.get("url") or arguments.get("file_path") or arguments.get("image_path") or "")
+        # 平台文件（QQ/微信/飞书/Telegram）
+        ctx["filename"] = os.path.basename(
+            arguments.get("filename") or arguments.get("url")
+            or arguments.get("file_path") or arguments.get("image_path") or ""
+        )
+        ctx["file_suffix"] = f"：{ctx['filename']}" if ctx["filename"] else ""
         ctx["target_id"] = arguments.get("target_id") or ""
 
         # Web ops
@@ -245,6 +303,45 @@ class ToolDescriptionGenerator:
         # Shell
         ctx["cmd"] = (arguments.get("command") or "").strip()
         ctx["cmd_first"] = ctx["cmd"].split()[0] if ctx["cmd"].split() else ""
+
+        # Sub Agent
+        if tool_name == "sub_agent":
+            tasks = arguments.get("tasks")
+            if isinstance(tasks, str):
+                try:
+                    tasks = json.loads(tasks)
+                except Exception:
+                    tasks = None
+            names = []
+            if isinstance(tasks, list):
+                ctx["task_count"] = len(tasks)
+                names = [str(t.get("name")) for t in tasks if isinstance(t, dict) and t.get("name")]
+            elif isinstance(tasks, dict):
+                ctx["task_count"] = 1
+                if tasks.get("name"):
+                    names = [str(tasks["name"])]
+            elif (arguments.get("task") or "").strip():
+                ctx["task_count"] = 1
+            else:
+                ctx["task_count"] = 0
+            single = str(arguments.get("name") or "")
+            if single and not names:
+                names = [single]
+            ctx["agent_names"] = ", ".join([n for n in names if n])[:60]
+            ctx["agent_suffix"] = f"：{ctx['agent_names']}" if ctx["agent_names"] else ""
+
+        # ls / glob
+        ctx["dir_label"] = ctx["basename"] or "当前目录"
+        glob_pattern = (arguments.get("pattern") or "")[:60]
+        ctx["glob_suffix"] = f"：{glob_pattern}" if glob_pattern else ""
+
+        # Skill / 定时任务
+        skill_name = str(arguments.get("skill_name") or arguments.get("name") or "")[:40]
+        ctx["skill_suffix"] = f"：{skill_name}" if skill_name else ""
+        task_name = str(arguments.get("name") or "")[:40]
+        ctx["task_suffix"] = f"：{task_name}" if task_name else ""
+        task_id = str(arguments.get("task_id") or "")
+        ctx["task_id_suffix"] = f"：{task_id}" if task_id else ""
 
         # Component tools fallback
         if not any([ctx["basename"], ctx["query"], ctx["title"], ctx["cmd"]]):

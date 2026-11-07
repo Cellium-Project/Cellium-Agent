@@ -1,7 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/appStore';
-import { API, postJSON } from '../utils/api';
+import { API, postJSON, fetchJSON } from '../utils/api';
 import type { SSEEvent, Message, ToolTrace, TimelineSegment, Attachment } from '../types';
+import { mergeSubagentSegment, describeSubagent } from '../utils/subagent';
+import type { SubagentInfo } from '../utils/subagent';
 
 /**
  * 从内容中提取 JSON thinking 数据（仅匹配代码块或纯 JSON，保持兼容）
@@ -189,6 +191,7 @@ export function useChat() {
 
   const pendingEchoRef = useRef<Record<string, string | null>>({});
   const isManualCloseRef = useRef(false);
+  const activeCtxRef = useRef<ReturnType<typeof buildStreamingContext> | null>(null);
   
   const {
     currentSessionId,
@@ -200,6 +203,7 @@ export function useChat() {
     setHasRunningTask,
     updateStreamingMessage,
     addMessage,
+    upsertMessage,
     fetchSessions,
     checkTaskStatus,
     stopTask,
@@ -271,6 +275,7 @@ export function useChat() {
       updateStreamingMessage(null);
       return;
     }
+    if (activeCtxRef.current === ctx) activeCtxRef.current = null;
     if (typeof connectionId === 'number' && connectionId !== connectionIdRef.current && !ctx.sawDone) {
       return;
     }
@@ -301,6 +306,115 @@ export function useChat() {
     updateStreamingMessage(null);
   }, [addMessage, updateStreamingMessage]);
 
+  const upsertSubagentActivity = useCallback((event: SSEEvent, ctx?: ReturnType<typeof buildStreamingContext>) => {
+    const name = event.name || 'subagent';
+    const id = `subagent:${name}`;
+    const isDone = event.type === 'subagent_done';
+    const status: 'running' | 'done' | 'error' = isDone
+      ? (event.success === false || event.error ? 'error' : 'done')
+      : 'running';
+    const description = describeSubagent({
+      name, status: isDone ? (event.status || status) : (event.status || 'running'),
+      tool_calls: event.tool_calls, current_tool: event.current_tool, last_tool: event.last_tool,
+      tools_used: event.tools_used, last_result_preview: event.last_result_preview,
+      elapsed_s: event.elapsed_s, duration_s: event.duration_s, error: event.error,
+    });
+    const seg: Extract<TimelineSegment, { kind: 'tool' }> = {
+      kind: 'tool',
+      tool: 'sub_agent',
+      arguments: { name, task: event.task || '' },
+      duration_ms: Math.round(Number(event.duration_s || 0) * 1000),
+      description,
+      status,
+      call_id: id,
+      result: isDone
+        ? { content: event.content || '', error: event.error, success: event.success !== false }
+        : (event.last_result_preview ? { preview: event.last_result_preview } : undefined),
+    };
+    // 本轮对话进行中：并入当前流式消息，不单独出一条消息
+    const target = ctx || activeCtxRef.current;
+    const visible = Boolean(useAppStore.getState().streamingMessage) ||
+      Boolean(target && target.timeline.length);
+    if (target && !target.finalized && visible) {
+      target.timeline = mergeSubagentSegment(target.timeline, seg);
+      updateStreamingMessage({
+        role: 'assistant',
+        content: '',
+        toolTraces: [...target.traces],
+        timeline: [...target.timeline],
+      });
+      return;
+    }
+    upsertMessage({ id, role: 'assistant', content: '', timeline: [seg] });
+  }, [upsertMessage, updateStreamingMessage]);
+
+  useEffect(() => {
+    if (!currentSessionId) return;
+    const timer = window.setInterval(async () => {
+      const msgs = useAppStore.getState().messages;
+      const running = msgs.filter(
+        (m) => typeof m.id === 'string' && m.id.startsWith('subagent:') &&
+          m.timeline?.some((s) => s.kind === 'tool' && s.status === 'running')
+      );
+      const ctx = activeCtxRef.current;
+      const streamingRunning = Boolean(ctx && !ctx.finalized && ctx.timeline.some(
+        (s) => s.kind === 'tool' && s.status === 'running' &&
+          typeof s.call_id === 'string' && s.call_id.startsWith('subagent:')
+      ));
+      if (!running.length && !streamingRunning) return;
+      try {
+        const data = await fetchJSON<{ subagents: SubagentInfo[] }>(
+          API.chatSubagents(currentSessionId)
+        );
+        const infos = new Map(data.subagents.map((s) => [s.name || '', s]));
+        if (ctx && !ctx.finalized && streamingRunning) {
+          let changed = false;
+          ctx.timeline = ctx.timeline.map((seg) => {
+            if (seg.kind !== 'tool' || seg.status !== 'running' ||
+                typeof seg.call_id !== 'string' || !seg.call_id.startsWith('subagent:')) {
+              return seg;
+            }
+            const name = seg.call_id.slice('subagent:'.length);
+            const info = infos.get(name);
+            const st = info?.status;
+            if (st === 'running' || st === 'queued' || st === 'cancelling') return seg;
+            changed = true;
+            const finalStatus = (st === 'error' ? 'error' : 'done') as 'done' | 'error';
+            return { ...seg, status: finalStatus,
+              description: describeSubagent({ ...info, name, status: finalStatus }) };
+          });
+          if (changed) {
+            updateStreamingMessage({
+              role: 'assistant',
+              content: '',
+              toolTraces: [...ctx.traces],
+              timeline: [...ctx.timeline],
+            });
+          }
+        }
+        for (const m of running) {
+          const name = m.id!.slice('subagent:'.length);
+          const info = infos.get(name);
+          const st = info?.status;
+          if (st === 'running' || st === 'queued' || st === 'cancelling') continue;
+          const finalStatus = (st === 'error' ? 'error' : 'done') as 'done' | 'error';
+          const description = describeSubagent({ ...info, name, status: finalStatus });
+          upsertMessage({
+            ...m,
+            timeline: (m.timeline || []).map((seg) =>
+              seg.kind === 'tool' && seg.status === 'running'
+                ? { ...seg, status: finalStatus, description, call_id: `subagent:${name}` }
+                : seg
+            ),
+          });
+        }
+      } catch {
+        // 兜底轮询失败时保持现状，下一次再试
+      }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [currentSessionId, upsertMessage, updateStreamingMessage]);
+
   const handleChatEvent = useCallback((event: SSEEvent, ctx: ReturnType<typeof buildStreamingContext>, sessionId: string, connectionId: number) => {
     if (connectionId !== connectionIdRef.current) return;
     
@@ -327,6 +441,11 @@ export function useChat() {
       }
     }
     switch (event.type) {
+      case 'subagent_progress':
+      case 'subagent_done': {
+        upsertSubagentActivity(event, ctx);
+        return;
+      }
       case 'mode_changed': {
         // 会话模式由后端广播，TUI/WebUI 实时同步
         setAgentMode(event.mode === 'plan' ? 'plan' : 'run');
@@ -603,7 +722,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((
@@ -744,6 +863,7 @@ export function useChat() {
     }
 
     const ctx = buildStreamingContext();
+    activeCtxRef.current = ctx;
     ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
     if (streamingMessage?.timeline?.length) {
       ctx.timeline = [...streamingMessage.timeline];
@@ -803,6 +923,7 @@ export function useChat() {
     setHasRunningTask(true);
 
     const ctx = buildStreamingContext();
+    activeCtxRef.current = ctx;
     lastEventIdBySessionRef.current[sessionId] = 0;
     pendingEchoRef.current[sessionId] = content.trim();
     updateStreamingMessage({
@@ -878,6 +999,7 @@ export function useChat() {
         timeline: finalTimeline,
       });
     }
+    activeCtxRef.current = null;
     updateStreamingMessage(null);
     setIsStreaming(false);
     setHasRunningTask(false);
@@ -924,6 +1046,7 @@ export function useChat() {
 
       if (hasTask) {
         // 有运行任务：恢复流式状态
+        activeCtxRef.current = ctx;
         updateStreamingMessage({
           role: 'assistant',
           content: '',
@@ -932,6 +1055,7 @@ export function useChat() {
         });
         setIsStreaming(true);
       } else {
+        activeCtxRef.current = null;
         updateStreamingMessage(null);
         setIsStreaming(false);
         setHasRunningTask(false);

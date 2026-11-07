@@ -51,10 +51,11 @@ class TestBlockBlankBackground(unittest.TestCase):
 
 class TestLogoPlanColor(unittest.TestCase):
 
-    def test_green_becomes_violet(self):
+    def test_green_becomes_dark_gold(self):
         from app.tui.widgets import LogoImage
         out = LogoImage._plan_color((36, 236, 170, 250))
-        self.assertTrue(out[2] > out[0] > out[1], f"应为紫罗兰色系: {out}")
+        self.assertTrue(out[0] > out[1] > out[2], f"应为暗金色系: {out}")
+        self.assertLess(max(out[:3]), 220, f"亮度应偏暗: {out}")
         self.assertEqual(out[3], 250)
 
     def test_blue_and_transparent_untouched(self):
@@ -124,16 +125,137 @@ class TestCommandMatch(unittest.TestCase):
 
 class TestModeBadge(unittest.TestCase):
 
-    def test_plan_badge_violet(self):
+    def test_plan_badge_gold(self):
         from app.tui.app import mode_badge_markup
-        self.assertIn("#a78bfa", mode_badge_markup("plan"))
-        self.assertIn("#7c5cff", mode_badge_markup("plan", dark=False))
+        self.assertIn("#b8860b", mode_badge_markup("plan"))
+        self.assertIn("#8a6d1f", mode_badge_markup("plan", dark=False))
 
     def test_run_badge_green(self):
         from app.tui.app import mode_badge_markup
         self.assertIn("RUN", mode_badge_markup("run"))
         self.assertIn("#2ff0ab", mode_badge_markup("run"))
         self.assertIn("#0b8a63", mode_badge_markup("run", dark=False))
+
+
+class TestSubagentCard(unittest.TestCase):
+
+    def test_progress_and_done_render(self):
+        from app.tui.app import CelliumTUI
+
+        async def run():
+            app = CelliumTUI(bootstrap=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._update_subagent_card({
+                    "name": "a", "status": "running", "current_tool": "read",
+                    "tool_calls": 1, "elapsed_s": 2, "task": "调研",
+                })
+                await pilot.pause()
+                self.assertIn("subagent:a", app._subagent_cards)
+                await app._finish_subagent_card({
+                    "name": "a", "status": "done", "success": True,
+                    "duration_s": 1.2, "content": "结论",
+                })
+                await pilot.pause()
+                self.assertNotIn("subagent:a", app._subagent_cards)
+
+        asyncio.run(run())
+
+    def test_three_parallel_cards_are_independent(self):
+        from app.tui.app import CelliumTUI
+
+        async def run():
+            app = CelliumTUI(bootstrap=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                for name in ("a", "b", "c"):
+                    await app._update_subagent_card({
+                        "name": name, "status": "running",
+                        "current_tool": "read", "tool_calls": 1, "elapsed_s": 1,
+                    })
+                await pilot.pause()
+                self.assertEqual(sorted(app._subagent_cards.keys()),
+                                 ["subagent:a", "subagent:b", "subagent:c"])
+                cards = [app._subagent_cards[k] for k in ("subagent:a", "subagent:b", "subagent:c")]
+                self.assertEqual(len({id(c) for c in cards}), 3, "每个子 Agent 应独立一张卡")
+                await app._finish_subagent_card({
+                    "name": "b", "status": "done", "success": True,
+                    "duration_s": 1.0, "content": "B 完成",
+                })
+                await pilot.pause()
+                self.assertNotIn("subagent:b", app._subagent_cards)
+                self.assertIn("subagent:a", app._subagent_cards)
+                self.assertIn("subagent:c", app._subagent_cards)
+
+        asyncio.run(run())
+
+
+    def test_label_shows_tools_and_elapsed_when_done(self):
+        from app.tui.app import CelliumTUI
+        label = CelliumTUI._subagent_label({
+            "name": "x", "status": "done", "tools_used": ["read", "grep"],
+            "tool_calls": 3, "duration_s": 18, "error": None,
+        })
+        self.assertIn("工具 read, grep", label)
+        self.assertIn("第 3 次", label)
+        self.assertIn("18s", label)
+
+    def test_sync_fallback_description_is_rich(self):
+        import time
+        import components.sub_agent as sa
+        from app.tui.app import CelliumTUI
+
+        async def run():
+            app = CelliumTUI(bootstrap=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await app._update_subagent_card({"name": "s3", "status": "running"})
+                card = app._subagent_cards["subagent:s3"]
+                key = sa._sub_key(app.session_id, "s3")
+                now = time.time()
+                sa._SUBAGENTS[key] = {
+                    "name": "s3", "status": "done", "result_content": "ok",
+                    "last_tool": "grep", "tool_calls": 2, "tools_used": ["read", "grep"],
+                    "started_at": now - 5, "finished_at": now - 2,
+                }
+                try:
+                    app._sync_subagent_cards()
+                finally:
+                    sa._SUBAGENTS.pop(key, None)
+                await pilot.pause()
+                self.assertNotIn("subagent:s3", app._subagent_cards)
+                self.assertIn("工具 grep", card._calls["subagent:s3"]["description"])
+                self.assertIn("第 2 次", card._calls["subagent:s3"]["description"])
+
+        asyncio.run(run())
+
+    def test_sync_finishes_stale_running_cards(self):
+        import components.sub_agent as sa
+        from app.tui.app import CelliumTUI
+
+        async def run():
+            app = CelliumTUI(bootstrap=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                names = ("s1", "s2")
+                for name in names:
+                    await app._update_subagent_card({
+                        "name": name, "status": "running", "current_tool": "read",
+                    })
+                keys = [sa._sub_key(app.session_id, n) for n in names]
+                for name in names:
+                    sa._SUBAGENTS[sa._sub_key(app.session_id, name)] = {
+                        "name": name, "status": "done", "result_content": "",
+                    }
+                try:
+                    app._sync_subagent_cards()
+                finally:
+                    for key in keys:
+                        sa._SUBAGENTS.pop(key, None)
+                await pilot.pause()
+                self.assertEqual(app._subagent_cards, {}, "注册表已结束的卡片应兜底收尾")
+
+        asyncio.run(run())
 
 
 class TestLogoAnimation(unittest.TestCase):

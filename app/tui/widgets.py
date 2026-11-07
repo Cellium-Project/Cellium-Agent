@@ -648,9 +648,9 @@ class LogoImage(Static):
         h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
         if not 70 <= h * 360 <= 190:
             return pixel
-        s2 = min(0.70, s * 0.9)
-        l2 = min(1.0, l * 0.9 + 0.12)
-        r2, g2, b2 = colorsys.hls_to_rgb(258 / 360, l2, s2)
+        s2 = min(0.80, s * 0.85 + 0.05)
+        l2 = min(0.38, l * 0.42 + 0.04)
+        r2, g2, b2 = colorsys.hls_to_rgb(43 / 360, l2, s2)
         return (round(r2 * 255), round(g2 * 255), round(b2 * 255), a)
 
     def _render_pixels(self):
@@ -1790,6 +1790,13 @@ class ToolCallCard(Static):
         call["duration"] = duration_ms or 0
         self._tick()
 
+    def set_call_description(self, call_id, description):
+        call = self._calls.get(call_id)
+        if not call:
+            return
+        call["description"] = description or ""
+        self._tick()
+
     def finish(self):
         self._done = True
         self._frame = 0
@@ -1888,6 +1895,14 @@ class ToolCallCard(Static):
                     path = (c["arguments"] or {}).get("file_path") or ""
                     if path:
                         t.append(f"  {self._rel_path(path)}", style="dim")
+                elif c["tool"] == "sub_agent":
+                    desc = (c.get("description") or "").strip()
+                    if desc:
+                        t.append(f"  {desc}", style="dim")
+                    else:
+                        args = self._preview_args(c["arguments"], 3 + len(name))
+                        if args:
+                            t.append(f"  {args}", style="dim")
                 elif c["tool"] != "shell":
                     prefix_len = 3 + len(name)
                     args = self._preview_args(c["arguments"], prefix_len)

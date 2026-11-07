@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -271,17 +272,16 @@ class TestSubAgentComponent(unittest.TestCase):
 
     def test_tools_whitelist_parsing(self):
         c = SubAgent()
-        # read/ls/glob/grep 为默认自动附带，用户传入的部分仅补齐缺失项
-        self.assertEqual(c._allowed_tool_names('["read","grep"]'), ["read", "grep", "ls", "glob"])
-        self.assertEqual(c._allowed_tool_names("read, grep, glob"), ["read", "grep", "glob", "ls"])
+        # 显式传入即精确白名单；不传才回退默认四项
+        self.assertEqual(c._allowed_tool_names('["read","grep"]'), ["read", "grep"])
+        self.assertEqual(c._allowed_tool_names("read, grep, glob"), ["read", "grep", "glob"])
         self.assertEqual(c._allowed_tool_names(None), ["read", "ls", "glob", "grep"])
-        self.assertEqual(c._allowed_tool_names(["read"]), ["read", "ls", "glob", "grep"])
+        self.assertEqual(c._allowed_tool_names(["read"]), ["read"])
 
     def test_tools_blacklist(self):
         c = SubAgent()
-        # 平台组件工具被过滤，默认浏览工具自动附带
         result = c._allowed_tool_names(["read", "weixin_files", "web_search", "config", "scheduler", "grep"])
-        self.assertEqual(result, ["read", "grep", "ls", "glob"], f"禁用工具应被过滤: {result}")
+        self.assertEqual(result, ["read", "grep"], f"禁用工具应被过滤: {result}")
 
     def test_tools_rule_extraction(self):
         c = SubAgent()
@@ -315,7 +315,26 @@ class TestSubAgentComponent(unittest.TestCase):
         self.assertIn("read：", inj)
         self.assertIn("grep：", inj)
         self.assertIn("[输出要求]", inj)
+        self.assertIn("社交套话", inj, "子 Agent 应压制寒暄/询问称呼")
         self.assertLess(len(inj), 400, "子 Agent 提示词应保持精简")
+
+    def test_system_injection_inherits_user_name(self):
+        from unittest.mock import patch
+        c = SubAgent()
+        func_globals = type(c)._build_system_injection.__globals__
+        with patch.dict(func_globals, {"_resolve_user_name": lambda: "老王"}):
+            inj = c._build_system_injection("", "", [])
+        self.assertIn("老王", inj, "子 Agent 应继承主 Agent 的用户称呼")
+        self.assertNotIn("不要询问用户称呼", inj)
+
+        with patch.dict(func_globals, {"_resolve_user_name": lambda: ""}):
+            inj = c._build_system_injection("", "", [])
+        self.assertIn("不要询问用户称呼", inj, "无称呼时也不应追问")
+
+    def test_profile_piece_can_skip_ask_user_name(self):
+        from app.agent.prompt.pieces import get_profile_piece
+        self.assertEqual(get_profile_piece(None, ask_user_name=False).content, "")
+        self.assertIn("礼貌询问", get_profile_piece(None).content)
 
     def test_help_list_status_cancel(self):
         c = SubAgent()
@@ -338,6 +357,441 @@ class TestSubAgentComponent(unittest.TestCase):
 # 集成测试（需主 loop）
 # ================================================================
 
+class TestSubAgentBackground(unittest.TestCase):
+    """后台 spawn / 进度 / 结果 / 取消 / 唤醒"""
+
+    def setUp(self):
+        import components.sub_agent as m
+        self._mod = m
+        self._session = f"bgtest_{uuid.uuid4().hex[:6]}"
+
+    def tearDown(self):
+        for key, info in list(self._mod._SUBAGENTS.items()):
+            if not key.startswith(self._session + "::"):
+                continue
+            bg_task = info.get("bg_task")
+            if bg_task is not None:
+                try:
+                    _MAIN_LOOP.call_soon_threadsafe(bg_task.cancel)
+                except Exception:
+                    pass
+            self._mod._SUBAGENTS.pop(key, None)
+        worker = self._mod._NOTIFY_WORKERS.pop(self._session, None)
+        self._mod._PENDING_NOTIFY.pop(self._session, None)
+        if worker is not None:
+            try:
+                _MAIN_LOOP.call_soon_threadsafe(worker.cancel)
+            except Exception:
+                pass
+
+    def _wait_until(self, cond, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if cond():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _wait_done(self, status_fn, timeout=4.0):
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            status = status_fn()
+            if status.get("status") in ("done", "error", "cancelled"):
+                return status
+            time.sleep(0.05)
+        return status
+
+    def test_spawn_returns_immediately_and_results(self):
+        c = setup_subagent(lambda: SlowEngine(0.6))
+        t0 = time.time()
+        r = call_cmd(lambda: c._cmd_spawn(
+            tasks=[{"name": "bg1", "task": "后台任务"}],
+            notify=False, session_id=self._session,
+        ))
+        submit_cost = time.time() - t0
+        self.assertTrue(r["success"], r)
+        self.assertLess(submit_cost, 0.3, f"spawn 应立即返回，实际 {submit_cost:.2f}s")
+
+        status = self._wait_done(lambda: call_cmd(
+            lambda: c._cmd_status("bg1", session_id=self._session)))
+        self.assertEqual(status["status"], "done", status)
+        self.assertIn("完成", status.get("result_preview", ""))
+
+        res = call_cmd(lambda: c._cmd_results("bg1", session_id=self._session))
+        self.assertFalse(res["running"])
+        self.assertIn("完成", res["content"])
+
+    def test_spawn_cancel_marks_cancelled(self):
+        c = setup_subagent(lambda: SlowEngine(3))
+        r = call_cmd(lambda: c._cmd_spawn(
+            tasks=[{"name": "bgc", "task": "长任务"}],
+            notify=False, session_id=self._session,
+        ))
+        self.assertTrue(r["success"], r)
+        time.sleep(0.15)
+        cn = call_cmd(lambda: c._cmd_cancel("bgc", session_id=self._session))
+        self.assertTrue(cn["success"], cn)
+        status = self._wait_done(lambda: call_cmd(
+            lambda: c._cmd_status("bgc", session_id=self._session)), timeout=3.0)
+        self.assertEqual(status["status"], "cancelled", status)
+
+    def test_spawn_limit(self):
+        c = setup_subagent(lambda: SlowEngine(2))
+        old = c.MAX_BACKGROUND_SUBAGENTS
+        c.MAX_BACKGROUND_SUBAGENTS = 1
+        try:
+            first = call_cmd(lambda: c._cmd_spawn(
+                tasks=[{"name": "bgl1", "task": "任务"}],
+                notify=False, session_id=self._session,
+            ))
+            second = call_cmd(lambda: c._cmd_spawn(
+                tasks=[{"name": "bgl2", "task": "任务"}],
+                notify=False, session_id=self._session,
+            ))
+            self.assertTrue(first["success"], first)
+            self.assertFalse(second["success"], second)
+            self.assertIn("上限", second.get("error", ""))
+        finally:
+            c.MAX_BACKGROUND_SUBAGENTS = old
+
+    def test_duplicate_name_rejected(self):
+        c = setup_subagent(lambda: SlowEngine(2))
+        first = call_cmd(lambda: c._cmd_spawn(
+            tasks=[{"name": "dup", "task": "任务"}], notify=False, session_id=self._session))
+        second = call_cmd(lambda: c._cmd_spawn(
+            tasks=[{"name": "dup", "task": "任务"}], notify=False, session_id=self._session))
+        self.assertTrue(first["success"], first)
+        self.assertFalse(second["success"], second)
+        self.assertIn("已在使用", second.get("error", ""))
+
+    def test_cancel_before_start_skips_execution(self):
+        called = []
+        c = setup_subagent(lambda: called.append(1) or SlowEngine(0.1))
+        key = self._mod._sub_key(self._session, "pre")
+        self._mod._SUBAGENTS[key] = {
+            "name": "pre", "task": "任务", "status": "queued",
+            "started_at": time.time(), "updated_at": time.time(),
+        }
+        cn = call_cmd(lambda: c._cmd_cancel("pre", session_id=self._session))
+        self.assertTrue(cn["success"], cn)
+        fut = asyncio.run_coroutine_threadsafe(
+            c._run_background({"name": "pre", "task": "任务"}, self._session, False, False),
+            _MAIN_LOOP,
+        )
+        fut.result(timeout=5)
+        status = c._cmd_status("pre", session_id=self._session)
+        self.assertEqual(status["status"], "cancelled", status)
+        self.assertEqual(called, [], "取消后不应再启动引擎")
+
+    def test_finished_entries_pruned(self):
+        c = setup_subagent(lambda: SlowEngine(0.1))
+        prefix = self._session + "::"
+        for i in range(25):
+            self._mod._SUBAGENTS[f"{prefix}old{i}"] = {
+                "name": f"old{i}", "status": "done",
+                "started_at": time.time() - 100 + i,
+                "finished_at": time.time() - 100 + i,
+            }
+        r = call_cmd(lambda: c._cmd_spawn(
+            tasks=[{"name": "fresh", "task": "任务"}], notify=False, session_id=self._session))
+        self.assertTrue(r["success"], r)
+        finished = [
+            k for k, v in self._mod._SUBAGENTS.items()
+            if k.startswith(prefix) and v.get("status") in ("done", "error", "cancelled")
+        ]
+        self.assertLessEqual(len(finished), 20, f"完成记录应被裁剪: {len(finished)}")
+
+    def test_notify_falls_back_to_enqueue(self):
+        from unittest.mock import patch
+        calls = {}
+
+        class FakeTaskMgr:
+            def has_running_task(self, sid):
+                return False
+
+            async def start_task(self, **kwargs):
+                calls["start"] = kwargs
+                return False
+
+            def enqueue_supplement_message(self, sid, payload):
+                calls.setdefault("queue", payload)
+                return True
+
+        class FakeMgr:
+            async def get_loop(self, sid):
+                return object()
+
+        class FakeSessionMgr:
+            def get_or_create(self, sid):
+                return type("S", (), {"memory": object()})()
+
+        c = self._mod.SubAgent()
+        payload = {"name": "n2", "success": True, "content": "结论",
+                   "iterations": 1, "tools_used": [], "duration_s": 0.1}
+        with patch("app.server.task_manager.get_task_manager", return_value=FakeTaskMgr()), \
+             patch("app.agent.loop.agent_loop_manager.AgentLoopManager.get_instance", return_value=FakeMgr()), \
+             patch("app.agent.loop.session_manager.get_session_manager", return_value=FakeSessionMgr()), \
+             patch("app.server.session_mode.get_mode", return_value="run"), \
+             patch.object(self._mod, "_NOTIFY_RETRY_INTERVAL", 0.05), \
+             patch("app.messaging.message_broker.get_message_broker", side_effect=RuntimeError("no broker")):
+            fut = asyncio.run_coroutine_threadsafe(
+                c._notify_parent(self._session, payload), _MAIN_LOOP)
+            fut.result(timeout=5)
+            delivered = self._wait_until(lambda: "queue" in calls)
+
+        self.assertTrue(delivered, "启动失败时应回退到排队")
+        self.assertIn("[子Agent完成]", calls["queue"]["content"])
+
+    def test_parallel_publishes_progress_and_done(self):
+        from unittest.mock import patch
+        events = []
+
+        class FakeBroker:
+            def publish(self, sid, evt):
+                events.append((sid, evt))
+
+        c = setup_subagent(lambda: SlowEngine(0.2))
+        with patch("app.messaging.message_broker.get_message_broker", return_value=FakeBroker()):
+            r = call_cmd(lambda: c._cmd_parallel(
+                tasks=[{"name": "pl", "task": "任务", "tools": ["read"]}],
+                timeout=5, session_id=self._session,
+            ))
+        self.assertTrue(r["success"], r)
+        types = [evt["type"] for _, evt in events]
+        self.assertIn("subagent_progress", types, "parallel 也应发布进度事件")
+        self.assertIn("subagent_done", types, "parallel 也应发布完成事件")
+
+    def test_spawn_input_validation(self):
+        c = setup_subagent(lambda: SlowEngine(0.1))
+        r1 = call_cmd(lambda: c._cmd_spawn(tasks=[], session_id=self._session))
+        r2 = call_cmd(lambda: c._cmd_spawn(tasks=[{"name": "x", "task": " "}], session_id=self._session))
+        self.assertFalse(r1["success"])
+        self.assertFalse(r2["success"])
+        self.assertIn("task", r2["error"])
+
+    def test_spawn_requires_main_loop(self):
+        from unittest.mock import patch
+        c = setup_subagent(lambda: SlowEngine(0.1))
+        with patch.object(self._mod, "_get_main_loop", return_value=None):
+            r = call_cmd(lambda: c._cmd_spawn(
+                tasks=[{"name": "nl", "task": "任务"}], notify=False, session_id=self._session))
+        self.assertFalse(r["success"])
+        self.assertIn("事件循环", r["error"])
+
+    def test_results_missing_name(self):
+        c = setup_subagent(lambda: SlowEngine(0.1))
+        r1 = call_cmd(lambda: c._cmd_results("", session_id=self._session))
+        r2 = call_cmd(lambda: c._cmd_results("nope", session_id=self._session))
+        self.assertFalse(r1["success"])
+        self.assertFalse(r2["success"])
+        self.assertIn("不存在", r2["error"])
+
+    def test_spawn_publishes_done_without_notify(self):
+        from unittest.mock import patch
+        events = []
+
+        class FakeBroker:
+            def publish(self, sid, evt):
+                events.append((sid, evt))
+
+        c = setup_subagent(lambda: SlowEngine(0.2))
+        with patch("app.messaging.message_broker.get_message_broker", return_value=FakeBroker()):
+            r = call_cmd(lambda: c._cmd_spawn(
+                tasks=[{"name": "nd", "task": "任务"}],
+                notify=False, session_id=self._session,
+            ))
+            ok = self._wait_until(
+                lambda: any(evt["type"] == "subagent_done" for _, evt in events), timeout=2.0)
+        self.assertTrue(r["success"], r)
+        self.assertTrue(ok, "notify=false 也必须广播完成事件，避免卡片停留在 running")
+
+    def test_progress_counts_tool_results(self):
+        from unittest.mock import patch
+        events = []
+
+        class FakeBroker:
+            def publish(self, sid, evt):
+                events.append(evt)
+
+        c = self._mod.SubAgent()
+        key = self._mod._sub_key(self._session, "ct")
+        self._mod._SUBAGENTS[key] = {
+            "name": "ct", "status": "running", "started_at": time.time(), "_pushed_at": 0,
+        }
+        with patch("app.messaging.message_broker.get_message_broker", return_value=FakeBroker()):
+            c._update_progress(key, {"type": "tool_result", "tool": "read"}, self._session)
+            self._mod._SUBAGENTS[key]["_pushed_at"] = 0
+            c._update_progress(key, {"type": "tool_result", "tool": "grep"}, self._session)
+        self.assertEqual(self._mod._SUBAGENTS[key]["tool_calls"], 2, "无 tool_start 时也应按 tool_result 计数")
+        self.assertEqual(self._mod._SUBAGENTS[key]["last_tool"], "grep")
+
+    def test_progress_elapsed_uses_real_start(self):
+        from unittest.mock import patch
+        events = []
+
+        class FakeBroker:
+            def publish(self, sid, evt):
+                events.append(evt)
+
+        c = self._mod.SubAgent()
+        with patch("app.messaging.message_broker.get_message_broker", return_value=FakeBroker()):
+            c._publish_progress(self._session, {
+                "name": "el", "status": "running", "started_at": time.time() - 3,
+            })
+        self.assertTrue(events)
+        self.assertGreaterEqual(events[0]["elapsed_s"], 2.5)
+        self.assertLessEqual(events[0]["elapsed_s"], 4.5)
+
+    def test_elapsed_uses_finished_at(self):
+        key = self._mod._sub_key(self._session, "fin")
+        now = time.time()
+        self._mod._SUBAGENTS[key] = {
+            "name": "fin", "status": "done", "started_at": now - 30,
+            "finished_at": now - 11.5, "result_content": "ok",
+        }
+        c = self._mod.SubAgent()
+        self.assertAlmostEqual(c._cmd_status("fin", self._session)["elapsed_s"], 18.5, delta=0.1)
+        self.assertAlmostEqual(c._cmd_results("fin", self._session)["elapsed_s"], 18.5, delta=0.1)
+        item = [x for x in c._cmd_list(self._session)["subagents"] if x["name"] == "fin"][0]
+        self.assertAlmostEqual(item["elapsed_s"], 18.5, delta=0.1)
+
+    def test_done_message_is_compact(self):
+        payload = {
+            "name": "x", "success": True, "content": "a" * 5000,
+            "iterations": 2, "tools_used": ["read"], "duration_s": 1.2,
+        }
+        msg = SubAgent._build_done_message(payload)
+        self.assertIn("[子Agent完成]", msg)
+        self.assertIn("[截断]", msg)
+        self.assertLess(len(msg), 4300)
+
+    def test_progress_publishes_to_broker(self):
+        from unittest.mock import patch
+        events = []
+
+        class FakeBroker:
+            def publish(self, sid, evt):
+                events.append((sid, evt))
+
+        c = self._mod.SubAgent()
+        key = self._mod._sub_key(self._session, "px")
+        self._mod._SUBAGENTS[key] = {
+            "name": "px", "status": "running", "task": "t",
+            "started_at": time.time() - 3, "_pushed_at": 0,
+        }
+        with patch("app.messaging.message_broker.get_message_broker", return_value=FakeBroker()):
+            c._update_progress(key, {"type": "tool_start", "tool": "read"}, self._session)
+        self.assertTrue(events, "应发布进度事件")
+        self.assertEqual(events[0][0], self._session)
+        self.assertEqual(events[0][1]["type"], "subagent_progress")
+        self.assertEqual(events[0][1]["current_tool"], "read")
+
+    def test_done_event_carries_tools_and_elapsed(self):
+        from unittest.mock import patch
+        events = []
+
+        class FakeBroker:
+            def publish(self, sid, evt):
+                events.append(evt)
+
+        with patch("app.messaging.message_broker.get_message_broker", return_value=FakeBroker()):
+            self._mod.SubAgent._publish_done_event(self._session, {
+                "name": "dx", "success": True, "content": "ok", "iterations": 2,
+                "tools_used": ["read", "grep"], "tool_calls": 3, "duration_s": 8.5,
+            })
+        evt = events[0]
+        self.assertEqual(evt["tool_calls"], 3, "完成事件应带工具调用次数")
+        self.assertEqual(evt["tools_used"], ["read", "grep"])
+        self.assertEqual(evt["elapsed_s"], 8.5, "完成事件应带真实耗时")
+
+    def test_notify_wakes_idle_parent(self):
+        from unittest.mock import patch
+        calls = {}
+
+        class FakeTaskMgr:
+            def has_running_task(self, sid):
+                return False
+
+            async def start_task(self, **kwargs):
+                calls["start"] = kwargs
+                return True
+
+            def enqueue_supplement_message(self, sid, payload):
+                calls["queue"] = payload
+                return True
+
+        class FakeMgr:
+            async def get_loop(self, sid):
+                return object()
+
+        class FakeSessionMgr:
+            def get_or_create(self, sid):
+                return type("S", (), {"memory": object()})()
+
+        c = self._mod.SubAgent()
+        payload = {"name": "n1", "success": True, "content": "结论", "iterations": 1,
+                   "tools_used": ["read"], "duration_s": 0.5}
+        with patch("app.server.task_manager.get_task_manager", return_value=FakeTaskMgr()), \
+             patch("app.agent.loop.agent_loop_manager.AgentLoopManager.get_instance", return_value=FakeMgr()), \
+             patch("app.agent.loop.session_manager.get_session_manager", return_value=FakeSessionMgr()), \
+             patch("app.server.session_mode.get_mode", return_value="run"), \
+             patch.object(self._mod, "_NOTIFY_RETRY_INTERVAL", 0.05), \
+             patch("app.messaging.message_broker.get_message_broker", side_effect=RuntimeError("no broker")):
+            fut = asyncio.run_coroutine_threadsafe(
+                c._notify_parent(self._session, payload), _MAIN_LOOP
+            )
+            fut.result(timeout=5)
+            delivered = self._wait_until(lambda: "start" in calls)
+
+        self.assertTrue(delivered, "空闲父会话应自动起一轮")
+        self.assertEqual(calls["start"]["session_id"], self._session)
+        self.assertIn("[子Agent完成]", calls["start"]["user_input"])
+
+    def test_notify_retries_until_task_running(self):
+        from unittest.mock import patch
+        state = {"attempt": 0, "queued": []}
+
+        class FakeTaskMgr:
+            def has_running_task(self, sid):
+                return state["attempt"] >= 2
+
+            async def start_task(self, **kwargs):
+                state["attempt"] += 1
+                return False
+
+            def enqueue_supplement_message(self, sid, payload):
+                if state["attempt"] >= 2:
+                    state["queued"].append(payload)
+                    return True
+                return False
+
+        class FakeMgr:
+            async def get_loop(self, sid):
+                return object()
+
+        class FakeSessionMgr:
+            def get_or_create(self, sid):
+                return type("S", (), {"memory": object()})()
+
+        c = self._mod.SubAgent()
+        payload = {"name": "race", "success": True, "content": "结论",
+                   "iterations": 1, "tools_used": [], "duration_s": 0.1}
+        with patch("app.server.task_manager.get_task_manager", return_value=FakeTaskMgr()), \
+             patch("app.agent.loop.agent_loop_manager.AgentLoopManager.get_instance", return_value=FakeMgr()), \
+             patch("app.agent.loop.session_manager.get_session_manager", return_value=FakeSessionMgr()), \
+             patch("app.server.session_mode.get_mode", return_value="run"), \
+             patch.object(self._mod, "_NOTIFY_RETRY_INTERVAL", 0.05), \
+             patch("app.messaging.message_broker.get_message_broker", side_effect=RuntimeError("no broker")):
+            fut = asyncio.run_coroutine_threadsafe(
+                c._notify_parent(self._session, payload), _MAIN_LOOP)
+            fut.result(timeout=5)
+            delivered = self._wait_until(lambda: bool(state["queued"]))
+
+        self.assertTrue(delivered, "启动竞争失败后应重试并最终进入队列")
+        self.assertIn("[子Agent完成]", state["queued"][0]["content"])
+
+
 class TestSubAgentIntegration(unittest.TestCase):
     """单任务、并行、白名单"""
 
@@ -349,7 +803,25 @@ class TestSubAgentIntegration(unittest.TestCase):
         item = r["results"][0]
         self.assertTrue(item["success"], f"应成功: {item}")
         self.assertIn("子任务完成", item["content"])
+        self.assertNotIn("tool_traces", item, "默认不应回传工具轨迹")
         self.assertTrue(engine.closed, "engine 应被 close")
+
+    def test_parallel_concurrency_limit(self):
+        sid = f"conc_{uuid.uuid4().hex[:6]}"
+        c = setup_subagent(lambda: SlowEngine(0.3))
+        old = c.MAX_PARALLEL_SUBAGENTS
+        c.MAX_PARALLEL_SUBAGENTS = 2
+        try:
+            t0 = time.time()
+            r = call_cmd(lambda: c._cmd_parallel(
+                tasks=[{"name": f"c{i}", "task": "任务"} for i in range(6)],
+                timeout=10, session_id=sid,
+            ))
+            dur = time.time() - t0
+        finally:
+            c.MAX_PARALLEL_SUBAGENTS = old
+        self.assertTrue(r["success"], r)
+        self.assertLess(dur, 1.4, f"应受并发上限约束（串行需 ~1.8s），实际 {dur:.2f}s")
 
     def test_parallel_concurrent(self):
         import components.sub_agent as subagent_mod
@@ -374,16 +846,41 @@ class TestSubAgentIntegration(unittest.TestCase):
         self.assertEqual(engines["a"].call_count, 1)
         self.assertEqual(engines["b"].call_count, 1)
 
+    def test_parallel_duplicate_names_are_split(self):
+        import components.sub_agent as subagent_mod
+        sid = f"dup_{uuid.uuid4().hex[:6]}"
+        c = setup_subagent(lambda: SlowEngine(0.1))
+        r = call_cmd(lambda: c._cmd_parallel(
+            tasks=[
+                {"name": "x", "task": "任务1"},
+                {"name": "x", "task": "任务2"},
+                {"name": "x", "task": "任务3"},
+            ],
+            timeout=5, session_id=sid,
+        ))
+        names = [item["name"] for item in r["results"]]
+        self.assertEqual(names, ["x", "x_2", "x_3"], "同名任务应自动拆分")
+        try:
+            for name in names:
+                res = c._cmd_results(name, session_id=sid)
+                self.assertTrue(res["success"], res)
+                self.assertFalse(res["running"])
+                self.assertIn("完成", res["content"])
+        finally:
+            for key in [k for k in subagent_mod._SUBAGENTS if k.startswith(sid + "::")]:
+                subagent_mod._SUBAGENTS.pop(key, None)
+
     def test_whitelist_isolation(self):
         import components.sub_agent as subagent_mod
         # 只授权 grep；shell 不属于默认自动附带 → mock 强求 shell 应被拒绝
         engine = ToolThenReplyEngine(first_tool="shell")
         c = setup_subagent(lambda: engine)
-        r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "iso", "task": "任务", "tools": '["grep"]'}]))
+        r = call_cmd(lambda: c._cmd_parallel(
+            tasks=[{"name": "iso", "task": "任务", "tools": '["grep"]'}], verbose=True))
         item = r["results"][0]
         traces = item.get("tool_traces", [])
         self.assertTrue(traces, "应有工具轨迹")
-        self.assertIn("not allowed", str(traces[0]["result"]))
+        self.assertIn("not allowed", str(traces[0]["result_preview"]))
 
     def test_string_json_compat(self):
         import components.sub_agent as subagent_mod
@@ -400,6 +897,10 @@ class TestSubAgentIntegration(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertTrue(r.get("timeout"))
         self.assertIn("超时", r["error"])
+        item = r["results"][0]
+        self.assertTrue(item.get("timed_out"))
+        for key in ("name", "success", "content", "iterations", "tools_used", "duration_s", "error"):
+            self.assertIn(key, item, f"超时项结构应完整: {item}")
 
     def test_timeout_clamped_to_max(self):
         from unittest.mock import patch
@@ -450,10 +951,11 @@ class TestSubAgentIsolation(unittest.TestCase):
         def collect(self, names):
             return {"read": FakeTool("read", behavior="raise")}
         c = setup_subagent(lambda: engine, tool_collect=collect)
-        r = call_cmd(lambda: c._cmd_parallel(tasks=[{"name": "b1", "task": "任务", "tools": ["read"]}]))
+        r = call_cmd(lambda: c._cmd_parallel(
+            tasks=[{"name": "b1", "task": "任务", "tools": ["read"]}], verbose=True))
         item = r["results"][0]
         self.assertTrue(item["success"], "工具失败不应让子 Agent 崩溃")
-        self.assertIn("RuntimeError", str(item["tool_traces"][0]["result"]))
+        self.assertIn("RuntimeError", str(item["tool_traces"][0]["result_preview"]))
 
     def test_no_temp_dir_leak(self):
         import components.sub_agent as subagent_mod
@@ -572,13 +1074,14 @@ class TestPlanModeInheritance(unittest.TestCase):
         r = call_cmd(lambda: c._cmd_parallel(
             tasks=[{"name": "p", "task": "只读调查", "tools": ["edit", "read"]}],
             session_id="parent_plan_mode",
+            verbose=True,
         ))
         item = r["results"][0]
         self.assertNotIn("edit", engine.visible_tools or [], "Plan 模式下 edit 不应下发")
         self.assertNotIn("edit", executed, "Plan 模式下 edit 不应真正执行")
         traces = item.get("tool_traces") or []
         self.assertTrue(
-            any("Plan 模式禁止" in str(t.get("result", {})) for t in traces),
+            any("Plan 模式禁止" in str(t.get("result_preview", {})) for t in traces),
             f"应返回拦截原因: {traces}",
         )
 

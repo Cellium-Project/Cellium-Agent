@@ -71,6 +71,8 @@ export type SSEEventType =
   | 'message_received'
   | 'supplement_injected'
   | 'mode_changed'
+  | 'subagent_progress'
+  | 'subagent_done'
   | 'hybrid_phase';
 
 export interface SSEEvent {
@@ -89,6 +91,19 @@ export interface SSEEvent {
   reason?: string;
   tool_traces?: ToolTrace[];
   suggestions?: string[];
+  // 子 Agent 后台进度
+  name?: string;
+  status?: string;
+  task?: string;
+  current_tool?: string;
+  tool_calls?: number;
+  last_tool?: string;
+  last_result_preview?: string;
+  elapsed_s?: number;
+  success?: boolean;
+  tools_used?: string[];
+  iterations?: number;
+  duration_s?: number;
   // Hybrid 状态
   phase?: string;
   // Plan/Run 模式

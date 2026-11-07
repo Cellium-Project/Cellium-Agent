@@ -6,6 +6,8 @@ export const API = {
   supplement: `${API_BASE}/chat/supplement`,
   chatStatus: (sessionId: string) => `${API_BASE}/chat/status?session_id=${sessionId}`,
   chatStop: `${API_BASE}/chat/stop`,
+  chatSubagents: (sessionId: string) =>
+    `${API_BASE}/chat/subagents?session_id=${encodeURIComponent(sessionId)}`,
 
   // Sessions
   sessions: `${API_BASE}/sessions`,

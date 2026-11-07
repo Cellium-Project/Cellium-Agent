@@ -124,9 +124,9 @@ def get_system_info_piece() -> PromptPiece:
     )
 
 
-def get_profile_piece(memory=None) -> PromptPiece:
+def get_profile_piece(memory=None, ask_user_name: bool = True) -> PromptPiece:
     _, user_name, _ = _load_profile(memory)
-    if user_name:
+    if user_name or not ask_user_name:
         content = ""
     else:
         content = "<system-reminder>\n用户尚未告知称呼，请在合适时机礼貌询问用户希望被如何称呼。\n</system-reminder>"
@@ -285,7 +285,10 @@ def get_auto_hints_piece() -> PromptPiece:
 # 工厂函数
 # ============================================================
 
-def create_default_builder(memory_dir: str = "memory", memory=None, shell_cwd: str = None) -> "PromptBuilder":
+def create_default_builder(
+    memory_dir: str = "memory", memory=None, shell_cwd: str = None,
+    ask_user_name: bool = True,
+) -> "PromptBuilder":
     from app.agent.prompt.builder import PromptBuilder
 
     builder = PromptBuilder()
@@ -293,7 +296,7 @@ def create_default_builder(memory_dir: str = "memory", memory=None, shell_cwd: s
     # static
     builder.register(get_identity_piece(memory_dir, memory))
     builder.register(get_system_info_piece())
-    builder.register(get_profile_piece(memory))
+    builder.register(get_profile_piece(memory, ask_user_name=ask_user_name))
     builder.register(get_thought_schema_piece())
 
     # daily
