@@ -16,8 +16,25 @@ export interface Session {
   created_at: string;
   last_active: string;
   title?: string;
+  running?: boolean;  // 会话正在运行
   age_seconds?: number;
   idle_seconds?: number;
+}
+
+export interface DelegationActivity {
+  task_id: string;
+  target: string;
+  target_title?: string;
+  purpose?: string;
+  status: string;
+  current_tool?: string;
+  last_tool?: string;
+  last_reasoning?: string;
+  tool_calls?: number;
+  elapsed_s?: number;
+  error?: string;
+  success?: boolean;
+  updatedAt: number;
 }
 
 export interface ToolTrace {
@@ -45,6 +62,9 @@ export interface Message {
   type?: 'scheduler_trigger';  // 特殊消息类型
   schedulerTaskName?: string;  // 定时任务名称
   attachments?: Attachment[];  // 附件列表
+  can_rewind?: boolean;  // 该轮是否有文件追踪记录
+  sourceSession?: string;  // 来自会话委托的委托方会话 id
+  sourceSessionTitle?: string;  // 委托方会话名称
 }
 
 export interface HistoryResponse {
@@ -93,6 +113,7 @@ export interface SSEEvent {
   tool_traces?: ToolTrace[];
   suggestions?: string[];
   message_id?: string;
+  tracked_turn_id?: string;
   removed_count?: number;
   // 子 Agent 后台进度
   name?: string;
@@ -107,10 +128,20 @@ export interface SSEEvent {
   tools_used?: string[];
   iterations?: number;
   duration_s?: number;
+  // 会话委托
+  kind?: string;
+  target?: string;
+  target_title?: string;
+  task_id?: string;
+  last_reasoning?: string;
+  purpose?: string;
+  turn_id?: string;
+  source_session?: string;
+  source_session_title?: string;
   // Hybrid 状态
   phase?: string;
-  // Plan/Run 模式
-  mode?: 'run' | 'plan';
+  // Run/Plan/Delegate 模式
+  mode?: 'run' | 'plan' | 'delegate';
   // 定时任务标记
   scheduler_task?: boolean;
   // 定时任务信息

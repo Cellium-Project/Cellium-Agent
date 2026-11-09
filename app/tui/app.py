@@ -73,7 +73,7 @@ Screen {
 }
 
 #sidebar {
-    width: 26;
+    width: 22%;
     min-width: 20;
     max-width: 40;
     padding: 0 0 0 1;
@@ -100,6 +100,8 @@ Screen {
     padding: 0 1;
     border: none;
     background: transparent;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 #session-list:focus {
@@ -182,6 +184,21 @@ Screen {
 #chat-column {
     width: 1fr;
     height: 1fr;
+}
+
+#delegation-bar {
+    height: auto;
+    max-height: 8;
+    padding: 0 1;
+    background: $surface;
+    color: $text-muted;
+    display: none;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#delegation-bar.visible {
+    display: block;
 }
 
 #footer-bar {
@@ -324,7 +341,7 @@ Screen {
     color: $msg-user-text;
 }
 
-.user-msg:hover {
+.user-msg.rewindable:hover {
     text-style: underline;
 }
 
@@ -375,8 +392,11 @@ ToastRack {
 def mode_badge_markup(mode: str, dark: bool = True) -> str:
     """侧栏收起时的模式标识"""
     if mode == "plan":
-        color = "#b8860b" if dark else "#8a6d1f"
+        color = "#a78bfa" if dark else "#7c5cff"
         return f"[bold {color}]PLAN[/]"
+    if mode == "delegate":
+        color = "#f5a524" if dark else "#b45309"
+        return f"[bold {color}]DELEGATE[/]"
     color = "#2ff0ab" if dark else "#0b8a63"
     return f"[bold {color}]RUN[/]"
 
@@ -420,7 +440,7 @@ class CelliumTUI(App):
         Binding("ctrl+n", "new_session", "新建会话"),
         Binding("ctrl+s", "open_settings", "设置"),
         Binding("ctrl+l", "clear_chat", "清屏"),
-        Binding("shift+tab", "toggle_run_mode", "Plan/Run 切换", show=False, priority=True),
+        Binding("shift+tab", "toggle_run_mode", "模式切换", show=False, priority=True),
     ]
 
     def __init__(self, bootstrap=None, session_id=None):
@@ -476,6 +496,12 @@ class CelliumTUI(App):
         self._file_panel_dir = ""
         self._restoring_history = False 
         self._local_rewind = False
+        self._tracked_ids = set()
+        self._delegation_state = {}
+        self._delegation_timers = {}
+        self._delegation_text = ""
+        self._delegation_frame = 0
+        self._session_list_entries = []
 
         self.header = None
         self.body = None
@@ -518,6 +544,13 @@ class CelliumTUI(App):
             return "default"
 
     def _current_model_name(self):
+        try:
+            from app.server import session_llm
+            override = session_llm.get_model(self.session_id)
+            if override:
+                return override
+        except Exception:
+            pass
         try:
             from app.core.util.agent_config import get_config
             llm = get_config().get_section("llm") or {}
@@ -585,6 +618,7 @@ class CelliumTUI(App):
                 with Vertical(id="sidebar-bottom"):
                     yield Button(self.tr("sidebar.settings"), id="btn-settings", variant="default")
             with Vertical(id="chat-column"):
+                yield NoSelectStatic("", id="delegation-bar")
                 yield ChatScroll(id="chat")
                 with Vertical(id="footer-bar"):
                     yield CommandPalette(id="command-palette")
@@ -605,6 +639,7 @@ class CelliumTUI(App):
         self.hint = self.query_one("#hint", Hint)
         self.status_left = self.query_one("#status-left", NoSelectStatic)
         self.status_right = self.query_one("#status-right", NoSelectStatic)
+        self.delegation_bar = self.query_one("#delegation-bar", NoSelectStatic)
         self.input.focus()
         self._set_terminal_title()
         self._refresh_status()
@@ -621,6 +656,8 @@ class CelliumTUI(App):
         self.set_interval(2.0, self._sync_subagent_cards)
         # 全局 blink timer，所有 spinner 共享
         self._global_blink_timer = self.set_interval(0.5, self._tick_global_blink)
+        # 委托状态条单独高频刷新（0.12s ≈ 8fps）
+        self._delegation_timer = self.set_interval(0.12, self._tick_delegation_bar)
         # 常驻订阅 broker：空闲时也能实时收到对端（WebUI/外部平台）发起的消息
         self._post(self._start_broker_listener())
 
@@ -716,6 +753,7 @@ class CelliumTUI(App):
             self._last_width = w
             self._refresh_status()
             self._apply_responsive_sidebar()
+            self._schedule_session_prompt_reload()
 
     def _converge_runtime(self) -> None:
         try:
@@ -825,6 +863,24 @@ class CelliumTUI(App):
         for w in self.chat.query("ToolCallCard"):
             if not w._done:
                 w._tick()
+        try:
+            self._refresh_session_running()
+        except Exception:
+            pass
+
+    def _tick_delegation_bar(self):
+        if not self._delegation_state:
+            return
+        self._delegation_frame += 1
+        if not any(
+            (v.get("status") or "running") not in self._DELEGATION_TERMINAL
+            for v in self._delegation_state.values()
+        ):
+            return
+        try:
+            self._render_delegation_bar()
+        except Exception:
+            pass
 
     def _refresh_status(self):
         web = ""
@@ -871,8 +927,8 @@ class CelliumTUI(App):
         right = ""
         if web:
             right = f"[dim]| {self.tr('header.webui')} {web}[/dim]"
-        # 侧栏收起时 logo 不可见，用状态栏补一个模式标识
-        if not self._sidebar_visible():
+        # 侧栏收起时 logo 不可见，用状态栏补一个模式标识；委托模式始终显示
+        if not self._sidebar_visible() or self._run_mode == "delegate":
             tag = mode_badge_markup(self._run_mode, self.theme == "cellium-dark")
             right = f"{right}  {tag}" if right else tag
         if self.status_right:
@@ -922,6 +978,8 @@ class CelliumTUI(App):
                 self.chat.set_class(False, "no-scrollbar")
             except Exception:
                 pass
+        # 侧栏显示后按真实宽度重算标题
+        self.set_timer(0.2, self._reload_session_prompts)
 
     def apply_language(self):
         if self.sidebar:
@@ -1150,15 +1208,102 @@ class CelliumTUI(App):
             await self._append_system(self.tr("session.list_error", e))
             return
         self.session_list.clear_options()
+        from app.core.util.session_status import is_session_running
+        entries = []
         for meta in metas:
-            title = meta.title or meta.session_id
-            if meta.message_count:
-                title += f"  [dim]({meta.message_count})[/dim]"
-            if meta.session_id == self.session_id:
-                title = f"● {title}"
-            else:
-                title = f"○ {title}"
-            self.session_list.add_option(Option(title, id=meta.session_id))
+            entry = {
+                "sid": meta.session_id,
+                "title": str(meta.title or meta.session_id),
+                "count": meta.message_count or 0,
+                "current": meta.session_id == self.session_id,
+                "running": is_session_running(meta.session_id),
+                "frame": self._global_blink_counter,
+            }
+            entries.append(entry)
+            try:
+                self.session_list.add_option(
+                    Option(self._session_prompt(entry), id=meta.session_id)
+                )
+            except Exception as e:
+                # 单条标题异常不应中断整个会话列表
+                logger.warning("[TUI] 会话项渲染失败 | %s | %s", meta.session_id, e)
+        self._session_list_entries = entries
+        # 首次布局前算不到真实宽度，稍后重算一次
+        self.set_timer(0.2, self._reload_session_prompts)
+
+    def _session_list_width(self) -> int:
+        try:
+            w = self.session_list.scrollable_content_region.width
+            if w:
+                return max(10, w - 1)
+        except Exception:
+            pass
+        for attr in ("content_size", "size"):
+            try:
+                w = getattr(self.session_list, attr).width
+            except Exception:
+                w = 0
+            if w:
+                return max(10, w - 2)
+        return 16
+
+    def _reload_session_prompts(self):
+        """布局完成后按真实宽度重算，避免首帧过宽换行"""
+        entries = getattr(self, "_session_list_entries", None) or []
+        for idx, entry in enumerate(entries):
+            try:
+                self.session_list.replace_option_prompt_at_index(idx, self._session_prompt(entry))
+            except Exception:
+                pass
+
+    def _schedule_session_prompt_reload(self, delay: float = 0.15):
+        timer = getattr(self, "_prompt_reload_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._prompt_reload_timer = self.set_timer(delay, self._reload_session_prompts)
+
+    def _session_prompt(self, entry, frame=None) -> str:
+        from app.tui.spinner import running_marker
+        from app.tui.widgets import clip_cells, plain_one_line
+        from rich.cells import cell_len
+        frame = self._global_blink_counter if frame is None else frame
+        if entry.get("running"):
+            prefix = f"{running_marker(frame)} "
+        else:
+            prefix = "● " if entry.get("current") else "○ "
+        count = entry.get("count") or 0
+        # 去 ANSI/控制字符并压成单行；截断后无条件转义方括号，避免 markup 崩溃
+        raw = plain_one_line(entry.get("title") or "")
+        suffix = f"  ({count})" if count else ""
+        avail = max(4, self._session_list_width() - 3 - cell_len(suffix))
+        title = clip_cells(raw, avail).replace("[", "\\[")
+        if count:
+            title += f"  [dim]({count})[/dim]"
+        return prefix + title
+
+    def _refresh_session_running(self):
+        """闪烁点：只更新状态有变化的选项，避免整表重建丢选中"""
+        entries = getattr(self, "_session_list_entries", None) or []
+        if not entries:
+            return
+        try:
+            from app.core.util.session_status import is_session_running
+            lst = self.session_list
+        except Exception:
+            return
+        frame = self._global_blink_counter
+        for idx, entry in enumerate(entries):
+            running = is_session_running(entry["sid"])
+            if running != entry.get("running") or (running and entry.get("frame") != frame):
+                entry["running"] = running
+                entry["frame"] = frame
+                try:
+                    lst.replace_option_prompt_at_index(idx, self._session_prompt(entry, frame))
+                except Exception:
+                    pass
 
     async def _switch_session(self, session_id):
         if self._busy:
@@ -1191,6 +1336,7 @@ class CelliumTUI(App):
         self._tool_cards = {}
         self._subagent_cards = {}
         self._tool_count = 0
+        self.model_name = self._current_model_name()
         self._apply_store_mode()
         self._refresh_status()
         await self._load_sessions()
@@ -1208,6 +1354,7 @@ class CelliumTUI(App):
             get_session_manager().get_or_create(self.session_id)
             store.set_client_last_session(self.session_id, "tui")
             self.chat.remove_children()
+            self.model_name = self._current_model_name()
             self._refresh_status()
             await self._load_sessions()
             await self._append_system(self.tr("session.created", self.session_id))
@@ -1586,6 +1733,8 @@ class CelliumTUI(App):
             self._handle_plan_habit(arg)
         elif cmd == "/run":
             self._set_run_mode("run")
+        elif cmd == "/delegate":
+            self._set_run_mode("delegate")
         else:
             self._post(self._append_system(self.tr("commands.unknown", cmd)))
 
@@ -1655,9 +1804,13 @@ class CelliumTUI(App):
             if not any(m.get("name") == name for m in models):
                 await self._append_system(self.tr("model.not_found", name))
                 return
-            cfg.set("llm.current_model", name, persist=True)
-            from app.server.routes.config import reload_llm_engine
-            await reload_llm_engine()
+            # 只切当前会话，不动全局配置（其他会话继续用各自的模型）
+            from app.server import session_llm
+            result = session_llm.set_model(self.session_id, name)
+            if not result.get("success"):
+                await self._append_system(self.tr("model.switch_failed", result.get("error")))
+                return
+            session_llm.apply_to_loop(self.session_id)
             self.model_name = name
             self._refresh_status()
             await self._append_system(self.tr("model.switched", name))
@@ -1745,7 +1898,9 @@ class CelliumTUI(App):
                 pass
 
     def action_toggle_run_mode(self):
-        self._set_run_mode("plan" if self._run_mode == "run" else "run")
+        order = ("run", "plan", "delegate")
+        idx = order.index(self._run_mode) if self._run_mode in order else 0
+        self._set_run_mode(order[(idx + 1) % len(order)])
 
     def _apply_store_mode(self):
         """按后端会话模式同步本地状态（启动/切会话时，不播放动画）"""
@@ -1761,8 +1916,9 @@ class CelliumTUI(App):
             pass
 
     def _set_run_mode(self, mode, sync=True, animate=True):
+        from app.core.security.run_mode import normalize_mode
         from app.server.session_mode import set_mode
-        mode = "plan" if mode == "plan" else "run"
+        mode = normalize_mode(mode)
         if sync:
             mode = set_mode(self.session_id, mode)
         if mode == self._run_mode:
@@ -1812,14 +1968,42 @@ class CelliumTUI(App):
         if not message_id:
             self._post(self._append_system(self.tr("rewind.none")))
             return
-        from app.tui.session_picker import DeleteConfirmScreen
+        self.run_worker(self._begin_rewind_confirm(message_id))
+
+    async def _begin_rewind_confirm(self, msg_id):
+        try:
+            from app.agent.loop.rewind import has_tracking, preview_rewind
+            tracked = await asyncio.to_thread(has_tracking, self.session_id, msg_id)
+            if not tracked:
+                await self._append_system(self.tr("rewind.untracked"))
+                return
+            preview = await asyncio.to_thread(preview_rewind, self.session_id, msg_id)
+        except Exception as e:
+            await self._append_system(self.tr("rewind.failed", e))
+            return
+        from app.tui.session_picker import RewindConfirmScreen, format_rewind_files
+        files = list(preview.get("files") or [])
+        skipped = list(preview.get("files_skipped") or [])
+        files_text = format_rewind_files(
+            files, skipped,
+            restore_label=self.tr("rewind.files_restored"),
+            delete_label=self.tr("rewind.files_deleted"),
+            none_label=self.tr("rewind.files_none"),
+            more_label=self.tr("rewind.files_more"),
+            skipped_label=self.tr("rewind.files_skipped"),
+            binary_label=self.tr("rewind.files_binary"),
+        )
         self.push_screen(
-            DeleteConfirmScreen(
+            RewindConfirmScreen(
                 self.tr("rewind.confirm"),
+                files,
+                skipped,
+                self.tr("rewind.hint"),
+                files_text,
                 self.tr("rewind.confirm_yes"),
                 self.tr("common.cancel"),
             ),
-            callback=lambda ok: self._post(self._rewind_to(message_id)) if ok else None,
+            callback=lambda ok: self._post(self._rewind_to(msg_id)) if ok else None,
         )
 
     async def _rewind_last_round(self):
@@ -1834,7 +2018,7 @@ class CelliumTUI(App):
         if not msg_id:
             await self._append_system(self.tr("rewind.none"))
             return
-        await self._rewind_to(msg_id)
+        await self._begin_rewind_confirm(msg_id)
 
     async def _rewind_to(self, msg_id):
         try:
@@ -1856,6 +2040,34 @@ class CelliumTUI(App):
         self._last_local_task_end = time.monotonic()
         self._clear_chat()
         await self._load_history()
+
+    def _refresh_tracked_ids(self):
+        try:
+            from app.agent.loop.rewind import tracked_user_ids
+            self._tracked_ids = tracked_user_ids(self.session_id)
+        except Exception:
+            self._tracked_ids = set()
+        return self._tracked_ids
+
+    def _apply_rewindable(self, mark_last=False, turn_id=None):
+        from app.tui.widgets import UserMessage
+        try:
+            widgets = list(self.query(UserMessage))
+        except Exception:
+            return
+        for w in widgets:
+            w.set_rewindable(bool(w.message_id) and w.message_id in self._tracked_ids)
+        if not mark_last or not widgets:
+            return
+        last = widgets[-1]
+        msg_id = turn_id or self._find_user_msg_id(last._content)
+        if msg_id and msg_id in self._tracked_ids:
+            last.message_id = msg_id
+            last.set_rewindable(True)
+
+    async def _sync_rewindable(self, mark_last=False, turn_id=None):
+        await asyncio.to_thread(self._refresh_tracked_ids)
+        self._apply_rewindable(mark_last, turn_id)
 
     def _clear_local_rewind(self):
         self._local_rewind = False
@@ -2028,12 +2240,24 @@ class CelliumTUI(App):
         t = evt.get("type")
         if t == "mode_changed":
             self._set_run_mode(evt.get("mode"), sync=False)
+        elif t == "session_model_changed":
+            if evt.get("session_id") in (None, self.session_id):
+                self.model_name = evt.get("model") or self.model_name
+                self._refresh_status()
         elif t == "status":
             self._refresh_status()
         elif t == "message_received":
             # 对端（WebUI/外部平台）发起的消息：立即显示用户消息
             msg = evt.get("message") or evt.get("content") or ""
             if msg:
+                source_session = evt.get("source_session")
+                if source_session:
+                    await self._append_system(
+                        self.tr(
+                            "session.delegated_from",
+                            evt.get("source_session_title") or source_session,
+                        )
+                    )
                 await self._append_user(str(msg))
         elif t == "messages_rewound":
             if not self._local_rewind and not self._busy:
@@ -2077,16 +2301,24 @@ class CelliumTUI(App):
             self._touch_busy()
             self._update_tool_card(evt)
         elif t == "subagent_progress":
-            await self._update_subagent_card(evt)
+            if evt.get("kind") == "session":
+                self._update_delegation_bar(evt)
+            else:
+                await self._update_subagent_card(evt)
         elif t == "subagent_done":
-            await self._finish_subagent_card(evt)
+            if evt.get("kind") == "session":
+                self._update_delegation_bar(evt)
+            else:
+                await self._finish_subagent_card(evt)
         elif t == "done":
             await self._finalize_render()
             self._finish_response()
             self._refresh_status()
+            await self._sync_rewindable(mark_last=True, turn_id=evt.get("tracked_turn_id"))
         elif t in ("stopped", "control_loop_stop", "heuristic_stop"):
             await self._finalize_render()
             self._finish_response()
+            await self._sync_rewindable(mark_last=True, turn_id=evt.get("tracked_turn_id"))
         elif t == "error":
             await self._append_system(self.tr("error", evt.get("error", "")))
         elif t == "heuristic_redirect":
@@ -2460,7 +2692,18 @@ class CelliumTUI(App):
 
     @staticmethod
     def _subagent_label(evt):
-        parts = [str(evt.get("name") or "subagent"), str(evt.get("status") or "running")]
+        if evt.get("kind") == "session":
+            status_cn = {
+                "queued": "排队中", "running": "执行中", "done": "完成",
+                "error": "失败", "timeout": "超时", "cancelled": "已取消",
+            }
+            target = str(evt.get("target_title") or evt.get("target") or evt.get("name") or "?")
+            raw_status = str(evt.get("status") or "running")
+            parts = [f"会话 {target}", status_cn.get(raw_status, raw_status)]
+            if evt.get("purpose"):
+                parts.append(str(evt["purpose"])[:40])
+        else:
+            parts = [str(evt.get("name") or "subagent"), str(evt.get("status") or "running")]
         tool = evt.get("current_tool") or evt.get("last_tool")
         used = [t for t in (evt.get("tools_used") or []) if t]
         if tool:
@@ -2481,30 +2724,148 @@ class CelliumTUI(App):
             parts.append(str(evt["error"])[:60])
         return " · ".join(parts)
 
+    _DELEGATION_FIELDS = (
+        "target", "target_title", "purpose", "status", "current_tool",
+        "last_tool", "last_reasoning", "tool_calls", "elapsed_s", "error", "success",
+    )
+    _DELEGATION_TERMINAL = ("done", "error", "timeout", "cancelled", "unknown")
+
+    def _update_delegation_bar(self, evt):
+        key = str(evt.get("task_id") or f"session:{evt.get('target') or evt.get('name') or ''}")
+        info = self._delegation_state.setdefault(key, {"task_id": key})
+        for field in self._DELEGATION_FIELDS:
+            if evt.get(field) is not None:
+                info[field] = evt.get(field)
+        info["updated_at"] = time.time()
+        status = info.get("status") or "running"
+        if status in self._DELEGATION_TERMINAL:
+            old = self._delegation_timers.pop(key, None)
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    pass
+            delay = 2.5 if status == "done" else 4.0
+            self._delegation_timers[key] = self.set_timer(
+                delay, lambda k=key: self._remove_delegation(k)
+            )
+        self._render_delegation_bar()
+
+    def _remove_delegation(self, key):
+        self._delegation_timers.pop(key, None)
+        self._delegation_state.pop(key, None)
+        self._render_delegation_bar()
+
+    def _reset_delegations(self):
+        for timer in getattr(self, "_delegation_timers", {}).values():
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._delegation_timers = {}
+        self._delegation_state = {}
+        self._delegation_text = ""
+        try:
+            self.delegation_bar.update("")
+            self.delegation_bar.remove_class("visible")
+        except Exception:
+            pass
+
+    def _render_delegation_bar(self):
+        bar = getattr(self, "delegation_bar", None)
+        if bar is None:
+            return
+        state = list(self._delegation_state.values())
+        if not state:
+            self._delegation_text = ""
+            bar.update("")
+            bar.remove_class("visible")
+            return
+        bar.add_class("visible")
+        from rich.markup import escape
+        from app.tui.spinner import DOTS_FRAMES
+        frame = DOTS_FRAMES[self._delegation_frame % len(DOTS_FRAMES)]
+        lines = []
+        visible = state[-3:]
+        hidden = len(state) - len(visible)
+        running_keys = [
+            str(v.get("task_id")) for v in visible
+            if (v.get("status") or "running") not in self._DELEGATION_TERMINAL
+        ]
+        last_running = running_keys[-1] if running_keys else None
+        for info in visible:
+            status = info.get("status") or "running"
+            name = info.get("target_title") or info.get("target") or "?"
+            key = str(info.get("task_id") or "")
+            if status in self._DELEGATION_TERMINAL:
+                if status == "done":
+                    prefix = "[green]✓[/]"
+                    label = self.tr("delegation.done", name)
+                else:
+                    prefix = "[red]✗[/]"
+                    label = self.tr("delegation.failed", name)
+            else:
+                prefix = f"[bold cyan]{frame}[/]"
+                label = self.tr(
+                    "delegation.running" if status == "running" else "delegation.queued", name
+                )
+            parts = [f"{prefix} {escape(str(label))}"]
+            tool = info.get("current_tool") or info.get("last_tool")
+            if tool:
+                parts.append(f"[dim]{escape(self.tr('delegation.tool', tool))}[/]")
+            if info.get("tool_calls"):
+                parts.append(f"[dim]{escape(self.tr('delegation.attempt', info['tool_calls']))}[/]")
+            if info.get("elapsed_s"):
+                parts.append(f"[dim]{int(float(info['elapsed_s']))}s[/]")
+            if status in self._DELEGATION_TERMINAL and info.get("error"):
+                parts.append(f"[red]{escape(str(info['error'])[:60])}[/]")
+            lines.append(" · ".join(parts))
+            if key == last_running and info.get("last_reasoning"):
+                lines.append(
+                    f"[dim]{self.tr('delegation.reasoning')}："
+                    f"{escape(str(info['last_reasoning'])[:120])}[/]"
+                )
+        if hidden > 0:
+            lines.append(f"[dim]{escape(self.tr('delegation.more', hidden))}[/]")
+        self._delegation_text = "\n".join(lines)
+        bar.update(self._delegation_text)
+
     async def _update_subagent_card(self, evt):
+        is_session = evt.get("kind") == "session"
         name = str(evt.get("name") or "subagent")
-        key = f"subagent:{name}"
+        target = str(evt.get("target") or name)
+        key = f"session:{target}" if is_session else f"subagent:{name}"
         desc = self._subagent_label(evt)
         card = self._subagent_cards.get(key)
         if card is None:
             card = ToolCallCard()
             await self.chat.mount(card)
-            card.add_call(key, tool="sub_agent", description=desc,
-                          arguments={"name": name, "task": evt.get("task", "")})
+            if is_session:
+                card.add_call(key, tool="session_agent", description=desc,
+                              arguments={"target": target, "purpose": evt.get("purpose")})
+            else:
+                card.add_call(key, tool="sub_agent", description=desc,
+                              arguments={"name": name, "task": evt.get("task", "")})
             self._subagent_cards[key] = card
         else:
             card.set_call_description(key, desc)
         self.chat.scroll_to_follow()
 
     async def _finish_subagent_card(self, evt):
+        is_session = evt.get("kind") == "session"
         name = str(evt.get("name") or "subagent")
-        key = f"subagent:{name}"
+        target = str(evt.get("target") or name)
+        key = f"session:{target}" if is_session else f"subagent:{name}"
         desc = self._subagent_label(evt)
         card = self._subagent_cards.pop(key, None)
         if card is None:
             card = ToolCallCard()
             await self.chat.mount(card)
-            card.add_call(key, tool="sub_agent", description=desc, arguments={"name": name})
+            if is_session:
+                card.add_call(key, tool="session_agent", description=desc,
+                              arguments={"target": target, "purpose": evt.get("purpose")})
+            else:
+                card.add_call(key, tool="sub_agent", description=desc, arguments={"name": name})
         else:
             card.set_call_description(key, desc)
         card.update_call(
@@ -2525,6 +2886,9 @@ class CelliumTUI(App):
         except Exception:
             return
         for key in list(self._subagent_cards.keys()):
+            # session 委托不在 SubAgent 注册表中，跳过注册表兜底
+            if not key.startswith("subagent:"):
+                continue
             name = key.split("subagent:", 1)[-1]
             info = sa._SUBAGENTS.get(sa._sub_key(self.session_id, name)) or {}
             status = info.get("status")
@@ -2643,6 +3007,7 @@ class CelliumTUI(App):
         self._active_tool_card = None
         self._restoring_history = False
         self._history_specs = None
+        self._reset_delegations()
 
     def _history_stale(self, epoch: int) -> bool:
         return epoch != self._session_epoch
@@ -2658,7 +3023,11 @@ class CelliumTUI(App):
     def _build_spec_widget(self, spec, md=None):
         kind = spec["kind"]
         if kind == "user":
-            return UserMessage(spec["content"], spec.get("id"))
+            return UserMessage(
+                spec["content"],
+                spec.get("id"),
+                bool(spec.get("id")) and spec.get("id") in self._tracked_ids,
+            )
         if kind == "thinking":
             return ThinkingBlock(spec["content"])
         if kind == "reasoning":
@@ -2763,6 +3132,7 @@ class CelliumTUI(App):
 
     async def _load_history(self):
         epoch = self._session_epoch
+        await asyncio.to_thread(self._refresh_tracked_ids)
         self._history_ready.clear()
         self._restoring_history = True
         self._history_offset = 0

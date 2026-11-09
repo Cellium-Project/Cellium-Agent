@@ -3,6 +3,12 @@ from rich.text import Text
 
 CELL_FRAMES = ["◐", "◓", "◉", "◎", "◉", "◒"]
 
+DOTS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+def running_marker(frame: int) -> str:
+    """会话列表的运行中标记"""
+    return f"[bold cyan]{CELL_FRAMES[frame % len(CELL_FRAMES)]}[/]"
+
 _PULSE_TOP = {2, 3}
 
 def cell_spinner_text(frame: int, state_text: str, color: str) -> Text:

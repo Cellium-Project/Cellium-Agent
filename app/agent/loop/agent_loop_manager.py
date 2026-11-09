@@ -124,8 +124,12 @@ class AgentLoopManager:
         if not new_engine:
             return 0
         self._llm_engine = new_engine
+        from app.server import session_llm
         updated = 0
         for session_id, meta in list(self._loops.items()):
+            if session_llm.has_override(session_id):
+                # 会话有独立模型，不跟随全局切换
+                continue
             loop = meta.agent_loop
             try:
                 if hasattr(loop, 'llm'):
@@ -138,6 +142,24 @@ class AgentLoopManager:
                 logger.warning(f"[AgentLoopManager] LLM 推送失败 session={session_id}: {e}")
         logger.info(f"[AgentLoopManager] LLM 引擎已推送到 {updated} 个活跃 loop")
         return updated
+
+    def apply_session_engine(self, session_id: str, engine=None) -> int:
+        """把会话级引擎推给已存在的 loop；engine=None 表示回落到全局引擎"""
+        meta = self._loops.get(session_id)
+        if meta is None:
+            return 0
+        target = engine or self._llm_engine
+        loop = meta.agent_loop
+        try:
+            if hasattr(loop, "llm"):
+                loop.llm = target
+            compactor = getattr(loop, "_session_compactor", None)
+            if compactor is not None and hasattr(compactor, "llm"):
+                compactor.llm = target
+            return 1
+        except Exception as e:
+            logger.warning(f"[AgentLoopManager] 会话引擎推送失败 session={session_id}: {e}")
+            return 0
 
     async def get_loop(self, session_id: str) -> Any:
         if session_id in self._loops:
@@ -217,6 +239,11 @@ class AgentLoopManager:
         del self._loops[session_id]
         with self._locks_guard:
             self._locks.pop(session_id, None)
+        try:
+            from app.server import session_llm
+            session_llm.drop_engine(session_id)
+        except Exception:
+            pass
         logger.info(f"[AgentLoopManager] Evicted oldest session: {session_id}")
 
     async def get_lock(self, session_id: str) -> SessionLock:
@@ -286,8 +313,15 @@ class AgentLoopManager:
         session_shell = ShellTool()
         session_tools = dict(self._tools) if self._tools else {}
 
+        session_engine = None
+        try:
+            from app.server import session_llm
+            session_engine = session_llm.resolve_engine(session_id)
+        except Exception as e:
+            logger.warning("[AgentLoopManager] 读取会话模型失败 session=%s: %s", session_id, e)
+
         return AgentLoop(
-            llm_engine=self._llm_engine,
+            llm_engine=session_engine or self._llm_engine,
             shell=session_shell,
             memory=None,
             three_layer_memory=self._three_layer_memory,

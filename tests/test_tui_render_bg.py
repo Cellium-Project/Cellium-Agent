@@ -51,11 +51,11 @@ class TestBlockBlankBackground(unittest.TestCase):
 
 class TestLogoPlanColor(unittest.TestCase):
 
-    def test_green_becomes_dark_gold(self):
+    def test_green_becomes_violet(self):
         from app.tui.widgets import LogoImage
         out = LogoImage._plan_color((36, 236, 170, 250))
-        self.assertTrue(out[0] > out[1] > out[2], f"应为暗金色系: {out}")
-        self.assertLess(max(out[:3]), 220, f"亮度应偏暗: {out}")
+        self.assertTrue(out[2] > out[0] > out[1], f"应为紫罗兰色系: {out}")
+        self.assertLess(max(out[:3]), 235, f"亮度应偏柔和: {out}")
         self.assertEqual(out[3], 250)
 
     def test_blue_and_transparent_untouched(self):
@@ -125,10 +125,10 @@ class TestCommandMatch(unittest.TestCase):
 
 class TestModeBadge(unittest.TestCase):
 
-    def test_plan_badge_gold(self):
+    def test_plan_badge_violet(self):
         from app.tui.app import mode_badge_markup
-        self.assertIn("#b8860b", mode_badge_markup("plan"))
-        self.assertIn("#8a6d1f", mode_badge_markup("plan", dark=False))
+        self.assertIn("#a78bfa", mode_badge_markup("plan"))
+        self.assertIn("#7c5cff", mode_badge_markup("plan", dark=False))
 
     def test_run_badge_green(self):
         from app.tui.app import mode_badge_markup

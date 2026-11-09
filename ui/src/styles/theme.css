@@ -40,6 +40,7 @@
   /* Run 模式标识色：与 logo 中间薄荷绿同色系，浅色主题下调深保证可读 */
   --mode-run: #0b8a63;
   --mode-plan: #7c5cff;
+  --mode-delegate: #b45309;
 
   /* Shadow */
   --shadow-sm: 0 1px 2px rgba(60, 64, 67, 0.1);
@@ -173,6 +174,7 @@
   /* Run 模式标识色：logo 中间的薄荷绿 */
   --mode-run: #2ff0ab;
   --mode-plan: #a78bfa;
+  --mode-delegate: #f5a524;
 
   /* Shadow */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -477,6 +479,10 @@
   color: var(--mode-plan);
 }
 
+.btn-mode.delegate {
+  color: var(--mode-delegate);
+}
+
 .btn-mode:hover {
   background: var(--bg-hover);
   color: var(--mode-run);
@@ -484,6 +490,51 @@
 
 .btn-mode.plan:hover {
   color: var(--mode-plan);
+}
+
+.btn-mode.delegate:hover {
+  color: var(--mode-delegate);
+}
+
+.custom-dropdown.header-model-dropdown {
+  width: auto;
+  max-width: 200px;
+  flex-shrink: 0;
+}
+
+.header-model-dropdown .dropdown-trigger {
+  width: auto;
+  max-width: 200px;
+  min-width: 100px;
+  height: 30px;
+  line-height: 28px;
+  padding: 0 26px 0 12px;
+  font-size: 12px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 15px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.header-model-dropdown .dropdown-trigger::after {
+  right: 12px;
+  border-top-width: 4px;
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  border-right-color: var(--text-tertiary);
+}
+
+.header-model-dropdown .dropdown-trigger:hover,
+.header-model-dropdown .dropdown-trigger.open {
+  border-color: var(--accent-primary);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.header-model-dropdown .dropdown-trigger.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 

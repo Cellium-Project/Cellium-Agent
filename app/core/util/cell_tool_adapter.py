@@ -61,6 +61,7 @@ EXEMPTED_NAMES: Set[str] = {
     "web_fetch",
     "scheduler",
     "sub_agent",
+    "session_agent",
 }
 
 SERIALIZED_NAMES: Set[str] = {

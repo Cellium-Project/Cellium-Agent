@@ -91,6 +91,12 @@ export const Sidebar: React.FC = () => {
     fetchSessions();
   }, [fetchSessions]);
 
+  // 会话运行状态：轮询刷新（跨会话/委托都能反映）
+  useEffect(() => {
+    const timer = window.setInterval(() => { fetchSessions(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [fetchSessions]);
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -561,6 +567,7 @@ const SessionItem: React.FC<SessionItemProps> = ({
       title={session.session_id}
     >
       <span className="session-title" onDoubleClick={startEdit}>
+        {session.running && <span className="session-running-dot" />}
         {getSessionTitle(session, t)}
       </span>
       <span className="session-time">{timeLabel}</span>

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import filecmp
+import hashlib
 import json
 import logging
 import os
@@ -13,10 +14,12 @@ from app.core.util.runtime_paths import resolve_dir_writable
 
 logger = logging.getLogger(__name__)
 
-MAX_TURNS = 5
+MAX_TURNS = 7
 COPY_MAX_BYTES = 100 * 1024 * 1024
 COPY_MAX_FILES = 5000
 MAX_FILE_BYTES = 2 * 1024 * 1024
+# 行数差异计算的规模上限，超过后退化估算，避免 SequenceMatcher 卡住
+DIFF_MAX_CELLS = 4_000_000
 EXCLUDE_DIRS = {
     ".git", "node_modules", "venv", ".venv", "dist", "build", "__pycache__", ".cache",
 }
@@ -34,8 +37,14 @@ class UndoStore:
 
     @staticmethod
     def _safe_name(value) -> str:
-        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", str(value or "")).strip("._")
-        return safe or "default"
+        raw = str(value or "")
+        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", raw).strip("._")
+        if not safe:
+            return "default"
+        if safe != raw:
+            digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:6]
+            return f"{safe}_{digest}"
+        return safe
 
     def _session_dir(self, session_id) -> str:
         path = os.path.join(self._root, self._safe_name(session_id))
@@ -70,6 +79,8 @@ class UndoStore:
         turn_dir = self._turn_dir(session_id, turn_id)
         manifest = self._load(turn_dir)
         if manifest is None:
+            shutil.rmtree(os.path.join(turn_dir, "files"), ignore_errors=True)
+            os.makedirs(os.path.join(turn_dir, "files"), exist_ok=True)
             manifest = {
                 "turn_id": str(turn_id),
                 "created_at": time.time(),
@@ -104,10 +115,60 @@ class UndoStore:
                     created = os.path.getmtime(turn_dir)
                 except Exception:
                     created = 0.0
-            items.append((float(created), turn_dir))
+            items.append((float(created), turn_dir, manifest))
         items.sort(key=lambda x: x[0], reverse=True)
-        for _, turn_dir in items[MAX_TURNS:]:
+        if not items:
+            return
+        # 最新轮次可能还在写快照，先为它预留一个名额
+        newest_tracked = self._has_snapshot(items[0][2])
+        limit = MAX_TURNS if newest_tracked else MAX_TURNS - 1
+        kept = 0
+        for idx, (_, turn_dir, manifest) in enumerate(items):
+            tracked = self._has_snapshot(manifest)
+            if tracked:
+                kept += 1
+                if kept <= limit:
+                    continue
+            elif idx == 0:
+                continue
             shutil.rmtree(turn_dir, ignore_errors=True)
+
+    @staticmethod
+    def _has_snapshot(manifest) -> bool:
+        manifest = manifest or {}
+        return bool(
+            manifest.get("entries")
+            or manifest.get("git")
+            or manifest.get("copy_root")
+        )
+
+    def has_tracking(self, session_id, turn_id) -> bool:
+        try:
+            with self._lock:
+                turn_dir = os.path.join(
+                    self._root, self._safe_name(session_id), self._safe_name(turn_id)
+                )
+                return self._has_snapshot(self._load(turn_dir) or {})
+        except Exception:
+            return False
+
+    def tracked_turn_ids(self, session_id) -> set:
+        ids = set()
+        try:
+            with self._lock:
+                session_dir = os.path.join(self._root, self._safe_name(session_id))
+                if not os.path.isdir(session_dir):
+                    return ids
+                for name in os.listdir(session_dir):
+                    turn_dir = os.path.join(session_dir, name)
+                    if not os.path.isdir(turn_dir):
+                        continue
+                    manifest = self._load(turn_dir) or {}
+                    if self._has_snapshot(manifest):
+                        ids.add(str(manifest.get("turn_id") or name))
+        except Exception as e:
+            logger.warning("[UndoStore] 读取追踪失败: %s", e)
+        return ids
 
     @staticmethod
     def _ignore(_src, names):
@@ -222,8 +283,10 @@ class UndoStore:
                     baseline = []
                     try:
                         proc = subprocess.run(
-                            ["git", "-C", repo, "status", "--porcelain", "-uall"],
-                            capture_output=True, text=True, timeout=60,
+                            ["git", "-C", repo, "-c", "core.quotepath=false",
+                             "status", "--porcelain", "-uall"],
+                            capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=60,
                         )
                         if proc.returncode == 0:
                             baseline = (proc.stdout or "").splitlines()
@@ -282,10 +345,26 @@ class UndoStore:
         import difflib
         if old_text is None or new_text is None:
             return None
-        added = removed = 0
         old_lines = old_text.splitlines()
         new_lines = new_text.splitlines()
-        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old_lines, new_lines).get_opcodes():
+        # 先剪掉公共前后缀，大文件通常只改一小段
+        start = 0
+        limit = min(len(old_lines), len(new_lines))
+        while start < limit and old_lines[start] == new_lines[start]:
+            start += 1
+        end_old, end_new = len(old_lines), len(new_lines)
+        while (
+            end_old > start and end_new > start
+            and old_lines[end_old - 1] == new_lines[end_new - 1]
+        ):
+            end_old -= 1
+            end_new -= 1
+        mid_old = old_lines[start:end_old]
+        mid_new = new_lines[start:end_new]
+        if len(mid_old) * len(mid_new) > DIFF_MAX_CELLS:
+            return len(mid_new), len(mid_old)
+        added = removed = 0
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, mid_old, mid_new).get_opcodes():
             if tag in ("replace", "delete"):
                 removed += i2 - i1
             if tag in ("replace", "insert"):
@@ -293,12 +372,13 @@ class UndoStore:
         return added, removed
 
     @staticmethod
-    def _record_file(result, path, added=0, removed=0, kind="modified") -> None:
+    def _record_file(result, path, added=0, removed=0, kind="modified", binary=False) -> None:
         result.setdefault("files", []).append({
             "path": path,
             "added": int(added or 0),
             "removed": int(removed or 0),
             "kind": kind,
+            "binary": bool(binary),
         })
 
     def _restore_entries(self, turn_dir, manifest, result, apply=True) -> None:
@@ -358,34 +438,132 @@ class UndoStore:
                 result["skipped"].append(path)
 
     @staticmethod
-    def _git_show(repo, rev, rel):
+    def _git_numstat(repo, rev):
+        """一次 git diff 拿到全部文件的增删行数（已按“回滚视角”换算）"""
+        stats = {}
         try:
             proc = subprocess.run(
-                ["git", "-C", repo, "show", f"{rev}:{rel}"],
-                capture_output=True, text=True, timeout=60,
+                ["git", "-C", repo, "-c", "core.quotepath=false",
+                 "diff", "--numstat", "--no-renames", rev, "--"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60,
             )
-            if proc.returncode == 0:
-                return proc.stdout
+            if proc.returncode != 0:
+                return stats
+            for line in (proc.stdout or "").splitlines():
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    continue
+                added, removed, rel = parts[0], parts[1], "\t".join(parts[2:])
+                is_bin = not added.isdigit() or not removed.isdigit()
+                # numstat 是“快照 → 工作区”，回滚要反过来看
+                stats[os.path.normpath(rel)] = (
+                    int(removed) if removed.isdigit() else 0,
+                    int(added) if added.isdigit() else 0,
+                    is_bin,
+                )
         except Exception:
             pass
-        return None
+        return stats
 
-    def _restore_git(self, git, result, apply=True) -> None:
+    @staticmethod
+    def _git_tree_paths(repo, rev):
+        """快照内所有文件路径（一次 ls-tree），失败返回 None"""
+        try:
+            proc = subprocess.run(
+                ["git", "-C", repo, "-c", "core.quotepath=false",
+                 "ls-tree", "-r", "--name-only", rev],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60,
+            )
+            if proc.returncode != 0:
+                return None
+            return {
+                os.path.normpath(p.strip())
+                for p in (proc.stdout or "").splitlines() if p.strip()
+            }
+        except Exception:
+            return None
+
+    def _remove_path(self, full, result, apply=True):
+        try:
+            if os.path.isdir(full):
+                if apply:
+                    shutil.rmtree(full, ignore_errors=True)
+                result["restored"] += 1
+            elif os.path.exists(full):
+                removed = self._count_lines(self._read_text(full))
+                if apply:
+                    os.remove(full)
+                self._record_file(result, full, 0, removed, kind="deleted")
+                result["restored"] += 1
+        except Exception as e:
+            logger.warning("[UndoStore] 删除多余文件失败 path=%s error=%s", full, e)
+            result["skipped"].append(full)
+
+    @staticmethod
+    def _git_restore_worktree(repo, rev, rel) -> bool:
+        """只恢复工作区，不动 index，避免撤回后改动被误标为已暂存"""
+        commands = (
+            ["restore", f"--source={rev}", "--worktree", "--", rel],
+            ["checkout", rev, "--", rel],
+        )
+        for args in commands:
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", repo, "-c", "core.quotepath=false", *args],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=60,
+                )
+            except Exception:
+                continue
+            if proc.returncode == 0:
+                return True
+        return False
+
+    def _git_restore_path(self, repo, rev, rel, result, apply, numstat, tree, baseline):
+        full = os.path.join(repo, rel)
+        key = os.path.normpath(rel)
+        if tree is not None and key not in tree:
+            # 快照里没有：本轮回合新增，回滚即删除
+            if key in baseline:
+                result["skipped"].append(full)
+                return
+            self._remove_path(full, result, apply=apply)
+            return
+        existed = os.path.isfile(full)
+        if apply and not self._git_restore_worktree(repo, rev, rel):
+            logger.warning("[UndoStore] git 恢复失败 path=%s", rel)
+            result["skipped"].append(full)
+            return
+        result["restored"] += 1
+        stats = numstat.get(key) or (0, 0, False)
+        kind = "modified" if existed else "restored"
+        self._record_file(result, full, stats[0], stats[1], kind=kind, binary=stats[2])
+
+    def _restore_git(self, git, result, apply=True, cache=None, stats_rev=None) -> None:
+        cache = cache if cache is not None else {}
         repo = git.get("repo")
         sha = (git.get("sha") or "").strip()
         if not repo or not os.path.isdir(repo):
             result["skipped"].append(repo or "")
             return
-        try:
-            proc = subprocess.run(
-                ["git", "-C", repo, "status", "--porcelain", "-uall"],
-                capture_output=True, text=True, timeout=60,
-            )
-        except Exception as e:
-            logger.warning("[UndoStore] git status 失败: %s", e)
-            result["skipped"].append(repo)
-            return
-        if proc.returncode != 0:
+        cached = cache.get(("status", repo))
+        if cached is None:
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", repo, "-c", "core.quotepath=false",
+                     "status", "--porcelain", "-uall"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=60,
+                )
+                cached = (proc.returncode == 0, proc.stdout or "")
+            except Exception as e:
+                logger.warning("[UndoStore] git status 失败: %s", e)
+                cached = (False, "")
+            cache[("status", repo)] = cached
+        ok, status_out = cached
+        if not ok:
             result["skipped"].append(repo)
             return
         baseline = set()
@@ -393,55 +571,42 @@ class UndoStore:
             for p in self._porcelain_paths(line):
                 baseline.add(os.path.normpath(p))
         rev = sha or "HEAD"
-        for line in (proc.stdout or "").splitlines():
+        oldest = (stats_rev or {}).get(repo) or rev
+        numstat = cache.get(("numstat", repo))
+        if numstat is None:
+            # 多轮撤回时最终态由最老快照决定，统一用最老的 rev 算一次
+            numstat = self._git_numstat(repo, oldest)
+            cache[("numstat", repo)] = numstat
+        tree = cache.get(("tree", repo))
+        if tree is None:
+            tree = self._git_tree_paths(repo, oldest)
+            cache[("tree", repo)] = tree
+
+        for line in status_out.splitlines():
             if not line:
                 continue
             status = line[:2]
-            for rel in self._porcelain_paths(line):
-                if not rel:
-                    continue
-                full = os.path.join(repo, rel)
-                if status == "??":
-                    if os.path.normpath(rel) not in baseline:
-                        try:
-                            if os.path.isdir(full):
-                                if apply:
-                                    shutil.rmtree(full, ignore_errors=True)
-                            elif os.path.exists(full):
-                                removed = self._count_lines(self._read_text(full))
-                                if apply:
-                                    os.remove(full)
-                                self._record_file(result, full, 0, removed, kind="deleted")
-                            result["restored"] += 1
-                        except Exception as e:
-                            logger.warning("[UndoStore] 删除未跟踪文件失败 path=%s error=%s", full, e)
-                            result["skipped"].append(full)
-                    continue
-                current = self._read_text(full) if os.path.isfile(full) else None
-                old_text = self._git_show(repo, rev, rel)
-                if apply:
-                    try:
-                        proc2 = subprocess.run(
-                            ["git", "-C", repo, "checkout", rev, "--", rel],
-                            capture_output=True, text=True, timeout=60,
-                        )
-                    except Exception as e:
-                        logger.warning("[UndoStore] git checkout 失败 path=%s error=%s", rel, e)
-                        result["skipped"].append(full)
+            paths = [p for p in self._porcelain_paths(line) if p]
+            if status == "??":
+                # 快照前就是未跟踪的文件无法用 rev 还原，跳过
+                for rel in paths:
+                    if os.path.normpath(rel) in baseline:
                         continue
-                    if proc2.returncode != 0:
-                        result["skipped"].append(full)
-                        continue
-                else:
-                    if old_text is None:
-                        result["skipped"].append(full)
-                        continue
-                result["restored"] += 1
-                stats = self._diff_stats(current, old_text)
-                if stats is None and old_text is not None:
-                    stats = (self._count_lines(old_text), 0)
-                kind = "modified" if current is not None else "restored"
-                self._record_file(result, full, *(stats or (0, 0)), kind=kind)
+                    self._remove_path(os.path.join(repo, rel), result, apply=apply)
+                continue
+            if status[:1] in ("R", "C") and len(paths) >= 2:
+                # 重命名：恢复旧路径，删掉新路径
+                self._git_restore_path(
+                    repo, rev, paths[0], result, apply, numstat, tree, baseline
+                )
+                self._remove_path(
+                    os.path.join(repo, paths[1]), result, apply=apply
+                )
+                continue
+            for rel in paths:
+                self._git_restore_path(
+                    repo, rev, rel, result, apply, numstat, tree, baseline
+                )
 
     @staticmethod
     def _rel_files(base: str):
@@ -452,6 +617,27 @@ class UndoStore:
                 full = os.path.join(root, name)
                 rels.add(os.path.relpath(full, base).replace(os.sep, "/"))
         return rels
+
+    @staticmethod
+    def _rel_dirs(base: str):
+        dirs_out = set()
+        for root, subdirs, _files in os.walk(base):
+            subdirs[:] = [d for d in subdirs if d not in EXCLUDE_DIRS]
+            for name in subdirs:
+                full = os.path.join(root, name)
+                dirs_out.add(os.path.relpath(full, base).replace(os.sep, "/"))
+        return dirs_out
+
+    @staticmethod
+    def _prune_empty_dirs(cwd: str, rels):
+        """自底向上删除回滚后变空的目录"""
+        for rel in sorted(rels, key=lambda r: r.count("/"), reverse=True):
+            full = os.path.join(cwd, *rel.split("/"))
+            try:
+                if os.path.isdir(full) and not os.listdir(full):
+                    os.rmdir(full)
+            except OSError:
+                continue
 
     def _restore_copy(self, turn_dir, manifest, result, apply=True) -> None:
         copy_root = manifest.get("copy_root")
@@ -484,7 +670,12 @@ class UndoStore:
             try:
                 same = False
                 if os.path.exists(dst) and os.path.isfile(dst):
-                    same = filecmp.cmp(src, dst, shallow=False)
+                    # 只有大小相同才做内容比较；相同大小 + 回填 mtime 的情况也不能漏
+                    try:
+                        same = (os.path.getsize(src) == os.path.getsize(dst)
+                                and filecmp.cmp(src, dst, shallow=False))
+                    except OSError:
+                        same = False
                 if not same:
                     cur_text = self._read_text(dst) if os.path.isfile(dst) else None
                     src_text = self._read_text(src)
@@ -504,6 +695,9 @@ class UndoStore:
             except Exception as e:
                 logger.warning("[UndoStore] 复制快照失败 path=%s error=%s", dst, e)
                 result["skipped"].append(dst)
+        if apply:
+            # 删除快照后新建的空目录
+            self._prune_empty_dirs(cwd, self._rel_dirs(cwd) - self._rel_dirs(root))
 
     def drop_session(self, session_id) -> None:
         try:
@@ -514,7 +708,9 @@ class UndoStore:
             logger.warning("[UndoStore] 清理会话快照失败: %s", e)
 
     def _pending_turns(self, session_id, keep_turn_ids):
-        session_dir = self._session_dir(session_id)
+        session_dir = os.path.join(self._root, self._safe_name(session_id))
+        if not os.path.isdir(session_dir):
+            return []
         keep = {self._safe_name(t) for t in (keep_turn_ids or [])}
         turns = []
         for name in os.listdir(session_dir):
@@ -535,11 +731,22 @@ class UndoStore:
     def _run_turns(self, turns, apply: bool) -> dict:
         result = {"restored": 0, "skipped": [], "files": [], "warning": None}
         warned = False
+        cache = {}
+        stats_rev = {}
+        # turns 新的在前，最后留下的即最老快照（最终还原态）
+        for _, _, manifest in turns:
+            git = manifest.get("git")
+            if isinstance(git, dict) and git.get("repo"):
+                stats_rev[git["repo"]] = (git.get("sha") or "").strip() or "HEAD"
         for _, turn_dir, manifest in turns:
+            skipped_before = len(result["skipped"])
             try:
                 self._restore_entries(turn_dir, manifest, result, apply=apply)
                 if manifest.get("git"):
-                    self._restore_git(manifest["git"], result, apply=apply)
+                    self._restore_git(
+                        manifest["git"], result, apply=apply,
+                        cache=cache, stats_rev=stats_rev,
+                    )
                 elif manifest.get("copy_root"):
                     self._restore_copy(turn_dir, manifest, result, apply=apply)
                 if manifest.get("skipped_reason"):
@@ -551,10 +758,17 @@ class UndoStore:
             except Exception as e:
                 logger.warning("[UndoStore] turn 回滚失败 turn=%s error=%s", turn_dir, e)
                 result["skipped"].append(turn_dir)
-            if apply:
+            if apply and len(result["skipped"]) == skipped_before:
+                # 有文件没回滚就保留快照，方便重试
                 shutil.rmtree(turn_dir, ignore_errors=True)
         if result["skipped"] or warned:
             result["warning"] = "部分文件未回滚"
+        if not apply:
+            # 多轮会重复列出同一文件，按路径去重（保留最老快照的统计）
+            merged = {}
+            for row in result["files"]:
+                merged[os.path.normpath(str(row.get("path") or ""))] = row
+            result["files"] = list(merged.values())
         return result
 
     def preview(self, session_id, keep_turn_ids) -> dict:

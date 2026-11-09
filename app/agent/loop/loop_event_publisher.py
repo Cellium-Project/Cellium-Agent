@@ -51,6 +51,8 @@ class LoopEventPublisher:
         self,
         session_id: str,
         message: str,
+        source_session: str = None,
+        source_session_title: str = None,
     ):
         """发布消息接收事件"""
         try:
@@ -58,7 +60,11 @@ class LoopEventPublisher:
                 AgentEventType.MESSAGE_RECEIVED,
                 MessageReceivedEvent(
                     event_type=AgentEventType.MESSAGE_RECEIVED,
-                    data={"message": message},
+                    data={
+                        "message": message,
+                        "source_session": source_session,
+                        "source_session_title": source_session_title,
+                    },
                     session_id=session_id,
                     message=message,
                 ),

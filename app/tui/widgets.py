@@ -24,6 +24,40 @@ from textual.widgets._option_list import Option
 
 _TIME_FMT = "%H:%M:%S"
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+
+
+def plain_one_line(text) -> str:
+    """去 ANSI 转义与换行/控制字符，压成单行"""
+    raw = _ANSI_RE.sub("", str(text or ""))
+    raw = "".join(" " if ord(ch) < 32 or ord(ch) == 127 else ch for ch in raw)
+    return " ".join(raw.split())
+
+
+def escape_markup_brackets(text) -> str:
+    """转义未闭合方括号，避免 Textual markup 解析崩溃"""
+    return str(text or "").replace("[", "\\[")
+
+
+def clip_cells(text: str, width: int, ellipsis: str = "…") -> str:
+    """按终端显示宽度截断"""
+    from rich.cells import cell_len
+    text = str(text or "")
+    if width <= 0 or not text:
+        return ""
+    if cell_len(text) <= width:
+        return text
+    limit = max(0, width - cell_len(ellipsis))
+    total = 0
+    out = []
+    for ch in text:
+        w = cell_len(ch)
+        if total + w > limit:
+            break
+        out.append(ch)
+        total += w
+    return "".join(out) + ellipsis
+
 
 def _patch_rich_emoji_width():
 
@@ -487,14 +521,22 @@ def _preview(value, max_len=200):
 class UserMessage(Static):
     """用户消息"""
 
-    def __init__(self, content, message_id=None):
+    def __init__(self, content, message_id=None, rewindable=False):
         super().__init__(content, markup=False)
         self.add_class("user-msg")
         self._content = content
         self.message_id = message_id
+        self.rewindable = False
+        self.set_rewindable(rewindable)
+
+    def set_rewindable(self, flag):
+        self.rewindable = bool(flag)
+        self.set_class(self.rewindable, "rewindable")
 
     def on_click(self, event):
         event.stop()
+        if not self.rewindable:
+            return
         try:
             self.app.action_rewind_to(self.message_id, self._content)
         except Exception:
@@ -657,9 +699,9 @@ class LogoImage(Static):
         h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
         if not 70 <= h * 360 <= 190:
             return pixel
-        s2 = min(0.80, s * 0.85 + 0.05)
-        l2 = min(0.38, l * 0.42 + 0.04)
-        r2, g2, b2 = colorsys.hls_to_rgb(43 / 360, l2, s2)
+        s2 = min(0.70, s * 0.9)
+        l2 = min(1.0, l * 0.9 + 0.12)
+        r2, g2, b2 = colorsys.hls_to_rgb(258 / 360, l2, s2)
         return (round(r2 * 255), round(g2 * 255), round(b2 * 255), a)
 
     def _render_pixels(self):

@@ -37,14 +37,15 @@ _RETRYABLE_NET_ERRORS = (
 
 
 def _net_err_detail(e: Exception) -> str:
-    parts = [type(e).__name__]
-    msg = str(e).strip()
-    if msg:
-        parts.append(msg)
+    from app.core.util.error_text import describe_error
+    detail = describe_error(e)
     cause = e.__cause__ or e.__context__
     if cause is not None:
-        parts.append(f"cause={type(cause).__name__}: {cause}")
-    return " | ".join(parts)
+        cause_msg = str(cause).strip()
+        detail = f"{detail} | cause={type(cause).__name__}"
+        if cause_msg:
+            detail += f": {cause_msg}"
+    return detail
 
 
 _STREAM_OPEN_MAX_ATTEMPTS = 3

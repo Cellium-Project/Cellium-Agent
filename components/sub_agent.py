@@ -174,6 +174,7 @@ class SubAgent(BaseCell):
     FORBIDDEN_COMPONENT_TOOLS = {
         "weixin_files", "web_search", "web_fetch", "telegram_files",
         "scheduler", "qq_files", "feishu_files", "sub_agent",
+        "session_agent",  # 会话委托仅限主会话发起
         "config",  # 主 Agent 专属（管理自身 LLM 配置），子 Agent 禁用
     }
 

@@ -132,7 +132,11 @@ def create_app(auto_open_browser: bool = True) -> FastAPI:
         
         @app.get("/")
         async def serve_index():
-            return FileResponse(os.path.join(html_dir, "index.html"))
+            # index 不缓存，避免浏览器拿着旧 hash 资源名去请求已删除的文件（404）
+            return FileResponse(
+                os.path.join(html_dir, "index.html"),
+                headers={"Cache-Control": "no-store, max-age=0"},
+            )
         
         @app.get("/logo.png")
         async def serve_logo():

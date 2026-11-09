@@ -3,12 +3,16 @@
 PromptDiffTracker — API 请求差异追踪层
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_STREAM_RETRY_ATTEMPTS = 3
+_STREAM_RETRY_BACKOFFS = (1, 2, 4)
 
 
 @dataclass
@@ -127,15 +131,37 @@ class PromptDiffTracker:
             yield {"type": "content", "text": response.content or ""}
             yield {"type": "done", "response": response}
         else:
-            async for chunk in streamer(
-                messages=messages,
-                tools=tools,
-                max_tokens=max_tokens,
-                **kwargs,
-            ):
-                if chunk.get("type") == "done":
-                    final_response = chunk.get("response")
-                yield chunk
+            attempt = 0
+            while True:
+                attempt += 1
+                yielded = False
+                try:
+                    async for chunk in streamer(
+                        messages=messages,
+                        tools=tools,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    ):
+                        yielded = True
+                        if chunk.get("type") == "done":
+                            final_response = chunk.get("response")
+                        yield chunk
+                    break
+                except Exception as e:
+                    from app.core.util.error_text import is_retryable_net_error
+                    from app.agent.llm.transport import RetryableAPIError
+                    retryable = isinstance(e, RetryableAPIError) or is_retryable_net_error(e)
+                    # 已经吐出内容就不重试，避免重复输出；完全没输出才安全重试
+                    if yielded or not retryable or attempt >= _STREAM_RETRY_ATTEMPTS:
+                        raise
+                    delay = _STREAM_RETRY_BACKOFFS[
+                        min(attempt - 1, len(_STREAM_RETRY_BACKOFFS) - 1)
+                    ]
+                    logger.warning(
+                        "[PromptDiff] 流式调用中断且无输出，自动重试 | 尝试=%d/%d | 延迟=%.1fs | %s",
+                        attempt, _STREAM_RETRY_ATTEMPTS, delay, type(e).__name__,
+                    )
+                    await asyncio.sleep(delay)
 
         if final_response is not None:
             self._last_messages = messages

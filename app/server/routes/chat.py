@@ -155,8 +155,9 @@ async def chat(request: ChatRequest):
             ),
         )
 
+        from app.core.util.error_text import describe_error
         return ChatResponse(
-            content=f"错误: {str(e)}",
+            content=f"错误: {describe_error(e)}",
             iterations=0,
             success=False,
             session_id=session_id,
@@ -334,7 +335,10 @@ async def rewind_chat(request: RewindRequest):
             await asyncio.sleep(0.1)
 
     try:
-        return rewind_session(session_id, request.message_id)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: rewind_session(session_id, request.message_id)
+        )
     except RewindError as e:
         if e.code == "not_found":
             status_code = 404
@@ -349,7 +353,12 @@ async def rewind_chat(request: RewindRequest):
 async def preview_rewind_chat(request: RewindRequest):
     """预览撤回将回滚的文件及行数差异"""
     try:
-        return preview_rewind(request.session_id or "default", request.message_id)
+        # 预览算 diff 属于同步 IO/CPU，放线程池执行，避免卡住 WebSocket 推送
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: preview_rewind(request.session_id or "default", request.message_id),
+        )
     except RewindError as e:
         if e.code == "not_found":
             status_code = 404
@@ -383,6 +392,37 @@ async def get_subagents_status(session_id: str = Query("default")):
         return {"session_id": session_id, "subagents": items}
     except Exception as e:
         return {"session_id": session_id, "subagents": [], "error": str(e)}
+
+
+@router.get("/chat/delegations")
+async def get_delegations_status(session_id: str = Query("default")):
+    """当前会话发起的会话委托状态（前端状态条兜底）"""
+    try:
+        from components import session_agent as sa
+        prefix = f"{session_id}::"
+        items = []
+        for key, info in sa._DELEGATIONS.items():
+            if not key.startswith(prefix):
+                continue
+            status = info.get("status")
+            if status in ("done", "error", "timeout", "cancelled", "unknown"):
+                continue
+            items.append({
+                "task_id": info.get("task_id"),
+                "target": info.get("target"),
+                "target_title": info.get("target_title"),
+                "purpose": info.get("purpose", ""),
+                "status": status,
+                "current_tool": info.get("current_tool"),
+                "last_tool": info.get("last_tool"),
+                "last_reasoning": info.get("last_reasoning"),
+                "tool_calls": info.get("tool_calls", 0),
+                "elapsed_s": sa._elapsed_seconds(info),
+                "error": info.get("error"),
+            })
+        return {"session_id": session_id, "delegations": items}
+    except Exception as e:
+        return {"session_id": session_id, "delegations": [], "error": str(e)}
 
 
 @router.post("/component/event")
@@ -768,7 +808,7 @@ def _extract_final_text(content: str) -> str:
     return text.strip()
 
 
-def _messages_to_renderable(raw_messages: list) -> list:
+def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
     renderable = []
     i = 0
     while i < len(raw_messages):
@@ -781,6 +821,11 @@ def _messages_to_renderable(raw_messages: list) -> list:
                 "role": "user",
                 "content": msg.get("content") or "",
                 "timeline": None,
+                "can_rewind": bool(
+                    msg.get("id")
+                    and not msg.get("_is_compacted_notes")
+                    and msg.get("id") in (tracked_ids or set())
+                ),
             })
             i += 1
 
@@ -1002,7 +1047,12 @@ async def get_session_history(
         session_id, len(paged_raw), start_idx, end_idx, total,
     )
 
-    renderable = _messages_to_renderable(paged_raw) if paged_raw else []
+    try:
+        from app.agent.loop.rewind import tracked_user_ids
+        tracked_ids = tracked_user_ids(session_id)
+    except Exception:
+        tracked_ids = set()
+    renderable = _messages_to_renderable(paged_raw, tracked_ids) if paged_raw else []
 
     return {
         "session_id": session_id,
@@ -1059,7 +1109,13 @@ async def list_all_sessions():
     store = get_session_store()
     sessions = store.list_sessions()
 
-    return {"sessions": [s.to_dict() for s in sessions], "total": len(sessions)}
+    from app.core.util.session_status import is_session_running
+    items = []
+    for s in sessions:
+        data = s.to_dict()
+        data["running"] = is_session_running(s.session_id)
+        items.append(data)
+    return {"sessions": items, "total": len(items)}
 
 
 @router.delete("/session/{session_id}")
@@ -1084,11 +1140,15 @@ async def delete_session_permanent(session_id: str):
 @router.patch("/session/{session_id}/title")
 async def rename_session(session_id: str, req: RenameSessionRequest):
     """重命名会话标题"""
+    title = "".join(" " if ord(ch) < 32 else ch for ch in str(req.title or ""))
+    title = " ".join(title.split()).strip()[:60]
+    if not title:
+        raise HTTPException(status_code=400, detail="标题不能为空")
     store = get_session_store()
     if not store.session_exists(session_id):
-        return {"error": "Session not found", "session_id": session_id}
-    store.set_session_title(session_id, req.title)
-    return {"status": "ok", "session_id": session_id, "title": req.title}
+        raise HTTPException(status_code=404, detail="会话不存在")
+    store.set_session_title(session_id, title)
+    return {"status": "ok", "session_id": session_id, "title": title}
 
 
 @router.get("/session/{session_id}/mode")
@@ -1103,6 +1163,54 @@ async def update_session_mode(session_id: str, req: ModeRequest):
     mode = set_mode(session_id, req.mode)
     logger.info("[chat] 会话模式切换 | session=%s | mode=%s", session_id, mode)
     return {"status": "ok", "session_id": session_id, "mode": mode}
+
+
+class SessionModelRequest(BaseModel):
+    model: Optional[str] = ""
+
+
+@router.get("/session/{session_id}/model")
+async def get_session_model(session_id: str):
+    """会话使用的 LLM 模型（可与其他会话隔离）"""
+    from app.server import session_llm
+    return {
+        "session_id": session_id,
+        "model": session_llm.get_model(session_id) or session_llm.global_model(),
+        "override": session_llm.has_override(session_id),
+        "global_model": session_llm.global_model(),
+        "models": session_llm.list_models(),
+    }
+
+
+@router.post("/session/{session_id}/model")
+async def update_session_model(session_id: str, req: SessionModelRequest):
+    """给会话绑定独立模型配置；model 传空表示跟随全局"""
+    from app.server import session_llm
+    result = session_llm.set_model(session_id, req.model)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "设置失败")
+    session_llm.apply_to_loop(session_id)
+    payload = {
+        "type": "session_model_changed",
+        "session_id": session_id,
+        "model": result["model"],
+        "override": result["override"],
+    }
+    try:
+        from app.messaging.message_broker import get_message_broker
+        get_message_broker().publish(session_id, dict(payload))
+    except Exception:
+        pass
+    try:
+        from app.server.routes.ws_event_manager import ws_publish_event
+        ws_publish_event("chat_event", dict(payload), session_id=session_id)
+    except Exception:
+        pass
+    logger.info(
+        "[chat] 会话模型切换 | session=%s | model=%s | override=%s",
+        session_id, result["model"], result["override"],
+    )
+    return {"status": "ok", **result}
 
 
 @router.post("/session/{session_id}/save-message")

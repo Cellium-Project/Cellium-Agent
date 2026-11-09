@@ -6,7 +6,15 @@ import { useAppStore } from '../stores/appStore';
 import { API, fetchJSON, postJSON } from '../utils/api';
 import { Icons } from './Icons';
 import { ChatMessage } from './ChatMessage';
+import { CustomDropdown } from './CustomDropdown';
 import type { Attachment, Message } from '../types';
+
+type AgentMode = 'run' | 'plan' | 'delegate';
+
+const toAgentMode = (mode?: string): AgentMode =>
+  mode === 'plan' ? 'plan' : mode === 'delegate' ? 'delegate' : 'run';
+
+const MODE_ORDER: AgentMode[] = ['run', 'plan', 'delegate'];
 
 const MessageList = memo(({
   messages, streamingMessage,
@@ -137,8 +145,12 @@ export const ChatView: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [rewindTargetId, setRewindTargetId] = useState<string | null>(null);
   const [rewindNotice, setRewindNotice] = useState('');
-  const [rewindFiles, setRewindFiles] = useState<{ path: string; added: number; removed: number; kind?: string }[]>([]);
+  const [rewindFiles, setRewindFiles] = useState<{ path: string; added: number; removed: number; kind?: string; binary?: boolean }[]>([]);
   const [rewindSkipped, setRewindSkipped] = useState<string[]>([]);
+  const [modelInfo, setModelInfo] = useState<{
+    model: string; override: boolean; global_model: string;
+    models: { name: string; model: string; base_url: string }[];
+  }>({ model: '', override: false, global_model: '', models: [] });
   const rewindNoticeTimer = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -148,15 +160,93 @@ export const ChatView: React.FC = () => {
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming, rewindToMessage, previewRewind } = useChat();
   const {
     statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages,
-    toggleMobileSidebar, agentMode, setAgentMode,
+    toggleMobileSidebar, agentMode, setAgentMode, sessions,
+    delegationActivity, removeDelegationActivity, upsertDelegationActivity,
   } = useAppStore();
-  const planMode = agentMode === 'plan';
+  const modeLabel = agentMode === 'plan'
+    ? t('chat.modePlan')
+    : agentMode === 'delegate' ? t('chat.modeDelegate') : t('chat.modeRun');
+  const modeTitle = agentMode === 'plan'
+    ? t('chat.modePlanTitle')
+    : agentMode === 'delegate' ? t('chat.modeDelegateTitle') : t('chat.modeRunTitle');
+  const modeClass = agentMode === 'plan' ? ' plan' : agentMode === 'delegate' ? ' delegate' : '';
+  const headerTitle = sessions.find(s => s.session_id === currentSessionId)?.title?.trim() || t('chat.title');
+  const TERMINAL_STATUS = ['done', 'error', 'timeout', 'cancelled', 'unknown'];
+
+  // 完成/失败后短暂展示再自动消失
+  useEffect(() => {
+    const timers = delegationActivity
+      .filter(a => TERMINAL_STATUS.includes(a.status))
+      .map(a => window.setTimeout(
+        () => removeDelegationActivity(a.task_id),
+        a.status === 'done' ? 2500 : 4000,
+      ));
+    return () => timers.forEach(id => window.clearTimeout(id));
+  }, [delegationActivity, removeDelegationActivity]);
+
+  const delegationLabel = (a: typeof delegationActivity[number]) => {
+    const name = a.target_title || a.target || '?';
+    if (a.status === 'queued') return t('chat.delegationQueued', { session: name });
+    if (TERMINAL_STATUS.includes(a.status)) {
+      if (a.status === 'done' && a.success !== false) return t('chat.delegationDone', { session: name });
+      return t('chat.delegationFailed', { session: name });
+    }
+    return t('chat.delegationRunning', { session: name });
+  };
+
+  // 多个委托：最多展示 3 条，超出折叠成 +N；推理只展示最新一条，节省纵向空间
+  const visibleDelegations = delegationActivity.slice(-3);
+  const hiddenDelegations = Math.max(0, delegationActivity.length - visibleDelegations.length);
+
+  // 轮询兜底：父会话未在流式时也能拿到委托进度（WS 事件可能收不到）
+  const missCountRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!currentSessionId) return;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const data = await fetchJSON<{ delegations: any[] }>(
+          API.chatDelegations(currentSessionId)
+        );
+        if (!alive) return;
+        const items = data.delegations || [];
+        const liveIds = new Set(items.map((i: any) => String(i.task_id)));
+        for (const item of items) {
+          missCountRef.current[String(item.task_id)] = 0;
+          upsertDelegationActivity({ ...item, status: item.status || 'running' });
+        }
+        // 连续两次轮询都查不到 → 视为已结束（done 事件可能丢失）
+        for (const a of useAppStore.getState().delegationActivity) {
+          if (TERMINAL_STATUS.includes(a.status) || liveIds.has(a.task_id)) continue;
+          const n = (missCountRef.current[a.task_id] || 0) + 1;
+          missCountRef.current[a.task_id] = n;
+          if (n >= 2) {
+            upsertDelegationActivity({
+              task_id: a.task_id, target: a.target, target_title: a.target_title,
+              status: 'done', success: true, elapsed_s: a.elapsed_s,
+            });
+          }
+        }
+      } catch {
+        /* 忽略轮询失败 */
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 1500);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [currentSessionId, upsertDelegationActivity]);
 
   // 模式实时同步：初始拉取 + 订阅后端广播（TUI/WebUI 任一端口切换都会推送）
   useEffect(() => {
     if (!currentSessionId) return;
     fetchJSON<{ mode: string }>(API.sessionMode(currentSessionId))
-      .then(r => setAgentMode(r.mode === 'plan' ? 'plan' : 'run'))
+      .then(r => setAgentMode(toAgentMode(r.mode)))
+      .catch(() => {});
+    fetchJSON<typeof modelInfo>(API.sessionModel(currentSessionId))
+      .then(setModelInfo)
       .catch(() => {});
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -171,7 +261,14 @@ export const ChatView: React.FC = () => {
       try {
         const msg = JSON.parse(evt.data);
         if (msg.type === 'chat_event' && msg.data?.type === 'mode_changed') {
-          setAgentMode(msg.data.mode === 'plan' ? 'plan' : 'run');
+          setAgentMode(toAgentMode(msg.data.mode));
+        }
+        if (msg.type === 'chat_event' && msg.data?.type === 'session_model_changed') {
+          setModelInfo(prev => ({
+            ...prev,
+            model: msg.data.model || prev.model,
+            override: Boolean(msg.data.override),
+          }));
         }
       } catch {
         // 非 JSON 消息忽略
@@ -261,10 +358,23 @@ export const ChatView: React.FC = () => {
   };
 
   const toggleMode = () => {
-    const next = planMode ? 'run' : 'plan';
+    const prev = agentMode;
+    const next = MODE_ORDER[(MODE_ORDER.indexOf(agentMode) + 1) % MODE_ORDER.length];
     setAgentMode(next);
     const sid = currentSessionId || 'default';
-    postJSON(API.sessionMode(sid), { mode: next }).catch(() => {});
+    postJSON(API.sessionMode(sid), { mode: next }).catch(() => setAgentMode(prev));
+  };
+
+  const handleModelChange = (value: string) => {
+    const sid = currentSessionId || 'default';
+    setModelInfo(prev => ({
+      ...prev,
+      model: value || prev.global_model,
+      override: Boolean(value),
+    }));
+    postJSON(API.sessionModel(sid), { model: value }).catch(() => {
+      fetchJSON<typeof modelInfo>(API.sessionModel(sid)).then(setModelInfo).catch(() => {});
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -283,15 +393,31 @@ export const ChatView: React.FC = () => {
     <div className="chat-view">
       {/* Header */}
       <div className="chat-header">
-        <h1 className="chat-header-title">{t('chat.title')}</h1>
+        <h1 className="chat-header-title" title={headerTitle}>{headerTitle}</h1>
+        {modelInfo.models.length > 0 && (
+          <CustomDropdown
+            className="header-model-dropdown"
+            value={modelInfo.override ? modelInfo.model : ''}
+            items={[
+              {
+                value: '',
+                label: t('chat.modelFollowGlobal', { model: modelInfo.global_model || '-' }),
+              },
+              ...modelInfo.models.map(m => ({ value: m.name, label: m.name })),
+            ]}
+            onChange={handleModelChange}
+            disabled={isStreaming}
+            menuMinWidth={180}
+          />
+        )}
         <span className={`status ${statusOnline ? '' : 'error'}`}>{statusOnline ? t('common.online') : t('common.offline')}</span>
         <div className="chat-header-actions">
           <button
-            className={`btn-mode mobile-only${planMode ? ' plan' : ''}`}
+            className={`btn-mode mobile-only${modeClass}`}
             onClick={toggleMode}
-            title={planMode ? t('chat.modePlanTitle') : t('chat.modeRunTitle')}
+            title={modeTitle}
           >
-            {planMode ? t('chat.modePlan') : t('chat.modeRun')}
+            {modeLabel}
           </button>
           <button
             className="icon-btn mobile-only"
@@ -303,7 +429,40 @@ export const ChatView: React.FC = () => {
         </div>
       </div>
 
-      {/* Messages — 独立组件，流式更新不影响输入框 */}
+      {/* 会话委托运行状态条 */}
+      {delegationActivity.length > 0 && (
+        <div className="delegation-banners">
+          {visibleDelegations.map((a, idx) => {
+            const running = !TERMINAL_STATUS.includes(a.status);
+            const tool = a.current_tool || a.last_tool;
+            const showReason = running && idx === visibleDelegations.length - 1;
+            return (
+              <div className={`delegation-banner ${running ? 'running' : a.status}`} key={a.task_id}>
+                <div className="delegation-banner-line">
+                  {running && <span className="delegation-banner-spinner" />}
+                  <span className="delegation-banner-title">{delegationLabel(a)}</span>
+                  {tool && <span className="delegation-banner-meta">{t('chat.delegationTool', { tool })}</span>}
+                  {a.tool_calls ? (
+                    <span className="delegation-banner-meta">{t('chat.delegationAttempt', { n: a.tool_calls })}</span>
+                  ) : null}
+                  {a.elapsed_s ? (
+                    <span className="delegation-banner-meta">{Math.round(Number(a.elapsed_s))}s</span>
+                  ) : null}
+                  {a.error && <span className="delegation-banner-error">{a.error}</span>}
+                </div>
+                {showReason && a.last_reasoning && (
+                  <div className="delegation-banner-reason">
+                    {t('chat.delegationReasoning')}：{a.last_reasoning}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {hiddenDelegations > 0 && (
+            <div className="delegation-more">{t('chat.delegationMore', { n: hiddenDelegations })}</div>
+          )}
+        </div>
+      )}
       <MessageList
         messages={messages}
         streamingMessage={streamingMessage}
@@ -362,11 +521,11 @@ export const ChatView: React.FC = () => {
           />
           <div className="input-actions">
             <button
-              className={`btn-mode mode-desktop${planMode ? ' plan' : ''}`}
+              className={`btn-mode mode-desktop${modeClass}`}
               onClick={toggleMode}
-              title={planMode ? t('chat.modePlanTitle') : t('chat.modeRunTitle')}
+              title={modeTitle}
             >
-              {planMode ? t('chat.modePlan') : t('chat.modeRun')}
+              {modeLabel}
             </button>
             <button
               className="btn-upload"
@@ -425,6 +584,8 @@ export const ChatView: React.FC = () => {
                       <span className="rewind-file-tag">还原</span>
                     ) : file.kind === 'deleted' ? (
                       <span className="rewind-file-tag tag-del">删除</span>
+                    ) : file.binary ? (
+                      <span className="rewind-file-tag">二进制</span>
                     ) : (
                       <>
                         <span className="rewind-file-add">+{file.added}</span>

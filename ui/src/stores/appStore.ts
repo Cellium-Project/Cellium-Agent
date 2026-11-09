@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Message, Session, ModelConfig } from '../types';
+import { Message, Session, ModelConfig, DelegationActivity } from '../types';
 import { API, fetchJSON, postJSON } from '../utils/api';
 import i18n from '../i18n';
 
@@ -23,8 +23,19 @@ interface AppState {
   streamingMessage: Message | null;
   hasRunningTask: boolean;
 
-  // Agent mode (plan / run)
-  agentMode: 'run' | 'plan';
+  // Agent mode (run / plan / delegate)
+  agentMode: 'run' | 'plan' | 'delegate';
+
+  // 会话委托进行中的状态条
+  delegationActivity: DelegationActivity[];
+  upsertDelegationActivity: (event: {
+    task_id?: string; target?: string; target_title?: string; name?: string;
+    purpose?: string; status?: string; current_tool?: string; last_tool?: string;
+    last_reasoning?: string; tool_calls?: number; elapsed_s?: number;
+    error?: string; success?: boolean;
+  }) => void;
+  removeDelegationActivity: (taskId: string) => void;
+  clearDelegationActivity: () => void;
 
   // Models
   savedModels: ModelConfig[];
@@ -52,6 +63,7 @@ interface AppState {
   addMessage: (message: Message) => void;
   prependMessages: (messages: Message[]) => void;
   upsertMessage: (message: Message) => void;
+  markLastUserRewindable: (turnId: string) => void;
   rewindMessagesFrom: (messageId: string) => void;
   updateStreamingMessage: (message: Message | null) => void;
   setHasMoreHistory: (hasMore: boolean) => void;
@@ -60,7 +72,7 @@ interface AppState {
   setIsStreaming: (streaming: boolean) => void;
   setIsLoadingMessages: (loading: boolean) => void;
   setHasRunningTask: (running: boolean) => void;
-  setAgentMode: (mode: 'run' | 'plan') => void;
+  setAgentMode: (mode: 'run' | 'plan' | 'delegate') => void;
 
   setSavedModels: (models: ModelConfig[]) => void;
   setCurrentModelId: (id: string | null) => void;
@@ -98,6 +110,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   streamingMessage: null,
   hasRunningTask: false,
   agentMode: 'run',
+  delegationActivity: [],
   savedModels: [],
   currentModelId: null,
   sidebarCollapsed: false,
@@ -126,6 +139,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   })),
 
   setMessages: (messages) => set({ messages }),
+  upsertDelegationActivity: (event) => set((state) => {
+    const id = event.task_id || `session:${event.target || event.name || ''}`;
+    if (!id || id === 'session:') return {};
+    const idx = state.delegationActivity.findIndex(a => a.task_id === id);
+    const base = idx >= 0 ? state.delegationActivity[idx] : null;
+    const item: DelegationActivity = {
+      task_id: id,
+      target: event.target ?? base?.target ?? '',
+      target_title: event.target_title ?? base?.target_title,
+      purpose: event.purpose ?? base?.purpose,
+      status: event.status ?? base?.status ?? 'running',
+      current_tool: event.current_tool ?? (event.status ? undefined : base?.current_tool),
+      last_tool: event.last_tool ?? base?.last_tool,
+      last_reasoning: event.last_reasoning ?? base?.last_reasoning,
+      tool_calls: event.tool_calls ?? base?.tool_calls,
+      elapsed_s: event.elapsed_s ?? base?.elapsed_s,
+      error: event.error ?? (event.status ? undefined : base?.error),
+      success: event.success ?? base?.success,
+      updatedAt: Date.now(),
+    };
+    const next = idx >= 0
+      ? state.delegationActivity.map((a, i) => (i === idx ? item : a))
+      : [...state.delegationActivity, item];
+    return { delegationActivity: next };
+  }),
+  removeDelegationActivity: (taskId) => set((state) => ({
+    delegationActivity: state.delegationActivity.filter(a => a.task_id !== taskId),
+  })),
+  clearDelegationActivity: () => set({ delegationActivity: [] }),
   addMessage: (message) => set((state) => ({
     messages: [...state.messages, message],
   })),
@@ -140,6 +182,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const next = [...state.messages];
     next[idx] = message;
     return { messages: next };
+  }),
+  markLastUserRewindable: (turnId) => set((state) => {
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      const m = state.messages[i];
+      if (m.role !== 'user') continue;
+      const next = [...state.messages];
+      next[i] = { ...m, id: m.id || turnId, can_rewind: true };
+      return { messages: next };
+    }
+    return {};
   }),
   rewindMessagesFrom: (messageId) => set((state) => {
     const idx = state.messages.findIndex((m) => m.id === messageId);
@@ -158,7 +210,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
   setIsLoadingMessages: (loading) => set({ isLoadingMessages: loading }),
   setHasRunningTask: (running) => set({ hasRunningTask: running }),
-  setAgentMode: (mode) => set({ agentMode: mode }),
+  setAgentMode: (mode) => set({
+    agentMode: mode === 'plan' || mode === 'delegate' ? mode : 'run',
+  }),
 
   setSavedModels: (models) => set({ savedModels: models }),
   setCurrentModelId: (id) => set({ currentModelId: id }),
@@ -260,6 +314,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: [],
         historyOffset: 0,
         hasMoreHistory: false,
+        delegationActivity: [],
       }));
       postJSON(API.sessionActivate(data.session_id, 'webui'), {}).catch(() => {});
       return data.session_id;
@@ -280,6 +335,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       hasMoreHistory: false,  // 切换会话时先设为 false，等 fetchMessages 返回后再更新
       streamingMessage: null,
       isStreaming: false,
+      delegationActivity: [],
       hasRunningTask: false,
     });
 

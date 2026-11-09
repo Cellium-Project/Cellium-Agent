@@ -326,11 +326,12 @@ class BackgroundTaskManager:
             logger.info("[TaskManager] 任务已取消 | session=%s", session_id)
 
         except Exception as e:
-            self.broker.publish(session_id, {"type": "error", "error": str(e)})
+            from app.core.util.error_text import describe_error
+            self.broker.publish(session_id, {"type": "error", "error": describe_error(e)})
             error_event = self.broker.get_event_history(session_id)[-1]
             info.event_count = len(self.broker.get_event_history(session_id))
             info.last_event_id = int(error_event.get("event_id", 0) or 0)
-            self._apply_terminal_status(info, "error", error_message=str(e))
+            self._apply_terminal_status(info, "error", error_message=describe_error(e))
             logger.error("[TaskManager] 任务出错 | session=%s | error=%s", session_id, e, exc_info=True)
 
         finally:

@@ -204,6 +204,8 @@ export function useChat() {
     updateStreamingMessage,
     addMessage,
     upsertMessage,
+    markLastUserRewindable,
+    upsertDelegationActivity,
     rewindMessagesFrom,
     fetchSessions,
     checkTaskStatus,
@@ -308,22 +310,38 @@ export function useChat() {
   }, [addMessage, updateStreamingMessage]);
 
   const upsertSubagentActivity = useCallback((event: SSEEvent, ctx?: ReturnType<typeof buildStreamingContext>) => {
+    const isSession = event.kind === 'session';
     const name = event.name || 'subagent';
-    const id = `subagent:${name}`;
+    const id = isSession ? `session:${event.target || name}` : `subagent:${name}`;
     const isDone = event.type === 'subagent_done';
     const status: 'running' | 'done' | 'error' = isDone
       ? (event.success === false || event.error ? 'error' : 'done')
       : 'running';
-    const description = describeSubagent({
-      name, status: isDone ? (event.status || status) : (event.status || 'running'),
-      tool_calls: event.tool_calls, current_tool: event.current_tool, last_tool: event.last_tool,
-      tools_used: event.tools_used, last_result_preview: event.last_result_preview,
-      elapsed_s: event.elapsed_s, duration_s: event.duration_s, error: event.error,
-    });
+    let description: string;
+    if (isSession) {
+      const label = event.target_title || event.target || name;
+      const parts = [`会话 ${label}`, String(event.status || status)];
+      if (event.purpose) parts.push(String(event.purpose));
+      const tool = event.current_tool || event.last_tool;
+      if (tool) parts.push(`工具 ${tool}`);
+      const elapsed = event.elapsed_s ?? event.duration_s;
+      if (elapsed) parts.push(`${Math.round(Number(elapsed))}s`);
+      if (event.error) parts.push(String(event.error).slice(0, 60));
+      description = parts.join(' · ');
+    } else {
+      description = describeSubagent({
+        name, status: isDone ? (event.status || status) : (event.status || 'running'),
+        tool_calls: event.tool_calls, current_tool: event.current_tool, last_tool: event.last_tool,
+        tools_used: event.tools_used, last_result_preview: event.last_result_preview,
+        elapsed_s: event.elapsed_s, duration_s: event.duration_s, error: event.error,
+      });
+    }
     const seg: Extract<TimelineSegment, { kind: 'tool' }> = {
       kind: 'tool',
-      tool: 'sub_agent',
-      arguments: { name, task: event.task || '' },
+      tool: isSession ? 'session_agent' : 'sub_agent',
+      arguments: isSession
+        ? { target: event.target, title: event.target_title, purpose: event.purpose }
+        : { name, task: event.task || '' },
       duration_ms: Math.round(Number(event.duration_s || 0) * 1000),
       description,
       status,
@@ -424,7 +442,8 @@ export function useChat() {
     }
     
     if (event.session_id && event.session_id !== sessionId) return;
-    if (ctx.finalized && event.type !== 'messages_rewound') return;
+    // message_received 必须唤醒已结束的 ctx：TUI/通道/会话委托推送会在空闲时拉起新一轮
+    if (ctx.finalized && event.type !== 'messages_rewound' && event.type !== 'message_received') return;
 
     if (event.event_id && event.event_id > ctx.lastEventId) {
       ctx.lastEventId = event.event_id;
@@ -445,12 +464,17 @@ export function useChat() {
     switch (event.type) {
       case 'subagent_progress':
       case 'subagent_done': {
+        if (event.kind === 'session') {
+          // 会话委托：状态条展示，不进对话时间线
+          upsertDelegationActivity(event);
+          return;
+        }
         upsertSubagentActivity(event, ctx);
         return;
       }
       case 'mode_changed': {
         // 会话模式由后端广播，TUI/WebUI 实时同步
-        setAgentMode(event.mode === 'plan' ? 'plan' : 'run');
+        setAgentMode(event.mode === 'plan' ? 'plan' : event.mode === 'delegate' ? 'delegate' : 'run');
         return;
       }
       case 'thinking':
@@ -621,6 +645,7 @@ export function useChat() {
         finalizeMessage(ctx, connectionId);
         setIsStreaming(false);
         setHasRunningTask(false);
+        if (event.tracked_turn_id) markLastUserRewindable(event.tracked_turn_id);
         break;
 
       case 'error': {
@@ -655,6 +680,8 @@ export function useChat() {
               return '已停止：达到最大迭代次数';
             case 'loop_detected':
               return '已停止：检测到重复输出';
+            case 'empty_response':
+              return '已停止：回复为空';
             default:
               return event.reason ? `已停止：${event.reason}` : '已停止生成';
           }
@@ -669,6 +696,7 @@ export function useChat() {
         finalizeMessage(ctx, connectionId);
         setIsStreaming(false);
         setHasRunningTask(false);
+        if (event.tracked_turn_id) markLastUserRewindable(event.tracked_turn_id);
         break;
       }
 
@@ -692,6 +720,8 @@ export function useChat() {
             addMessage({
               role: 'user',
               content: msgContent,
+              sourceSession: event.source_session || undefined,
+              sourceSessionTitle: event.source_session_title || undefined,
             });
           }
         }
@@ -709,6 +739,12 @@ export function useChat() {
         ctx.stoppedByServer = false;
         ctx.stopRequested = false;
         ctx.lastEventId = 0;
+        // 空闲状态收到外部来源的新回合：同步流式/运行中状态
+        // 不能只看 wasFinalized：首屏/切会话后 ctx 是新建的，finalized 也是 false
+        if (!useAppStore.getState().isStreaming) {
+          setIsStreaming(true);
+          setHasRunningTask(true);
+        }
         updateStreamingMessage({
           role: 'assistant',
           content: '',
@@ -732,7 +768,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity, rewindMessagesFrom]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity, rewindMessagesFrom, markLastUserRewindable, upsertDelegationActivity]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((
@@ -798,16 +834,18 @@ export function useChat() {
         return;
       }
 
-      if (!(ws as any).isManualClose && !ctx.finalized) {
-        reconnectTimerRef.current = setTimeout(() => {
-          const newConnectingKey = `ws_connecting_${sessionId}`;
-          (window as any)[newConnectingKey] = false;
-          const newConnectionId = ++connectionIdRef.current;
-          createNewConnection(sessionId, ctx, newConnectionId, newConnectingKey);
-        }, 3000);
-      } else {
+      if ((ws as any).isManualClose) {
         setIsStreaming(false);
+        return;
       }
+
+      // 空闲（ctx.finalized）也要重连：否则断线后收不到 TUI/通道/会话委托推送
+      reconnectTimerRef.current = setTimeout(() => {
+        const newConnectingKey = `ws_connecting_${sessionId}`;
+        (window as any)[newConnectingKey] = false;
+        const newConnectionId = ++connectionIdRef.current;
+        createNewConnection(sessionId, ctx, newConnectionId, newConnectingKey);
+      }, 3000);
     };
   }, [handleChatEvent, setIsStreaming]);
 
@@ -1029,7 +1067,7 @@ export function useChat() {
         removed_count: number;
         files_restored: number;
         files_skipped: string[];
-        files?: { path: string; added: number; removed: number; kind?: string }[];
+        files?: { path: string; added: number; removed: number; kind?: string; binary?: boolean }[];
         warning: string | null;
       }>(API.chatRewind, { session_id: sessionId, message_id: messageId });
       rewindMessagesFrom(messageId);
@@ -1047,7 +1085,7 @@ export function useChat() {
     return postJSON<{
       success: boolean;
       removed_count: number;
-      files: { path: string; added: number; removed: number; kind?: string }[];
+      files: { path: string; added: number; removed: number; kind?: string; binary?: boolean }[];
       files_skipped: string[];
       warning: string | null;
     }>(API.chatRewindPreview, { session_id: sessionId, message_id: messageId });

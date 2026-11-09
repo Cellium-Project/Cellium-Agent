@@ -93,6 +93,16 @@ class ToolDescriptionGenerator:
             "cancel":    "正在取消子 Agent{agent_suffix}",
             "_default":  "正在调度子 Agent{agent_suffix}",
         },
+        "session_agent": {
+            "send":      "正在把任务委托给会话{session_suffix}",
+            "status":    "正在查看会话委托状态{session_suffix}",
+            "results":   "正在读取会话委托结果{session_suffix}",
+            "cancel":    "正在取消会话委托{session_suffix}",
+            "list":      "正在查看会话委托列表",
+            "sessions":  "正在查看会话列表{keyword_suffix}",
+            "rename":    "正在给会话命名{session_suffix}",
+            "_default":  "正在处理会话委托{session_suffix}",
+        },
         "ls": {
             "_default":  "正在列出目录：{dir_label}",
         },
@@ -329,6 +339,13 @@ class ToolDescriptionGenerator:
                 names = [single]
             ctx["agent_names"] = ", ".join([n for n in names if n])[:60]
             ctx["agent_suffix"] = f"：{ctx['agent_names']}" if ctx["agent_names"] else ""
+
+        # Session Agent
+        if tool_name == "session_agent":
+            ctx["target"] = str(arguments.get("target") or "")
+            ctx["session_suffix"] = f"：{ctx['target']}" if ctx["target"] else ""
+            keyword = str(arguments.get("keyword") or "")[:40]
+            ctx["keyword_suffix"] = f"：{keyword}" if keyword else ""
 
         # ls / glob
         ctx["dir_label"] = ctx["basename"] or "当前目录"

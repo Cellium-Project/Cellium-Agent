@@ -120,3 +120,49 @@ class LoopController:
         self._iteration = 0
         self._stop_requested = False
         self._recent_outputs.clear()
+
+
+# 单次回复内的退化重复检测（模型刷屏时提前中断，避免白烧 token）
+_STREAM_WINDOW = 4000
+_STREAM_MIN_COUNT = 12
+_STREAM_MIN_REPEAT_CHARS = 2000
+_STREAM_MIN_PERIOD = 8
+_STREAM_MAX_PERIOD = 240
+_STREAM_MIN_ALNUM = 6
+
+
+def detect_stream_loop(text: str) -> Optional[str]:
+    """检测单条回复末尾是否在连续重复同一片段，返回重复片段"""
+    if not text:
+        return None
+    tail = text[-_STREAM_WINDOW:]
+
+    # 连续重复的长行（要求累计重复长度够大，避免误伤数据表/代码块）
+    prev, run = None, 0
+    for raw in reversed(tail.splitlines()):
+        line = raw.strip()
+        if not line:
+            continue
+        if line == prev:
+            run += 1
+        else:
+            prev, run = line, 1
+        if (
+            run >= _STREAM_MIN_COUNT
+            and len(line) * run >= _STREAM_MIN_REPEAT_CHARS
+            and sum(ch.isalnum() for ch in line) >= _STREAM_MIN_ALNUM
+        ):
+            return line
+
+    # 末尾必须是同一片段的连续整段重复，分散出现的相同句子不算
+    for period in range(_STREAM_MIN_PERIOD, _STREAM_MAX_PERIOD + 1):
+        repeat = max(_STREAM_MIN_COUNT, -(-600 // period))
+        need = period * repeat
+        if len(tail) < need:
+            continue
+        unit = tail[-period:]
+        if sum(ch.isalnum() for ch in unit) < _STREAM_MIN_ALNUM:
+            continue
+        if tail[-need:] == unit * repeat:
+            return unit
+    return None

@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.security.run_mode import (
     normalize_mode, plan_block_reason, plan_injection, run_injection, shell_block_reason,
+    delegate_block_reason, delegate_injection, mode_block_reason,
+    blocked_tools_for_mode, is_delegate,
 )
 
 
@@ -156,6 +158,7 @@ class TestPlanBlock(unittest.TestCase):
     def test_mode_and_injection(self):
         self.assertEqual(normalize_mode("plan"), "plan")
         self.assertEqual(normalize_mode("PLAN"), "plan")
+        self.assertEqual(normalize_mode("delegate"), "delegate")
         self.assertEqual(normalize_mode("bad"), "run")
         self.assertIn("PLAN（只读）", plan_injection())
         self.assertLess(len(plan_injection()), 420, "提示词应保持精简")
@@ -163,6 +166,75 @@ class TestPlanBlock(unittest.TestCase):
         self.assertNotIn("<user_habit>", plan_injection())
         self.assertIn("RUN（正常执行）", run_injection())
         self.assertIn("请忽略", run_injection())
+
+    def test_plan_blocks_session_agent(self):
+        self.assertIn("Plan 模式禁止", plan_block_reason("session_agent", {"command": "send"}))
+        self.assertIn("session_agent", blocked_tools_for_mode("plan"))
+        self.assertNotIn("session_agent", blocked_tools_for_mode("delegate"))
+        self.assertEqual(blocked_tools_for_mode("run"), frozenset())
+
+    def test_delegate_mode_blocks_direct_writes(self):
+        self.assertTrue(is_delegate("delegate"))
+        self.assertIn("委托模式禁止", delegate_block_reason("edit", {"path": "a.py"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("file", {"command": "fs", "action": "create"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("shell", {"command": "run", "cmd": "rm -rf x"}))
+        self.assertIsNone(delegate_block_reason("shell", {"command": "run", "cmd": "pytest -q"}))
+        self.assertIsNone(delegate_block_reason("session_agent", {"command": "send", "target": "B"}))
+        self.assertIsNone(delegate_block_reason("read", {"path": "a.py"}))
+        self.assertIn("委托模式禁止", mode_block_reason("edit", {}, "delegate"))
+        self.assertIsNone(mode_block_reason("edit", {}, "run"))
+
+    def test_delegate_injection(self):
+        text = delegate_injection()
+        self.assertIn("DELEGATE", text)
+        self.assertIn("session_agent", text)
+        self.assertIn("禁止", text)
+        # 明确要求复用会话并给出分工维度
+        self.assertIn("优先复用", text)
+        self.assertIn("sessions", text)
+        self.assertIn("按能力", text)
+        self.assertIn("按角色", text)
+
+    def test_shell_array_and_bypass_blocked(self):
+        for cmd in (
+            ["rm", "-rf", "x"],
+            ["git", "commit", "-m", "x"],
+            ["python", "-c", "open(1)"],
+        ):
+            self.assertIsNotNone(plan_block_reason("shell", {"command": "run", "cmd": cmd}), cmd)
+            self.assertIsNotNone(
+                delegate_block_reason("shell", {"command": "run", "cmd": cmd}), cmd
+            )
+        for cmd in (
+            "git -C repo commit -m x",
+            "git -c user.name=x commit",
+            "git --git-dir=.git commit",
+            "env rm -rf x",
+            "timeout 5 rm -rf x",
+            "nice rm -rf x",
+            "command rm -rf x",
+            "r''m -rf x",
+            "g''it commit -m x",
+            "rm${IFS}-rf x",
+            "pip -q install requests",
+            "npm --prefix ui install",
+            "pnpm -C ui add x",
+            "docker --context foo run x",
+            "kubectl --namespace x apply",
+        ):
+            self.assertIsNotNone(plan_block_reason("shell", {"command": "run", "cmd": cmd}), cmd)
+
+    def test_shell_readonly_still_allowed(self):
+        for cmd in (
+            "pytest -q", "git log | head -5", "git status", "git diff HEAD",
+            "git log --grep commit", "npm test", "npm run lint",
+            "docker ps", "kubectl get pods", "find . -name test.py",
+        ):
+            self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": cmd}), cmd)
+
+    def test_normalize_non_string_inputs(self):
+        self.assertEqual(normalize_mode(1), "run")
+        self.assertEqual(normalize_mode(["plan"]), "run")
 
 
 def _fake_memory(value=""):

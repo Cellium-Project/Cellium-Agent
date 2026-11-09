@@ -134,6 +134,19 @@ class TestToolDescriptionGenerator(unittest.TestCase):
             "sub_agent", {"command": "cancel", "name": "w1"}))
         self.assertIn("列表", ToolDescriptionGenerator.generate("sub_agent", {"command": "list"}))
 
+    def test_generate_session_agent_commands_and_fallback(self):
+        g = ToolDescriptionGenerator.generate
+        self.assertIn("委托给会话：s_2", g("session_agent", {"command": "send", "target": "s_2"}))
+        self.assertIn("状态：s_2", g("session_agent", {"command": "status", "target": "s_2"}))
+        self.assertIn("读取会话委托结果：s_2", g("session_agent", {"command": "results", "target": "s_2"}))
+        self.assertIn("取消会话委托：s_2", g("session_agent", {"command": "cancel", "target": "s_2"}))
+        self.assertIn("会话委托列表", g("session_agent", {"command": "list"}))
+        self.assertIn("会话列表：构建", g("session_agent", {"command": "sessions", "keyword": "构建"}))
+        self.assertIn("会话列表", g("session_agent", {"command": "sessions"}))
+        self.assertIn("给会话命名：s_2", g("session_agent", {"command": "rename", "target": "s_2"}))
+        # 未收录的命令走工具级兜底
+        self.assertIn("处理会话委托", g("session_agent", {"command": "unknown_cmd", "target": "s_2"}))
+
 
 class TestShellCommandDescription(unittest.TestCase):
     def test_describe_shell_cat(self):

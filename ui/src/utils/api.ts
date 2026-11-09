@@ -10,6 +10,8 @@ export const API = {
   chatRewindPreview: `${API_BASE}/chat/rewind/preview`,
   chatSubagents: (sessionId: string) =>
     `${API_BASE}/chat/subagents?session_id=${encodeURIComponent(sessionId)}`,
+  chatDelegations: (sessionId: string) =>
+    `${API_BASE}/chat/delegations?session_id=${encodeURIComponent(sessionId)}`,
 
   // Sessions
   sessions: `${API_BASE}/sessions`,
@@ -25,6 +27,7 @@ export const API = {
   sessionRename: (sessionId: string) => `${API_BASE}/session/${sessionId}/title`,
   sessionSaveMessage: (sessionId: string) => `${API_BASE}/session/${sessionId}/save-message`,
   sessionMode: (sessionId: string) => `${API_BASE}/session/${sessionId}/mode`,
+  sessionModel: (sessionId: string) => `${API_BASE}/session/${sessionId}/model`,
 
   // Config
   configStatus: `${API_BASE}/config/status`,

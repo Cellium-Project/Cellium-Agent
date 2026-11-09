@@ -22,3 +22,4 @@ enabled_components:
 - components.feishu_files.FeishuFiles
 - components.weixin_files.WeixinFiles
 - components.sub_agent.SubAgent
+- components.session_agent.SessionAgent

@@ -37,6 +37,23 @@ def _keep_user_ids(messages) -> list:
     ]
 
 
+def tracked_user_ids(session_id: str) -> set:
+    """有文件追踪记录的轮次（turn_id = 该轮用户消息 id）"""
+    try:
+        from app.core.util.undo_store import get_undo_store
+        return get_undo_store().tracked_turn_ids(session_id)
+    except Exception:
+        return set()
+
+
+def has_tracking(session_id: str, message_id: str) -> bool:
+    try:
+        from app.core.util.undo_store import get_undo_store
+        return get_undo_store().has_tracking(session_id, message_id)
+    except Exception:
+        return False
+
+
 def preview_rewind(session_id: str, message_id: str) -> dict:
     manager = get_session_manager()
     messages = manager.get_or_create(session_id).memory.messages

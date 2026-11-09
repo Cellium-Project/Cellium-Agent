@@ -9,6 +9,7 @@ COMMANDS: List[Dict] = [
     {"slash": "plan",    "desc_key": "cmd.desc.plan",    "aliases": []},
     {"slash": "plan-habit", "desc_key": "cmd.desc.planhabit", "aliases": []},
     {"slash": "run",     "desc_key": "cmd.desc.run",     "aliases": []},
+    {"slash": "delegate", "desc_key": "cmd.desc.delegate", "aliases": []},
     {"slash": "models",  "desc_key": "cmd.desc.models",  "aliases": ["model"]},
     {"slash": "session", "desc_key": "cmd.desc.session", "aliases": []},
     {"slash": "delete",  "desc_key": "cmd.desc.delete",  "aliases": ["rm"]},

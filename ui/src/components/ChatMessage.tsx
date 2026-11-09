@@ -368,6 +368,11 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
         <div className={`message-content ${isUser ? 'user-content' : 'markdown-body'}`}>
           {isUser ? (
             <>
+              {message.sourceSession && (
+                <div className="delegated-from">
+                  {t('common.delegatedFrom', { session: message.sourceSessionTitle || message.sourceSession })}
+                </div>
+              )}
               <div className="user-text">{parsedMessage.content}</div>
               {parsedMessage.attachments && parsedMessage.attachments.length > 0 && (
                 <div className="message-attachments">
@@ -396,7 +401,7 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
             </span>
           )}
         </div>
-        {isUser && onRewind && (
+        {isUser && onRewind && message.can_rewind && (
           <button
             className="rewind-btn"
             onClick={handleRewind}
@@ -438,7 +443,7 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
       } else if (segment.kind === 'reasoning') {
         groups.push(segment as ReasoningSegment);
       } else if (segment.kind === 'tool') {
-        if (segment.tool === 'sub_agent') {
+        if (segment.tool === 'sub_agent' || segment.tool === 'session_agent') {
           groups.push({ kind: 'tool-single', item: segment as ToolSegment });
           continue;
         }
@@ -672,7 +677,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact })
       >
         <span className={`tool-state-dot ${status || 'done'}`} />
         <span className="tool-trace-name">{String(trace.tool || 'unknown')}</span>
-        {trace.tool === 'sub_agent' && trace.description ? (
+        {(trace.tool === 'sub_agent' || trace.tool === 'session_agent') && trace.description ? (
           <span className="tool-trace-arg">{String(trace.description)}</span>
         ) : keyArg && (
           <span className="tool-trace-arg">{keyArg.length > 48 ? keyArg.slice(0, 48) + '…' : keyArg}</span>
@@ -710,8 +715,10 @@ const ToolGroupItem: React.FC<ToolTraceCardProps> = ({ trace, status }) => {
       >
         <span className={`tool-state-dot ${status || 'done'}`} />
         <span className="tool-group-item-arg">
-          {trace.tool === 'sub_agent' && trace.description
-            ? `sub_agent · ${trace.description}`
+          {trace.tool === 'sub_agent' || trace.tool === 'session_agent'
+            ? trace.description
+              ? `${trace.tool} · ${trace.description}`
+              : String(trace.tool)
             : (keyArg || String(trace.tool || 'unknown'))}
         </span>
         {err && <span className="tool-group-item-err">{err.length > 40 ? err.slice(0, 40) + '…' : err}</span>}

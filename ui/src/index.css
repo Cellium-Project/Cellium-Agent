@@ -347,6 +347,23 @@ body {
     color: var(--text-primary);
 }
 
+.session-running-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    vertical-align: middle;
+    animation: session-running-blink 1s steps(2, jump-none) infinite;
+}
+
+@keyframes session-running-blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.15; }
+    100% { opacity: 1; }
+}
+
 .session-time {
     font-size: 11px;
     color: var(--text-tertiary);
@@ -629,6 +646,114 @@ body {
     font-size: 16px;
     font-weight: 600;
     flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.delegation-banners {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    flex-shrink: 0;
+}
+
+.delegation-banner {
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.delegation-banner-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.delegation-banner-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    min-width: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--border-secondary);
+    border-top-color: var(--accent-primary);
+    box-sizing: border-box;
+    flex-shrink: 0;
+    animation: delegation-spin 0.7s linear infinite;
+}
+
+@keyframes delegation-spin {
+    to { transform: rotate(360deg); }
+}
+
+.delegation-banner-title {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.delegation-banner.done .delegation-banner-title {
+    color: var(--accent-success);
+}
+
+.delegation-banner.error .delegation-banner-title,
+.delegation-banner.timeout .delegation-banner-title,
+.delegation-banner.unknown .delegation-banner-title,
+.delegation-banner.cancelled .delegation-banner-title {
+    color: var(--danger-color, #e74c3c);
+}
+
+.delegation-banner-meta {
+    color: var(--text-tertiary);
+}
+
+.delegation-banner-error {
+    color: var(--danger-color, #e74c3c);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+}
+
+.delegation-banner-reason {
+    margin-top: 2px;
+    padding-left: 14px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.delegation-more {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+@media (max-width: 768px) {
+    .delegation-banners {
+        padding: 4px 12px;
+        gap: 2px;
+        max-height: 34vh;
+        overflow-y: auto;
+    }
+
+    .delegation-banner {
+        font-size: 11px;
+    }
+
+    .delegation-banner-line {
+        gap: 6px;
+    }
+
+    .delegation-banner-reason {
+        font-size: 10px;
+        padding-left: 12px;
+    }
 }
 
 .status {
@@ -1184,6 +1309,22 @@ body {
     color: var(--msg-user-text);
     border: 1px solid var(--border-secondary);
     border-radius: 12px;
+}
+
+.delegated-from {
+    display: inline-block;
+    max-width: 100%;
+    margin-bottom: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
 }
 
 .markdown-body {
@@ -5665,6 +5806,20 @@ input:focus, select:focus, textarea:focus {
     /* 手机端模式按钮移到顶部状态栏，输入区只留上传/发送 */
     .mode-desktop {
         display: none;
+    }
+
+    .custom-dropdown.header-model-dropdown {
+        max-width: 132px;
+    }
+
+    .header-model-dropdown .dropdown-trigger {
+        max-width: 132px;
+        min-width: 76px;
+        height: 26px;
+        line-height: 24px;
+        font-size: 11px;
+        padding: 0 22px 0 10px;
+        border-radius: 13px;
     }
 
     .input-footer {

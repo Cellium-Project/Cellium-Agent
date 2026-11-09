@@ -244,6 +244,22 @@ class TestRenderableIds(unittest.TestCase):
         out = _messages_to_renderable([{"id": "m_1", "role": "user", "content": "hi"}])
         self.assertEqual(out[0]["id"], "m_1")
 
+    def test_can_rewind_only_for_tracked_ids(self):
+        from app.server.routes.chat import _messages_to_renderable
+        raw = [
+            {"id": "m_1", "role": "user", "content": "a"},
+            {"id": "m_2", "role": "user", "content": "b"},
+        ]
+        out = _messages_to_renderable(raw, {"m_2"})
+        self.assertFalse(out[0]["can_rewind"])
+        self.assertTrue(out[1]["can_rewind"])
+
+    def test_compacted_notes_never_rewindable(self):
+        from app.server.routes.chat import _messages_to_renderable
+        raw = [{"id": "m_1", "role": "user", "content": "a", "_is_compacted_notes": True}]
+        out = _messages_to_renderable(raw, {"m_1"})
+        self.assertFalse(out[0]["can_rewind"])
+
 
 if __name__ == "__main__":
     unittest.main()

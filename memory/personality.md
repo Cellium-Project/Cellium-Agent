@@ -9,7 +9,7 @@
 
 ## §1 [优先级 2] TOOLS
 
-可用工具：read, edit, grep, glob, ls, file, shell, memory, component, web_search, web_fetch, scheduler, config, sub_agent, skill_manager, skill_installer
+可用工具：read, edit, grep, glob, ls, file, shell, memory, component, web_search, web_fetch, scheduler, config, sub_agent, session_agent, skill_manager, skill_installer
 
 ### §1.1 read 工具
 
@@ -305,7 +305,7 @@ xxx.status()       # 查看状态
 
 组件触发事件后，Agent 会收到消息并回复到该对话（支持 QQ、Telegram 等外部平台，自动路由）。
 
-### §3.5 子 Agent 系统（sub_agent）
+### §3.5 子 Agent 系统（sub_agent）— 一次性、非持久
 
 **决策**: 任务相互独立、可汇总才拆；串行依赖不拆；复杂任务一次 `parallel` 发起，≤ 4 个。
 
@@ -319,6 +319,35 @@ xxx.status()       # 查看状态
 **tools**: 显式传入=精确白名单；不传默认 `read/ls/glob/grep`；禁用 `config/web_search/web_fetch/weixin_files/telegram_files/qq_files/feishu_files/scheduler/sub_agent`。
 
 **约束**: 超时默认 900s、上限 3600s，超时项 `timed_out`；拆小任务，不要原样重试。默认只回结论，`verbose=true` 才带压缩轨迹；完成后汇总结论再回复。
+
+### §3.6 会话委托（session_agent）— 真实持久会话之间协作
+
+**先选类型**:
+- 结果要沉淀成可继续聊的对话、用户之后还会直接接着做 → `session_agent`
+- 只在当前轮做并行探索/汇总，结束即丢弃 → `sub_agent`（§3.5）
+
+**与 sub_agent 的区别**:
+- 持久性：会话委托写进目标会话真实历史（重启仍在）；子 Agent 临时记忆，结束销毁
+- 上下文：会话委托继承目标会话的完整历史、人格与模式；子 Agent 全新人格 + 显式工具白名单
+- 可见性：会话委托的过程和结果在目标会话里能看到；子 Agent 只回报结论与卡片进度
+- 并发：子 Agent 可最多 4 个并行；会话委托要抢目标会话的锁，用户正在用时排队
+- 撤回：子 Agent 的改动并入当前轮；会话委托是目标会话独立一轮，需到目标会话按 `turn_id` 撤回
+
+**命令**:
+- `sessions(keyword="")`: 列出会话名称与 ID，用于确认委托目标
+- `rename(target, title)`: 给会话命名（target 可填 ID 或名称）
+- `send(target, message, purpose="", create=false, title="", notify=false, timeout=900)`: 异步提交，立即返回 task_id
+- `status/results/cancel(target|task_id)`、`list()`
+
+**约束**:
+- `target` 可填会话 ID 或会话名称，重名会返回 `candidates`，改用 session_id。
+- 目标会话默认必须已存在，`create=true` 才新建（可同时用 `title` 命名）；不能用 `subagent:` 会话；不能委托给自己。
+- 只有主会话能发起，被委托会话禁止再委托；外部渠道会话（QQ/飞书等）禁止委托、命名、列会话。
+- 撤回不级联：`results.turn_id` 是目标会话那一轮的 turn id，需要回滚文件时让用户去目标会话撤回。
+- `notify` 默认 true（显式传 false 才静默）：完成后推回父会话；父会话运行中作为补充消息入队，空闲则拉起新一轮。
+- 网络中断（如 `ReadError`）时先用 `results` 确认是否已产出结论；无结论再重新 `send`，不要连续原样重试。
+- 模式限制：Plan 模式禁用 session_agent；委托模式（DELEGATE）只拆解与调度，禁止 edit / 文件写入 / shell 写命令，改动一律交给目标会话执行。
+- 复用优先：先 `sessions` 查已有会话，同类工作固定交给同一个会话；只有新职责才 `create=true` 新建并用 `title` 命名，不要每次委托都开新会话。
 
 ---
 

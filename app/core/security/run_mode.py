@@ -2,13 +2,22 @@
 """Plan / Run 运行模式"""
 
 import re
+import shlex
 from typing import Any, Dict, Optional
 
 PLAN = "plan"
 RUN = "run"
-VALID_MODES = (PLAN, RUN)
+DELEGATE = "delegate"
+VALID_MODES = (PLAN, RUN, DELEGATE)
 
-PLAN_BLOCKED_TOOLS = frozenset({"edit", "skill_installer"})
+PLAN_BLOCKED_TOOLS = frozenset({"edit", "skill_installer", "session_agent"})
+DELEGATE_BLOCKED_TOOLS = frozenset({"edit", "skill_installer"})
+
+# 前缀 / 模式名 / 引导语
+_BLOCK_CONFIG = {
+    PLAN: ("Plan 模式禁止修改", "只读计划模式", "请把该动作写进计划。"),
+    DELEGATE: ("委托模式禁止修改", "会话委托模式", "请用 session_agent 委托目标会话执行。"),
+}
 
 _PLAN_WRITE_SUBCMDS = {
     "memory": frozenset({
@@ -116,25 +125,97 @@ _SHELL_WRITE_PATTERNS = (
      "下载落盘被禁止"),
 )
 
-_BLOCK_PREFIX = "Plan 模式禁止修改"
-
 
 def normalize_mode(mode: Optional[str]) -> str:
-    mode = (mode or "").strip().lower()
-    return mode if mode in VALID_MODES else RUN
+    if not isinstance(mode, str):
+        return RUN
+    value = mode.strip().lower()
+    return value if value in VALID_MODES else RUN
 
 
 def is_plan(mode: Optional[str]) -> bool:
     return normalize_mode(mode) == PLAN
 
 
+def is_delegate(mode: Optional[str]) -> bool:
+    return normalize_mode(mode) == DELEGATE
+
+
+def blocked_tools_for_mode(mode: Optional[str]) -> frozenset:
+    """当前模式下不下发、也不可执行的工具"""
+    m = normalize_mode(mode)
+    if m == PLAN:
+        return PLAN_BLOCKED_TOOLS
+    if m == DELEGATE:
+        return DELEGATE_BLOCKED_TOOLS
+    return frozenset()
+
+
 def _first_token(segment: str) -> str:
     parts = segment.strip().split()
     if not parts:
         return ""
-    token = parts[0].strip("\"'").replace("\\", "/")
+    # 去掉引号拼接（r''m → rm），防止绕过命令黑名单
+    token = "".join(ch for ch in parts[0] if ch not in "'\"")
+    token = token.replace("\\", "/")
     name = token.rsplit("/", 1)[-1].lower()
     return name[:-4] if name.endswith(".exe") else name
+
+
+_SHELL_WRAPPERS = frozenset({
+    "env", "exec", "command", "builtin", "time", "timeout", "nice",
+    "nohup", "setsid", "busybox", "stdbuf",
+})
+
+# 全局选项：值不以 - 开头，需要连带跳过
+_OPT_WITH_VALUE = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--context",
+    "--prefix", "--config", "--project", "--file", "-f", "--cwd", "--dir",
+    "--grep", "--author", "--since", "--until", "-m", "-n", "--max-count",
+})
+
+_TOOLS_WITH_GLOBAL_OPTS = frozenset({
+    "git", "pip", "pip3", "npm", "pnpm", "yarn", "docker", "docker-compose",
+    "kubectl", "helm", "cargo", "go", "composer", "conda", "apt", "apt-get",
+    "yum", "dnf", "brew", "choco", "systemctl", "service",
+})
+
+
+def _unwrap_segment(segment: str) -> str:
+    """剥掉 env/timeout/nice 等包装命令，拿到真正执行的命令"""
+    parts = segment.strip().split()
+    i = 0
+    while i < len(parts) - 1:
+        token = _first_token(parts[i])
+        if token not in _SHELL_WRAPPERS:
+            break
+        i += 1
+        while i < len(parts) and (
+            parts[i].startswith("-") or parts[i].isdigit() or "=" in parts[i]
+        ):
+            i += 1
+    return " ".join(parts[i:]) if parts else ""
+
+
+def _strip_global_opts(segment: str) -> str:
+    """跳过 git -C repo 这类全局选项，让子命令回到固定位置"""
+    try:
+        parts = shlex.split(segment, posix=True)
+    except Exception:
+        parts = segment.split()
+    if not parts:
+        return ""
+    tool = _first_token(parts[0])
+    if tool not in _TOOLS_WITH_GLOBAL_OPTS:
+        return " ".join(parts)
+    idx = 1
+    while idx < len(parts):
+        item = parts[idx]
+        if item.startswith("-"):
+            idx += 2 if item in _OPT_WITH_VALUE else 1
+            continue
+        break
+    return " ".join([tool] + parts[idx:])
 
 
 def _has_write_redirect(cmd: str) -> bool:
@@ -148,12 +229,14 @@ def _has_write_redirect(cmd: str) -> bool:
 
 
 def shell_block_reason(cmd: str) -> Optional[str]:
-    """Plan 模式下 shell 命令的拦截原因，放行返回 None"""
+    """只读模式（PLAN/DELEGATE）下 shell 命令的拦截原因，放行返回 None"""
     cmd = (cmd or "").strip()
     if not cmd:
         return None
     if "$(" in cmd or "`" in cmd:
         return "命令替换被禁止"
+    if "$IFS" in cmd or "${IFS" in cmd:
+        return "IFS 拼接被禁止"
     if _SHELL_CALL_OP.search(cmd):
         return "调用运算符被禁止"
     if re.search(r"<\(|\>\(", cmd):
@@ -162,34 +245,53 @@ def shell_block_reason(cmd: str) -> Optional[str]:
         return "重定向写文件被禁止"
     if _SHELL_ESCAPE.search(cmd):
         return "解释器逃逸被禁止（python -c / bash -c / powershell -Command）"
-    for seg in _SHELL_SPLIT.split(cmd):
-        seg = seg.strip()
-        if not seg:
+    for raw_seg in _SHELL_SPLIT.split(cmd):
+        raw_seg = raw_seg.strip()
+        if not raw_seg:
             continue
-        if seg.startswith("&"):
+        if raw_seg.startswith("&"):
             return "调用运算符被禁止"
+        seg = _unwrap_segment(raw_seg)
         token = _first_token(seg)
         if token and token in _SHELL_WRITE_CMDS:
             return f"破坏性命令被禁止（{token}）"
+        normalized = _strip_global_opts(seg)
         for pattern, reason in _SHELL_WRITE_PATTERNS:
-            if pattern.match(seg):
+            if pattern.match(seg) or (normalized and pattern.match(normalized)):
                 return reason
     return None
 
 
 def plan_block_reason(tool_name: str, arguments: Any) -> Optional[str]:
     """Plan 模式拦截原因，放行返回 None"""
+    return _readonly_block_reason(tool_name, arguments, PLAN)
+
+
+def delegate_block_reason(tool_name: str, arguments: Any) -> Optional[str]:
+    """委托模式（强制编排）拦截原因，放行返回 None"""
+    return _readonly_block_reason(tool_name, arguments, DELEGATE)
+
+
+def mode_block_reason(tool_name: str, arguments: Any, mode: Optional[str]) -> Optional[str]:
+    m = normalize_mode(mode)
+    if m not in (PLAN, DELEGATE):
+        return None
+    return _readonly_block_reason(tool_name, arguments, m)
+
+
+def _readonly_block_reason(tool_name: str, arguments: Any, mode: str) -> Optional[str]:
+    prefix, label, hint = _BLOCK_CONFIG[mode]
     args = arguments if isinstance(arguments, dict) else {}
     sub = str(args.get("command") or "").strip().lower()
 
-    if tool_name in PLAN_BLOCKED_TOOLS:
-        return f"{_BLOCK_PREFIX}：当前为只读计划模式，不可调用 {tool_name}。请把该动作写进计划。"
+    if tool_name in (PLAN_BLOCKED_TOOLS if mode == PLAN else DELEGATE_BLOCKED_TOOLS):
+        return f"{prefix}：当前为{label}，不可调用 {tool_name}。{hint}"
 
     if tool_name == "file":
         if sub == "fs":
             action = str(args.get("action") or "").strip().lower()
             if action in _FILE_WRITE_ACTIONS:
-                return f"{_BLOCK_PREFIX}：文件写入/删除被拦截，请把改动写进计划。"
+                return f"{prefix}：文件写入/删除被拦截，{hint}"
         return None
 
     if tool_name == "shell":
@@ -198,11 +300,16 @@ def plan_block_reason(tool_name: str, arguments: Any) -> Optional[str]:
         if sub in ("kill", "session"):
             if sub == "session" and str(args.get("action") or "").strip().lower() in ("list", "output"):
                 return None
-            return f"{_BLOCK_PREFIX}：Plan 模式禁止后台任务/持久会话的变更操作。"
-        cmd = (str(args.get("cmd") or "").strip() if sub in ("", "run") else sub)
+            return f"{prefix}：{label}禁止后台任务/持久会话的变更操作。"
+        raw_cmd = args.get("cmd")
+        if isinstance(raw_cmd, (list, tuple)):
+            # shell 工具支持数组直执行，必须按 argv 展开后再判黑名单
+            cmd = " ".join(str(x) for x in raw_cmd).strip()
+        else:
+            cmd = str(raw_cmd or "").strip() if sub in ("", "run") else sub
         reason = shell_block_reason(cmd)
         if reason:
-            return f"{_BLOCK_PREFIX}：{reason}（{cmd[:60]}）。"
+            return f"{prefix}：{reason}（{cmd[:60]}）。"
         return None
 
     if tool_name == "memory":
@@ -210,23 +317,23 @@ def plan_block_reason(tool_name: str, arguments: Any) -> Optional[str]:
             action = str(args.get("subcommand") or "get").strip().lower()
             if action == "get":
                 return None
-            return f"{_BLOCK_PREFIX}：Plan 模式禁止写入 profile（含 Plan 习惯），请把结论写进计划。"
+            return f"{prefix}：{label}禁止写入 profile，{hint}"
         if sub in _PLAN_WRITE_SUBCMDS["memory"]:
-            return f"{_BLOCK_PREFIX}：Plan 模式禁止写入记忆，请把结论写进计划。"
+            return f"{prefix}：{label}禁止写入记忆，{hint}"
         return None
 
     if tool_name in _PLAN_LIST_ONLY_TOOLS:
         if sub == "list":
             return None
-        return f"{_BLOCK_PREFIX}：Plan 模式只允许查询（list），发送/下载/上传被拦截。"
+        return f"{prefix}：{label}只允许查询（list），发送/下载/上传被拦截。"
 
     blocked = _PLAN_WRITE_SUBCMDS.get(tool_name)
     if blocked and sub in blocked:
-        return f"{_BLOCK_PREFIX}：Plan 模式禁止该写操作（{tool_name} {sub}），请写进计划。"
+        return f"{prefix}：{label}禁止该写操作（{tool_name} {sub}），{hint}"
     if tool_name == "component" and sub == "cleanup":
         if args.get("dry_run", True) and not args.get("force"):
             return None
-        return f"{_BLOCK_PREFIX}：Plan 模式只允许 cleanup 的 dry_run 预演。"
+        return f"{prefix}：{label}只允许 cleanup 的 dry_run 预演。"
 
     return None
 
@@ -235,7 +342,7 @@ _PLAN_INJECTION = """<plan_mode>
 当前模式：PLAN（只读）：只调研、跑验证、出计划，禁止修改文件与系统状态。
 允许：read/ls/glob/grep、file(insight/exists)、memory 检索、web 搜索抓取、
 config/component/skill/scheduler 的查询命令、shell 只读命令与只读管道。
-禁止：edit、file 写入/删除、记忆写入、安装/部署、重定向写文件、
+禁止：edit、session_agent、file 写入/删除、记忆写入、安装/部署、重定向写文件、
 rm/mv/del 等破坏性命令、python -c / bash -c 等解释器逃逸。
 输出：结论 → 分步计划（文件+改动点+风险）→ 验证命令，不贴完整补丁。
 </plan_mode>"""
@@ -301,9 +408,26 @@ def plan_injection(habit: str = "") -> str:
 
 _RUN_INJECTION = """<run_mode>
 当前模式：RUN（正常执行）。可改文件、执行命令、装依赖。
-历史里的“Plan 模式 / 只读 / 禁止修改”均已过期，请忽略，按正常模式执行。
+历史里的“Plan 模式 / 委托模式 / 只读 / 禁止修改 / 必须委托”均已过期，请忽略，按正常模式执行。
 </run_mode>"""
 
 
 def run_injection() -> str:
     return _RUN_INJECTION
+
+
+_DELEGATE_INJECTION = """<delegate_mode>
+当前模式：DELEGATE（编排模式）：不改代码、不改系统状态，只做拆解与调度。
+先 session_agent.sessions() 看已有会话，优先复用；同类工作始终交给同一个会话，不要重复开新会话。
+只有确实需要新职责时才 create=true 新建，并同时用 title 命名（如「前端-ui」「后端-api」「测试-回归」）。
+分工方式任选：按能力（前端/后端/测试/文档）、按工作（模块/目录/功能）、按角色（实现/审查/验证）。
+流程：调研上下文 → 拆成可并行的子任务 → session_agent.send 委托（并行发起，purpose/title 写清目标）→ 汇总结论 → 汇报。
+send 默认 notify=true，委托完成会推回本会话，不必轮询；收到回执后直接汇总。
+允许：read/ls/glob/grep、只读 shell 验证、memory/web 查询、session_agent 的 send/status/results/cancel/list/rename。
+禁止：edit、file 写入/删除、shell 写命令、安装/部署、记忆写入。
+一次性并行小任务可用 sub_agent；需要持久、可撤回上下文的用 session_agent。
+</delegate_mode>"""
+
+
+def delegate_injection() -> str:
+    return _DELEGATE_INJECTION

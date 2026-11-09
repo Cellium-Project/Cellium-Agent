@@ -14,6 +14,7 @@ interface CustomDropdownProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  menuMinWidth?: number;
 }
 
 export const CustomDropdown: React.FC<CustomDropdownProps> = ({
@@ -23,6 +24,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   placeholder,
   disabled = false,
   className = '',
+  menuMinWidth = 0,
 }) => {
   const { t } = useTranslation();
   const defaultPlaceholder = placeholder || t('common.pleaseSelect');
@@ -38,13 +40,15 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   const updatePosition = useCallback(() => {
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect();
+      const width = Math.max(rect.width, menuMinWidth);
+      const left = Math.min(rect.left, Math.max(8, window.innerWidth - width - 8));
       setMenuPosition({
         top: rect.bottom + 4,
-        left: rect.left,
-        width: rect.width,
+        left,
+        width,
       });
     }
-  }, []);
+  }, [menuMinWidth]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -113,6 +117,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
           className={`dropdown-item ${item.value === value ? 'selected' : ''}`}
           onClick={() => handleSelect(item.value)}
           role="option"
+          title={item.label}
           aria-selected={item.value === value}
         >
           {item.label}
@@ -129,6 +134,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
         className={`dropdown-trigger ${isOpen ? 'open' : ''} ${disabled ? 'disabled' : ''}`}
         onClick={handleToggle}
         disabled={disabled}
+        title={displayText}
         aria-expanded={isOpen}
         aria-haspopup="listbox"
       >

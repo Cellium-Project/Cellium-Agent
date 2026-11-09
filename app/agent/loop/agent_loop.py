@@ -37,7 +37,8 @@ from .tool_executor import (
 )
 from .command_handler import CommandHandler
 from .auto_hints import AutoHintManager
-from .loop_controller import LoopController
+from .loop_controller import LoopController, detect_stream_loop
+from app.core.util.error_text import describe_error as _describe_error
 from app.agent.prompt import PromptBuilder, PromptDiffTracker, create_default_builder
 from .loop_event_publisher import LoopEventPublisher
 
@@ -936,19 +937,22 @@ class AgentLoop:
         if self._loop_controller.is_stop_requested or (self._stop_event and self._stop_event.is_set()):
             return {"_stopped_by_user": True, "error": "stopped_by_user"}
 
-        if getattr(self, "_run_mode", "run") == "plan":
-            from app.core.security.run_mode import plan_block_reason
+        _run_mode = getattr(self, "_run_mode", "run")
+        if _run_mode in ("plan", "delegate"):
+            from app.core.security.run_mode import mode_block_reason
             name = getattr(tool_call, "name", "") or (
                 tool_call.get("name", "") if isinstance(tool_call, dict) else ""
             )
             args = getattr(tool_call, "arguments", None) if not isinstance(tool_call, dict) \
                 else tool_call.get("arguments")
-            reason = plan_block_reason(name, args)
+            reason = mode_block_reason(name, args, _run_mode)
             if reason:
-                logger.warning("[AgentLoop] Plan 模式拦截工具 | tool=%s", name)
+                logger.warning("[AgentLoop] %s 模式拦截工具 | tool=%s", _run_mode, name)
                 return {
                     "success": False, "error": reason,
-                    "blocked": True, "_tool_blocked": True, "plan_mode": True,
+                    "blocked": True, "_tool_blocked": True,
+                    "plan_mode": _run_mode == "plan",
+                    "delegate_mode": _run_mode == "delegate",
                 }
 
         stop_event = self._stop_event
@@ -1138,6 +1142,8 @@ class AgentLoop:
                 stuck_iterations=stuck_iters,
             )
 
+        tracked_turn_id = self._tracked_turn_id(effective_session, effective_memory)
+
         return {
             "type": "done",
             "content": final_content,
@@ -1146,7 +1152,25 @@ class AgentLoop:
             "completed": completed,
             "total_time_ms": total_time,
             "reason": reason,
+            "tracked_turn_id": tracked_turn_id,
         }
+
+    @staticmethod
+    def _tracked_turn_id(session_id, memory):
+        """当前轮有文件追踪时返回 turn_id（撤回入口用）"""
+        try:
+            turn_id = None
+            for msg in reversed(memory.messages):
+                if msg.get("role") == "user" and msg.get("id") and not msg.get("_is_compacted_notes"):
+                    turn_id = msg["id"]
+                    break
+            if turn_id:
+                from app.core.util.undo_store import get_undo_store
+                if get_undo_store().has_tracking(session_id, turn_id):
+                    return turn_id
+        except Exception:
+            pass
+        return None
 
     async def _emit_stop_and_finalize(
         self,
@@ -1161,6 +1185,12 @@ class AgentLoop:
         final_response_content: Optional[str] = None,
     ):
         """处理 stop 场景：先发送 stop_event，再执行收尾"""
+        # 让 stopped 事件也带上 turn_id，WebUI 才能标出可撤回
+        if "tracked_turn_id" not in stop_event:
+            stop_event = dict(stop_event)
+            stop_event["tracked_turn_id"] = self._tracked_turn_id(
+                effective_session, effective_memory
+            )
         yield stop_event
 
         done_event = self._finalize_session(
@@ -1185,7 +1215,7 @@ class AgentLoop:
 
 
     async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None,
-                         system_injection: str = None, mode: str = None):
+                         system_injection: str = None, mode: str = None, delegated_from: str = None):
 
         """流式执行 Agent 循环"""
         effective_memory = memory or self.memory
@@ -1193,11 +1223,17 @@ class AgentLoop:
         start_time = time.time()
 
         from app.core.security.run_mode import (
-            normalize_mode, plan_injection, run_injection, get_plan_habit, PLAN,
+            normalize_mode, plan_injection, run_injection, delegate_injection,
+            get_plan_habit, PLAN, DELEGATE,
         )
         self._run_mode = normalize_mode(mode)
-        # 两种模式都显式声明当前状态
-        _mode_text = plan_injection(get_plan_habit()) if self._run_mode == PLAN else run_injection()
+        # 各模式都显式声明当前状态
+        if self._run_mode == PLAN:
+            _mode_text = plan_injection(get_plan_habit())
+        elif self._run_mode == DELEGATE:
+            _mode_text = delegate_injection()
+        else:
+            _mode_text = run_injection()
         system_injection = f"{system_injection}\n\n{_mode_text}" if system_injection else _mode_text
 
         # 本轮循环的停止事件（stop() 可跨线程 set，asyncio.Event.set 线程安全）
@@ -1221,11 +1257,28 @@ class AgentLoop:
 
         try:
             # === 1. 消息接收事件 ===
+            source_session_title = None
+            if delegated_from:
+                try:
+                    from app.agent.loop.session_store import get_session_store
+                    for meta in get_session_store().list_sessions(limit=200) or []:
+                        if meta.session_id == delegated_from:
+                            source_session_title = (meta.title or "").strip() or None
+                            break
+                except Exception:
+                    pass
             self._event_publisher.publish_message_received(
                 session_id=effective_session,
                 message=user_input,
+                source_session=delegated_from,
+                source_session_title=source_session_title,
             )
-            yield {"type": "message_received", "message": user_input}
+            yield {
+                "type": "message_received",
+                "message": user_input,
+                "source_session": delegated_from,
+                "source_session_title": source_session_title,
+            }
             user_msg_id = effective_memory.add_user_message(user_input)
             if self._undo_context:
                 self._tool_executor.set_turn_context(*self._undo_context)
@@ -1632,6 +1685,8 @@ class AgentLoop:
                 _stream_reasoning_end = None
                 _stream_content = []
                 _stream_tool_calls = []
+                _stream_checked = 0
+                _stream_tail = ""
                 response = None
                 # 用辅助任务包装流式调用：主循环等待队列并检查停止标志，
                 _stream_finished = asyncio.Event()
@@ -1692,8 +1747,42 @@ class AgentLoop:
                             continue
                         ctype = chunk.get("type")
                         if ctype == "content":
-                            _stream_content.append(chunk.get("text", ""))
-                            yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                            _text = chunk.get("text", "")
+                            _stream_content.append(_text)
+                            yield {"type": "content_chunk", "content": _text}
+                            _stream_checked += len(_text)
+                            _stream_tail = (_stream_tail + _text)[-4000:]
+                            if _stream_checked >= 300:
+                                _stream_checked = 0
+                                _repeated = detect_stream_loop(_stream_tail)
+                                if _repeated:
+                                    logger.warning(
+                                        "[AgentLoop] 检测到流式输出刷屏重复，提前终止 | repeated=%r",
+                                        _repeated[:60],
+                                    )
+                                    _stop_emitted = True
+                                    _stream_task.cancel()
+                                    try:
+                                        await _stream_task
+                                    except (asyncio.CancelledError, Exception):
+                                        pass
+                                    async for event in self._emit_stop_and_finalize(
+                                        stop_event={
+                                            "type": "stopped",
+                                            "reason": "loop_detected",
+                                            "iteration": iteration,
+                                        },
+                                        user_input=user_input,
+                                        effective_session=effective_session,
+                                        effective_memory=effective_memory,
+                                        tool_traces=tool_traces,
+                                        iteration=iteration,
+                                        start_time=start_time,
+                                        # 刷屏内容不落库，避免污染记忆
+                                        final_response_content="",
+                                    ):
+                                        yield event
+                                    return
                         elif ctype == "reasoning":
                             if _stream_reasoning_start is None:
                                 _stream_reasoning_start = chunk.get("start_time") or time.time()
@@ -2195,6 +2284,23 @@ class AgentLoop:
                         yield {"type": "status", "content": "回复为空，正在重新生成..."}
                         continue
                     logger.warning("[AgentLoop] 最终回复为空且无法重试，终止 | iter=%d", iteration)
+                    # 空回复不能算正常完成
+                    async for event in self._emit_stop_and_finalize(
+                        stop_event={
+                            "type": "stopped",
+                            "reason": "empty_response",
+                            "iteration": iteration,
+                        },
+                        user_input=user_input,
+                        effective_session=effective_session,
+                        effective_memory=effective_memory,
+                        tool_traces=tool_traces,
+                        iteration=iteration,
+                        start_time=start_time,
+                        final_response_content="",
+                    ):
+                        yield event
+                    return
 
                 is_looping, repeated_output = self._loop_controller.check_output_loop(content)
                 if is_looping:
@@ -2356,7 +2462,7 @@ class AgentLoop:
                 self._persist_conversation(user_input, None, effective_session, memory=effective_memory)
             except Exception:
                 pass
-            yield {"type": "error", "error": f"{type(e).__name__}: {str(e)}"}
+            yield {"type": "error", "error": _describe_error(e)}
 
         finally:
             # 模式只作用于本轮，避免污染后续任务
@@ -2367,7 +2473,7 @@ class AgentLoop:
                 pass
 
     def _get_tools_definition(self) -> List[Dict]:
-        """获取所有工具的 LLM 定义（Plan 模式只下发只读工具）"""
+        """获取所有工具的 LLM 定义（只读类模式只下发允许的工具）"""
         self._refresh_tools()
         definitions = []
         for tname, tool in self.tools.items():
@@ -2376,11 +2482,12 @@ class AgentLoop:
             elif hasattr(tool, "__dict__") and "definition" in tool.__dict__:
                 definitions.append(tool.definition)
 
-        if getattr(self, "_run_mode", "run") == "plan":
-            from app.core.security.run_mode import PLAN_BLOCKED_TOOLS
+        from app.core.security.run_mode import blocked_tools_for_mode
+        blocked = blocked_tools_for_mode(getattr(self, "_run_mode", "run"))
+        if blocked:
             definitions = [
                 d for d in definitions
-                if (d.get("function") or {}).get("name") not in PLAN_BLOCKED_TOOLS
+                if (d.get("function") or {}).get("name") not in blocked
             ]
 
         builtin_count = len(self._builtin_tools)
