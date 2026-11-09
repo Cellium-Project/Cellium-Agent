@@ -1,9 +1,14 @@
 import json
 import logging
+import uuid
 from typing import List, Dict
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+def _new_id() -> str:
+    return f"m_{uuid.uuid4().hex[:12]}"
 
 
 class MemoryManager:
@@ -37,14 +42,18 @@ class MemoryManager:
         )
 
     def add_user_message(self, content: str):
+        message_id = _new_id()
         self.messages.append({
+            "id": message_id,
             "role": "user",
             "content": content,
             "timestamp": datetime.now().isoformat()
         })
+        return message_id
 
     def add_assistant_message(self, content: str, reasoning_content: str = None, reasoning_duration_ms: int = 0):
         msg = {
+            "id": _new_id(),
             "role": "assistant",
             "content": content,
             "timestamp": datetime.now().isoformat()
@@ -58,6 +67,7 @@ class MemoryManager:
     def add_system_message(self, content: str):
         """添加系统消息"""
         self.messages.append({
+            "id": _new_id(),
             "role": "system",
             "content": content,
             "timestamp": datetime.now().isoformat()
@@ -69,6 +79,7 @@ class MemoryManager:
             tool_call_id = f"call_{self.tool_call_counter}"
 
         self.messages.append({
+            "id": _new_id(),
             "role": "assistant",
             "content": None,
             "tool_calls": [{
@@ -113,6 +124,7 @@ class MemoryManager:
             })
 
         msg = {
+            "id": _new_id(),
             "role": "assistant",
             "content": content or None,
             "tool_calls": tool_calls,
@@ -144,6 +156,7 @@ class MemoryManager:
                 "status": "error",
             }, ensure_ascii=False)
         self.messages.append({
+            "id": _new_id(),
             "role": "tool",
             "tool_call_id": tool_call_id,
             "content": content

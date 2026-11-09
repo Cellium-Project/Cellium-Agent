@@ -729,6 +729,12 @@ class ToolExecutor:
         self._error_threshold: int = 3
         self._on_tools_changed = on_tools_changed  # 工具变化时的回调
         self._tool_policy = None
+        self._turn_session_id = None
+        self._turn_id = None
+
+    def set_turn_context(self, session_id, turn_id) -> None:
+        self._turn_session_id = session_id
+        self._turn_id = turn_id
 
     def set_tool_policy(self, policy) -> None:
         """实例级策略，context 里带的优先"""
@@ -758,6 +764,51 @@ class ToolExecutor:
     def refresh_tools(self, tools: Dict[str, Any]):
         """更新工具表（热插拔后调用）"""
         self.tools = tools
+
+    def _undo_checkpoint(self, tool_name: str, arguments: dict) -> None:
+        if not self._turn_session_id or not self._turn_id:
+            return
+        try:
+            from app.core.util.undo_store import get_undo_store
+            store = get_undo_store()
+            if tool_name == "edit":
+                paths = [arguments.get("file_path") or arguments.get("path")]
+            elif tool_name == "file":
+                paths = []
+                command = (arguments.get("command") or "").strip()
+                action = (arguments.get("action") or "").strip()
+                base = arguments.get("path")
+                if command == "fs" and action == "create":
+                    if base:
+                        paths.append(base)
+                    files = arguments.get("files")
+                    if isinstance(files, str):
+                        try:
+                            files = json.loads(files)
+                        except Exception:
+                            files = None
+                    if isinstance(files, dict):
+                        for key in files.keys():
+                            if base and not os.path.isabs(str(key)):
+                                paths.append(os.path.join(base, str(key)))
+                            else:
+                                paths.append(str(key))
+                elif base:
+                    paths.append(base)
+            elif tool_name == "shell":
+                shell_tool = self._builtin_tools.get("shell")
+                cwd = (
+                    getattr(shell_tool, "_cwd", None)
+                    or getattr(getattr(shell_tool, "shell", None), "_cwd", None)
+                    or os.getcwd()
+                )
+                store.checkpoint_shell(self._turn_session_id, self._turn_id, cwd)
+                return
+            else:
+                return
+            store.checkpoint_paths(self._turn_session_id, self._turn_id, [p for p in paths if p])
+        except Exception as e:
+            logger.warning("[ToolExecutor] undo checkpoint 失败: %s", e)
 
     async def execute(self, tool_call, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """执行工具调用（异步包装，避免阻塞事件循环）
@@ -805,6 +856,8 @@ class ToolExecutor:
             return {"error": error_msg}
 
         tool_instance = self.tools[tool_name]
+
+        self._undo_checkpoint(tool_name, arguments)
 
         try:
             loop = asyncio.get_running_loop()
@@ -858,6 +911,7 @@ class ToolExecutor:
             return {"error": error_msg}
 
         tool_instance = self.tools[tool_name]
+        self._undo_checkpoint(tool_name, arguments)
         try:
             return self._dispatch(tool_instance, arguments, session_id, platform_context)
         except Exception as e:

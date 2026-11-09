@@ -2,7 +2,9 @@ import React, { memo, useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import type { Message, TimelineSegment } from '../types';
+import type { Message, TimelineSegment, HistoryResponse } from '../types';
+import { useAppStore } from '../stores/appStore';
+import { API, fetchJSON } from '../utils/api';
 import { Icons } from './Icons';
 import { Collapsible } from './Collapsible';
 import { EditDiffCard, ShellOutputCard, parseUnifiedDiff } from './ToolOutput';
@@ -214,6 +216,7 @@ const JsonBlockCard: React.FC<{ jsonStr: string; isThinking?: boolean }> = memo(
 interface ChatMessageProps {
   message: Message;
   isStreaming?: boolean;
+  onRewind?: (id: string) => void;
 }
 
 const ReasoningBlock: React.FC<{ content: string; startedAt?: number; durationMs?: number; streaming?: boolean }> = ({ content, startedAt, durationMs, streaming }) => {
@@ -241,7 +244,19 @@ const ReasoningBlock: React.FC<{ content: string; startedAt?: number; durationMs
   );
 };
 
-export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => {
+function findTailMatchId(list: Message[], content: string, tailOrdinal: number): string | undefined {
+  let seen = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m.role === 'user' && (m.content || '').trim() === content) {
+      seen++;
+      if (seen === tailOrdinal) return m.id;
+    }
+  }
+  return undefined;
+}
+
+export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRewind }) => {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
   const [showSchedulerDetail, setShowSchedulerDetail] = useState(false);
@@ -267,7 +282,50 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => 
     }
     return { isSchedulerTrigger: false };
   }, [isUser, parsedMessage.content]);
-  
+
+  const handleRewind = async () => {
+    if (!onRewind) return;
+    if (!window.confirm('撤回该消息及其后续所有回复？')) return;
+    if (message.id) {
+      onRewind(message.id);
+      return;
+    }
+    const store = useAppStore.getState();
+    const sessionId = store.currentSessionId;
+    if (!sessionId) return;
+    const content = (message.content || '').trim();
+    const list = store.messages;
+    let tailOrdinal = 1;
+    const idx = list.indexOf(message);
+    if (idx >= 0) {
+      tailOrdinal = 0;
+      for (let i = idx; i < list.length; i++) {
+        const m = list[i];
+        if (m.role === 'user' && (m.content || '').trim() === content) tailOrdinal++;
+      }
+    }
+    await store.fetchMessages(sessionId, 0, true);
+    let targetId = findTailMatchId(useAppStore.getState().messages, content, tailOrdinal);
+    if (!targetId) {
+      const data = await fetchJSON<HistoryResponse>(
+        `${API.sessionHistory(sessionId)}?limit=150&offset=0`
+      );
+      targetId = findTailMatchId(data.messages, content, tailOrdinal);
+    }
+    if (targetId) {
+      const latest = useAppStore.getState().messages;
+      if (idx >= 0 && idx < latest.length && !latest[idx].id &&
+        (latest[idx].content || '').trim() === content) {
+        const next = [...latest];
+        next[idx] = { ...latest[idx], id: targetId };
+        useAppStore.getState().setMessages(next);
+      }
+      onRewind(targetId);
+    } else {
+      alert('撤回失败：消息尚未同步');
+    }
+  };
+
   if (message.type === 'scheduler_trigger') {
     return (
       <div className="message-row scheduler-trigger">
@@ -339,6 +397,11 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming }) => 
             </span>
           )}
         </div>
+        {isUser && onRewind && (
+          <button className="rewind-btn" onClick={handleRewind}>
+            撤回
+          </button>
+        )}
       </div>
     </div>
   );

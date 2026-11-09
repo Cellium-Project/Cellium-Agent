@@ -270,6 +270,12 @@ class SessionManager:
         )
 
     @staticmethod
+    def _restore_archive_id(memory: 'MemoryManager', msg: Dict) -> None:
+        archive_id = msg.get("id")
+        if archive_id:
+            memory.messages[-1]["id"] = archive_id
+
+    @staticmethod
     def _restore_archive_message(memory: 'MemoryManager', msg: Dict, seen_keys: set) -> bool:
         role = msg.get("role", "")
         content = msg.get("content")
@@ -282,6 +288,7 @@ class SessionManager:
 
         if role == "user":
             memory.add_user_message(content or "")
+            SessionManager._restore_archive_id(memory, msg)
             if msg.get("_is_compacted_notes"):
                 memory.messages[-1]["_is_compacted_notes"] = True
             return True
@@ -309,9 +316,11 @@ class SessionManager:
                     reasoning_content=reasoning_content,
                     reasoning_duration_ms=reasoning_duration_ms,
                 )
+                SessionManager._restore_archive_id(memory, msg)
                 return True
             if content:
                 memory.add_assistant_message(content, reasoning_content=reasoning_content, reasoning_duration_ms=reasoning_duration_ms)
+                SessionManager._restore_archive_id(memory, msg)
                 return True
             return False
 
@@ -327,6 +336,7 @@ class SessionManager:
                 )
                 return False
             memory.add_tool_result(tc_id, parsed)
+            SessionManager._restore_archive_id(memory, msg)
             return True
 
         return False

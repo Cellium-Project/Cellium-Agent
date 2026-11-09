@@ -1224,7 +1224,14 @@ class AgentLoop:
                 message=user_input,
             )
             yield {"type": "message_received", "message": user_input}
-            effective_memory.add_user_message(user_input)
+            user_msg_id = effective_memory.add_user_message(user_input)
+            _turn_id = user_msg_id or f"turn_{int(time.time() * 1000)}"
+            self._tool_executor.set_turn_context(effective_session, _turn_id)
+            try:
+                from app.core.util.undo_store import get_undo_store
+                get_undo_store().begin_turn(effective_session, _turn_id)
+            except Exception:
+                pass
 
             # === 1.5 会话目标更新 ===
             session_notes = self._get_session_notes(effective_session)
@@ -2349,6 +2356,10 @@ class AgentLoop:
         finally:
             # 模式只作用于本轮，避免污染后续任务
             self._run_mode = "run"
+            try:
+                self._tool_executor.set_turn_context(None, None)
+            except Exception:
+                pass
 
     def _get_tools_definition(self) -> List[Dict]:
         """获取所有工具的 LLM 定义（Plan 模式只下发只读工具）"""

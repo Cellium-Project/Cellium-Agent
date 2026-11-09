@@ -43,7 +43,10 @@ def plan_slice(messages: list, start_index: int, end_index: int) -> list:
             content = m.get("content")
             if content:
                 span = (start_index + i, start_index + i + 1)
-                plan.append({"kind": "user", "content": content, "span": span})
+                plan.append({
+                    "kind": "user", "content": content, "span": span,
+                    "id": m.get("id"),
+                })
             i += 1
             continue
         if role != "assistant":

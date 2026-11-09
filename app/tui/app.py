@@ -471,6 +471,7 @@ class CelliumTUI(App):
         self._file_panel_active = False
         self._file_panel_dir = ""
         self._restoring_history = False 
+        self._local_rewind = False
 
         self.header = None
         self.body = None
@@ -1521,6 +1522,8 @@ class CelliumTUI(App):
             self._post(self._append_system(self.tr("commands.help")))
         elif cmd == "/clear":
             self._clear_chat()
+        elif cmd in ("/undo", "/rewind"):
+            self._post(self._rewind_last_round())
         elif cmd == "/theme":
             self.action_toggle_theme()
         elif cmd == "/settings":
@@ -1752,6 +1755,47 @@ class CelliumTUI(App):
         msg = self.tr("plan.habit_reset") if not value else self.tr("plan.habit_saved")
         self._post(self._append_system(msg))
 
+    async def _rewind_last_round(self):
+        if self._busy:
+            await self._append_system(self.tr("rewind.busy"))
+            return
+        try:
+            memory = await asyncio.to_thread(self._get_session_memory, self.session_id)
+            msg_id = next(
+                (
+                    m.get("id")
+                    for m in reversed(memory.messages)
+                    if m.get("role") == "user"
+                    and not m.get("_is_compacted_notes")
+                    and m.get("id")
+                ),
+                None,
+            )
+            if not msg_id:
+                await self._append_system(self.tr("rewind.none"))
+                return
+            from app.agent.loop.rewind import rewind_session
+            self._local_rewind = True
+            result = await asyncio.to_thread(rewind_session, self.session_id, msg_id)
+            await self._refresh_after_rewind()
+            removed = int((result or {}).get("removed_count") or 0)
+            partial = bool((result or {}).get("warning") or (result or {}).get("files_skipped"))
+            await self._append_system(
+                self.tr("rewind.partial" if partial else "rewind.done", removed)
+            )
+            self.set_timer(2.0, self._clear_local_rewind)
+        except Exception as e:
+            self._local_rewind = False
+            await self._append_system(self.tr("rewind.failed", e))
+
+    async def _refresh_after_rewind(self):
+        self._last_local_task_end = time.monotonic()
+        self._clear_chat()
+        await self._load_history()
+
+    def _clear_local_rewind(self):
+        self._local_rewind = False
+
     def action_toggle_theme(self):
         self.theme = "cellium-light" if self.theme == "cellium-dark" else "cellium-dark"
         self.save_theme_pref(self.theme)
@@ -1927,6 +1971,9 @@ class CelliumTUI(App):
             msg = evt.get("message") or evt.get("content") or ""
             if msg:
                 await self._append_user(str(msg))
+        elif t == "messages_rewound":
+            if not self._local_rewind and not self._busy:
+                await self._refresh_after_rewind()
         elif t == "thinking":
             self._touch_busy()
             await self._append_thinking(evt.get("content", ""))

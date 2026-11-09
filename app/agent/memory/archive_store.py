@@ -132,6 +132,95 @@ class ArchiveStore:
                 records.append(json.loads(line))
         return records
 
+    def delete_after(self, session_id: str, message_id: str) -> int:
+        files = sorted(f for f in os.listdir(self.base_dir) if f.endswith(".jsonl"))
+        parsed: Dict[str, List[Dict]] = {}
+        target_file = None
+        target_record_index = -1
+        target_message_index = -1
+
+        for fname in files:
+            file_path = os.path.join(self.base_dir, fname)
+            records = []
+            try:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("[ArchiveStore] 归档文件读取失败，跳过: %s (%s)", fname, e)
+                continue
+            parsed[fname] = records
+
+            if target_file is not None:
+                continue
+            for record_index, rec in enumerate(records):
+                if rec.get("session_id") != session_id:
+                    continue
+                msgs = rec.get("messages")
+                if not isinstance(msgs, list):
+                    continue
+                for message_index, msg in enumerate(msgs):
+                    if isinstance(msg, dict) and msg.get("id") == message_id:
+                        target_file = fname
+                        target_record_index = record_index
+                        target_message_index = message_index
+                        break
+                if target_file is not None:
+                    break
+
+        if target_file is None:
+            return 0
+
+        removed_count = 0
+        started = False
+        affected = set()
+
+        for fname in files:
+            records = parsed.get(fname)
+            if records is None:
+                continue
+            new_records = []
+            changed = False
+            for record_index, rec in enumerate(records):
+                if rec.get("session_id") != session_id:
+                    new_records.append(rec)
+                    continue
+                if fname == target_file and record_index == target_record_index:
+                    msgs = rec.get("messages") or []
+                    kept = msgs[:target_message_index]
+                    removed_count += len(msgs) - target_message_index
+                    started = True
+                    changed = True
+                    if kept:
+                        updated = dict(rec)
+                        updated["messages"] = kept
+                        new_records.append(updated)
+                    continue
+                if started:
+                    removed_count += len(rec.get("messages") or [])
+                    changed = True
+                    continue
+                new_records.append(rec)
+            if changed:
+                affected.add(fname)
+                parsed[fname] = new_records
+
+        for fname in affected:
+            file_path = os.path.join(self.base_dir, fname)
+            tmp_path = f"{file_path}.{os.getpid()}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                for rec in parsed[fname]:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            os.replace(tmp_path, file_path)
+
+        self._session_keys.pop(session_id, None)
+        return removed_count
+
     @staticmethod
     def _message_key(msg: Dict) -> tuple:
         """消息级去重键：role + content + timestamp + tool_call_id + tool_calls"""

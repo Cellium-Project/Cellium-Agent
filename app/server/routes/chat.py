@@ -3,8 +3,9 @@
 聊天 API 路由 — 会话感知 + EventBus 事件 + DI 容器
 """
 
+import asyncio
 import logging
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import json
@@ -18,6 +19,7 @@ from app.agent.events.event_models import (
 )
 from app.agent.loop.session_manager import get_session_manager
 from app.agent.loop.session_store import get_session_store
+from app.agent.loop.rewind import RewindError, rewind_session
 from app.server.task_manager import get_task_manager
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -70,6 +72,11 @@ class SaveMessageRequest(BaseModel):
 class StopRequest(BaseModel):
     """停止任务请求"""
     session_id: Optional[str] = "default"
+
+
+class RewindRequest(BaseModel):
+    session_id: str = "default"
+    message_id: str
 
 
 class ComponentEventRequest(BaseModel):
@@ -312,6 +319,30 @@ async def stop_chat(request: StopRequest):
         return {"status": "stopped", "session_id": session_id}
 
     return {"status": "not_found", "session_id": session_id}
+
+
+@router.post("/chat/rewind")
+async def rewind_chat(request: RewindRequest):
+    """撤回指定用户消息及其之后的所有消息"""
+    session_id = request.session_id or "default"
+    task_mgr = get_task_manager()
+    if task_mgr.has_running_task(session_id):
+        task_mgr.cancel_task(session_id)
+        for _ in range(30):
+            if not task_mgr.has_running_task(session_id):
+                break
+            await asyncio.sleep(0.1)
+
+    try:
+        return rewind_session(session_id, request.message_id)
+    except RewindError as e:
+        if e.code == "not_found":
+            status_code = 404
+        elif e.code == "compacted":
+            status_code = 409
+        else:
+            status_code = 400
+        raise HTTPException(status_code=status_code, detail=str(e))
 
 
 @router.get("/chat/subagents")
@@ -731,6 +762,7 @@ def _messages_to_renderable(raw_messages: list) -> list:
 
         if role == "user":
             renderable.append({
+                "id": msg.get("id"),
                 "role": "user",
                 "content": msg.get("content") or "",
                 "timeline": None,
@@ -854,6 +886,7 @@ def _messages_to_renderable(raw_messages: list) -> list:
                             timeline.append({"kind": "text", "content": seg_["content"]})
 
                 renderable.append({
+                    "id": msg.get("id"),
                     "role": "assistant",
                     "content": final_text or "",
                     "toolTraces": tool_traces,
@@ -880,6 +913,7 @@ def _messages_to_renderable(raw_messages: list) -> list:
                             timeline.append({"kind": "text", "content": seg["content"]})
                 
                 renderable.append({
+                    "id": msg.get("id"),
                     "role": "assistant",
                     "content": content or "",
                     "toolTraces": [],

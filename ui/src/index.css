@@ -883,6 +883,35 @@ body {
     color: var(--accent-success);
 }
 
+.rewind-btn {
+    align-self: center;
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.message-row.user:hover .rewind-btn {
+    opacity: 1;
+}
+
+.rewind-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+@media (hover: none) {
+    .rewind-btn {
+        opacity: 0.7;
+    }
+}
+
 .message-content {
     padding: 12px 16px;
     border-radius: 12px;

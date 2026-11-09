@@ -204,6 +204,7 @@ export function useChat() {
     updateStreamingMessage,
     addMessage,
     upsertMessage,
+    rewindMessagesFrom,
     fetchSessions,
     checkTaskStatus,
     stopTask,
@@ -423,7 +424,8 @@ export function useChat() {
     }
     
     if (event.session_id && event.session_id !== sessionId) return;
-    
+    if (ctx.finalized && event.type !== 'messages_rewound') return;
+
     if (event.event_id && event.event_id > ctx.lastEventId) {
       ctx.lastEventId = event.event_id;
       lastEventIdBySessionRef.current[sessionId] = event.event_id;
@@ -670,6 +672,14 @@ export function useChat() {
         break;
       }
 
+      case 'messages_rewound': {
+        if (event.message_id) {
+          rewindMessagesFrom(event.message_id);
+          activeCtxRef.current = null;
+        }
+        break;
+      }
+
       case 'message_received': {
         if (event.message) {
           const msgContent = String(event.message);
@@ -722,7 +732,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity, rewindMessagesFrom]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((
@@ -1008,6 +1018,27 @@ export function useChat() {
     await stopTask(sessionId);
   }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage, disconnectWebSocket, addMessage, setIsStreaming, setHasRunningTask]);
 
+  const rewindToMessage = useCallback(async (messageId: string) => {
+    const sessionId = currentSessionId || 'default';
+    const ctx = activeCtxRef.current;
+    const wasFinalized = Boolean(ctx?.finalized);
+    if (ctx) ctx.finalized = true;
+    try {
+      await postJSON<{
+        success: boolean;
+        removed_count: number;
+        files_restored: number;
+        files_skipped: string[];
+        warning: string | null;
+      }>(API.chatRewind, { session_id: sessionId, message_id: messageId });
+      rewindMessagesFrom(messageId);
+      activeCtxRef.current = null;
+    } catch (error: any) {
+      if (ctx && !wasFinalized) ctx.finalized = false;
+      alert(error.message);
+    }
+  }, [currentSessionId, rewindMessagesFrom]);
+
   // 使用 ref 跟踪 session，避免 useEffect 依赖不稳定
   const currentSessionIdRef = useRef(currentSessionId);
   const hasReconnectedRef = useRef(false);
@@ -1095,5 +1126,6 @@ export function useChat() {
     isStreaming,
     hasRunningTask,
     reconnectToTask,
+    rewindToMessage,
   };
 }

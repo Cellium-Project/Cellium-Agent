@@ -4,6 +4,7 @@ from typing import List, Dict
 COMMANDS: List[Dict] = [
     {"slash": "help",    "desc_key": "cmd.desc.help",    "aliases": ["h"]},
     {"slash": "clear",   "desc_key": "cmd.desc.clear",   "aliases": []},
+    {"slash": "undo",    "desc_key": "cmd.desc.undo",    "aliases": ["rewind"]},
     {"slash": "theme",   "desc_key": "cmd.desc.theme",   "aliases": []},
     {"slash": "plan",    "desc_key": "cmd.desc.plan",    "aliases": []},
     {"slash": "plan-habit", "desc_key": "cmd.desc.planhabit", "aliases": []},

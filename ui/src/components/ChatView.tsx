@@ -11,7 +11,7 @@ const MessageList = memo(({
   messages, streamingMessage,
   messagesEndRef, messagesContainerRef,
   isLoadingMessages, hasMoreHistory, currentSessionId,
-  fetchMessages, isStreaming,
+  fetchMessages, isStreaming, onRewind,
 }: {
   messages: Message[];
   streamingMessage: Message | null;
@@ -22,6 +22,7 @@ const MessageList = memo(({
   currentSessionId: string | null;
   fetchMessages: (sessionId: string, offset?: number) => Promise<void>;
   isStreaming: boolean;
+  onRewind?: (id: string) => void;
 }) => {
   const { t } = useTranslation();
   const prevSessionIdRef = useRef<string | null>(null);
@@ -120,6 +121,7 @@ const MessageList = memo(({
           key={msg.id || `${msg.role}-${idx}-${msg.content?.slice(0, 20)}`} 
           message={msg} 
           isStreaming={streamingMessage !== null && msg === streamingMessage}
+          onRewind={onRewind}
         />
       ))}
       <div ref={messagesEndRef} />
@@ -137,7 +139,7 @@ export const ChatView: React.FC = () => {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming } = useChat();
+  const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming, rewindToMessage } = useChat();
   const {
     statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages,
     toggleMobileSidebar, agentMode, setAgentMode,
@@ -277,6 +279,7 @@ export const ChatView: React.FC = () => {
         currentSessionId={currentSessionId}
         fetchMessages={fetchMessages}
         isStreaming={isStreaming}
+        onRewind={rewindToMessage}
       />
 
       <div className="chat-input-container">

@@ -73,7 +73,8 @@ export type SSEEventType =
   | 'mode_changed'
   | 'subagent_progress'
   | 'subagent_done'
-  | 'hybrid_phase';
+  | 'hybrid_phase'
+  | 'messages_rewound';
 
 export interface SSEEvent {
   type: SSEEventType;
@@ -91,6 +92,8 @@ export interface SSEEvent {
   reason?: string;
   tool_traces?: ToolTrace[];
   suggestions?: string[];
+  message_id?: string;
+  removed_count?: number;
   // 子 Agent 后台进度
   name?: string;
   status?: string;
