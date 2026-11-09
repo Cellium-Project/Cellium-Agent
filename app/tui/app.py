@@ -324,6 +324,10 @@ Screen {
     color: $msg-user-text;
 }
 
+.user-msg:hover {
+    text-style: underline;
+}
+
 .assistant-msg {
     margin: 0 0 1 0;
     padding: 0 1;
@@ -500,6 +504,13 @@ class CelliumTUI(App):
     # ---- 初始化 ----
 
     def _default_session_id(self):
+        try:
+            from app.agent.loop.session_store import get_session_store
+            last = get_session_store().get_client_last_session("tui")
+            if last:
+                return last
+        except Exception:
+            pass
         try:
             from app.core.util.agent_config import get_config
             return get_config().get("agent.default_session_id", "default")
@@ -1164,6 +1175,11 @@ class CelliumTUI(App):
         self._session_epoch += 1
         from_session = self.session_id
         self.session_id = session_id
+        try:
+            from app.agent.loop.session_store import get_session_store
+            get_session_store().set_client_last_session(session_id, "tui")
+        except Exception:
+            pass
         self._current_thinking = None
         self._current_reasoning = None
         self._current_response = None
@@ -1190,6 +1206,7 @@ class CelliumTUI(App):
             self.session_id = meta.session_id
             from app.agent.loop.session_manager import get_session_manager
             get_session_manager().get_or_create(self.session_id)
+            store.set_client_last_session(self.session_id, "tui")
             self.chat.remove_children()
             self._refresh_status()
             await self._load_sessions()
@@ -1209,9 +1226,18 @@ class CelliumTUI(App):
             store = get_session_store()
             store.delete_session(self.session_id)
             get_session_manager().close_session(self.session_id)
+            try:
+                from app.core.util.undo_store import get_undo_store
+                get_undo_store().drop_session(self.session_id)
+            except Exception:
+                pass
             await self._append_system(self.tr("session.deleted", self.session_id))
             self._session_epoch += 1
             self.session_id = "default"
+            try:
+                store.set_client_last_session("default", "tui")
+            except Exception:
+                pass
             self.chat.remove_children()
             self._refresh_status()
             await self._load_sessions()
@@ -1233,9 +1259,18 @@ class CelliumTUI(App):
             store = get_session_store()
             store.delete_session(target)
             get_session_manager().close_session(target)
+            try:
+                from app.core.util.undo_store import get_undo_store
+                get_undo_store().drop_session(target)
+            except Exception:
+                pass
             await self._append_system(self.tr("session.deleted", target))
             if self.session_id == target:
                 self.session_id = "default"
+                try:
+                    store.set_client_last_session("default", "tui")
+                except Exception:
+                    pass
                 self.chat.remove_children()
                 self._refresh_status()
                 await self._load_sessions()
@@ -1755,25 +1790,54 @@ class CelliumTUI(App):
         msg = self.tr("plan.habit_reset") if not value else self.tr("plan.habit_saved")
         self._post(self._append_system(msg))
 
+    def _find_user_msg_id(self, content=None):
+        memory = self._get_session_memory(self.session_id)
+        text = None if content is None else str(content).strip()
+        for m in reversed(memory.messages):
+            if m.get("role") != "user" or m.get("_is_compacted_notes") or not m.get("id"):
+                continue
+            if text is None or str(m.get("content") or "").strip() == text:
+                return m["id"]
+        return None
+
+    def action_rewind_to(self, message_id=None, content=None):
+        if self._busy:
+            self._post(self._append_system(self.tr("rewind.busy")))
+            return
+        if not message_id:
+            try:
+                message_id = self._find_user_msg_id(content)
+            except Exception:
+                message_id = None
+        if not message_id:
+            self._post(self._append_system(self.tr("rewind.none")))
+            return
+        from app.tui.session_picker import DeleteConfirmScreen
+        self.push_screen(
+            DeleteConfirmScreen(
+                self.tr("rewind.confirm"),
+                self.tr("rewind.confirm_yes"),
+                self.tr("common.cancel"),
+            ),
+            callback=lambda ok: self._post(self._rewind_to(message_id)) if ok else None,
+        )
+
     async def _rewind_last_round(self):
         if self._busy:
             await self._append_system(self.tr("rewind.busy"))
             return
         try:
-            memory = await asyncio.to_thread(self._get_session_memory, self.session_id)
-            msg_id = next(
-                (
-                    m.get("id")
-                    for m in reversed(memory.messages)
-                    if m.get("role") == "user"
-                    and not m.get("_is_compacted_notes")
-                    and m.get("id")
-                ),
-                None,
-            )
-            if not msg_id:
-                await self._append_system(self.tr("rewind.none"))
-                return
+            msg_id = await asyncio.to_thread(self._find_user_msg_id)
+        except Exception as e:
+            await self._append_system(self.tr("rewind.failed", e))
+            return
+        if not msg_id:
+            await self._append_system(self.tr("rewind.none"))
+            return
+        await self._rewind_to(msg_id)
+
+    async def _rewind_to(self, msg_id):
+        try:
             from app.agent.loop.rewind import rewind_session
             self._local_rewind = True
             result = await asyncio.to_thread(rewind_session, self.session_id, msg_id)
@@ -2594,7 +2658,7 @@ class CelliumTUI(App):
     def _build_spec_widget(self, spec, md=None):
         kind = spec["kind"]
         if kind == "user":
-            return UserMessage(spec["content"])
+            return UserMessage(spec["content"], spec.get("id"))
         if kind == "thinking":
             return ThinkingBlock(spec["content"])
         if kind == "reasoning":

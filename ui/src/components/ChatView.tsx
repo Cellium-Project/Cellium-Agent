@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useChat } from '../hooks/useChat';
 import { useAppStore } from '../stores/appStore';
 import { API, fetchJSON, postJSON } from '../utils/api';
@@ -134,12 +135,17 @@ export const ChatView: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [rewindTargetId, setRewindTargetId] = useState<string | null>(null);
+  const [rewindNotice, setRewindNotice] = useState('');
+  const [rewindFiles, setRewindFiles] = useState<{ path: string; added: number; removed: number; kind?: string }[]>([]);
+  const [rewindSkipped, setRewindSkipped] = useState<string[]>([]);
+  const rewindNoticeTimer = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming, rewindToMessage } = useChat();
+  const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming, rewindToMessage, previewRewind } = useChat();
   const {
     statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages,
     toggleMobileSidebar, agentMode, setAgentMode,
@@ -176,6 +182,35 @@ export const ChatView: React.FC = () => {
       ws.close();
     };
   }, [currentSessionId, setAgentMode]);
+
+  useEffect(() => () => {
+    if (rewindNoticeTimer.current) window.clearTimeout(rewindNoticeTimer.current);
+  }, []);
+
+  const handleRequestRewind = async (messageId: string) => {
+    try {
+      const preview = await previewRewind(messageId);
+      setRewindFiles(preview.files || []);
+      setRewindSkipped(preview.files_skipped || []);
+      setRewindTargetId(messageId);
+    } catch (error: any) {
+      alert(error.message);
+    }
+  };
+
+  const handleConfirmRewind = async () => {
+    const targetId = rewindTargetId;
+    setRewindTargetId(null);
+    setRewindFiles([]);
+    setRewindSkipped([]);
+    if (!targetId) return;
+    const result = await rewindToMessage(targetId);
+    if (!result) return;
+    const skipped = result.files_skipped?.length ?? 0;
+    setRewindNotice(skipped > 0 ? `${skipped} 个文件未还原` : '');
+    if (rewindNoticeTimer.current) window.clearTimeout(rewindNoticeTimer.current);
+    rewindNoticeTimer.current = window.setTimeout(() => setRewindNotice(''), 5000);
+  };
 
   const handleFileSelect = () => {
     fileInputRef.current?.click();
@@ -279,7 +314,7 @@ export const ChatView: React.FC = () => {
         currentSessionId={currentSessionId}
         fetchMessages={fetchMessages}
         isStreaming={isStreaming}
-        onRewind={rewindToMessage}
+        onRewind={handleRequestRewind}
       />
 
       <div className="chat-input-container">
@@ -360,6 +395,57 @@ export const ChatView: React.FC = () => {
           {t('chat.inputTip')}
         </div>
       </div>
+
+      {rewindNotice && (
+        <div className="rewind-files">
+          <div className="rewind-file-warn">{rewindNotice}</div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={Boolean(rewindTargetId)}
+        title="撤回消息"
+        icon={<Icons.Rewind size={15} />}
+        confirmLabel="撤回"
+        cancelLabel="取消"
+        danger
+        onConfirm={handleConfirmRewind}
+        onCancel={() => setRewindTargetId(null)}
+        message={
+          <>
+            <div>将撤回这条消息及其之后的所有对话</div>
+            {rewindFiles.length > 0 ? (
+              <div className="confirm-files">
+                {rewindFiles.slice(0, 8).map((file, idx) => (
+                  <div className="rewind-file-row" key={idx} title={file.path}>
+                    <span className="rewind-file-path">
+                      {file.path.split(/[\\/]/).slice(-2).join('/')}
+                    </span>
+                    {file.kind === 'restored' ? (
+                      <span className="rewind-file-tag">还原</span>
+                    ) : file.kind === 'deleted' ? (
+                      <span className="rewind-file-tag tag-del">删除</span>
+                    ) : (
+                      <>
+                        <span className="rewind-file-add">+{file.added}</span>
+                        <span className="rewind-file-del">−{file.removed}</span>
+                      </>
+                    )}
+                  </div>
+                ))}
+                {rewindFiles.length > 8 && (
+                  <div className="rewind-file-more">还有 {rewindFiles.length - 8} 个文件</div>
+                )}
+              </div>
+            ) : (
+              <div className="confirm-hint">无文件改动</div>
+            )}
+            {rewindSkipped.length > 0 && (
+              <div className="rewind-file-warn">{rewindSkipped.length} 个文件无法回滚</div>
+            )}
+          </>
+        }
+      />
     </div>
   );
 };

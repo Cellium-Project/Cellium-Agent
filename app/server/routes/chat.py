@@ -19,7 +19,7 @@ from app.agent.events.event_models import (
 )
 from app.agent.loop.session_manager import get_session_manager
 from app.agent.loop.session_store import get_session_store
-from app.agent.loop.rewind import RewindError, rewind_session
+from app.agent.loop.rewind import RewindError, preview_rewind, rewind_session
 from app.server.task_manager import get_task_manager
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -335,6 +335,21 @@ async def rewind_chat(request: RewindRequest):
 
     try:
         return rewind_session(session_id, request.message_id)
+    except RewindError as e:
+        if e.code == "not_found":
+            status_code = 404
+        elif e.code == "compacted":
+            status_code = 409
+        else:
+            status_code = 400
+        raise HTTPException(status_code=status_code, detail=str(e))
+
+
+@router.post("/chat/rewind/preview")
+async def preview_rewind_chat(request: RewindRequest):
+    """预览撤回将回滚的文件及行数差异"""
+    try:
+        return preview_rewind(request.session_id or "default", request.message_id)
     except RewindError as e:
         if e.code == "not_found":
             status_code = 404
@@ -1002,15 +1017,28 @@ async def get_session_history(
 
 
 @router.get("/session/last")
-async def get_last_session():
+async def get_last_session(channel: str = Query("")):
     """获取最后活跃的 session_id"""
     store = get_session_store()
-    last_id = store.get_last_active_session()
+    last_id = store.get_client_last_session(channel) if channel else None
+    if not last_id:
+        last_id = store.get_last_active_session()
 
     if last_id:
         return {"session_id": last_id, "exists": True}
 
     return {"session_id": None, "exists": False}
+
+
+@router.post("/session/{session_id}/activate")
+async def activate_session(session_id: str, channel: str = Query("")):
+    """记录指定客户端最后使用的会话"""
+    store = get_session_store()
+    if channel:
+        store.set_client_last_session(session_id, channel)
+    else:
+        store.get_or_create_session(session_id)
+    return {"status": "ok", "session_id": session_id, "channel": channel}
 
 
 @router.post("/session/create")
@@ -1042,6 +1070,11 @@ async def delete_session_permanent(session_id: str):
 
     session_mgr = get_session_manager()
     session_mgr.close_session(session_id)
+    try:
+        from app.core.util.undo_store import get_undo_store
+        get_undo_store().drop_session(session_id)
+    except Exception:
+        pass
 
     if deleted:
         return {"status": "deleted", "session_id": session_id}

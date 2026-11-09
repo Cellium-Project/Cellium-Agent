@@ -285,7 +285,6 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
 
   const handleRewind = async () => {
     if (!onRewind) return;
-    if (!window.confirm('撤回该消息及其后续所有回复？')) return;
     if (message.id) {
       onRewind(message.id);
       return;
@@ -398,8 +397,13 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
           )}
         </div>
         {isUser && onRewind && (
-          <button className="rewind-btn" onClick={handleRewind}>
-            撤回
+          <button
+            className="rewind-btn"
+            onClick={handleRewind}
+            title="撤回该消息及其后续回复"
+            aria-label="撤回"
+          >
+            <Icons.Rewind size={14} />
           </button>
         )}
       </div>

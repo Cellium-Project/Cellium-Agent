@@ -261,6 +261,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         historyOffset: 0,
         hasMoreHistory: false,
       }));
+      postJSON(API.sessionActivate(data.session_id, 'webui'), {}).catch(() => {});
       return data.session_id;
     } catch (error) {
       console.error('Failed to create session:', error);
@@ -282,6 +283,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       hasRunningTask: false,
     });
 
+    postJSON(API.sessionActivate(sessionId, 'webui'), {}).catch(() => {});
     await fetchMessages(sessionId, 0);
   },
 

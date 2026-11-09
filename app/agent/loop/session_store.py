@@ -386,6 +386,31 @@ class SessionStore:
 
         return None
 
+    def get_client_last_session(self, channel: str = "") -> Optional[str]:
+        if not channel:
+            return None
+        store = self._read_store()
+        sid = (store.get("client_last_active") or {}).get(channel)
+        sessions = {s["session_id"] for s in store.get("sessions", [])}
+        return sid if sid in sessions else None
+
+    def set_client_last_session(self, session_id: str, channel: str = "") -> None:
+        if not session_id:
+            return
+        target = channel or "default"
+        with self._rw_lock:
+            store = self._read_store(notify=False)
+            clients = store.setdefault("client_last_active", {})
+            clients[target] = session_id
+            store["last_active_session"] = session_id
+            now = datetime.now().isoformat()
+            for s in store.get("sessions", []):
+                if s.get("session_id") == session_id:
+                    s["last_active"] = now
+                    break
+            self._write_store(store)
+        self._notify_listeners("session_updated", store)
+
     def list_sessions(self, limit: int = 50) -> List[SessionMeta]:
         """列出所有会话（按活跃时间倒序）"""
         store = self._read_store()
@@ -410,6 +435,11 @@ class SessionStore:
 
             if store.get("last_active_session") == session_id:
                 store["last_active_session"] = new_sessions[-1]["session_id"] if new_sessions else None
+            clients = store.get("client_last_active") or {}
+            for channel, sid in list(clients.items()):
+                if sid == session_id:
+                    clients[channel] = store["last_active_session"]
+            store["client_last_active"] = clients
 
             self._write_store(store)
             self._publish_event("session_deleted", {"session_id": session_id})

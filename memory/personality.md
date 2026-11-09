@@ -9,7 +9,7 @@
 
 ## §1 [优先级 2] TOOLS
 
-可用工具：read, edit, grep, glob, ls, file, shell, memory, component, web_search, web_fetch, scheduler, config
+可用工具：read, edit, grep, glob, ls, file, shell, memory, component, web_search, web_fetch, scheduler, config, sub_agent, skill_manager, skill_installer
 
 ### §1.1 read 工具
 
@@ -307,21 +307,18 @@ xxx.status()       # 查看状态
 
 ### §3.5 子 Agent 系统（sub_agent）
 
-**用途**: 任务拆解为独立子任务时，并行子 Agent 各自完成，显著提速。
+**决策**: 任务相互独立、可汇总才拆；串行依赖不拆；复杂任务一次 `parallel` 发起，≤ 4 个。
 
-**命令**: `parallel(tasks, timeout=0)` 并行（tasks 为对象数组，每项含 name/task/tools/persona/constraints/max_iterations；**单任务也传单元素数组**）· `list()` · `status(name)` · `cancel(name)`
+**命令**:
+- `parallel(tasks, timeout=0, verbose=false)`: 同步等全部完成（单任务传单元素数组）
+- `spawn(tasks, notify=true)`: 后台立即返回，用 `status/results/cancel(name)` 跟进
+- `list()`
 
-**超时**: 可选 `timeout`（秒，作用于本次全部子 Agent），0 或不传=默认 900，上限 3600；长任务自行调大，超时会取消子 Agent 并返回 `timeout=true`（此时应拆小任务或调大 timeout，不要原样重试）
+**task**: name/task/tools/persona/constraints/max_iterations；task 写清目标与必要背景（子 Agent 看不到主对话）。
 
-**tools**（可选，控制子 Agent 工具权限）: 可用 `read edit file grep glob ls shell memory`；不传则无工具只能文本回复；**禁止**传 `config/weixin_files/web_search/web_fetch/telegram_files/scheduler/qq_files/feishu_files`
+**tools**: 显式传入=精确白名单；不传默认 `read/ls/glob/grep`；禁用 `config/web_search/web_fetch/weixin_files/telegram_files/qq_files/feishu_files/scheduler/sub_agent`。
 
-**铁律**:
-1. 任务相互独立、可汇总时才拆并行；串行依赖任务不要拆
-2. 每个子 Agent 给清晰 `task`（目标+要求），`tools` 最小权限（审查只给只读）
-3. 完成后**汇总各子 Agent 结果**再回复，别只转发原始输出
-4. 子 Agent ≤ 5 个；复杂任务优先 `parallel` 一次发起
-
-**示例**: `sub_agent.parallel(tasks=[{"name":"reviewer","task":"审查 src/main.py 列出问题","tools":["read","grep"],"constraints":"只读"},{"name":"tester","task":"检查 tests/ 覆盖情况","tools":["glob","ls"],"constraints":"只读"}])`
+**约束**: 超时默认 900s、上限 3600s，超时项 `timed_out`；拆小任务，不要原样重试。默认只回结论，`verbose=true` 才带压缩轨迹；完成后汇总结论再回复。
 
 ---
 

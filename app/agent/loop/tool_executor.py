@@ -736,6 +736,11 @@ class ToolExecutor:
         self._turn_session_id = session_id
         self._turn_id = turn_id
 
+    def get_turn_context(self):
+        if not self._turn_session_id or not self._turn_id:
+            return None
+        return (self._turn_session_id, self._turn_id)
+
     def set_tool_policy(self, policy) -> None:
         """实例级策略，context 里带的优先"""
         self._tool_policy = policy

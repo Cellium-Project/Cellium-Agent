@@ -1024,20 +1024,34 @@ export function useChat() {
     const wasFinalized = Boolean(ctx?.finalized);
     if (ctx) ctx.finalized = true;
     try {
-      await postJSON<{
+      const result = await postJSON<{
         success: boolean;
         removed_count: number;
         files_restored: number;
         files_skipped: string[];
+        files?: { path: string; added: number; removed: number; kind?: string }[];
         warning: string | null;
       }>(API.chatRewind, { session_id: sessionId, message_id: messageId });
       rewindMessagesFrom(messageId);
       activeCtxRef.current = null;
+      return result;
     } catch (error: any) {
       if (ctx && !wasFinalized) ctx.finalized = false;
       alert(error.message);
+      return null;
     }
   }, [currentSessionId, rewindMessagesFrom]);
+
+  const previewRewind = useCallback(async (messageId: string) => {
+    const sessionId = currentSessionId || 'default';
+    return postJSON<{
+      success: boolean;
+      removed_count: number;
+      files: { path: string; added: number; removed: number; kind?: string }[];
+      files_skipped: string[];
+      warning: string | null;
+    }>(API.chatRewindPreview, { session_id: sessionId, message_id: messageId });
+  }, [currentSessionId]);
 
   // 使用 ref 跟踪 session，避免 useEffect 依赖不稳定
   const currentSessionIdRef = useRef(currentSessionId);
@@ -1127,5 +1141,6 @@ export function useChat() {
     hasRunningTask,
     reconnectToTask,
     rewindToMessage,
+    previewRewind,
   };
 }

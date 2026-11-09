@@ -384,6 +384,35 @@ class TestSubAgentBackground(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_parallel_inherits_parent_undo_context(self):
+        from unittest.mock import patch
+        c = setup_subagent(lambda: SimpleEngine("完成"))
+        with patch.object(self._mod, "_parent_undo_context", return_value=("parent", "turn1")):
+            r = call_cmd(lambda: c._cmd_parallel(
+                tasks=[{"name": "u", "task": "任务"}], session_id=self._session))
+        self.assertTrue(r["success"])
+        info = self._mod._SUBAGENTS[self._mod._sub_key(self._session, "u")]
+        self.assertEqual(info["loop"]._undo_context, ("parent", "turn1"))
+
+    def test_parent_undo_context_from_manager(self):
+        from unittest.mock import patch
+
+        class FakeExecutor:
+            def get_turn_context(self):
+                return ("s1", "t1")
+
+        class FakeLoop:
+            _tool_executor = FakeExecutor()
+
+        class FakeManager:
+            def get_loop_sync(self, session_id):
+                return FakeLoop()
+
+        with patch("app.agent.loop.agent_loop_manager.AgentLoopManager.get_instance",
+                   return_value=FakeManager()):
+            self.assertEqual(self._mod._parent_undo_context("s1"), ("s1", "t1"))
+        self.assertIsNone(self._mod._parent_undo_context(None))
+
     def _wait_until(self, cond, timeout=3.0):
         deadline = time.time() + timeout
         while time.time() < deadline:

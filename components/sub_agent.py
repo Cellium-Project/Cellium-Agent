@@ -148,6 +148,18 @@ def _resolve_user_name() -> str:
         return ""
 
 
+def _parent_undo_context(session_id: str):
+    if not session_id:
+        return None
+    try:
+        from app.agent.loop.agent_loop_manager import AgentLoopManager
+        parent = AgentLoopManager.get_instance().get_loop_sync(session_id)
+        executor = getattr(parent, "_tool_executor", None)
+        return executor.get_turn_context() if executor else None
+    except Exception:
+        return None
+
+
 def _elapsed_seconds(info: Dict[str, Any]) -> float:
     """真实耗时：优先用 finished_at，运行中才用当前时间"""
     info = info or {}
@@ -350,6 +362,7 @@ class SubAgent(BaseCell):
                 flash_mode=True,
                 enable_learning=False,
                 intent_enabled=False,
+                undo_context=_parent_undo_context(parent_session_id),
             )
         except Exception as e:
             await _cleanup()

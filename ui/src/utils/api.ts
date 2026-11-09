@@ -7,6 +7,7 @@ export const API = {
   chatStatus: (sessionId: string) => `${API_BASE}/chat/status?session_id=${sessionId}`,
   chatStop: `${API_BASE}/chat/stop`,
   chatRewind: `${API_BASE}/chat/rewind`,
+  chatRewindPreview: `${API_BASE}/chat/rewind/preview`,
   chatSubagents: (sessionId: string) =>
     `${API_BASE}/chat/subagents?session_id=${encodeURIComponent(sessionId)}`,
 
@@ -15,7 +16,10 @@ export const API = {
   sessionHistory: (sessionId: string) => `${API_BASE}/sessions/${sessionId}/history`,
   sessionDetail: (sessionId: string) => `${API_BASE}/sessions/${sessionId}`,
   sessionCreate: `${API_BASE}/session/create`,
-  sessionLast: `${API_BASE}/session/last`,
+  sessionLast: (channel?: string) =>
+    `${API_BASE}/session/last${channel ? `?channel=${encodeURIComponent(channel)}` : ''}`,
+  sessionActivate: (sessionId: string, channel?: string) =>
+    `${API_BASE}/session/${encodeURIComponent(sessionId)}/activate${channel ? `?channel=${encodeURIComponent(channel)}` : ''}`,
   sessionList: `${API_BASE}/session/list`,
   sessionDelete: (sessionId: string) => `${API_BASE}/session/${sessionId}`,
   sessionRename: (sessionId: string) => `${API_BASE}/session/${sessionId}/title`,

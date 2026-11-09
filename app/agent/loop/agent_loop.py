@@ -142,8 +142,10 @@ class AgentLoop:
         enable_hybrid: bool = True,
         intent_llm_engine=None,
         intent_enabled=True,
+        undo_context=None,
     ):
         self.llm = llm_engine
+        self._undo_context = undo_context
         self._intent_llm = intent_llm_engine or llm_engine
         self._intent_enabled = intent_enabled
         self.shell = shell
@@ -1225,13 +1227,16 @@ class AgentLoop:
             )
             yield {"type": "message_received", "message": user_input}
             user_msg_id = effective_memory.add_user_message(user_input)
-            _turn_id = user_msg_id or f"turn_{int(time.time() * 1000)}"
-            self._tool_executor.set_turn_context(effective_session, _turn_id)
-            try:
-                from app.core.util.undo_store import get_undo_store
-                get_undo_store().begin_turn(effective_session, _turn_id)
-            except Exception:
-                pass
+            if self._undo_context:
+                self._tool_executor.set_turn_context(*self._undo_context)
+            else:
+                _turn_id = user_msg_id or f"turn_{int(time.time() * 1000)}"
+                self._tool_executor.set_turn_context(effective_session, _turn_id)
+                try:
+                    from app.core.util.undo_store import get_undo_store
+                    get_undo_store().begin_turn(effective_session, _turn_id)
+                except Exception:
+                    pass
 
             # === 1.5 会话目标更新 ===
             session_notes = self._get_session_notes(effective_session)

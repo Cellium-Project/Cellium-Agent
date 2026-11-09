@@ -886,12 +886,16 @@ body {
 .rewind-btn {
     align-self: center;
     flex-shrink: 0;
-    padding: 2px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
     background: transparent;
     color: var(--text-tertiary);
-    font-size: 12px;
     cursor: pointer;
     opacity: 0;
     transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
@@ -909,6 +913,258 @@ body {
 @media (hover: none) {
     .rewind-btn {
         opacity: 0.7;
+    }
+}
+
+.confirm-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.42);
+    z-index: 1000;
+    animation: confirm-fade 0.14s ease;
+}
+
+.confirm-card {
+    width: 100%;
+    max-width: 340px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 14px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    animation: confirm-pop 0.16s ease;
+}
+
+.confirm-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 16px 4px;
+}
+
+.confirm-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--bg-hover);
+    color: var(--accent-primary);
+}
+
+.confirm-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.confirm-body {
+    padding: 4px 16px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.confirm-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.confirm-files {
+    margin-top: 8px;
+    max-height: 168px;
+    overflow-y: auto;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: var(--bg-hover);
+}
+
+.confirm-actions {
+    display: flex;
+    gap: 8px;
+    padding: 0 16px 16px;
+}
+
+.confirm-btn {
+    flex: 1;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.confirm-btn:active {
+    transform: scale(0.98);
+}
+
+.confirm-btn:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+.confirm-btn-cancel {
+    background: transparent;
+    border-color: var(--border-secondary);
+    color: var(--text-secondary);
+}
+
+.confirm-btn-cancel:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.confirm-btn-danger {
+    background: var(--btn-danger-bg);
+    color: var(--btn-danger-text);
+}
+
+.confirm-btn-danger:hover {
+    background: var(--btn-danger-hover);
+}
+
+.confirm-btn-primary {
+    background: var(--btn-primary-bg);
+    color: var(--btn-primary-text);
+}
+
+.confirm-btn-primary:hover {
+    background: var(--btn-primary-hover);
+}
+
+.rewind-files {
+    position: fixed;
+    right: 20px;
+    bottom: 96px;
+    width: 340px;
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.24);
+    z-index: 900;
+    animation: confirm-fade 0.16s ease;
+}
+
+.rewind-file-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+}
+
+.rewind-file-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.rewind-file-add {
+    flex: none;
+    color: var(--accent-success);
+}
+
+.rewind-file-tag {
+    flex: none;
+    padding: 0 6px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 18px;
+    color: var(--text-secondary);
+}
+
+.rewind-file-tag.tag-del {
+    border-color: var(--text-error);
+    color: var(--text-error);
+}
+
+.rewind-file-del {
+    flex: none;
+    color: var(--text-error);
+}
+
+.rewind-file-more,
+.rewind-file-warn {
+    padding-top: 4px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+
+.rewind-file-warn {
+    color: var(--text-error);
+}
+
+@keyframes confirm-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes confirm-pop {
+    from { opacity: 0; transform: translateY(6px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes confirm-slide-up {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+}
+
+@media (max-width: 640px) {
+    .confirm-overlay {
+        align-items: flex-end;
+        padding: 0;
+    }
+
+    .confirm-card {
+        max-width: 100%;
+        border-radius: 16px 16px 0 0;
+        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        animation: confirm-slide-up 0.2s ease;
+    }
+
+    .confirm-head {
+        padding: 18px 18px 4px;
+    }
+
+    .confirm-body {
+        padding: 4px 18px 16px;
+    }
+
+    .confirm-actions {
+        flex-direction: column-reverse;
+        gap: 8px;
+        padding: 0 18px 12px;
+    }
+
+    .confirm-btn {
+        height: 42px;
+        font-size: 14px;
+    }
+
+    .rewind-files {
+        left: 12px;
+        right: 12px;
+        bottom: 120px;
+        width: auto;
+        max-height: 180px;
     }
 }
 

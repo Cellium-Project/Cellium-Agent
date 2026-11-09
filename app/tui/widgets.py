@@ -487,9 +487,18 @@ def _preview(value, max_len=200):
 class UserMessage(Static):
     """用户消息"""
 
-    def __init__(self, content):
+    def __init__(self, content, message_id=None):
         super().__init__(content, markup=False)
         self.add_class("user-msg")
+        self._content = content
+        self.message_id = message_id
+
+    def on_click(self, event):
+        event.stop()
+        try:
+            self.app.action_rewind_to(self.message_id, self._content)
+        except Exception:
+            pass
 
 
 LOGO_RENDER_WIDTH = 18

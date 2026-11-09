@@ -49,12 +49,13 @@ const App: React.FC = () => {
       try {
         // Get last active session
         const data = await fetchJSON<{ session_id: string | null; exists: boolean }>(
-          API.sessionLast
+          API.sessionLast('webui')
         );
 
         if (data.session_id && data.exists) {
           setCurrentSessionId(data.session_id);
           await fetchMessages(data.session_id, 0);
+          fetchJSON(API.sessionActivate(data.session_id, 'webui'), { method: 'POST' }).catch(() => {});
         } else {
           // No existing session, create new one
           const createData = await fetchJSON<{ session_id: string }>(
@@ -62,6 +63,7 @@ const App: React.FC = () => {
             { method: 'POST' }
           );
           setCurrentSessionId(createData.session_id);
+          fetchJSON(API.sessionActivate(createData.session_id, 'webui'), { method: 'POST' }).catch(() => {});
         }
 
         fetchSessions();
