@@ -206,8 +206,11 @@ class ComponentToolRegistry:
         if not platform:
             return True
         try:
-            from app.channels import ChannelManager
-            target = ChannelManager.get_instance().get_adapter(platform)
+            from app.core.ports import PORTS
+            channel = PORTS.channel
+            if channel is None:
+                return True
+            target = channel.get_adapter(platform)
             if target is None:
                 return False
             if platform == "weixin":

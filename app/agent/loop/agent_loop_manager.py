@@ -81,6 +81,7 @@ class LoopMetadata:
 
 class AgentLoopManager:
     _instance: Optional['AgentLoopManager'] = None
+    _instance_lock = threading.Lock()
 
     def __init__(self):
         self._loops: Dict[str, LoopMetadata] = {}
@@ -98,9 +99,18 @@ class AgentLoopManager:
 
     @classmethod
     def get_instance(cls) -> 'AgentLoopManager':
-        if cls._instance is None:
-            cls._instance = AgentLoopManager()
-        return cls._instance
+        from app.core.di.container import get_container
+
+        container = get_container()
+        if container.has(cls):
+            return container.resolve(cls)
+        with cls._instance_lock:
+            if container.has(cls):
+                return container.resolve(cls)
+            inst = cls()
+            container.register(cls, inst, singleton=True)
+            cls._instance = inst
+            return inst
 
     def initialize(self, llm_engine, shell, three_layer_memory, tools: Dict = None, global_config: Dict = None):
         if not shell:

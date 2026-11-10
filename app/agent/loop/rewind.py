@@ -54,6 +54,27 @@ def has_tracking(session_id: str, message_id: str) -> bool:
         return False
 
 
+def rewindable_user_ids(session_id: str) -> set:
+    """真正可撤回的用户消息：有文件追踪且未被压缩"""
+    tracked = tracked_user_ids(session_id)
+    if not tracked:
+        return set()
+    try:
+        messages = get_session_manager().get_or_create(session_id).memory.messages
+    except Exception:
+        return tracked
+    boundary = max(
+        (i for i, m in enumerate(messages) if m.get("_is_compacted_notes")), default=-1
+    )
+    return {
+        m["id"] for i, m in enumerate(messages)
+        if i > boundary
+        and m.get("role") == "user"
+        and m.get("id")
+        and m["id"] in tracked
+    }
+
+
 def preview_rewind(session_id: str, message_id: str) -> dict:
     manager = get_session_manager()
     messages = manager.get_or_create(session_id).memory.messages

@@ -27,7 +27,8 @@ function safeRenderMarkdown(content: string): string {
   if (cached) return cached;
   
   const rawHtml = marked.parse(normalizeMarkdown(content)) as string;
-  const sanitized = DOMPurify.sanitize(rawHtml);
+  const sanitized = DOMPurify.sanitize(rawHtml)
+    .replace(/<pre><code[^>]*>(?:\s|<br\s*\/?>)*<\/code><\/pre>/gi, '');
   
   if (markdownCache.size >= MAX_CACHE_SIZE) {
     const firstKey = markdownCache.keys().next().value;
@@ -196,6 +197,8 @@ const JsonBlockCard: React.FC<{ jsonStr: string; isThinking?: boolean }> = memo(
     return result;
   }, [jsonStr]);
 
+  if (!String(content).trim()) return null;
+
   return (
     <div className="json-block-card">
       <Collapsible
@@ -256,6 +259,110 @@ function findTailMatchId(list: Message[], content: string, tailOrdinal: number):
   return undefined;
 }
 
+function parseSupplementNotice(content: string) {
+  const lines = (content || '').trim().split(/\r?\n/);
+  const header = (lines[0] || '').replace(/^\[|\]$/g, '');
+  const info: Record<string, string> = {};
+  const body: string[] = [];
+  let footer = '';
+  let inBody = false;
+
+  for (let i = 1; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = raw.trim();
+    if (!line) {
+      if (inBody) body.push('');
+      continue;
+    }
+    if (line.startsWith('结论:') || line.startsWith('结论：')) {
+      inBody = true;
+      const rest = line.slice(3).trim();
+      if (rest) body.push(rest);
+      continue;
+    }
+    if (line.startsWith('（') || line.startsWith('如需完整结果')) {
+      footer = footer ? `${footer}\n${line}` : line;
+      continue;
+    }
+    const match = line.match(/^([^:：]{1,8})[:：]\s*(.*)$/);
+    if (!inBody && match) {
+      info[match[1]] = match[2];
+      continue;
+    }
+    body.push(raw);
+  }
+
+  return {
+    title: info['目标会话'] || info['名称'] || header.replace(/完成$/, ''),
+    status: info['状态'] || '',
+    elapsed: info['耗时'] || '',
+    body: body.join('\n').trim(),
+    error: info['错误'] || '',
+    footer,
+  };
+}
+
+function isSupplementNotice(content: string): boolean {
+  const text = (content || '').trim();
+  if (!/^\[(会话委托完成|子Agent完成)\]/.test(text)) return false;
+  const hasTarget = /(^|\n)\s*(目标会话|名称)[:：]\s*\S/.test(text);
+  const hasStatus = /(^|\n)\s*状态[:：]\s*(成功|失败)/.test(text);
+  const hasFooter = /如需回滚文件|如需完整结果/.test(text);
+  return hasTarget && hasStatus && hasFooter;
+}
+
+const SupplementNotice: React.FC<{ content: string; source?: string }> = ({ content }) => {
+  const { t } = useTranslation();
+  const parsed = useMemo(() => parseSupplementNotice(content), [content]);
+  const [expanded, setExpanded] = useState(false);
+  const [panelMounted, setPanelMounted] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  const hasDetail = Boolean(parsed.body || parsed.error);
+  const ok = parsed.status === '成功';
+
+  const toggle = () => {
+    if (!hasDetail) return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    if (expanded) {
+      setExpanded(false);
+      timerRef.current = window.setTimeout(() => setPanelMounted(false), 240);
+    } else {
+      setPanelMounted(true);
+      requestAnimationFrame(() => setExpanded(true));
+    }
+  };
+
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+  }, []);
+
+  return (
+    <div className="supplement-block">
+      <button
+        type="button"
+        className={`supplement-pill${ok ? ' ok' : ' failed'}${expanded ? ' expanded' : ''}`}
+        onClick={toggle}
+        aria-expanded={expanded}
+      >
+        <span className="supplement-pill-icon"><Icons.MessageSquareText size={12} /></span>
+        <span className="supplement-pill-title">{parsed.title || t('chat.supplementInjected')}</span>
+        {parsed.status && <span className="supplement-pill-badge">{parsed.status}</span>}
+        {parsed.elapsed && <span className="supplement-pill-meta">{parsed.elapsed}</span>}
+        {hasDetail && (
+          <Icons.ChevronDown size={12} className={`supplement-pill-chevron${expanded ? ' open' : ''}`} />
+        )}
+      </button>
+      {panelMounted && (
+        <div className={`supplement-panel${expanded ? ' open' : ''}`}>
+          {parsed.body}
+          {parsed.error && <div className="supplement-pill-error">{parsed.error}</div>}
+          {parsed.footer && <div className="supplement-pill-footer">{parsed.footer}</div>}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRewind }) => {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
@@ -282,6 +389,44 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
     }
     return { isSchedulerTrigger: false };
   }, [isUser, parsedMessage.content]);
+
+  // 可视区懒渲染：首屏只为近处消息生成 Markdown
+  const [visible, setVisible] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  const plainPreview = useMemo(() => {
+    let text = message.content || '';
+    if (!text && message.timeline && message.timeline.length > 0) {
+      text = message.timeline
+        .filter(s => s.kind === 'text')
+        .map(s => (s as Extract<TimelineSegment, { kind: 'text' }>).content)
+        .join('');
+    }
+    return text.slice(0, 1500);
+  }, [message.content, message.timeline]);
+
+  useEffect(() => {
+    if (isUser || isStreaming || visible) {
+      setVisible(true);
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const el = rowRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '1200px 0px', threshold: 0 });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isUser, isStreaming, visible]);
 
   const handleRewind = async () => {
     if (!onRewind) return;
@@ -359,8 +504,16 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
     );
   }
 
+  if (isUser && isSupplementNotice(message.content || '')) {
+    return (
+      <div className="message-row supplement-row">
+        <SupplementNotice content={message.content} />
+      </div>
+    );
+  }
+
   return (
-    <div className={`message-row ${message.role}`}>
+    <div className={`message-row ${message.role}`} ref={rowRef}>
       <div className="message-wrapper">
         <div className="message-avatar">
           {isUser ? <Icons.User size={20} /> : <Icons.Bot size={20} />}
@@ -394,9 +547,15 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
             </>
           ) : (
             <span className="assistant-content-wrap">
-              {renderTimeline(message, isStreaming)}
-              {isStreaming && (!message.timeline || message.timeline.length === 0) && !message.content && (
-                <span className="streaming-cursor"><span /><span /><span /></span>
+              {visible || isStreaming ? (
+                <>
+                  {renderTimeline(message, isStreaming)}
+                  {isStreaming && (!message.timeline || message.timeline.length === 0) && !message.content && (
+                    <span className="streaming-cursor"><span /><span /><span /></span>
+                  )}
+                </>
+              ) : (
+                <pre className="assistant-plain">{plainPreview}</pre>
               )}
             </span>
           )}
@@ -423,6 +582,7 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
     type ReasoningSegment = Extract<TimelineSegment, { kind: 'reasoning' }>;
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
+      | { kind: 'supplement'; content: string; source?: string }
       | { kind: 'tool-batch'; items: ToolSegment[] }
       | { kind: 'tool-single'; item: ToolSegment }
       | ThinkingSegment
@@ -438,6 +598,8 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
         } else {
           groups.push({ kind: 'merged-text', contents: [segment.content] });
         }
+      } else if (segment.kind === 'supplement') {
+        groups.push({ kind: 'supplement', content: segment.content, source: segment.source });
       } else if (segment.kind === 'thinking') {
         groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'reasoning') {
@@ -463,6 +625,9 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
           if (group.kind === 'merged-text') {
             const merged = group.contents.join('');
             return <React.Fragment key={idx}>{renderContentWithCollapsibleJson(merged)}</React.Fragment>;
+          }
+          if (group.kind === 'supplement') {
+            return <SupplementNotice key={idx} content={group.content} source={group.source} />;
           }
           if (group.kind === 'thinking') {
             return <JsonBlockCard key={idx} jsonStr={group.content} isThinking />;

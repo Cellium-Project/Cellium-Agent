@@ -56,6 +56,7 @@ Cellium Agent is a versatile AI assistant that helps you with various tasks:
 - "Create a scheduled task to check server status every hour, and notify me automatically when the status is abnormal"
 - "Help me write a Python script to process CSV files and automatically generate data visualization charts"
 - "Create a new component to monitor stock prices and notify me automatically when the price fluctuates by more than 5%"
+- "Delegate this refactor to another session and send the conclusion back to me"
 
 ## Features
 
@@ -75,6 +76,12 @@ Cellium Agent is a versatile AI assistant that helps you with various tasks:
 | Multi-Channel Access | Support external platforms like QQ, Telegram, Feishu (Lark), WeChat, unified message routing, file transfer and injection through ChannelManager |
 | Scheduled Tasks | Support interval tasks, daily tasks, weekly tasks. Create tasks via natural language, Agent executes and pushes results to the corresponding platform when triggered |
 | Background Component Events | Components can run in background and actively trigger Agent execution, supporting real-time scenarios (e.g., crypto price monitoring, real-time data push, Agent auto-analysis) |
+| Run Modes | Session-level RUN / PLAN / DELEGATE: PLAN plans without touching files, DELEGATE only dispatches |
+| Session Delegation | Delegate tasks to other sessions, with live progress, automatic result delivery and result cards |
+| Parallel Sub-Agents | Split tasks in parallel within a session, with tool whitelists, personas, background execution and live status |
+| Message Rewind | Per-turn file snapshots; rewinding a message also restores/removes that turn's file changes, synced across TUI / WebUI |
+| Session-level Models | Each session can use its own model and API connection; settings manage the global default model |
+| Conversation Archive | SQLite (WAL) single store, legacy JSONL auto-migrated, full text readable by entry_id |
 
 ## Quick Start
 
@@ -515,6 +522,14 @@ The memory system has built-in sensitive information detection and protection me
 - **Write Blocking**: High-risk sensitive information (e.g., private keys) is blocked from memory by default
 - **Classification Marking**: Sensitive memories are tagged and can be filtered out during retrieval
 
+**Conversation Archive**:
+
+Conversation archives use SQLite by default (`memory/archive.db`, WAL mode) and read history through per-session indexes. On startup, legacy `memory/archive/*.jsonl` files are migrated automatically; during migration the old files remain readable but are never written again.
+
+- `memory.archive_backend`: `sqlite` (default) / `jsonl`
+- `memory.archive_dual_write`: disabled by default, legacy JSONL stays read-only
+- Long-term memory entries reference archives via `archive_entry_id`, and `memory.read_archive(entry_id=...)` reads the original reply by id
+
 ### Heuristic Decision Rules
 
 | Rule | Description |
@@ -585,6 +600,7 @@ Official component marketplace: [components.cellium.top](https://components.cell
 | Browse / Search | Search by name, description or tag on the web, filter by category (e.g., AI), sort by recently updated |
 | Install | The component package is written into `components/`, ComponentWatcher hot-loads it within 3 seconds |
 | Install from chat | Built-in `component.market_search` → `market_info` → `market_install` — search, then download and install directly |
+| Download reliability | Automatic retry on failure, resumable downloads, install history shown in the market panel |
 | Share | Upload your component package on the [submit page](https://components.cellium.top/submit), it goes live after review |
 
 Marketplace components follow the same pipeline as local ones: hot-plug, `/trust` whitelist confirmation, and automatic `settings.yaml` maintenance. The marketplace defaults to `https://components.cellium.top`; set the `CELLIUM_COMPONENTS_BASE` environment variable to point at a mirror.
@@ -705,6 +721,56 @@ Components can run in the background and actively trigger Agent execution, enabl
 - Database change listening: Push when critical data changes, Agent executes corresponding logic
 
 Event trigger results are automatically pushed to the corresponding session (WebUI/QQ/Telegram/Feishu/WeChat).
+
+### Run Modes: RUN / PLAN / DELEGATE
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| RUN | Default, executes and modifies files directly | Daily development |
+| PLAN | Analyze and plan only, write operations blocked by tool blacklist | Reviews, high-risk changes |
+| DELEGATE | Only decomposes and dispatches, does not edit code | Parallel work, cross-session collaboration |
+
+- Modes are **session-scoped**, switchable from the TUI / WebUI header or via `/plan`, `/run`, `/delegate`, and synced to running loops in real time.
+- PLAN supports a session-level habit prompt, viewable and editable via `/plan-habit`.
+- PLAN blocking uses a tool blacklist, so newly added tools are never blocked by default.
+
+### Session Delegation (session_agent)
+
+Delegate a task to another session that owns its own context and model configuration — useful for long-running work and context isolation.
+
+| Capability | Description |
+|------------|-------------|
+| Dispatch | `session_agent.send(target, message, notify=...)` with target/new session, task description and notify flag |
+| Progress | Live status, current tool and elapsed time while the delegation runs |
+| Delivery | Automatically injects the conclusion into the parent session (`notify=true`) |
+| Result card | WebUI pill / TUI card with conclusion, duration and `turn_id`, expandable |
+| Rollback hint | The card carries `turn_id`, so you can rewind that turn in the target session |
+
+If the parent session is running, delegation results are injected as supplement messages without interrupting the current turn.
+
+### Parallel Sub-Agents (sub_agent)
+
+Split work in parallel **within one session** — suitable for search, reading and verification tasks.
+
+| Capability | Description |
+|------------|-------------|
+| Parallelism | `sub_agent.parallel` waits for all results; `spawn` runs in background and returns immediately |
+| Isolation | Each sub-agent can define a tool whitelist, persona and constraints |
+| Observability | `list` / `status` for live progress, `results` for conclusions, `cancel` to abort |
+| Limits | Default timeout 900s (max 3600s); platform component tools (QQ/Feishu/WeChat files, etc.) are disabled for sub-agents |
+
+### Message Rewind (TUI / WebUI)
+
+Each user message corresponds to a turn, and a file snapshot is taken for that turn while it runs:
+
+- Rewinding a user message deletes it and everything after it, and restores files to their state before that turn;
+- In the TUI, click a rewindable message or run `/undo`; in the WebUI, use the rewind button next to the message;
+- Only messages with snapshots and not yet compacted are rewindable — other messages show no clickable hint;
+- After rewinding, a `messages_rewound` event refreshes all clients (TUI / WebUI).
+
+### Session-level Model Configuration
+
+Each session can use its own model and API connection independently; the settings page configures the "global default model" that new sessions inherit. In the TUI, `/models` switches the current session's model. Useful for assigning different models or quotas to concurrent delegations.
 
 ## Strategy Gene (GEP) Integration
 

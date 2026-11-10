@@ -90,8 +90,27 @@ class ArchiveStore:
                         return record
         return None
 
+    def get_record_meta(self, record_id: str) -> Optional[Dict]:
+        record = self.get_by_id(record_id)
+        if not record:
+            return None
+        meta = dict(record)
+        meta.pop("messages", None)
+        return meta
+
+    def get_last_assistant(self, record_id: str) -> Optional[str]:
+        record = self.get_by_id(record_id)
+        if not record:
+            return None
+        for msg in reversed(record.get("messages") or []):
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                return msg.get("content") or ""
+        return None
+
     def get_by_session(self, session_id: str, limit: int = 20) -> List[Dict]:
         records: List[Dict] = []
+        if limit <= 0:
+            return records
         all_files = sorted(
             [f for f in os.listdir(self.base_dir) if f.endswith(".jsonl")],
             reverse=True,

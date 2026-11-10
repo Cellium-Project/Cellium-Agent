@@ -756,8 +756,8 @@ export function useChat() {
 
       case 'supplement_injected': {
         ctx.timeline.push({
-          kind: 'text',
-          content: `[补充信息已注入: ${(event.content || '').slice(0, 30)}...]`,
+          kind: 'supplement',
+          content: event.content || '',
         });
         updateStreamingMessage({
           role: 'assistant',

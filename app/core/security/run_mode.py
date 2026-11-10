@@ -354,8 +354,8 @@ PLAN_HABIT_MEMORY_KEY = "profile:plan_habit"
 def _manager_memory():
     """主记忆实例（AgentLoopManager 持有，子 Agent 同进程可用）"""
     try:
-        from app.agent.loop.agent_loop_manager import AgentLoopManager
-        return getattr(AgentLoopManager.get_instance(), "_three_layer_memory", None)
+        from app.core.ports import PORTS
+        return getattr(PORTS.memory, "_three_layer_memory", None)
     except Exception:
         return None
 

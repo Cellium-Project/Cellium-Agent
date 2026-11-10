@@ -5,6 +5,9 @@
 
 import asyncio
 import logging
+import os
+import re
+import threading
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -751,44 +754,80 @@ def _split_content_with_thinking(content: str) -> list:
     return result
 
 
+_FENCE_LINE_RE = re.compile(r'^[ \t]*(```|~~~)')
+_INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
+
+
+def _code_spans(content: str):
+    """代码块/行内代码区间，避免把引用内容里的 JSON 当成 thinking"""
+    spans = []
+    start = None
+    pos = 0
+    for line in content.splitlines(keepends=True):
+        if _FENCE_LINE_RE.match(line):
+            if start is None:
+                start = pos
+            else:
+                spans.append((start, pos + len(line)))
+                start = None
+        pos += len(line)
+    if start is not None:
+        spans.append((start, len(content)))
+    for match in _INLINE_CODE_RE.finditer(content):
+        spans.append((match.start(), match.end()))
+    return spans
+
+
 def _split_inline_json(content: str) -> list:
     """检测并分割内联 JSON thinking，保持顺序"""
-    result = []
-    
-    brace_start = content.find('{')
-    if brace_start == -1:
-        if content.strip():
-            result.append({"type": "text", "content": content})
-        return result
-    
-    depth = 0
-    json_end = -1
-    for i in range(brace_start, len(content)):
-        if content[i] == '{':
-            depth += 1
-        elif content[i] == '}':
-            depth -= 1
-            if depth == 0:
-                json_str = content[brace_start:i + 1]
-                try:
-                    data = json.loads(json_str)
-                    if isinstance(data, dict) and "reasoning" in data and "action" in data:
-                        if brace_start > 0:
-                            before = content[:brace_start].strip()
-                            if before:
-                                result.append({"type": "text", "content": before})
-                        result.append({"type": "thinking", "content": json.dumps(data, ensure_ascii=False, indent=2)})
-                        after = content[i + 1:].strip()
-                        if after:
-                            result.extend(_split_inline_json(after))
-                        return result
-                except:
-                    pass
-                break
-    
+    spans = _code_spans(content)
+
+    def _in_code(idx):
+        return any(s <= idx < e for s, e in spans)
+
+    search_from = 0
+    while True:
+        brace_start = content.find('{', search_from)
+        if brace_start == -1:
+            break
+        if _in_code(brace_start):
+            search_from = brace_start + 1
+            continue
+
+        depth = 0
+        json_end = -1
+        for i in range(brace_start, len(content)):
+            if content[i] == '{':
+                depth += 1
+            elif content[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    json_end = i
+                    break
+        if json_end == -1:
+            break
+
+        json_str = content[brace_start:json_end + 1]
+        try:
+            data = json.loads(json_str)
+        except Exception:
+            data = None
+        if isinstance(data, dict) and "reasoning" in data and "action" in data:
+            result = []
+            before = content[:brace_start].strip()
+            if before:
+                result.append({"type": "text", "content": before})
+            result.append({"type": "thinking", "content": json.dumps(data, ensure_ascii=False, indent=2)})
+            after = content[json_end + 1:].strip()
+            if after:
+                result.extend(_split_inline_json(after))
+            return result
+
+        search_from = brace_start + 1
+
     if content.strip():
-        result.append({"type": "text", "content": content})
-    return result
+        return [{"type": "text", "content": content}]
+    return []
 
 
 def _is_json_thinking(content: str) -> bool:
@@ -986,6 +1025,107 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
     return renderable
 
 
+_HISTORY_CACHE = {}
+_HISTORY_CACHE_MAX = 8
+_HISTORY_CACHE_LOCK = threading.Lock()
+
+
+def _archive_signature(archive):
+    base = getattr(archive, "base_dir", None)
+    if not base:
+        return None
+    try:
+        files = [f for f in os.listdir(base) if f.endswith(".jsonl")]
+        if not files:
+            return None
+        newest = max(files, key=lambda f: os.stat(os.path.join(base, f)).st_mtime_ns)
+        st = os.stat(os.path.join(base, newest))
+    except OSError:
+        return None
+    return (len(files), newest, st.st_mtime_ns, st.st_size)
+
+
+def _archive_revision(archive, session_id=None):
+    rev = getattr(archive, "revision", None)
+    if callable(rev):
+        try:
+            return ("rev", int(rev(session_id) if session_id else rev()))
+        except TypeError:
+            try:
+                return ("rev", int(rev()))
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return ("sig", _archive_signature(archive))
+
+
+def _msg_dedupe_key(msg):
+    content = msg.get("content")
+    if isinstance(content, str):
+        key = (
+            msg.get("role"), msg.get("id"), msg.get("timestamp"),
+            msg.get("tool_call_id"), len(content), hash(content),
+        )
+    else:
+        key = (json.dumps(content, ensure_ascii=False, sort_keys=True),)
+    tool_calls = msg.get("tool_calls")
+    if tool_calls:
+        key += (json.dumps(tool_calls, ensure_ascii=False, sort_keys=True),)
+    return key
+
+
+def _load_archive_messages(archive, session_id):
+    revision = _archive_revision(archive, session_id)
+    cache_key = (session_id, revision) if revision[1] is not None else None
+    if cache_key is not None:
+        with _HISTORY_CACHE_LOCK:
+            cached = _HISTORY_CACHE.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+    all_messages = []
+    seen = set()
+    try:
+        records = archive.get_by_session(session_id, limit=500)
+        for rec in reversed(records):
+            msgs = rec.get("messages")
+            if isinstance(msgs, list):
+                filtered = [m for m in msgs if not (m.get("role") == "user" and m.get("_is_compacted_notes"))]
+                for msg in reversed(filtered):
+                    msg_key = _msg_dedupe_key(msg)
+                    if msg_key not in seen:
+                        seen.add(msg_key)
+                        all_messages.append(msg)
+    except Exception as e:
+        logger.warning("[History] archive 读取失败，回退到内存: %s", e)
+        return []
+
+    raw_msgs = list(reversed(all_messages))
+
+    if cache_key is not None:
+        with _HISTORY_CACHE_LOCK:
+            if cache_key not in _HISTORY_CACHE:
+                if len(_HISTORY_CACHE) >= _HISTORY_CACHE_MAX:
+                    _HISTORY_CACHE.pop(next(iter(_HISTORY_CACHE)))
+                _HISTORY_CACHE[cache_key] = list(raw_msgs)
+    return raw_msgs
+
+
+def _load_raw_history(session_id):
+    mgr = get_session_manager()
+    archive = mgr.three_layer_memory.archive if mgr.three_layer_memory else None
+    if archive:
+        raw_msgs = _load_archive_messages(archive, session_id)
+        if raw_msgs:
+            logger.debug("[History] 从 archive 恢复 | session=%s | %d 条消息", session_id, len(raw_msgs))
+            return raw_msgs
+    info = mgr.get_or_create(session_id)
+    raw_msgs = info.memory.get_messages()
+    logger.debug("[History] 从内存读取 | session=%s | raw=%d 条", session_id, len(raw_msgs))
+    return raw_msgs
+
+
 @router.get("/sessions/{session_id}/history")
 async def get_session_history(
     session_id: str,
@@ -993,63 +1133,24 @@ async def get_session_history(
     offset: int = Query(0, ge=0),
 ):
     """获取会话的历史消息"""
-    import logging as _logging
-    _hist_log = _logging.getLogger(__name__)
-
-    mgr = get_session_manager()
-    raw_msgs = []
-
-    try:
-        if mgr.three_layer_memory and mgr.three_layer_memory.archive:
-            records = mgr.three_layer_memory.archive.get_by_session(session_id, limit=500)
-            if records:
-                all_messages = []
-                seen = set()
-
-                for rec in reversed(records):
-                    msgs = rec.get("messages")
-                    if isinstance(msgs, list):
-                        filtered = [m for m in msgs if not (m.get("role") == "user" and m.get("_is_compacted_notes"))]
-                        for msg in reversed(filtered):
-    
-                            msg_key = json.dumps(msg, sort_keys=True, ensure_ascii=False)
-                            if msg_key not in seen:
-                                seen.add(msg_key)
-                                all_messages.append(msg)
-                
-                raw_msgs = list(reversed(all_messages))
-                
-                _hist_log.debug(
-                    "[History] 从 archive 恢复 | session=%s | %d 条记录 | 去重后 %d 条消息",
-                    session_id, len(records), len(raw_msgs),
-                )
-    except Exception as e:
-        _hist_log.warning("[History] archive 读取失败，回退到内存: %s", e)
+    raw_msgs = await asyncio.to_thread(_load_raw_history, session_id)
 
     if not raw_msgs:
-        info = mgr.get_or_create(session_id)
-        raw_msgs = info.memory.get_messages()
-        _hist_log.debug(
-            "[History] 从内存读取 | session=%s | raw=%d 条",
-            session_id, len(raw_msgs),
-        )
-
-    if not raw_msgs:
-        return {"session_id": session_id, "messages": [], "count": 0, "total": 0, "has_more": False}
+        return {"session_id": session_id, "messages": [], "count": 0, "total": 0, "has_more": False, "next_offset": 0}
 
     total = len(raw_msgs)
     end_idx = total - offset
     start_idx = max(0, end_idx - limit)
     paged_raw = raw_msgs[start_idx:end_idx]
 
-    _hist_log.debug(
+    logger.debug(
         "[History] session=%s | paged=%d 条 (slice[%d:%d]) | total=%d",
         session_id, len(paged_raw), start_idx, end_idx, total,
     )
 
     try:
-        from app.agent.loop.rewind import tracked_user_ids
-        tracked_ids = tracked_user_ids(session_id)
+        from app.agent.loop.rewind import rewindable_user_ids
+        tracked_ids = rewindable_user_ids(session_id)
     except Exception:
         tracked_ids = set()
     renderable = _messages_to_renderable(paged_raw, tracked_ids) if paged_raw else []
@@ -1060,6 +1161,7 @@ async def get_session_history(
         "count": len(renderable),
         "total": total,
         "has_more": start_idx > 0,
+        "next_offset": total - start_idx,
     }
 
 

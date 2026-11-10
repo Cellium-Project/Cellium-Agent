@@ -277,6 +277,7 @@ class AgentLoop:
 
         # 可等待的停止事件：停止时 set()，用于在工具执行等阻塞 await 期间立即中断
         self._stop_event = None
+        self._stop_event_loop = None
 
     def rebuild_prompt_builder(self):
         memory_dir = getattr(self.three_layer_memory, 'memory_dir', 'memory') if self.three_layer_memory else 'memory'
@@ -399,12 +400,17 @@ class AgentLoop:
     def stop(self):
         """请求停止当前推理（立即生效：中断进行中的工具执行/LLM 流式）"""
         self._loop_controller.request_stop()
-        # 唤醒阻塞在工具执行/流式等待中的停止事件
-        if self._stop_event is not None and not self._stop_event.is_set():
-            try:
-                self._stop_event.set()
-            except Exception:
-                pass
+        ev = self._stop_event
+        if ev is None or ev.is_set():
+            return
+        loop = self._stop_event_loop
+        try:
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(ev.set)
+            else:
+                ev.set()
+        except RuntimeError:
+            pass
 
     def update_config(self, flash_mode: bool = None, max_iterations: int = None, enable_learning: bool = None, intent_llm=None, intent_enabled=None):
         if flash_mode is not None and flash_mode != self.flash_mode:
@@ -959,6 +965,7 @@ class AgentLoop:
         if stop_event is None:
             # 未进入 run_stream（直接执行工具）：就地创建停止事件，保证可被停止
             stop_event = asyncio.Event()
+            self._stop_event_loop = asyncio.get_running_loop()
             self._stop_event = stop_event
 
         result_box = {}
@@ -1236,7 +1243,7 @@ class AgentLoop:
             _mode_text = run_injection()
         system_injection = f"{system_injection}\n\n{_mode_text}" if system_injection else _mode_text
 
-        # 本轮循环的停止事件（stop() 可跨线程 set，asyncio.Event.set 线程安全）
+        self._stop_event_loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
 
         if effective_memory:

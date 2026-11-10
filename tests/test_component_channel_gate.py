@@ -2,8 +2,8 @@
 import unittest
 from unittest import mock
 
-from app.channels import ChannelManager
 from app.core.interface.base_cell import BaseCell
+from app.core.ports import PORTS
 from app.core.util.component_tool_registry import ComponentToolRegistry
 
 
@@ -55,7 +55,7 @@ class ComponentChannelGateTest(unittest.TestCase):
         if weixin:
             registry.register(_WeixinProbeCell())
         fake = _FakeChannelManager(platforms, running)
-        with mock.patch.object(ChannelManager, "get_instance", return_value=fake):
+        with mock.patch.object(PORTS, "channel", fake):
             return registry.get_component_tools()
 
     def test_hidden_without_channel(self):

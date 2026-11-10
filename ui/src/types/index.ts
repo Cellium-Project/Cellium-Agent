@@ -48,6 +48,7 @@ export interface ToolTrace {
 
 export type TimelineSegment =
   | { kind: 'text'; content: string }
+  | { kind: 'supplement'; content: string; source?: string }
   | { kind: 'thinking'; content: string }
   | { kind: 'reasoning'; content: string; startedAt?: number; durationMs?: number }
   | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error'; call_id?: string };  // ★ 唯一标识符
@@ -73,6 +74,7 @@ export interface HistoryResponse {
   count: number;
   total: number;
   has_more: boolean;
+  next_offset: number;
 }
 
 // SSE Event Types

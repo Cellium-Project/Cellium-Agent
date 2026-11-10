@@ -665,6 +665,28 @@ body {
 .delegation-banner {
     font-size: 12px;
     line-height: 1.4;
+    overflow: hidden;
+    animation: delegation-banner-in 0.18s ease-out both;
+}
+
+.delegation-banner.leaving {
+    animation: delegation-banner-out 0.2s ease-in both;
+    pointer-events: none;
+}
+
+@keyframes delegation-banner-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes delegation-banner-out {
+    0% { opacity: 1; transform: translateY(0); max-height: 120px; margin-bottom: 0; }
+    100% { opacity: 0; transform: translateY(-4px); max-height: 0; margin-bottom: -4px; }
+}
+
+@keyframes delegation-more-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 .delegation-banner-line {
@@ -732,6 +754,142 @@ body {
 .delegation-more {
     font-size: 11px;
     color: var(--text-tertiary);
+    animation: delegation-more-in 0.18s ease-out both;
+}
+
+.message-row.supplement-row {
+    display: flex;
+    justify-content: flex-start;
+    padding: 8px 16px 8px 44px;
+    animation: none;
+}
+
+.supplement-block {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    max-width: min(680px, calc(100vw - 64px));
+}
+
+.supplement-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 4px 14px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    animation: supplement-pill-in 0.24s ease-out both;
+}
+
+@keyframes supplement-pill-in {
+    from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.supplement-pill:hover {
+    border-color: var(--border-focus);
+}
+
+.supplement-pill.expanded {
+    border-color: var(--border-focus);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.supplement-pill-icon {
+    display: inline-flex;
+    color: var(--mode-delegate);
+}
+
+.supplement-pill-title {
+    font-weight: 600;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.supplement-pill-badge {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.supplement-pill.ok .supplement-pill-badge {
+    color: var(--accent-success);
+}
+
+.supplement-pill.failed .supplement-pill-badge {
+    color: var(--danger-color, #e74c3c);
+}
+
+.supplement-pill-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
+.supplement-pill-chevron {
+    color: var(--text-tertiary);
+    transition: transform 0.2s ease;
+}
+
+.supplement-pill-chevron.open {
+    transform: rotate(180deg);
+}
+
+.supplement-panel {
+    width: max-content;
+    max-width: 100%;
+    max-height: 0;
+    overflow: hidden;
+    margin-top: 0;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    background: var(--bg-tertiary);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: 0;
+    transform: translateY(-4px);
+    scrollbar-width: none;
+    transition: max-height 0.24s ease, padding 0.24s ease, margin 0.24s ease,
+        opacity 0.16s ease, transform 0.24s ease, border-color 0.2s ease;
+}
+
+.supplement-panel::-webkit-scrollbar {
+    display: none;
+}
+
+.supplement-panel.open {
+    max-height: 40vh;
+    overflow-y: auto;
+    margin-top: 6px;
+    padding: 8px 12px 10px;
+    border-color: var(--border-secondary);
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.supplement-pill-error {
+    margin-top: 6px;
+    color: var(--danger-color, #e74c3c);
+}
+
+.supplement-pill-footer {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-tertiary);
 }
 
 @media (max-width: 768px) {
@@ -753,6 +911,14 @@ body {
     .delegation-banner-reason {
         font-size: 10px;
         padding-left: 12px;
+    }
+
+    .message-row.supplement-row {
+        padding: 6px 12px;
+    }
+
+    .supplement-pill-title {
+        max-width: 160px;
     }
 }
 
@@ -863,6 +1029,15 @@ body {
     gap: 3px;
     margin-left: 4px;
     vertical-align: middle;
+}
+
+/* 懒加载占位：可视区外的助手消息只渲染纯文本 */
+.assistant-plain {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    font: inherit;
+    color: inherit;
 }
 
 .streaming-cursor span {

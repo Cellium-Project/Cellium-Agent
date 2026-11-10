@@ -25,15 +25,60 @@ logger = logging.getLogger(__name__)
 class ThreeLayerMemory:
     """三层记忆：人格 + 会话上下文(外部注入) + 统一长期记忆仓库"""
 
-    def __init__(self, memory_dir: str = "memory", allow_sensitive_store: bool = False):
+    def __init__(
+        self,
+        memory_dir: str = "memory",
+        allow_sensitive_store: bool = False,
+        archive_backend: str = None,
+        archive_dual_write: bool = None,
+    ):
         self.memory_dir = memory_dir
         self.allow_sensitive_store = allow_sensitive_store
         self.searcher = FTS5MemorySearcher(memory_dir)
-        self.archive = ArchiveStore(os.path.join(memory_dir, "archive"))
+        archive_dir = os.path.join(memory_dir, "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+        self.archive = self._build_archive(memory_dir, archive_dir, archive_backend, archive_dual_write)
         self.extractor = KnowledgeExtractor(searcher=self.searcher)
         self.repository = MemoryRepository(memory_dir, self.searcher, allow_sensitive_store=allow_sensitive_store)
         self.tokenizer = get_tokenizer()
-        os.makedirs(os.path.join(memory_dir, "archive"), exist_ok=True)
+
+    @staticmethod
+    def _archive_defaults():
+        try:
+            from app.core.util.agent_config import get_config
+            cfg = get_config()
+            return (cfg.get("memory.archive_backend", "sqlite") or "sqlite").lower(), bool(cfg.get("memory.archive_dual_write", False))
+        except Exception:
+            return "sqlite", False
+
+    @classmethod
+    def _build_archive(cls, memory_dir, archive_dir, backend=None, dual_write=None):
+        if backend is None or dual_write is None:
+            default_backend, default_dual = cls._archive_defaults()
+            backend = backend or default_backend
+            dual_write = default_dual if dual_write is None else dual_write
+
+        backend = (backend or "sqlite").lower()
+        if backend not in ("sqlite", "jsonl"):
+            logger.warning("[ThreeLayerMemory] 未知 archive_backend=%s，回退 sqlite", backend)
+            backend = "sqlite"
+        if backend == "jsonl":
+            return ArchiveStore(archive_dir)
+
+        from .archive_sqlite import SqliteArchiveStore
+        from .archive_migrate import start_background_import
+
+        try:
+            store = SqliteArchiveStore(
+                os.path.join(memory_dir, "archive.db"),
+                jsonl_dir=archive_dir,
+                dual_write=bool(dual_write),
+            )
+        except Exception as e:
+            logger.warning("[ThreeLayerMemory] SQLite 归档初始化失败，回退 JSONL: %s", e)
+            return ArchiveStore(archive_dir)
+        start_background_import(store, archive_dir)
+        return store
 
     # ============================================================
     # 核心接口
@@ -327,3 +372,9 @@ class ThreeLayerMemory:
 
     def close(self):
         self.searcher.close()
+        close = getattr(self.archive, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass

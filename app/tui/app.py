@@ -1,13 +1,22 @@
 # -*- coding: utf-8 -*-
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 os.environ.setdefault("TEXTUAL_COLOR_SYSTEM", "truecolor")
 
 # Patch Textual 8.2.8 selection scroll delta sign bug (https://github.com/Textualize/textual/issues/6639)
+def _textual_version_tuple():
+    try:
+        return tuple(int(p) for p in _txt.__version__.split(".")[:3])
+    except Exception:
+        return ()
+
 try:
     import textual.selection as _sel
     import textual as _txt
-    if getattr(_txt, "__version__", "").startswith("8.2."):
+    if _textual_version_tuple() == (8, 2, 8):
         _SelectStart = _sel.SelectStart
         _orig_pointer_start_offset = _SelectStart.pointer_start_offset.fget
         def _patched_pointer_start_offset(self):
@@ -25,12 +34,13 @@ try:
                     continue
                 widget.selection_updated(selections.get(widget, None))
         _screen_mod.Screen._watch_selections = _patched_watch_selections
-except Exception:
-    pass
+    else:
+        logger.debug("textual %s: selection patch not applied", getattr(_txt, "__version__", ""))
+except Exception as e:
+    logger.debug("textual selection patch skipped: %s", e)
 
 import asyncio
 import json
-import logging
 import re
 import threading
 import time
@@ -51,6 +61,7 @@ from app.tui.widgets import (
     CommandPalette,
     FilePanel,
     UserMessage,
+    DelegationNotice,
     AssistantMessage,
     ThinkingBlock,
     ReasoningBlock,
@@ -367,6 +378,17 @@ Screen {
     background: transparent;
 }
 
+.delegation-notice {
+    margin: 1 0;
+    padding: 0 1;
+    border-left: solid $delegate-accent;
+    background: $panel 55%;
+}
+
+.delegation-notice:focus {
+    background: $panel 85%;
+}
+
 Screen > .screen--selection {
     color: $background;
     background: $foreground 100%;
@@ -449,15 +471,6 @@ class CelliumTUI(App):
         self.theme = self.load_theme_pref()
         self.lang = self.load_lang_pref()
         self.bootstrap = bootstrap
-
-        import threading as _threading
-        self._agent_loop = asyncio.new_event_loop()
-        self._agent_loop_thread = _threading.Thread(
-            target=self._agent_loop.run_forever,
-            daemon=True,
-            name="tui-agent-loop",
-        )
-        self._agent_loop_thread.start()
         self.session_id = session_id or self._default_session_id()
         self.model_name = self._current_model_name()
         self._busy = False
@@ -521,6 +534,7 @@ class CelliumTUI(App):
         self._history_has_more = False
         self._history_loading_more = False
         self._history_meta = None
+        self._history_rev = None
         self._backfill_pending = False
 
     def tr(self, key, *args):
@@ -790,6 +804,22 @@ class CelliumTUI(App):
                     self.input.focus()
             except Exception:
                 pass
+        self._post(self._reload_history_if_stale())
+
+    def _history_revision(self):
+        try:
+            from app.tui.history_render import history_revision
+            return history_revision(self.session_id)
+        except Exception:
+            return None
+
+    async def _reload_history_if_stale(self):
+        if self._busy or self._restoring_history or not self._history_ready.is_set():
+            return
+        rev = await asyncio.to_thread(self._history_revision)
+        if rev is None or rev == self._history_rev:
+            return
+        await self._load_history()
 
     def on_app_blur(self, event):
         pass
@@ -1166,16 +1196,6 @@ class CelliumTUI(App):
     def on_unmount(self):
         self._app_closing = True
         self._converge_runtime()
-        loop = getattr(self, "_agent_loop", None)
-        if loop is not None:
-            try:
-                loop.call_soon_threadsafe(loop.stop)
-                th = getattr(self, "_agent_loop_thread", None)
-                if th is not None and th.is_alive():
-                    th.join(timeout=0.5)
-                loop.close()
-            except Exception:
-                pass
         try:
             timer = getattr(self, "_msg_refresh_timer", None)
             if timer is not None:
@@ -2043,8 +2063,8 @@ class CelliumTUI(App):
 
     def _refresh_tracked_ids(self):
         try:
-            from app.agent.loop.rewind import tracked_user_ids
-            self._tracked_ids = tracked_user_ids(self.session_id)
+            from app.agent.loop.rewind import rewindable_user_ids
+            self._tracked_ids = rewindable_user_ids(self.session_id)
         except Exception:
             self._tracked_ids = set()
         return self._tracked_ids
@@ -2339,7 +2359,11 @@ class CelliumTUI(App):
     # ---- 渲染辅助 ----
 
     async def _append_user(self, content, force_scroll=False):
-        await self.chat.mount(UserMessage(content))
+        from app.tui.history_render import is_delegation_notice
+        if is_delegation_notice(str(content)):
+            await self.chat.mount(DelegationNotice(str(content)))
+        else:
+            await self.chat.mount(UserMessage(content))
         if force_scroll:
             self.chat.force_scroll_bottom()
         else:
@@ -3012,6 +3036,19 @@ class CelliumTUI(App):
     def _history_stale(self, epoch: int) -> bool:
         return epoch != self._session_epoch
 
+    def _build_mds(self, specs):
+        from app.tui.widgets import _build_rich_md
+        mds = []
+        for spec in specs:
+            if spec.get("kind") == "assistant" and spec.get("content"):
+                try:
+                    mds.append(_build_rich_md(spec["content"]))
+                except Exception:
+                    mds.append(None)
+            else:
+                mds.append(None)
+        return mds
+
     def _widget_from_spec(self, spec, md=None):
         widget = self._build_spec_widget(spec, md)
         try:
@@ -3028,6 +3065,8 @@ class CelliumTUI(App):
                 spec.get("id"),
                 bool(spec.get("id")) and spec.get("id") in self._tracked_ids,
             )
+        if kind == "notice":
+            return DelegationNotice(spec.get("content", ""))
         if kind == "thinking":
             return ThinkingBlock(spec["content"])
         if kind == "reasoning":
@@ -3037,13 +3076,8 @@ class CelliumTUI(App):
             )
         if kind == "assistant":
             from app.tui.widgets import HistoryMarkdown
-            content = spec.get("content", "") or ""
             w = HistoryMarkdown("")
-            if md is not None:
-                w._source = content
-                w._md = md
-            else:
-                w._source = content
+            w.set_rendered(spec.get("content", "") or "", md)
             return w
         if kind == "tool":
             card = ToolCallCard()
@@ -3063,7 +3097,7 @@ class CelliumTUI(App):
         elif isinstance(widget, ReasoningBlock):
             widget.finish()
 
-    async def _append_history_tail(self, plan, mds, meta, was_following, prev_scroll_y, epoch=None) -> bool:
+    async def _append_history_tail(self, plan, meta, was_following, prev_scroll_y, epoch=None) -> bool:
         """已挂载历史与新计划的公共前缀一致时，只替换尾部，避免整表重建"""
         prev = getattr(self, "_history_specs", None)
         if getattr(self, "_history_specs_sid", None) != self.session_id:
@@ -3088,7 +3122,8 @@ class CelliumTUI(App):
         keep_from = len(prev) - shift
         drop = children[len(prev):] if shift == 0 else (children[:shift] + children[len(prev):])
         new_specs = plan[keep_from:]
-        widgets = [self._widget_from_spec(s, md) for s, md in zip(new_specs, mds[keep_from:])]
+        mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, new_specs)
+        widgets = [self._widget_from_spec(s, md) for s, md in zip(new_specs, mds)]
         if epoch is not None and self._history_stale(epoch):
             return False
         try:
@@ -3133,6 +3168,7 @@ class CelliumTUI(App):
     async def _load_history(self):
         epoch = self._session_epoch
         await asyncio.to_thread(self._refresh_tracked_ids)
+        self._history_rev = await asyncio.to_thread(self._history_revision)
         self._history_ready.clear()
         self._restoring_history = True
         self._history_offset = 0
@@ -3145,27 +3181,16 @@ class CelliumTUI(App):
         try:
             hist_limit = self._history_limit
 
-            def _build_plan_and_md():
+            def _build_plan():
                 from app.tui.history_range import build_history_plan_range
-                from app.tui.widgets import _build_rich_md
-                p, meta = build_history_plan_range(self.session_id, None, hist_limit)
-                mds = []
-                for spec in p:
-                    if spec.get("kind") == "assistant" and spec.get("content"):
-                        try:
-                            mds.append(_build_rich_md(spec["content"]))
-                        except Exception:
-                            mds.append(None)
-                    else:
-                        mds.append(None)
-                return p, meta, mds
+                return build_history_plan_range(self.session_id, None, hist_limit)
 
-            plan, meta, mds = await asyncio.get_running_loop().run_in_executor(
-                None, _build_plan_and_md
+            plan, meta = await asyncio.get_running_loop().run_in_executor(
+                None, _build_plan
             )
             if self._history_stale(epoch):
                 return
-            if plan and await self._append_history_tail(plan, mds, meta, was_following, prev_scroll_y, epoch):
+            if plan and await self._append_history_tail(plan, meta, was_following, prev_scroll_y, epoch):
                 self.set_timer(0.15, self._scroll_history_done)
                 self._restoring_history = False
                 self._history_ready.set()
@@ -3180,6 +3205,9 @@ class CelliumTUI(App):
             self._history_has_more = meta.get("has_more", False)
             self._history_live_start = int(meta.get("end") or 0)
             if plan:
+                mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, plan)
+                if self._history_stale(epoch):
+                    return
                 widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
                 if self._history_stale(epoch):
                     return
@@ -3305,7 +3333,10 @@ class CelliumTUI(App):
                 return
             scroll_y = self.chat.scroll_y
             old_max = self.chat.max_scroll_y
-            widgets = [self._widget_from_spec(s) for s in plan]
+            mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, plan)
+            if self._history_stale(epoch):
+                return
+            widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
             with self.batch_update():
                 await self.chat.mount(*widgets)
                 for w, s in zip(widgets, plan):
@@ -3348,16 +3379,16 @@ class CelliumTUI(App):
             def _build_more():
                 messages = load_session_messages(self.session_id, limit=10000)
                 if not messages:
-                    return [], {}, messages
+                    return [], {}, messages, []
                 end_index = resolve_anchor_index(messages, anchor, prev_end)
                 if end_index <= 0:
-                    return [], {}, messages
+                    return [], {}, messages, []
                 p, new_meta = build_history_plan_range(
                     self.session_id, end_index, limit, messages=messages
                 )
-                return p, new_meta, messages
+                return p, new_meta, messages, self._build_mds(p)
 
-            plan, new_meta, messages = await asyncio.get_running_loop().run_in_executor(
+            plan, new_meta, messages, mds = await asyncio.get_running_loop().run_in_executor(
                 None, _build_more
             )
             if self._history_stale(epoch):
@@ -3370,7 +3401,7 @@ class CelliumTUI(App):
             scroll_y = self.chat.scroll_y
             old_max = self.chat.max_scroll_y
             first_widget = next(iter(self.chat.children), None)
-            widgets = [self._widget_from_spec(s) for s in plan]
+            widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
             with self.batch_update():
                 await self.chat.mount(*widgets, before=first_widget)
                 for w, s in zip(widgets, plan):

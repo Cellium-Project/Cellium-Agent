@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from app.core.ports import PORTS
 from app.core.scheduler.manager import SchedulerManager, TaskConfig, ScheduledTask, TaskStatus
 
 
@@ -576,10 +577,8 @@ class TestSchedulerExecutor:
         task.triggered_at = "2024-01-01T00:00:00"
         task.run_count = 1
 
-        with patch("app.server.task_manager.get_task_manager", return_value=mock_task_mgr), \
-             patch("app.agent.loop.session_manager.get_session_manager") as mock_session_mgr:
-            mock_session_mgr.return_value.get_or_create.return_value = mock_session_info
-
+        with patch.object(PORTS, "task", mock_task_mgr), \
+             patch.object(PORTS, "session", MagicMock(get_or_create=MagicMock(return_value=mock_session_info))):
             result = await executor._execute_via_websocket(task, "test_session", MagicMock())
 
         assert result is True
@@ -612,10 +611,8 @@ class TestSchedulerExecutor:
         task.task_id = "t002"
         task.task_name = "busy_task"
 
-        with patch("app.server.task_manager.get_task_manager", return_value=mock_task_mgr), \
-             patch("app.agent.loop.session_manager.get_session_manager") as mock_session_mgr:
-            mock_session_mgr.return_value.get_or_create.return_value = mock_session_info
-
+        with patch.object(PORTS, "task", mock_task_mgr), \
+             patch.object(PORTS, "session", MagicMock(get_or_create=MagicMock(return_value=mock_session_info))):
             result = await executor._execute_via_websocket(task, "test_session", MagicMock())
 
         assert result is False
@@ -643,10 +640,8 @@ class TestSchedulerExecutor:
         task.task_id = "t003"
         task.task_name = "fail_task"
 
-        with patch("app.server.task_manager.get_task_manager", return_value=mock_task_mgr), \
-             patch("app.agent.loop.session_manager.get_session_manager") as mock_session_mgr:
-            mock_session_mgr.return_value.get_or_create.return_value = mock_session_info
-
+        with patch.object(PORTS, "task", mock_task_mgr), \
+             patch.object(PORTS, "session", MagicMock(get_or_create=MagicMock(return_value=mock_session_info))):
             result = await executor._execute_via_websocket(task, "test_session", MagicMock())
 
         assert result is False

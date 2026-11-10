@@ -5,7 +5,6 @@
 
 import copy
 import logging
-import os
 import socket
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -68,72 +67,15 @@ def _setup_logging(cfg):
 
 
 def _setup_containers(cfg):
-    from app.core.di.container import setup_di_container
-    from app.agent.di_config import setup_agent_di, resolve_agent_services
-    from app.agent.loop import AgentLoopManager
-    from app.channels import ChannelManager
+    from app.runtime import setup_containers
 
-    setup_di_container()
-    logger.info("[OK] Core DI 容器初始化完成")
-
-    from app.core.util.runtime_paths import resolve_dir_writable
-    mem_dir = cfg.get("memory.memory_dir", "") or "memory"
-    if not os.path.isabs(mem_dir):
-        mem_dir = os.path.join(resolve_dir_writable(), mem_dir)
-    container = setup_agent_di(memory_dir=mem_dir)
-    logger.info("[OK] Agent DI 容器初始化完成")
-
-    agent_loop_mgr = AgentLoopManager.get_instance()
-    services = resolve_agent_services(container)
-
-    enforce_limit = cfg.get("agent.enforce_iteration_limit", False)
-    default_iter = cfg.get("agent.max_iterations", 10)
-    max_iter = default_iter if enforce_limit else float('inf')
-
-    agent_cfg = {
-        "max_iterations": max_iter,
-        "tool_timeout": cfg.get("agent.tool_timeout", 900),
-        "flash_mode": cfg.get("agent.flash_mode", False),
-        "enable_heuristics": True,
-        "enable_learning": True,
-    }
-    agent_loop_mgr.initialize(
-        llm_engine=services["llm_engine"],
-        shell=services["shell"],
-        three_layer_memory=services["memory"],
-        tools={
-            "shell": services["shell_tool"],
-            "memory": services["memory_tool"],
-            "file": services["file_tool"],
-            "read": services["read_tool"],
-            "edit": services["edit_tool"],
-            "grep": services["grep_tool"],
-            "glob": services["glob_tool"],
-            "ls": services["ls_tool"],
-            "config": services["config_tool"],
-        },
-        global_config=agent_cfg,
-    )
-    channel_mgr = ChannelManager.get_instance()
-    channel_mgr.set_agent_loop_manager(agent_loop_mgr)
-    logger.info("[OK] AgentLoopManager + ChannelManager 集成完成")
-    return container
+    return setup_containers(cfg)
 
 
 def _setup_session_manager(cfg):
-    from app.agent.memory.three_layer import ThreeLayerMemory
-    from app.core.di.container import get_container
-    from app.agent.loop.session_manager import init_session_manager
+    from app.runtime import setup_session_manager
 
-    di = get_container()
-    tlm = di.resolve(ThreeLayerMemory) if di.has(ThreeLayerMemory) else None
-
-    init_session_manager(
-        timeout=cfg.get("agent.request_timeout", 86400),
-        max_sessions=cfg.get("agent.max_sessions", 100),
-        three_layer_memory=tlm,
-    )
-    logger.info("[OK] 会话管理器初始化完成")
+    return setup_session_manager(cfg)
 
 
 def _setup_components(container):
@@ -168,22 +110,15 @@ def _setup_config_watcher():
 
 
 def _setup_web_app(auto_open_browser: bool = True):
-    from app.server.web_server import create_app
+    from app.runtime import create_web_app
 
-    app = create_app(auto_open_browser=auto_open_browser)
-    logger.info("[OK] FastAPI 应用创建完成")
-    return app
+    return create_web_app(auto_open_browser=auto_open_browser)
 
 
 def _print_event_system_info():
-    from app.core.bus.event_bus import event_bus
-    from app.agent.events.event_types import AgentEventType
+    from app.runtime import print_event_system_info
 
-    logger.info("[EVENT] 事件总线就绪:")
-    for et in AgentEventType:
-        count = event_bus.get_subscribers_count(et)
-        marker = "[ACTIVE]" if count > 0 else "       "
-        logger.info("  %s %s (%d subscribers)", marker, et.value, count)
+    print_event_system_info()
 
 
 def bootstrap_agent(host: str = None, port: int = None, enable_webapp: bool = True, auto_open_browser: bool = True, defer_web_app: bool = False) -> BootstrapResult:

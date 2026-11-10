@@ -129,6 +129,7 @@
     "delegationQueued": "Session {{session}} queued",
     "delegationRunning": "Session {{session}} running",
     "delegationDone": "Session {{session}} finished",
+    "supplementInjected": "Supplement injected",
     "delegationFailed": "Session {{session}} failed",
     "delegationTool": "Tool {{tool}}",
     "delegationAttempt": "call {{n}}",

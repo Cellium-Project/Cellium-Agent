@@ -113,14 +113,14 @@ class SchedulerExecutor:
             True 表示成功启动，False 表示失败
         """
         try:
-            from app.server.task_manager import get_task_manager
-            from app.channels import ChannelManager
-            from app.agent.loop.session_manager import get_session_manager
+            from app.core.ports import PORTS
             from app.messaging.message_broker import get_message_broker
-            
-            task_mgr = get_task_manager()
-            channel_mgr = ChannelManager.get_instance()
-            session_mgr = get_session_manager()
+
+            task_mgr = PORTS.task
+            channel_mgr = PORTS.channel
+            session_mgr = PORTS.session
+            if task_mgr is None or channel_mgr is None or session_mgr is None:
+                raise RuntimeError("runtime ports not bound")
             session_info = session_mgr.get_or_create(session_id)
             
             scheduler_context = self._build_scheduler_context(task)
@@ -153,11 +153,13 @@ class SchedulerExecutor:
             return False
 
     async def _execute_via_websocket(self, task, session_id: str, agent_loop) -> bool:
-        from app.server.task_manager import get_task_manager
-        from app.agent.loop.session_manager import get_session_manager
+        from app.core.ports import PORTS
 
-        task_mgr = get_task_manager()
-        session_info = get_session_manager().get_or_create(session_id)
+        task_mgr = PORTS.task
+        session_mgr = PORTS.session
+        if task_mgr is None or session_mgr is None:
+            raise RuntimeError("runtime ports not bound")
+        session_info = session_mgr.get_or_create(session_id)
         scheduler_context = self._build_scheduler_context(task)
 
         try:
@@ -216,9 +218,9 @@ class SchedulerExecutor:
 
         if not platform_context:
             try:
-                from app.agent.loop.session_manager import get_session_manager
-                session_mgr = get_session_manager()
-                session_info = session_mgr.get_or_create(session_id)
+                from app.core.ports import PORTS
+                session_mgr = PORTS.session
+                session_info = session_mgr.get_or_create(session_id) if session_mgr is not None else None
                 if hasattr(session_info, "platform_context") and session_info.platform_context:
                     platform_context = session_info.platform_context
                     logger.debug(f"[SchedulerExecutor] 从 session 恢复 platform_context | session={session_id}")

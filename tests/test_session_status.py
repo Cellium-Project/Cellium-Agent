@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.core.ports import PORTS
 from app.core.util import session_status
 
 
@@ -16,23 +17,26 @@ class TestSessionStatus(unittest.TestCase):
 
     def test_task_running(self):
         fake = SimpleNamespace(has_running_task=lambda sid: sid == "s_run")
-        with patch("app.server.task_manager.get_task_manager", return_value=fake):
+        with patch.object(PORTS, "task", fake):
             self.assertTrue(session_status.is_session_running("s_run"))
             self.assertFalse(session_status.is_session_running("s_idle"))
 
     def test_delegated_counts_as_running(self):
         fake = SimpleNamespace(has_running_task=lambda sid: False)
-        with patch("app.server.task_manager.get_task_manager", return_value=fake):
-            with patch("components.session_agent.is_delegated", return_value=True):
-                self.assertTrue(session_status.is_session_running("s_dlg"))
+        delegated = SimpleNamespace(is_delegated=lambda sid: True)
+        with patch.object(PORTS, "task", fake), patch.object(PORTS, "delegated", delegated):
+            self.assertTrue(session_status.is_session_running("s_dlg"))
 
     def test_errors_are_not_running(self):
-        def _boom():
-            raise RuntimeError("no task manager")
+        class _Boom:
+            def has_running_task(self, sid):
+                raise RuntimeError("no task manager")
 
-        with patch("app.server.task_manager.get_task_manager", side_effect=_boom):
-            with patch("components.session_agent.is_delegated", side_effect=lambda sid: False):
-                self.assertFalse(session_status.is_session_running("s_x"))
+            def is_delegated(self, sid):
+                raise RuntimeError("no delegated")
+
+        with patch.object(PORTS, "task", _Boom()), patch.object(PORTS, "delegated", _Boom()):
+            self.assertFalse(session_status.is_session_running("s_x"))
 
     def test_empty_session(self):
         self.assertFalse(session_status.is_session_running(""))

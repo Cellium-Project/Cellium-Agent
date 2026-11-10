@@ -22,6 +22,7 @@ class TestToolPolicy(unittest.TestCase):
         self.assertFalse(p.allows("scheduler"))
         self.assertFalse(p.allows("component"))
         self.assertFalse(p.allows("sub_agent"))
+        self.assertFalse(p.allows("session_agent"))
 
     def test_custom_blacklist_merges_default(self):
         p = ToolPolicy(mode=MODE_BLACKLIST, tools={"web_query"})

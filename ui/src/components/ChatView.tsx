@@ -19,7 +19,7 @@ const MODE_ORDER: AgentMode[] = ['run', 'plan', 'delegate'];
 const MessageList = memo(({
   messages, streamingMessage,
   messagesEndRef, messagesContainerRef,
-  isLoadingMessages, hasMoreHistory, currentSessionId,
+  isLoadingMessages, hasMoreHistory, currentSessionId, historyOffset,
   fetchMessages, isStreaming, onRewind,
 }: {
   messages: Message[];
@@ -29,6 +29,7 @@ const MessageList = memo(({
   isLoadingMessages: boolean;
   hasMoreHistory: boolean;
   currentSessionId: string | null;
+  historyOffset: number;
   fetchMessages: (sessionId: string, offset?: number) => Promise<void>;
   isStreaming: boolean;
   onRewind?: (id: string) => void;
@@ -99,10 +100,10 @@ const MessageList = memo(({
         scrollHeight: container.scrollHeight,
       };
       isLoadingHistoryRef.current = true;
-      fetchMessages(currentSessionId, messages.length);
+      fetchMessages(currentSessionId, historyOffset);
       window.setTimeout(() => { loadMoreLockRef.current = false; }, 600);
     }
-  }, [isLoadingMessages, isStreaming, hasMoreHistory, currentSessionId, fetchMessages, messages.length]);
+  }, [isLoadingMessages, isStreaming, hasMoreHistory, currentSessionId, fetchMessages, historyOffset]);
 
   if (isLoadingMessages && messages.length === 0) {
     return (
@@ -159,7 +160,7 @@ export const ChatView: React.FC = () => {
 
   const { sendMessage, stopStreaming, messages, streamingMessage, isStreaming, rewindToMessage, previewRewind } = useChat();
   const {
-    statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, fetchMessages,
+    statusOnline, currentSessionId, isLoadingMessages, hasMoreHistory, historyOffset, fetchMessages,
     toggleMobileSidebar, agentMode, setAgentMode, sessions,
     delegationActivity, removeDelegationActivity, upsertDelegationActivity,
   } = useAppStore();
@@ -173,16 +174,45 @@ export const ChatView: React.FC = () => {
   const headerTitle = sessions.find(s => s.session_id === currentSessionId)?.title?.trim() || t('chat.title');
   const TERMINAL_STATUS = ['done', 'error', 'timeout', 'cancelled', 'unknown'];
 
-  // 完成/失败后短暂展示再自动消失
+  const [leavingIds, setLeavingIds] = useState<string[]>([]);
+  const leavingRef = useRef<Set<string>>(new Set());
+  const scheduledRef = useRef<Set<string>>(new Set());
+  const leaveTimersRef = useRef<number[]>([]);
+
   useEffect(() => {
-    const timers = delegationActivity
-      .filter(a => TERMINAL_STATUS.includes(a.status))
-      .map(a => window.setTimeout(
-        () => removeDelegationActivity(a.task_id),
-        a.status === 'done' ? 2500 : 4000,
-      ));
-    return () => timers.forEach(id => window.clearTimeout(id));
+    leaveTimersRef.current.forEach(id => window.clearTimeout(id));
+    leaveTimersRef.current = [];
+    leavingRef.current.clear();
+    scheduledRef.current.clear();
+    setLeavingIds([]);
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    delegationActivity.forEach(a => {
+      if (!TERMINAL_STATUS.includes(a.status)) return;
+      const id = a.task_id;
+      if (scheduledRef.current.has(id) || leavingRef.current.has(id)) return;
+
+      scheduledRef.current.add(id);
+      const delay = a.status === 'done' ? 2500 : 4000;
+      const startLeave = window.setTimeout(() => {
+        leavingRef.current.add(id);
+        setLeavingIds(Array.from(leavingRef.current));
+        const finish = window.setTimeout(() => {
+          removeDelegationActivity(id);
+          leavingRef.current.delete(id);
+          scheduledRef.current.delete(id);
+          setLeavingIds(Array.from(leavingRef.current));
+        }, 200);
+        leaveTimersRef.current.push(finish);
+      }, delay);
+      leaveTimersRef.current.push(startLeave);
+    });
   }, [delegationActivity, removeDelegationActivity]);
+
+  useEffect(() => () => {
+    leaveTimersRef.current.forEach(id => window.clearTimeout(id));
+  }, []);
 
   const delegationLabel = (a: typeof delegationActivity[number]) => {
     const name = a.target_title || a.target || '?';
@@ -284,16 +314,19 @@ export const ChatView: React.FC = () => {
     if (rewindNoticeTimer.current) window.clearTimeout(rewindNoticeTimer.current);
   }, []);
 
-  const handleRequestRewind = async (messageId: string) => {
+  const previewRewindRef = useRef(previewRewind);
+  previewRewindRef.current = previewRewind;
+
+  const handleRequestRewind = useCallback(async (messageId: string) => {
     try {
-      const preview = await previewRewind(messageId);
+      const preview = await previewRewindRef.current(messageId);
       setRewindFiles(preview.files || []);
       setRewindSkipped(preview.files_skipped || []);
       setRewindTargetId(messageId);
     } catch (error: any) {
       alert(error.message);
     }
-  };
+  }, []);
 
   const handleConfirmRewind = async () => {
     const targetId = rewindTargetId;
@@ -436,8 +469,12 @@ export const ChatView: React.FC = () => {
             const running = !TERMINAL_STATUS.includes(a.status);
             const tool = a.current_tool || a.last_tool;
             const showReason = running && idx === visibleDelegations.length - 1;
+            const leaving = leavingIds.includes(a.task_id);
             return (
-              <div className={`delegation-banner ${running ? 'running' : a.status}`} key={a.task_id}>
+              <div
+                className={`delegation-banner ${running ? 'running' : a.status}${leaving ? ' leaving' : ''}`}
+                key={a.task_id}
+              >
                 <div className="delegation-banner-line">
                   {running && <span className="delegation-banner-spinner" />}
                   <span className="delegation-banner-title">{delegationLabel(a)}</span>
@@ -471,6 +508,7 @@ export const ChatView: React.FC = () => {
         isLoadingMessages={isLoadingMessages}
         hasMoreHistory={hasMoreHistory}
         currentSessionId={currentSessionId}
+        historyOffset={historyOffset}
         fetchMessages={fetchMessages}
         isStreaming={isStreaming}
         onRewind={handleRequestRewind}

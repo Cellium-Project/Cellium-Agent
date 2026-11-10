@@ -7,6 +7,7 @@ ChannelManager - 多平台通道协调器
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Dict, List, Optional, Callable, Any
 from collections import defaultdict
@@ -81,6 +82,7 @@ class MessageQueue:
 
 class ChannelManager:
     _instance: Optional['ChannelManager'] = None
+    _instance_lock = threading.Lock()
     FILE_MESSAGE_JOIN_WINDOW_SECONDS = 3.0
     MESSAGE_DEDUP_WINDOW_SECONDS = 300  # 5分钟内的重复消息去重
 
@@ -97,9 +99,18 @@ class ChannelManager:
 
     @classmethod
     def get_instance(cls) -> 'ChannelManager':
-        if cls._instance is None:
-            cls._instance = ChannelManager()
-        return cls._instance
+        from app.core.di.container import get_container
+
+        container = get_container()
+        if container.has(cls):
+            return container.resolve(cls)
+        with cls._instance_lock:
+            if container.has(cls):
+                return container.resolve(cls)
+            inst = cls()
+            container.register(cls, inst, singleton=True)
+            cls._instance = inst
+            return inst
 
     def register_adapter(self, adapter: ChannelAdapter):
         old = self._adapters.get(adapter.platform_name)

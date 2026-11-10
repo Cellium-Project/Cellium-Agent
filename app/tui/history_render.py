@@ -4,6 +4,56 @@ import json
 import os
 import re
 
+_NOTICE_HEADER_RE = re.compile(r"^\[(会话委托完成|子Agent完成)\]")
+
+
+def is_delegation_notice(content) -> bool:
+    text = (content or "").strip()
+    if not _NOTICE_HEADER_RE.match(text):
+        return False
+    has_target = re.search(r"(^|\n)\s*(目标会话|名称)[:：]\s*\S", text)
+    has_status = re.search(r"(^|\n)\s*状态[:：]\s*(成功|失败)", text)
+    has_footer = "如需回滚文件" in text or "如需完整结果" in text
+    return bool(has_target and has_status and has_footer)
+
+
+def parse_delegation_notice(content) -> dict:
+    lines = (content or "").strip().splitlines()
+    header = (lines[0] if lines else "").strip("[]")
+    info = {}
+    body = []
+    footer = ""
+    in_body = False
+    for raw in lines[1:]:
+        line = raw.strip()
+        if not line:
+            if in_body:
+                body.append("")
+            continue
+        if line.startswith("结论:") or line.startswith("结论："):
+            in_body = True
+            rest = line[3:].strip()
+            if rest:
+                body.append(rest)
+            continue
+        if line.startswith("（") or line.startswith("如需完整结果"):
+            footer = f"{footer}\n{line}" if footer else line
+            continue
+        match = re.match(r"^([^:：]{1,8})[:：]\s*(.*)$", line)
+        if not in_body and match:
+            info[match.group(1)] = match.group(2)
+            continue
+        body.append(raw)
+    return {
+        "title": info.get("目标会话") or info.get("名称") or re.sub(r"完成$", "", header),
+        "header": header,
+        "status": info.get("状态", ""),
+        "elapsed": info.get("耗时", ""),
+        "body": "\n".join(body).strip(),
+        "error": info.get("错误", ""),
+        "footer": footer,
+    }
+
 
 def _is_incomplete_thought_fragment(content: str) -> bool:
     text = (content or "").strip()
@@ -61,42 +111,78 @@ def _extract_protocol_reasoning(content: str) -> str:
     return ""
 
 
-def _split_inline_json(content: str) -> list:
-    result = []
-    brace_start = content.find("{")
-    if brace_start == -1:
-        if content.strip():
-            result.append({"type": "text", "content": content})
-        return result
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(```|~~~)")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 
-    depth = 0
-    json_end = -1
-    for i in range(brace_start, len(content)):
-        if content[i] == "{":
-            depth += 1
-        elif content[i] == "}":
-            depth -= 1
-            if depth == 0:
-                json_str = content[brace_start:i + 1]
-                try:
-                    data = json.loads(json_str)
-                    if isinstance(data, dict) and "reasoning" in data and "action" in data:
-                        if brace_start > 0:
-                            before = content[:brace_start].strip()
-                            if before:
-                                result.append({"type": "text", "content": before})
-                        result.append({"type": "thinking", "content": json.dumps(data, ensure_ascii=False, indent=2)})
-                        after = content[i + 1:].strip()
-                        if after:
-                            result.extend(_split_inline_json(after))
-                        return result
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                break
+
+def _code_spans(content: str):
+    spans = []
+    start = None
+    pos = 0
+    for line in content.splitlines(keepends=True):
+        if _FENCE_LINE_RE.match(line):
+            if start is None:
+                start = pos
+            else:
+                spans.append((start, pos + len(line)))
+                start = None
+        pos += len(line)
+    if start is not None:
+        spans.append((start, len(content)))
+    for match in _INLINE_CODE_RE.finditer(content):
+        spans.append((match.start(), match.end()))
+    return spans
+
+
+def _split_inline_json(content: str) -> list:
+    spans = _code_spans(content)
+
+    def _in_code(idx):
+        return any(s <= idx < e for s, e in spans)
+
+    search_from = 0
+    while True:
+        brace_start = content.find("{", search_from)
+        if brace_start == -1:
+            break
+        if _in_code(brace_start):
+            search_from = brace_start + 1
+            continue
+
+        depth = 0
+        json_end = -1
+        for i in range(brace_start, len(content)):
+            if content[i] == "{":
+                depth += 1
+            elif content[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    json_end = i
+                    break
+        if json_end == -1:
+            break
+
+        json_str = content[brace_start:json_end + 1]
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
+            data = None
+        if isinstance(data, dict) and "reasoning" in data and "action" in data:
+            result = []
+            before = content[:brace_start].strip()
+            if before:
+                result.append({"type": "text", "content": before})
+            result.append({"type": "thinking", "content": json.dumps(data, ensure_ascii=False, indent=2)})
+            after = content[json_end + 1:].strip()
+            if after:
+                result.extend(_split_inline_json(after))
+            return result
+
+        search_from = brace_start + 1
 
     if content.strip():
-        result.append({"type": "text", "content": content})
-    return result
+        return [{"type": "text", "content": content}]
+    return []
 
 
 def split_content_with_thinking(content: str) -> list:
@@ -150,6 +236,26 @@ _ARCHIVE_CACHE = {}
 _ARCHIVE_CACHE_MAX = 8
 
 
+def _fallback_archive():
+    from app.core.util.runtime_paths import resolve_dir_writable
+    memory_dir = resolve_dir_writable("memory")
+    archive_dir = os.path.join(memory_dir, "archive")
+    try:
+        from app.core.util.agent_config import get_config
+        backend = (get_config().get("memory.archive_backend", "sqlite") or "sqlite").lower()
+    except Exception:
+        backend = "sqlite"
+    db_path = os.path.join(memory_dir, "archive.db")
+    if backend != "jsonl" and os.path.exists(db_path):
+        try:
+            from app.agent.memory.archive_sqlite import SqliteArchiveStore
+            return SqliteArchiveStore(db_path, jsonl_dir=archive_dir, dual_write=False)
+        except Exception:
+            pass
+    from app.agent.memory.archive_store import ArchiveStore
+    return ArchiveStore(archive_dir)
+
+
 def _resolve_archive():
     from app.agent.loop.session_manager import get_session_manager
     mgr = get_session_manager()
@@ -167,13 +273,15 @@ def _resolve_archive():
             archive = None
     if archive is None:
         try:
-            from app.agent.memory.archive_store import ArchiveStore
-            from app.core.util.runtime_paths import resolve_dir_writable
-            base = os.path.join(resolve_dir_writable("memory"), "archive")
-            archive = ArchiveStore(str(base))
+            archive = _fallback_archive()
         except Exception:
             archive = None
     return mgr, archive
+
+
+def history_revision(session_id: str = None):
+    _, archive = _resolve_archive()
+    return _archive_revision(archive, session_id) if archive is not None else None
 
 
 def _archive_signature(archive):
@@ -191,11 +299,26 @@ def _archive_signature(archive):
     return (len(files), newest, st.st_mtime_ns, st.st_size)
 
 
+def _archive_revision(archive, session_id=None):
+    rev = getattr(archive, "revision", None)
+    if callable(rev):
+        try:
+            return ("rev", int(rev(session_id) if session_id else rev()))
+        except TypeError:
+            try:
+                return ("rev", int(rev()))
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return ("sig", _archive_signature(archive))
+
+
 def load_session_messages(session_id: str, limit: int = 500, record_cap: int = 0) -> list:
     mgr, archive = _resolve_archive()
     raw_msgs = []
-    sig = _archive_signature(archive) if archive is not None else None
-    cache_key = (session_id, int(limit), int(record_cap), sig) if sig is not None else None
+    rev = _archive_revision(archive, session_id) if archive is not None else None
+    cache_key = (session_id, int(limit), int(record_cap), rev) if rev is not None and rev[1] is not None else None
 
     if cache_key is not None:
         cached = _ARCHIVE_CACHE.get(cache_key)
@@ -343,7 +466,10 @@ def build_history_plan(session_id: str, limit: int = 100, offset: int = 0) -> tu
         if role == "user":
             content = m.get("content")
             if content:
-                plan.append({"kind": "user", "content": content})
+                plan.append({
+                    "kind": "notice" if is_delegation_notice(content) else "user",
+                    "content": content,
+                })
             i += 1
         elif role == "assistant":
             content = m.get("content")

@@ -5,6 +5,7 @@
 
 import json
 import os
+import sqlite3
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -96,44 +97,71 @@ class SessionStore:
 
         store = self._read_store()
         existing_ids = {s["session_id"] for s in store.get("sessions", [])}
-
-        if existing_ids:
-            return
-
+        deleted_ids = set(store.get("deleted_sessions") or [])
         discovered: Dict[str, Dict] = {}  # session_id -> {last_active, count}
 
-        for fname in os.listdir(self.archive_dir):
-            if not fname.endswith(".jsonl"):
-                continue
+        if not existing_ids:
+            for fname in os.listdir(self.archive_dir):
+                if not fname.endswith(".jsonl"):
+                    continue
 
-            fpath = os.path.join(self.archive_dir, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8-sig") as f:
-                    for line in f:
-                        try:
-                            rec = json.loads(line)
-                            sid = rec.get("session_id")
-                            if not sid or sid in existing_ids:
+                fpath = os.path.join(self.archive_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8-sig") as f:
+                        for line in f:
+                            try:
+                                rec = json.loads(line)
+                                sid = rec.get("session_id")
+                                if not sid or sid in deleted_ids:
+                                    continue
+
+                                if sid not in discovered:
+                                    discovered[sid] = {
+                                        "last_active": rec.get("time", ""),
+                                        "count": 0,
+                                        "first_seen": rec.get("time", ""),
+                                    }
+
+                                discovered[sid]["count"] += 1
+
+                                if rec.get("time", "") > discovered[sid]["last_active"]:
+                                    discovered[sid]["last_active"] = rec.get("time", "")
+
+                            except json.JSONDecodeError:
                                 continue
+                except Exception as e:
+                    logger.warning("[SessionStore] 扫描 archive 失败: %s | %s", fname, e)
+                    continue
 
-                            if sid not in discovered:
-                                discovered[sid] = {
-                                    "last_active": rec.get("time", ""),
-                                    "count": 0,
-                                    "first_seen": rec.get("time", ""),
-                                }
-
-                            discovered[sid]["count"] += 1
-
-                            # 更新最后活跃时间
-                            if rec.get("time", "") > discovered[sid]["last_active"]:
-                                discovered[sid]["last_active"] = rec.get("time", "")
-
-                        except json.JSONDecodeError:
-                            continue
+        db_path = os.path.join(os.path.dirname(self.archive_dir), "archive.db")
+        if os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                try:
+                    rows = conn.execute(
+                        "SELECT session_id, COUNT(*) AS cnt, MIN(time) AS first_seen, "
+                        "MAX(time) AS last_active FROM records "
+                        "WHERE session_id IS NOT NULL GROUP BY session_id"
+                    ).fetchall()
+                finally:
+                    conn.close()
+                for sid, cnt, first_seen, last_active in rows:
+                    if not sid or sid in existing_ids or sid in deleted_ids:
+                        continue
+                    first_seen = first_seen or ""
+                    last_active = last_active or ""
+                    info = discovered.setdefault(sid, {
+                        "last_active": last_active,
+                        "count": 0,
+                        "first_seen": first_seen,
+                    })
+                    info["count"] = max(int(info.get("count") or 0), int(cnt or 0))
+                    if last_active > info["last_active"]:
+                        info["last_active"] = last_active
+                    if first_seen and (not info["first_seen"] or first_seen < info["first_seen"]):
+                        info["first_seen"] = first_seen
             except Exception as e:
-                logger.warning("[SessionStore] 扫描 archive 失败: %s | %s", fname, e)
-                continue
+                logger.warning("[SessionStore] 读取 archive.db 失败: %s", e)
 
         if discovered:
             sessions = store.get("sessions", [])
@@ -432,6 +460,10 @@ class SessionStore:
                 return False
 
             store["sessions"] = new_sessions
+
+            deleted = [s for s in (store.get("deleted_sessions") or []) if s != session_id]
+            deleted.append(session_id)
+            store["deleted_sessions"] = deleted[-500:]
 
             if store.get("last_active_session") == session_id:
                 store["last_active_session"] = new_sessions[-1]["session_id"] if new_sessions else None

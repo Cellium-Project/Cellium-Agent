@@ -1,6 +1,8 @@
 memory:
   section: memory
   memory_dir: memory
+  archive_backend: sqlite
+  archive_dual_write: false
   short_term:
     max_history: 200
   session_compact:

@@ -32,7 +32,7 @@ def resolve_anchor_index(messages: list, anchor, fallback: int = 0) -> int:
 
 
 def plan_slice(messages: list, start_index: int, end_index: int) -> list:
-    from app.tui.history_render import build_assistant_timeline
+    from app.tui.history_render import build_assistant_timeline, is_delegation_notice
     page = messages[start_index:end_index]
     plan = []
     i = 0
@@ -44,7 +44,9 @@ def plan_slice(messages: list, start_index: int, end_index: int) -> list:
             if content:
                 span = (start_index + i, start_index + i + 1)
                 plan.append({
-                    "kind": "user", "content": content, "span": span,
+                    "kind": "notice" if is_delegation_notice(content) else "user",
+                    "content": content,
+                    "span": span,
                     "id": m.get("id"),
                 })
             i += 1

@@ -543,6 +543,74 @@ class UserMessage(Static):
             pass
 
 
+class DelegationNotice(Static):
+    """会话委托 / 子 Agent 完成注入卡片"""
+
+    COLLAPSED_LINES = 3
+
+    def __init__(self, content):
+        from app.tui.history_render import parse_delegation_notice
+        super().__init__("")
+        self.add_class("delegation-notice")
+        self._notice = parse_delegation_notice(content)
+        self._body = [ln for ln in (self._notice.get("body") or "").splitlines() if ln.strip()]
+        self._expanded = False
+
+    def on_mount(self):
+        self._refresh()
+
+    def can_focus(self):
+        return bool(self._body)
+
+    def on_click(self, event):
+        if not self._body:
+            return
+        self._expanded = not self._expanded
+        self._refresh()
+        event.stop()
+
+    def on_key(self, event):
+        if event.key == "enter" and self._body:
+            self._expanded = not self._expanded
+            self._refresh()
+            event.stop()
+
+    def _refresh(self):
+        from rich.text import Text
+        tr = getattr(self.app, "tr", None) or (lambda k, *a: k.format(*a) if a else k)
+        notice = self._notice
+        ok = notice.get("status") == "成功"
+        t = Text()
+        t.append("● ", style="green" if ok else "red")
+        t.append(notice.get("title") or "会话委托完成", style="bold")
+        status = notice.get("status") or ""
+        if status:
+            t.append("  ")
+            t.append(f"{'✓' if ok else '✗'} {status}", style="bold green" if ok else "bold red")
+        elapsed = notice.get("elapsed") or ""
+        if elapsed:
+            t.append(f" · {elapsed}", style="dim")
+
+        shown = self._body if self._expanded else self._body[:self.COLLAPSED_LINES]
+        for line in shown:
+            t.append("\n")
+            t.append(f"  {line}", style="dim")
+        hidden = len(self._body) - len(shown)
+        if hidden > 0 or (self._expanded and self._body):
+            t.append("\n")
+            if self._expanded:
+                t.append(f"  {tr('notice.collapse')}", style="dim italic")
+            else:
+                t.append(f"  {tr('notice.expand', hidden)}", style="dim italic")
+        if notice.get("error"):
+            t.append("\n")
+            t.append(f"  {notice['error']}", style="red")
+        for line in (notice.get("footer") or "").splitlines():
+            t.append("\n")
+            t.append(f"  {line}", style="dim")
+        self.update(t)
+
+
 LOGO_RENDER_WIDTH = 18
 LOGO_RENDER_HEIGHT = 10
 LOGO_PALETTE = (
@@ -946,6 +1014,7 @@ def _build_rich_md(markdown: str):
         }
 
     return CelliumRichMarkdown(_normalize_md(markdown))
+
 
 def _stamp_line_offsets(strips):
     """按整篇行号给每行打上 meta offset。
@@ -1420,6 +1489,11 @@ class HistoryMarkdown(Static):
         if text:
             self._md = _build_rich_md(text)
 
+    def set_rendered(self, source, md=None):
+        self._source = source or ""
+        self._md = md
+        self._visual = None
+
     def update(self, markdown="", layout=True):
         from textual.await_complete import AwaitComplete
         if markdown:
@@ -1453,7 +1527,12 @@ class HistoryMarkdown(Static):
 
     def render(self):
         if self._md is None:
-            return ""
+            if not self._source:
+                return ""
+            try:
+                self._md = _build_rich_md(self._source)
+            except Exception:
+                return ""
         if self._visual is None:
             self._visual = _SelectableRichVisual(self, self._md)
         return self._visual

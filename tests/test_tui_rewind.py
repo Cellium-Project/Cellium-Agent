@@ -208,6 +208,33 @@ class TestRewindCommand(unittest.TestCase):
         plan = plan_slice([{"id": "m1", "role": "user", "content": "hi"}], 0, 1)
         self.assertEqual(plan[0]["id"], "m1")
 
+    def test_rewindable_excludes_compacted(self):
+        from app.agent.loop import rewind
+
+        msgs = [
+            {"role": "user", "content": "old", "id": "m_old"},
+            {"_is_compacted_notes": True, "role": "user", "content": "notes"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "new", "id": "m_new"},
+        ]
+
+        class _Info:
+            def __init__(self):
+                self.memory = type("_Mem", (), {"messages": msgs})()
+
+        class _Mgr:
+            def get_or_create(self, sid):
+                return _Info()
+
+        self._patch(rewind, "get_session_manager", lambda: _Mgr())
+        self._patch(rewind, "tracked_user_ids", lambda sid: {"m_old", "m_new"})
+        self.assertEqual(rewind.rewindable_user_ids("s"), {"m_new"})
+
+    def _patch(self, obj, name, value):
+        original = getattr(obj, name)
+        setattr(obj, name, value)
+        self.addCleanup(setattr, obj, name, original)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -366,17 +366,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         count: number;
         total: number;
         has_more: boolean;
+        next_offset: number;
       }>(url);
 
       if (get().currentSessionId !== sessionId) {
         return;
       }
 
+      const nextOffset = typeof data.next_offset === 'number' ? data.next_offset : data.count;
+
       if (offset === 0) {
         set((state) => {
           if (state.isStreaming || state.streamingMessage) {
             return {
-              historyOffset: data.count,
+              historyOffset: nextOffset,
               hasMoreHistory: data.has_more,
             };
           }
@@ -384,27 +387,22 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (data.messages.length > 0) {
             return {
               messages: data.messages,
-              historyOffset: data.count,
+              historyOffset: nextOffset,
               hasMoreHistory: data.has_more,
             };
           }
           return {
             messages: state.messages,
-            historyOffset: data.count,
+            historyOffset: nextOffset,
             hasMoreHistory: data.has_more,
           };
         });
       } else {
-        set((state) => {
-          const getMsgKey = (m: Message) => `${m.role}:${(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 30)}`;
-          const existingKeys = new Set(state.messages.map(getMsgKey));
-          const newMessages = data.messages.filter(m => !existingKeys.has(getMsgKey(m)));
-          return {
-            messages: [...newMessages, ...state.messages],
-            historyOffset: state.historyOffset + data.count,
-            hasMoreHistory: data.has_more,
-          };
-        });
+        set((state) => ({
+          messages: [...data.messages, ...state.messages],
+          historyOffset: Math.max(state.historyOffset, nextOffset),
+          hasMoreHistory: data.has_more,
+        }));
       }
     } catch (error) {
       console.error('Failed to fetch messages:', error);

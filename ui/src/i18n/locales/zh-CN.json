@@ -128,6 +128,7 @@
     "delegationQueued": "会话 {{session}} 排队中",
     "delegationRunning": "会话 {{session}} 运行中",
     "delegationDone": "会话 {{session}} 完成",
+    "supplementInjected": "已注入补充信息",
     "delegationFailed": "会话 {{session}} 失败",
     "delegationTool": "工具 {{tool}}",
     "delegationAttempt": "调用 {{n}} 次",

@@ -8,7 +8,7 @@ MODE_WHITELIST = "whitelist"
 DEFAULT_BLOCKED_TOOLS: FrozenSet[str] = frozenset({
     "shell", "file", "edit", "read", "ls", "glob", "grep", "memory",
     "config", "web_search", "web_fetch", "scheduler",
-    "component", "skill_installer", "skill_manager", "sub_agent",
+    "component", "skill_installer", "skill_manager", "sub_agent", "session_agent",
     "qq_files", "weixin_files", "telegram_files", "feishu_files",
 })
 

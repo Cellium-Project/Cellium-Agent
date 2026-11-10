@@ -523,8 +523,10 @@ def setup_agent_di(
         container.register(CelliumShell, _shell, singleton=True)
 
     # --- 注册三层记忆 ---
-    _memory = ThreeLayerMemory(memory_dir, allow_sensitive_store=allow_sensitive_store)
-    if not container.has(ThreeLayerMemory):
+    if container.has(ThreeLayerMemory):
+        _memory = container.resolve(ThreeLayerMemory)
+    else:
+        _memory = ThreeLayerMemory(memory_dir, allow_sensitive_store=allow_sensitive_store)
         container.register(ThreeLayerMemory, _memory, singleton=True)
 
     # --- 注册对话上下文 MemoryManager ---

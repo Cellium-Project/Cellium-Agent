@@ -22,10 +22,11 @@ class DIContainer:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._services: Dict[str, Any] = {}
-                    cls._instance._singletons: Dict[str, Any] = {}
-                    cls._instance._resolve_lock = threading.Lock()  # 用于 resolve 的锁
+                    instance = super().__new__(cls)
+                    instance._services: Dict[str, Any] = {}
+                    instance._singletons: Dict[str, Any] = {}
+                    instance._resolve_lock = threading.Lock()  # 用于 resolve 的锁
+                    cls._instance = instance
         return cls._instance
 
     def register(self, service_type: Type, instance: Any, singleton: bool = True):

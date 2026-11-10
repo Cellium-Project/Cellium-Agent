@@ -515,18 +515,12 @@ class MemoryTool(BaseTool):
         page_size = max(500, min(page_size, 8000)) 
 
         try:
-            record = self.memory.archive.get_by_id(entry_id)
+            archive = self.memory.archive
+            record = archive.get_record_meta(entry_id)
             if not record:
                 return {"success": False, "error": f"未找到 Archive entry: {entry_id}"}
 
-            messages = record.get("messages", [])
-
-            assistant_response = None
-            for msg in reversed(messages):
-                if msg.get("role") == "assistant":
-                    assistant_response = msg.get("content", "")
-                    break
-
+            assistant_response = archive.get_last_assistant(entry_id) or ""
             if not assistant_response:
                 return {"success": False, "error": "未找到助手回复"}
 
