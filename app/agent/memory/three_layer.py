@@ -63,17 +63,20 @@ class ThreeLayerMemory:
             logger.warning("[ThreeLayerMemory] 未知 archive_backend=%s，回退 sqlite", backend)
             backend = "sqlite"
         if backend == "jsonl":
+            logger.info("[ThreeLayerMemory] 归档后端=jsonl | dir=%s", archive_dir)
             return ArchiveStore(archive_dir)
 
         from .archive_sqlite import SqliteArchiveStore
         from .archive_migrate import start_background_import
 
         try:
+            db_path = os.path.join(memory_dir, "archive.db")
             store = SqliteArchiveStore(
-                os.path.join(memory_dir, "archive.db"),
+                db_path,
                 jsonl_dir=archive_dir,
                 dual_write=bool(dual_write),
             )
+            logger.info("[ThreeLayerMemory] 归档后端=sqlite | db=%s", db_path)
         except Exception as e:
             logger.warning("[ThreeLayerMemory] SQLite 归档初始化失败，回退 JSONL: %s", e)
             return ArchiveStore(archive_dir)

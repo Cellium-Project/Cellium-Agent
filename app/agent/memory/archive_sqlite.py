@@ -67,6 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_record_messages_record ON record_messages(record_
 
 _RECORD_COLUMNS = "id, session_id, time, snapshot_hash, raw"
 _SEQ_LIVE_BASE = 1_000_000_000_000_000
+_WRITE_RETRY_DELAYS = (0.05, 0.15, 0.4)
+_SNAPSHOT_FLAG = '"_is_compacted_notes"'
 
 
 class SqliteArchiveStore:
@@ -84,7 +86,7 @@ class SqliteArchiveStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(_SCHEMA)
         self._ensure_columns()
         self._conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('seq', '0')")
@@ -92,6 +94,7 @@ class SqliteArchiveStore:
         self._read_local = threading.local()
         self._read_conns = set()
         self._read_conns_lock = threading.Lock()
+        self._last_flush = 0.0
         self._state = threading.Condition()
         self._active_reads = 0
         self._closed = False
@@ -132,6 +135,22 @@ class SqliteArchiveStore:
         if "raw" not in cols:
             self._conn.execute("ALTER TABLE records ADD COLUMN raw TEXT")
 
+    def flush(self, min_interval: float = 30.0) -> None:
+        """WAL 合并回主库：PASSIVE 不等读者，并按时长节流，避免多会话互相卡住"""
+        if self.db_path == ":memory:":
+            return
+        now = time.time()
+        if now - self._last_flush < min_interval:
+            return
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                self._last_flush = now
+            except sqlite3.Error as e:
+                logger.debug("[SqliteArchiveStore] checkpoint 失败: %s", e)
+
     def close(self) -> None:
         with self._lock:
             with self._state:
@@ -147,6 +166,10 @@ class SqliteArchiveStore:
                     conn.close()
                 except sqlite3.Error:
                     pass
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
             try:
                 self._conn.close()
             except sqlite3.Error:
@@ -185,6 +208,10 @@ class SqliteArchiveStore:
 
             if not fresh:
                 latest = self.get_latest_by_session(session_id)
+                logger.debug(
+                    "[SqliteArchiveStore] 消息全部命中去重，跳过写入 | session=%s | incoming=%d | latest=%s",
+                    session_id, len(normalized), (latest or {}).get("id", "")[:12],
+                )
                 return latest.get("id", "") if latest else ""
 
             now = datetime.now().astimezone().isoformat()
@@ -198,25 +225,47 @@ class SqliteArchiveStore:
             }
 
             try:
-                self._conn.execute("BEGIN IMMEDIATE")
-                seq = self._next_seq(self._conn)
-                self._conn.execute(
-                    "INSERT INTO records(id, session_id, time, snapshot_hash, seq, raw) "
-                    "VALUES(?, ?, ?, ?, ?, ?)",
-                    (
-                        record_id, session_id, now, record["snapshot_hash"], seq,
-                        self._raw_record(record),
-                    ),
+                self._write_with_retry(
+                    lambda: self._insert_record(record_id, session_id, fresh, record)
                 )
-                self._insert_messages(self._conn, record_id, session_id, fresh)
-                self._bump_revision(self._conn, session_id)
-                self._conn.execute("COMMIT")
             except Exception:
-                self._safe_rollback(self._conn)
                 raise
 
             self._append_jsonl(record)
             return record_id
+
+    def _insert_record(self, record_id, session_id, fresh, record) -> None:
+        """单条记录写入事务（被 _write_with_retry 重试调用）"""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            seq = self._next_seq(self._conn)
+            self._conn.execute(
+                "INSERT INTO records(id, session_id, time, snapshot_hash, seq, raw) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    record_id, session_id, record["time"], record["snapshot_hash"], seq,
+                    self._raw_record(record),
+                ),
+            )
+            self._insert_messages(self._conn, record_id, session_id, fresh)
+            self._bump_revision(self._conn, session_id)
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._safe_rollback(self._conn)
+            raise
+
+    def _write_with_retry(self, func):
+        """写锁争用短退避重试：busy_timeout 之后只兜短暂的锁抖动"""
+        attempts = len(_WRITE_RETRY_DELAYS) + 1
+        for i in range(attempts):
+            try:
+                return func()
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if i == attempts - 1 or ("locked" not in msg and "busy" not in msg):
+                    raise
+                logger.debug("[SqliteArchiveStore] 写锁争用，%.2fs 后重试: %s", _WRITE_RETRY_DELAYS[i], e)
+                time.sleep(_WRITE_RETRY_DELAYS[i])
 
     def get_by_id(self, record_id: str) -> Optional[Dict]:
         with self._reading() as conn:
@@ -235,7 +284,7 @@ class SqliteArchiveStore:
                 "ORDER BY seq DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-            records = [self._record_from_row(row) for row in reversed(rows)]
+            records = self._records_from_rows(list(reversed(rows)))
         legacy = self._legacy_store()
         if legacy is not None:
             try:
@@ -290,7 +339,7 @@ class SqliteArchiveStore:
                 f"SELECT {_RECORD_COLUMNS} FROM records WHERE time >= ? AND time < ? ORDER BY seq",
                 (date, date + "\uffff"),
             ).fetchall()
-            return [self._record_from_row(row) for row in rows]
+            return self._records_from_rows(rows)
 
     def delete_after(self, session_id: str, message_id: str) -> int:
         with self._lock:
@@ -467,6 +516,37 @@ class SqliteArchiveStore:
         legacy = self._legacy_store()
         return legacy.get_last_assistant(record_id) if legacy else None
 
+    def _records_from_rows(self, rows) -> List[Dict]:
+        """批量装配记录：一条 SQL 取全部消息，避免逐条查询"""
+        metas = [self._meta_from_row(row) for row in rows]
+        if not metas:
+            return []
+        bulk = self._load_messages_bulk([meta["id"] for meta in metas])
+        for meta in metas:
+            meta["messages"] = bulk.get(meta["id"], [])
+        return metas
+
+    def _load_messages_bulk(self, record_ids) -> Dict[str, List]:
+        result = {rid: [] for rid in record_ids}
+        ids = list(result)
+        if not ids:
+            return result
+        with self._reading() as conn:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    "SELECT record_id, payload FROM record_messages "
+                    f"WHERE record_id IN ({placeholders}) ORDER BY record_id, ordinal",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    try:
+                        result[row["record_id"]].append(json.loads(row["payload"]))
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+        return result
+
     def _load_messages(self, record_id: str) -> List:
         with self._reading() as conn:
             rows = conn.execute(
@@ -480,6 +560,76 @@ class SqliteArchiveStore:
             except (json.JSONDecodeError, TypeError):
                 continue
         return messages
+
+    def get_recent_messages(self, session_id: str, limit: int = 2000, offset: int = 0) -> List:
+        """按消息取窗口：跳过最新 offset 条后取 limit 条，正序返回（压缩快照忽略）"""
+        if limit <= 0:
+            return []
+        legacy = self._legacy_store()
+        if legacy is not None:
+            return self._legacy_messages_tail(legacy, session_id, limit, offset)
+        with self._reading() as conn:
+            rows = conn.execute(
+                "SELECT rm.payload FROM record_messages rm JOIN records r ON r.id = rm.record_id "
+                f"WHERE r.session_id = ? AND instr(rm.payload, '{_SNAPSHOT_FLAG}') = 0 "
+                "ORDER BY r.seq DESC, rm.ordinal DESC LIMIT ? OFFSET ?",
+                (session_id, limit, max(0, offset)),
+            ).fetchall()
+        return self._payloads_to_messages(rows)
+
+    def count_messages(self, session_id: str) -> int:
+        legacy = self._legacy_store()
+        if legacy is not None:
+            try:
+                records = legacy.get_by_session(session_id, limit=100000)
+            except Exception:
+                return 0
+            return sum(
+                1 for rec in records for m in (rec.get("messages") or [])
+                if not (m.get("role") == "user" and m.get("_is_compacted_notes"))
+            )
+        with self._reading() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM record_messages rm JOIN records r ON r.id = rm.record_id "
+                f"WHERE r.session_id = ? AND instr(rm.payload, '{_SNAPSHOT_FLAG}') = 0",
+                (session_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _payloads_to_messages(rows) -> List:
+        messages = []
+        for row in reversed(rows):
+            try:
+                messages.append(json.loads(row["payload"]))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return messages
+
+    @staticmethod
+    def _legacy_messages_tail(legacy, session_id, limit, offset) -> List:
+        """迁移未完成时从 JSONL 归档取尾部（消息级去重）"""
+        messages = []
+        seen = set()
+        try:
+            records = legacy.get_by_session(session_id, limit=500)
+        except Exception:
+            return []
+        for rec in reversed(records):
+            msgs = rec.get("messages")
+            if not isinstance(msgs, list):
+                continue
+            for msg in reversed(msgs):
+                if msg.get("role") == "user" and msg.get("_is_compacted_notes"):
+                    continue
+                key = json.dumps(msg, ensure_ascii=False, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                messages.append(msg)
+        messages.reverse()
+        end = len(messages) - max(0, offset)
+        return messages[max(0, end - limit):end]
 
     def _insert_messages(self, conn, record_id: str, session_id: str, messages: list) -> None:
         rows = []

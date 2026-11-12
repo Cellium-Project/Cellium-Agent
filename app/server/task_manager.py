@@ -206,8 +206,8 @@ class BackgroundTaskManager:
                 )
 
             from app.core.util.logger import clear_status_history, clear_runtime_status
-            clear_status_history()
-            clear_runtime_status()
+            clear_status_history(session_id)
+            clear_runtime_status(session_id)
 
             from app.server.routes.ws_event_manager import WSConnectionManager
             try:

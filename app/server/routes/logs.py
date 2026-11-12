@@ -85,25 +85,54 @@ async def log_stats():
     return stats
 
 
+def _session_titles():
+    try:
+        from app.agent.loop.session_store import get_session_store
+        return {
+            m.session_id: (m.title or "").strip()
+            for m in get_session_store().list_sessions(limit=200)
+        }
+    except Exception:
+        return {}
+
+
 @router.get("/status")
-async def runtime_status():
-    """运行时状态摘要（供 Agent 自我感知）"""
-    from app.core.util.logger import get_runtime_status
-    rs = get_runtime_status()
-    if not rs:
-        return {"available": False, "message": "Agent 未在运行"}
+async def runtime_status(session_id: str = Query("", description="留空返回全部会话")):
+    """运行时状态摘要"""
+    from app.core.util.logger import get_all_runtime_statuses
+
+    items = get_all_runtime_statuses()
+    if session_id:
+        items = [(sid, rs) for sid, rs in items if sid == session_id]
+
+    titles = _session_titles()
+    sessions = [
+        {
+            "session_id": sid,
+            "title": titles.get(sid, ""),
+            "summary": rs.to_summary(),
+            "detail": rs.to_dict(),
+            "updated_at": getattr(rs, "updated_at", 0.0),
+        }
+        for sid, rs in items
+    ]
+
+    if not sessions:
+        return {"available": False, "message": "Agent 未在运行", "sessions": []}
+
     return {
         "available": True,
-        "summary": rs.to_summary(),
-        "detail": rs.to_dict(),
+        "sessions": sessions,
+        "summary": sessions[0]["summary"],
+        "detail": sessions[0]["detail"],
     }
 
 
 @router.get("/status/history")
-async def runtime_status_history():
+async def runtime_status_history(session_id: str = Query("", description="会话 ID，留空取最近会话")):
     """运行时状态历史快照"""
     from app.core.util.logger import get_status_history
-    return {"history": get_status_history()}
+    return {"history": get_status_history(session_id or None)}
 
 
 @router.get("/errors")

@@ -1072,6 +1072,8 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
 _HISTORY_CACHE = {}
 _HISTORY_CACHE_MAX = 8
 _HISTORY_CACHE_LOCK = threading.Lock()
+_HISTORY_MAX_MESSAGES = 4000     # 单次读取窗口上限
+_HISTORY_ALIGN_HEADROOM = 200    # 分页对齐到用户消息的余量
 
 
 def _archive_signature(archive):
@@ -1132,53 +1134,80 @@ def _page_bounds(messages: list, limit: int, offset: int):
     return start, end
 
 
-def _load_archive_messages(archive, session_id):
+def _load_archive_messages(archive, session_id, limit=None, offset=0):
+    """最近 limit 条消息（正序）"""
+    need = min(limit or _HISTORY_MAX_MESSAGES, _HISTORY_MAX_MESSAGES)
     revision = _archive_revision(archive, session_id)
-    cache_key = (session_id, revision) if revision[1] is not None else None
+    cache_key = (session_id, revision) if revision[1] is not None and offset == 0 else None
     if cache_key is not None:
         with _HISTORY_CACHE_LOCK:
-            cached = _HISTORY_CACHE.get(cache_key)
-        if cached is not None:
-            return list(cached)
+            entry = _HISTORY_CACHE.get(cache_key)
+        if isinstance(entry, dict) and entry.get("limit", 0) >= need:
+            return list(entry["messages"][-need:])
 
-    all_messages = []
-    seen = set()
     try:
-        records = archive.get_by_session(session_id, limit=500)
-        for rec in reversed(records):
-            msgs = rec.get("messages")
-            if isinstance(msgs, list):
-                filtered = [m for m in msgs if not (m.get("role") == "user" and m.get("_is_compacted_notes"))]
-                for msg in reversed(filtered):
-                    msg_key = _msg_dedupe_key(msg)
-                    if msg_key not in seen:
-                        seen.add(msg_key)
-                        all_messages.append(msg)
+        reader = getattr(archive, "get_recent_messages", None)
+        if reader is not None:
+            raw_msgs = reader(session_id, need, offset)
+        else:
+            raw_msgs = _records_messages_tail(archive, session_id, need, offset)
     except Exception as e:
         logger.warning("[History] archive 读取失败，回退到内存: %s", e)
         return []
 
-    raw_msgs = list(reversed(all_messages))
-
     if cache_key is not None:
         with _HISTORY_CACHE_LOCK:
-            if cache_key not in _HISTORY_CACHE:
-                if len(_HISTORY_CACHE) >= _HISTORY_CACHE_MAX:
-                    _HISTORY_CACHE.pop(next(iter(_HISTORY_CACHE)))
-                _HISTORY_CACHE[cache_key] = list(raw_msgs)
+            if cache_key not in _HISTORY_CACHE and len(_HISTORY_CACHE) >= _HISTORY_CACHE_MAX:
+                _HISTORY_CACHE.pop(next(iter(_HISTORY_CACHE)))
+            _HISTORY_CACHE[cache_key] = {"messages": list(raw_msgs), "limit": need}
     return raw_msgs
 
 
-def _load_raw_history(session_id):
+def _records_messages_tail(archive, session_id, limit, offset):
+    """非 SQLite 归档（JSONL）兼容：按记录读再取消息尾部"""
+    all_messages = []
+    seen = set()
+    records = archive.get_by_session(session_id, limit=500)
+    for rec in reversed(records):
+        msgs = rec.get("messages")
+        if not isinstance(msgs, list):
+            continue
+        filtered = [m for m in msgs if not (m.get("role") == "user" and m.get("_is_compacted_notes"))]
+        for msg in reversed(filtered):
+            msg_key = _msg_dedupe_key(msg)
+            if msg_key not in seen:
+                seen.add(msg_key)
+                all_messages.append(msg)
+    all_messages.reverse()
+    end = len(all_messages) - max(0, offset)
+    return all_messages[max(0, end - limit):end]
+
+
+def _history_total(session_id, fallback=0):
+    try:
+        mgr = get_session_manager()
+        archive = mgr.three_layer_memory.archive if mgr.three_layer_memory else None
+        counter = getattr(archive, "count_messages", None) if archive else None
+        if counter is not None:
+            return max(int(counter(session_id)), fallback)
+    except Exception:
+        pass
+    return fallback
+
+
+def _load_raw_history(session_id, limit=None, offset=0):
     mgr = get_session_manager()
     archive = mgr.three_layer_memory.archive if mgr.three_layer_memory else None
     if archive:
-        raw_msgs = _load_archive_messages(archive, session_id)
+        raw_msgs = _load_archive_messages(archive, session_id, limit, offset)
         if raw_msgs:
             logger.debug("[History] 从 archive 恢复 | session=%s | %d 条消息", session_id, len(raw_msgs))
             return raw_msgs
     info = mgr.get_or_create(session_id)
     raw_msgs = info.memory.get_messages()
+    if limit:
+        end = max(0, len(raw_msgs) - max(0, offset))
+        return raw_msgs[max(0, end - limit):end]
     logger.debug("[History] 从内存读取 | session=%s | raw=%d 条", session_id, len(raw_msgs))
     return raw_msgs
 
@@ -1190,18 +1219,20 @@ async def get_session_history(
     offset: int = Query(0, ge=0),
 ):
     """获取会话的历史消息"""
-    raw_msgs = await asyncio.to_thread(_load_raw_history, session_id)
+    fetch_n = limit + _HISTORY_ALIGN_HEADROOM
+    raw_msgs = await asyncio.to_thread(_load_raw_history, session_id, fetch_n, offset)
 
     if not raw_msgs:
         return {"session_id": session_id, "messages": [], "count": 0, "total": 0, "has_more": False, "next_offset": 0}
 
-    total = len(raw_msgs)
-    start_idx, end_idx = _page_bounds(raw_msgs, limit, offset)
+    start_idx, end_idx = _page_bounds(raw_msgs, limit, 0)
     paged_raw = raw_msgs[start_idx:end_idx]
+    consumed = offset + (end_idx - start_idx)
+    total = _history_total(session_id, fallback=consumed)
 
     logger.debug(
-        "[History] session=%s | paged=%d 条 (slice[%d:%d]) | total=%d",
-        session_id, len(paged_raw), start_idx, end_idx, total,
+        "[History] session=%s | paged=%d 条 (slice[%d:%d]) | offset=%d | total=%d",
+        session_id, len(paged_raw), start_idx, end_idx, offset, total,
     )
 
     try:
@@ -1216,8 +1247,8 @@ async def get_session_history(
         "messages": renderable,
         "count": len(renderable),
         "total": total,
-        "has_more": start_idx > 0,
-        "next_offset": total - start_idx,
+        "has_more": consumed < total,
+        "next_offset": consumed,
     }
 
 

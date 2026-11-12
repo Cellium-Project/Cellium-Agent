@@ -122,6 +122,12 @@ def _log_failure(future) -> None:
         logger.warning("[SessionAgent] 后台调度失败 | error=%s", e)
 
 
+def _resolve_delegation_mode(target: str) -> str:
+    """被委托会话用自身模式执行，不继承委托方的编排/计划模式"""
+    from app.server.session_mode import get_mode
+    return get_mode(target)
+
+
 class SessionAgent(BaseCell):
     """会话委托 — 把任务交给另一个真实会话异步执行"""
 
@@ -681,7 +687,6 @@ class SessionAgent(BaseCell):
 
             from app.agent.loop.agent_loop_manager import AgentLoopManager
             from app.agent.loop.session_manager import get_session_manager
-            from app.server.session_mode import get_mode
 
             mgr = AgentLoopManager.get_instance()
             # 目标会话正被用户使用时在此排队，status 保持 queued，不报错
@@ -694,7 +699,7 @@ class SessionAgent(BaseCell):
                     self._publish_progress(parent, info)
                     loop = await mgr.get_loop(target)
                     memory = get_session_manager().get_or_create(target).memory
-                    mode = get_mode(target)
+                    mode = _resolve_delegation_mode(target)
                     injection = self._build_injection(parent, purpose)
                     effective_timeout = max(0.01, float(timeout or _DEFAULT_TIMEOUT))
                     try:

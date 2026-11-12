@@ -554,12 +554,9 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
             <span className="assistant-content-wrap">
               {visible || isStreaming ? (
                 <>
-                  <span className="live-slot">{renderTimeline(message, isStreaming)}</span>
-                  {isStreaming && (
-                    <span
-                      className={`streaming-cursor${waitingForResponse ? '' : ' fade-out'}`}
-                      aria-hidden="true"
-                    >
+                  {renderTimeline(message, isStreaming)}
+                  {isStreaming && waitingForResponse && (
+                    <span className="streaming-cursor" aria-hidden="true">
                       <span /><span /><span />
                     </span>
                   )}

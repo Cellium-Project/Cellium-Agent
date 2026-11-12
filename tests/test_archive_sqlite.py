@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -54,6 +55,57 @@ def test_append_messages_order_and_date(store):
 
     by_date = store.get_by_date(datetime.now().strftime("%Y-%m-%d"))
     assert _contents(by_date) == [["u1", "a1"], ["u2", "a2"]]
+
+
+def test_write_retry_on_locked(tmp_path, monkeypatch):
+    store = SqliteArchiveStore(str(tmp_path / "archive.db"))
+    calls = {"n": 0}
+    real = store._insert_record
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_insert_record", flaky)
+    record_id = store.append_messages("s1", [{"role": "user", "content": "u1"}])
+    assert record_id and calls["n"] == 3, "锁争用应退避重试后成功"
+    assert len(store.get_by_session("s1", 10)) == 1
+    store.close()
+
+
+def test_write_retry_skips_other_errors(tmp_path, monkeypatch):
+    store = SqliteArchiveStore(str(tmp_path / "archive.db"))
+    calls = {"n": 0}
+
+    def broken(*args, **kwargs):
+        calls["n"] += 1
+        raise sqlite3.OperationalError("no such table: x")
+
+    monkeypatch.setattr(store, "_insert_record", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        store.append_messages("s1", [{"role": "user", "content": "u1"}])
+    assert calls["n"] == 1, "非锁类错误不应重试"
+    store.close()
+
+
+def test_close_merges_wal_into_main_db(tmp_path):
+    db = tmp_path / "archive.db"
+    store = SqliteArchiveStore(str(db))
+    store.append_messages("s1", [{"role": "user", "content": "u1"}])
+    store.flush()
+    store.close()
+
+    wal = tmp_path / "archive.db-wal"
+    assert (not wal.exists()) or wal.stat().st_size == 0, "正常关闭后 WAL 应被合并"
+
+    conn = sqlite3.connect(str(db))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1, "主 DB 文件应直接包含已提交记录"
 
 
 def test_matches_jsonl_store(tmp_path, store):

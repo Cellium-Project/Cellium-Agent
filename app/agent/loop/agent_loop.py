@@ -53,6 +53,8 @@ _TRACE_FOLD_TRIGGER = 30
 _TRACE_FOLD_LIMIT = 500
 _TRACE_FOLD_ERROR_LIMIT = 1000
 _TRACE_UNTOUCHED_KEYS = {"error", "message", "success", "status", "tool", "name", "id", "error_type"}
+_CHECKPOINT_MIN_NEW = 6      # 两次检查点之间至少新增的消息数
+_CHECKPOINT_INTERVAL = 5.0   # 两次检查点之间的最小间隔（秒）
 
 
 def _slim_trace_value(v, limit, flag, depth=0, key=None):
@@ -144,6 +146,7 @@ class AgentLoop:
         intent_llm_engine=None,
         intent_enabled=True,
         undo_context=None,
+        publish_runtime_status: bool = True,
     ):
         self.llm = llm_engine
         self._undo_context = undo_context
@@ -155,6 +158,9 @@ class AgentLoop:
         self._tool_timeout = float(tool_timeout or 0)
         self.session_id = session_id
         self.flash_mode = flash_mode
+        self._stream_partial_text = ""
+        self._status_enabled = bool(publish_runtime_status)
+        self._checkpoint_state: Dict[str, Dict[str, float]] = {}
 
         # 事件总线
         self._bus = event_bus_instance or event_bus
@@ -1287,6 +1293,7 @@ class AgentLoop:
                 "source_session_title": source_session_title,
             }
             user_msg_id = effective_memory.add_user_message(user_input)
+            self._checkpoint_turn(effective_memory, effective_session, user_input, force=True)
             if self._undo_context:
                 self._tool_executor.set_turn_context(*self._undo_context)
             else:
@@ -1476,7 +1483,7 @@ class AgentLoop:
                     decision = self.control_loop.step(self._loop_state)
 
                     # 更新运行时状态（供 Agent 自我感知）
-                    set_runtime_status(self._loop_state)
+                    self._publish_runtime_state()
 
                     # 渲染决策为强约束（三段结构）
                     constraint = self._constraint_renderer.render(
@@ -1691,6 +1698,7 @@ class AgentLoop:
                 _stream_reasoning_start = None
                 _stream_reasoning_end = None
                 _stream_content = []
+                self._stream_partial_text = ""
                 _stream_tool_calls = []
                 _stream_checked = 0
                 _stream_tail = ""
@@ -1756,6 +1764,7 @@ class AgentLoop:
                         if ctype == "content":
                             _text = chunk.get("text", "")
                             _stream_content.append(_text)
+                            self._stream_partial_text = "".join(_stream_content)
                             yield {"type": "content_chunk", "content": _text}
                             _stream_checked += len(_text)
                             _stream_tail = (_stream_tail + _text)[-4000:]
@@ -1848,6 +1857,7 @@ class AgentLoop:
                             ctype = chunk.get("type")
                             if ctype == "content":
                                 _stream_content.append(chunk.get("text", ""))
+                                self._stream_partial_text = "".join(_stream_content)
                                 yield {"type": "content_chunk", "content": chunk.get("text", "")}
                             elif ctype == "reasoning":
                                 if _stream_reasoning_start is None:
@@ -1964,7 +1974,7 @@ class AgentLoop:
                         self._loop_state.tokens_used
                     )
 
-                set_runtime_status(self._loop_state)
+                self._publish_runtime_state()
 
                 self._event_publisher.publish_loop_iteration(
                     session_id=effective_session,
@@ -2112,6 +2122,9 @@ class AgentLoop:
                                     logger.debug("[AgentLoop] 记录工具错误 | tool=%s | error=%s", tool_name, error_msg[:50])
                         yield event
 
+                    # 工具轮结束即落库：闪退/强杀最多丢当前 LLM 流（节流 + 线程池写）
+                    await self._checkpoint_turn_async(effective_memory, effective_session, user_input)
+
                     # 工具执行后立即检查停止：停止时马上 emit 停止，不再走下一轮迭代
                     if self._loop_controller.is_stop_requested:
                         logger.info("[AgentLoop] 工具执行后检测到停止请求，立即中断")
@@ -2129,7 +2142,7 @@ class AgentLoop:
                         return
 
                     if self._loop_state:
-                        set_runtime_status(self._loop_state)
+                        self._publish_runtime_state()
 
                     # === Hybrid: 观察执行结果 ===
                     if self._hybrid_controller and iteration_traces:
@@ -2455,6 +2468,7 @@ class AgentLoop:
 
         except asyncio.CancelledError:
             try:
+                self._cleanup_incomplete_tool_calls(effective_memory)
                 self._persist_conversation(user_input, None, effective_session, memory=effective_memory)
             except Exception:
                 pass
@@ -2492,6 +2506,9 @@ class AgentLoop:
         finally:
             # 模式只作用于本轮，避免污染后续任务
             self._run_mode = "run"
+            # 关闭窗口/生成器被 aclose 等不走收尾的路径，靠这里兜底落库
+            self._persist_partial_stream(effective_memory)
+            self._checkpoint_turn(effective_memory, effective_session, user_input, force=True)
             try:
                 self._tool_executor.set_turn_context(None, None)
             except Exception:
@@ -2587,37 +2604,14 @@ class AgentLoop:
 
             # 增量归档：压缩基准调用（user_input=="" 且含快照）从快照起保存全部（快照仅此处归档）；
             # 普通轮次定位最后一个非快照 user 取增量，快照消息过滤
-            compact_idx = next(
-                (i for i, m in enumerate(all_messages) if m.get("_is_compacted_notes")), -1
-            )
-            if not user_input and compact_idx >= 0:
-                round_messages = all_messages[compact_idx:]
-            else:
-                # 锚定本轮 user_input（补充消息 drain 后会插入更晚的 user 消息，
-                # 盲取最后一条 user 会把本轮原始用户消息排除在归档外）
-                last_user_idx = -1
-                if user_input:
-                    for i in range(len(all_messages) - 1, -1, -1):
-                        m = all_messages[i]
-                        if m.get("role") == "user" and not m.get("_is_compacted_notes") and m.get("content") == user_input:
-                            last_user_idx = i
-                            break
-                if last_user_idx < 0:
-                    for i in range(len(all_messages) - 1, -1, -1):
-                        if all_messages[i].get("role") == "user" and not all_messages[i].get("_is_compacted_notes"):
-                            last_user_idx = i
-                            break
-                if last_user_idx >= 0:
-                    round_messages = all_messages[last_user_idx:]
-                elif compact_idx >= 0:
-                    round_messages = all_messages[compact_idx + 1:]
-                else:
-                    round_messages = all_messages
-                round_messages = [m for m in round_messages if not m.get("_is_compacted_notes")]
-            
+            round_messages = self._round_messages(all_messages, user_input)
+
             source_id = self.three_layer_memory.persist_session(
                 user_input, actual_response, session_id=sid, messages=round_messages,
             )
+            archive = getattr(self.three_layer_memory, "archive", None)
+            if archive is not None and hasattr(archive, "flush"):
+                archive.flush()
 
             logger.info("[AgentLoop] 对话已持久化 | session=%s | archive_id=%s", sid, source_id[:12] if source_id else "N/A")
         except Exception as mem_e:
@@ -2631,6 +2625,112 @@ class AgentLoop:
                 )
             except Exception as bus_e:
                 logger.warning("[AgentLoop] 发布持久化错误事件失败: %s", bus_e)
+
+    def _publish_runtime_state(self):
+        if not getattr(self, "_status_enabled", True) or self._loop_state is None:
+            return
+        try:
+            set_runtime_status(self._loop_state)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _round_messages(all_messages, user_input):
+        """取本轮增量消息（收尾与运行中检查点共用）"""
+        if not all_messages:
+            return []
+        compact_idx = next(
+            (i for i, m in enumerate(all_messages) if m.get("_is_compacted_notes")), -1
+        )
+        if not user_input and compact_idx >= 0:
+            return all_messages[compact_idx:]
+
+        # 锚定本轮 user_input（补充消息 drain 后会插入更晚的 user 消息，
+        # 盲取最后一条 user 会把本轮原始用户消息排除在归档外）
+        last_user_idx = -1
+        if user_input:
+            for i in range(len(all_messages) - 1, -1, -1):
+                m = all_messages[i]
+                if m.get("role") == "user" and not m.get("_is_compacted_notes") and m.get("content") == user_input:
+                    last_user_idx = i
+                    break
+        if last_user_idx < 0:
+            for i in range(len(all_messages) - 1, -1, -1):
+                if all_messages[i].get("role") == "user" and not all_messages[i].get("_is_compacted_notes"):
+                    last_user_idx = i
+                    break
+        if last_user_idx >= 0:
+            round_messages = all_messages[last_user_idx:]
+        elif compact_idx >= 0:
+            round_messages = all_messages[compact_idx + 1:]
+        else:
+            round_messages = all_messages
+        return [m for m in round_messages if not m.get("_is_compacted_notes")]
+
+    def _checkpoint_payload(self, memory, session_id=None, user_input="", force=False):
+        """切片与节流在主线程完成，返回 (session_id, round_messages) 或 None"""
+        if not self.has_long_term_memory or memory is None:
+            return None
+        all_messages = memory.get_messages()
+        if not all_messages:
+            return None
+        sid = session_id or self.session_id
+        state_map = getattr(self, "_checkpoint_state", None)
+        if state_map is None:
+            state_map = {}
+            self._checkpoint_state = state_map
+        state = state_map.get(sid)
+        now = time.time()
+        if not force and state:
+            if (len(all_messages) - state["count"] < _CHECKPOINT_MIN_NEW
+                    and now - state["ts"] < _CHECKPOINT_INTERVAL):
+                return None
+        round_messages = self._round_messages(all_messages, user_input)
+        if not round_messages:
+            return None
+        state_map[sid] = {"count": len(all_messages), "ts": now}
+        return sid, round_messages
+
+    def _write_checkpoint(self, session_id, round_messages):
+        try:
+            self.three_layer_memory.archive.append_messages(
+                session_id=session_id, messages=round_messages,
+            )
+        except Exception as e:
+            logger.warning("[AgentLoop] 增量落库失败: %s", e)
+
+    def _checkpoint_turn(self, memory, session_id=None, user_input="", force=False):
+        """同步检查点：收尾/取消/生成器关闭路径必须同步执行，不能 await"""
+        try:
+            payload = self._checkpoint_payload(memory, session_id, user_input, force=force)
+            if payload:
+                self._write_checkpoint(*payload)
+        except Exception as e:
+            logger.warning("[AgentLoop] 增量落库失败: %s", e)
+
+    async def _checkpoint_turn_async(self, memory, session_id=None, user_input="", force=False):
+        """工具轮检查点：写库丢线程池，避免多会话并发时阻塞事件循环"""
+        try:
+            payload = self._checkpoint_payload(memory, session_id, user_input, force=force)
+        except Exception as e:
+            logger.warning("[AgentLoop] 增量落库失败: %s", e)
+            return
+        if payload:
+            await asyncio.to_thread(self._write_checkpoint, *payload)
+
+    def _persist_partial_stream(self, memory):
+        """中断时把已展示的半截流式文本补进 memory"""
+        text = getattr(self, "_stream_partial_text", "")
+        self._stream_partial_text = ""
+        if not text or memory is None:
+            return
+        try:
+            for msg in memory.messages:
+                if msg.get("role") == "assistant" and text in (msg.get("content") or ""):
+                    return
+            memory.add_assistant_message(text)
+        except Exception:
+            pass
 
     async def run_scheduler_task(
         self,

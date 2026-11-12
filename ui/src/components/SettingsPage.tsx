@@ -1497,13 +1497,29 @@ const ChannelSettings: React.FC = () => {
 // ═════════════════════════════════════════════════════════════
 // 日志设置 Tab
 // ═════════════════════════════════════════════════════════════
+const fmtTokens = (v?: number) => (typeof v === 'number' ? v.toLocaleString() : '-');
+
+const fmtElapsed = (v?: number) => {
+  if (typeof v !== 'number' || !isFinite(v)) return '∞';
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`;
+};
+
+type RuntimeSession = {
+  session_id: string;
+  title: string;
+  summary: string;
+  detail: Record<string, any>;
+  updated_at: number;
+};
+
 const LoggingSettings: React.FC = () => {
   const { t } = useTranslation();
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const { saving, saved, doSave } = useSavingState();
-  const [status, setStatus] = useState<Record<string, any> | null>(null);
+  const [sessions, setSessions] = useState<RuntimeSession[]>([]);
   const [statusLoading, setStatusLoading] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<Record<string, any>[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [expandedHistory, setExpandedHistory] = useState(false);
@@ -1516,24 +1532,33 @@ const LoggingSettings: React.FC = () => {
 
   const loadStatus = useCallback(() => {
     setStatusLoading(true);
-    fetchJSON<Record<string, any>>(API.logsStatus)
-      .then(data => { setStatus(data); setStatusLoading(false); })
-      .catch(() => { setStatus(null); setStatusLoading(false); });
+    fetchJSON<{ available: boolean; sessions?: RuntimeSession[] }>(API.logsStatus)
+      .then(data => {
+        const list = data.sessions || [];
+        setSessions(list);
+        setSelectedId(prev => (prev && list.some(s => s.session_id === prev)) ? prev : (list[0]?.session_id ?? null));
+        setStatusLoading(false);
+      })
+      .catch(() => { setSessions([]); setStatusLoading(false); });
   }, []);
 
-  const loadHistory = useCallback(() => {
+  const loadHistory = useCallback((sid: string | null) => {
+    if (!sid) { setHistory([]); return; }
     setHistoryLoading(true);
-    fetchJSON<{ history: Record<string, any>[] }>(API.logsStatusHistory)
+    fetchJSON<{ history: Record<string, any>[] }>(`${API.logsStatusHistory}?session_id=${encodeURIComponent(sid)}`)
       .then(data => { setHistory(data.history || []); setHistoryLoading(false); })
       .catch(() => { setHistory([]); setHistoryLoading(false); });
   }, []);
 
   useEffect(() => {
     loadStatus();
-    loadHistory();
-    const timer = setInterval(() => { loadStatus(); loadHistory(); }, 3000);
+    const timer = setInterval(loadStatus, 3000);
     return () => clearInterval(timer);
-  }, [loadStatus, loadHistory]);
+  }, [loadStatus]);
+
+  useEffect(() => {
+    loadHistory(selectedId);
+  }, [selectedId, loadHistory]);
 
   const updateField = (path: string, value: any) => {
     setConfig(prev => ({ ...prev, [path]: value }));
@@ -1598,29 +1623,42 @@ const LoggingSettings: React.FC = () => {
         <div className="settings-card-header">
           <div className="settings-card-title">
             <Icons.Zap size={16} /> {t('settings.logging.agentStatus')}
+            {sessions.length > 0 && <span className="settings-card-subtitle">{sessions.length}</span>}
           </div>
-          <button className="btn-secondary btn-sm" onClick={() => { loadStatus(); loadHistory(); }} disabled={statusLoading}>
+          <button className="btn-secondary btn-sm" onClick={() => { loadStatus(); loadHistory(selectedId); }} disabled={statusLoading}>
             {statusLoading ? t('settings.logging.refreshing') : t('settings.logging.refresh')}
           </button>
         </div>
-        <div style={{ padding: '12px 16px' }}>
-          {!status || !status.available ? (
-            <div style={{ color: 'var(--text-disabled)', fontSize: 13 }}>{t('settings.logging.agentNotRunning')}</div>
+        <div className="settings-card-body">
+          {sessions.length === 0 ? (
+            <div className="runtime-empty">{t('settings.logging.agentNotRunning')}</div>
           ) : (
-            <pre style={{
-              margin: 0,
-              color: 'var(--text-code)',
-              fontSize: 12,
-              fontFamily: 'monospace',
-              background: 'var(--bg-code)',
-              borderRadius: 8,
-              padding: '10px 14px',
-              lineHeight: 1.7,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-            }}>
-              {status.summary}
-            </pre>
+            <div className="runtime-sessions">
+              {sessions.map(s => {
+                const d = s.detail || {};
+                return (
+                  <button
+                    key={s.session_id}
+                    className={`runtime-session${s.session_id === selectedId ? ' active' : ''}`}
+                    onClick={() => { setSelectedId(s.session_id); setExpandedHistory(false); }}
+                  >
+                    <div className="runtime-session-head">
+                      <span className="runtime-session-name">{s.title || s.session_id}</span>
+                      <span className="runtime-session-progress">
+                        {d.progress || `${d.iteration ?? 0}/${d.max_iterations ?? '-'}`}
+                      </span>
+                    </div>
+                    <div className="runtime-session-meta">
+                      <span>prompt {fmtTokens(d.last_prompt_tokens)}</span>
+                      <span>completion {fmtTokens(d.total_completion_tokens)}</span>
+                      <span>{fmtElapsed(d.elapsed_ms)}</span>
+                    </div>
+                    <div className="runtime-session-tools">{d.recent_tools_summary || t('settings.logging.noTools')}</div>
+                    {d.last_error ? <div className="runtime-session-error">{d.last_error}</div> : null}
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
 

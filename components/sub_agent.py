@@ -38,12 +38,13 @@ _NOTIFY_WORKERS: Dict[str, Any] = {}
 
 
 def _resolve_parent_mode(session_id: str = None) -> str:
-    """子 Agent 继承父会话的 Plan/Run 模式"""
+    """子 Agent 继承 Plan 只读约束；编排模式只约束编排方，子 Agent 按 Run 执行"""
     if not session_id:
         return "run"
     try:
         from app.server.session_mode import get_mode
-        return get_mode(session_id)
+        mode = get_mode(session_id)
+        return "run" if mode == "delegate" else mode
     except Exception:
         return "run"
 
@@ -364,6 +365,7 @@ class SubAgent(BaseCell):
                 enable_learning=False,
                 intent_enabled=False,
                 undo_context=_parent_undo_context(parent_session_id),
+                publish_runtime_status=False,
             )
         except Exception as e:
             await _cleanup()

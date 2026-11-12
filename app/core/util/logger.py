@@ -51,9 +51,12 @@ _file_handler: Optional[logging.Handler] = None
 _console_handler: Optional[logging.Handler] = None
 _console_enabled: bool = True  # 控制台输出开关
 
-_runtime_status: Optional["RuntimeStatus"] = None
-_status_history: List["RuntimeStatus"] = []
+_runtime_by_session: Dict[str, "RuntimeStatus"] = {}
+_history_by_session: Dict[str, List["RuntimeStatus"]] = {}
+_last_status_session: Optional[str] = None
+_status_seq: int = 0
 MAX_STATUS_HISTORY: int = 50
+MAX_STATUS_SESSIONS: int = 50
 _logger = logging.getLogger(__name__)
 
 
@@ -79,6 +82,8 @@ class RuntimeStatus:
         self.prediction_verified: Optional[bool] = None
         self.prediction_outcome: str = ""
         self.hybrid_phase: Optional[str] = None
+        self.updated_at: float = 0.0
+        self.updated_seq: int = 0
         
         # Hybrid 观察结果
         self.last_observation_success: Optional[bool] = None
@@ -170,41 +175,50 @@ class RuntimeStatus:
             "stop_reason": self.stop_reason,
             "stuck_iterations": self.stuck_iterations,
             "recent_llm_outputs_count": self.recent_llm_outputs_count,
+            "updated_at": self.updated_at,
         }
 
 
 def set_runtime_status(state) -> None:
     """从 LoopState 更新运行时状态，每次调用前先快照当前状态（按 iteration 去重）"""
-    global _runtime_status
+    global _last_status_session, _status_seq
+    sid = getattr(state, "session_id", None) or ""
+    rs = _runtime_by_session.get(sid)
+    if rs is None:
+        rs = RuntimeStatus()
+        _runtime_by_session[sid] = rs
+        while len(_runtime_by_session) > MAX_STATUS_SESSIONS:
+            oldest = next(iter(_runtime_by_session))
+            if oldest == sid:
+                break
+            _runtime_by_session.pop(oldest, None)
+            _history_by_session.pop(oldest, None)
+    history = _history_by_session.setdefault(sid, [])
 
-    if _runtime_status is None:
-        _runtime_status = RuntimeStatus()
-
-    current_iter = _runtime_status.iteration
+    current_iter = rs.iteration
     if current_iter > 0:
         snapshot = RuntimeStatus()
-        snapshot.current_time = _runtime_status.current_time
-        snapshot.iteration = _runtime_status.iteration
-        snapshot.max_iterations = _runtime_status.max_iterations
-        snapshot.tokens_used = _runtime_status.tokens_used
-        snapshot.last_prompt_tokens = _runtime_status.last_prompt_tokens
-        snapshot.total_completion_tokens = _runtime_status.total_completion_tokens
-        snapshot.elapsed_ms = _runtime_status.elapsed_ms
-        snapshot.tool_traces = list(_runtime_status.tool_traces)
-        snapshot.last_error = _runtime_status.last_error
-        snapshot.decision_action = _runtime_status.decision_action
-        snapshot.decision_guidance = _runtime_status.decision_guidance
-        snapshot.should_stop = _runtime_status.should_stop
-        snapshot.stop_reason = _runtime_status.stop_reason
-        snapshot.stuck_iterations = _runtime_status.stuck_iterations
-        if _status_history and _status_history[-1].iteration == current_iter:
-            _status_history[-1] = snapshot
+        snapshot.current_time = rs.current_time
+        snapshot.iteration = rs.iteration
+        snapshot.max_iterations = rs.max_iterations
+        snapshot.tokens_used = rs.tokens_used
+        snapshot.last_prompt_tokens = rs.last_prompt_tokens
+        snapshot.total_completion_tokens = rs.total_completion_tokens
+        snapshot.elapsed_ms = rs.elapsed_ms
+        snapshot.tool_traces = list(rs.tool_traces)
+        snapshot.last_error = rs.last_error
+        snapshot.decision_action = rs.decision_action
+        snapshot.decision_guidance = rs.decision_guidance
+        snapshot.should_stop = rs.should_stop
+        snapshot.stop_reason = rs.stop_reason
+        snapshot.stuck_iterations = rs.stuck_iterations
+        if history and history[-1].iteration == current_iter:
+            history[-1] = snapshot
         else:
-            _status_history.append(snapshot)
-            if len(_status_history) > MAX_STATUS_HISTORY:
-                _status_history.pop(0)
+            history.append(snapshot)
+            if len(history) > MAX_STATUS_HISTORY:
+                history.pop(0)
 
-    rs = _runtime_status
     rs.current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rs.iteration = state.iteration
     rs.max_iterations = state.max_iterations
@@ -242,28 +256,57 @@ def set_runtime_status(state) -> None:
     rs.last_observation_replan_reason = getattr(state, 'last_observation_replan_reason', "")
     rs.last_observation_suggest_replan = getattr(state, 'last_observation_suggest_replan', False)
     rs.last_observation_suggestion_reason = getattr(state, 'last_observation_suggestion_reason', "")
+    rs.updated_at = time.time()
+    _status_seq += 1
+    rs.updated_seq = _status_seq
+    _last_status_session = sid
 
 
-def get_runtime_status() -> Optional[RuntimeStatus]:
-    """获取当前运行时状态"""
-    return _runtime_status
+def get_all_runtime_statuses() -> List[tuple]:
+    """所有会话的运行时状态，按最近更新倒序"""
+    return sorted(
+        _runtime_by_session.items(),
+        key=lambda item: getattr(item[1], "updated_seq", 0),
+        reverse=True,
+    )
 
 
-def get_status_history() -> List[Dict]:
-    """获取历史快照列表"""
-    return [s.to_dict() for s in _status_history]
+def get_runtime_status(session_id: str = None) -> Optional[RuntimeStatus]:
+    """获取运行时状态；不传 session 时取最近写入的会话"""
+    if session_id:
+        return _runtime_by_session.get(session_id)
+    if _last_status_session:
+        return _runtime_by_session.get(_last_status_session)
+    return None
 
 
-def clear_status_history() -> None:
-    """清空历史快照（每次新任务开始时调用）"""
-    _status_history.clear()
+def get_status_history(session_id: str = None) -> List[Dict]:
+    """获取历史快照列表；不传 session 时取最近写入的会话"""
+    sid = session_id or _last_status_session
+    return [s.to_dict() for s in _history_by_session.get(sid or "", [])]
+
+
+def clear_status_history(session_id: str = None) -> None:
+    """清空历史快照（传 session 只清该会话）"""
+    if session_id:
+        _history_by_session.pop(session_id, None)
+        _logger.info("[StatusHistory] 历史快照已清空 | session=%s", session_id)
+        return
+    _history_by_session.clear()
     _logger.info("[StatusHistory] 历史快照已清空")
 
 
-def clear_runtime_status() -> None:
-    """清空当前运行时状态（每次新任务开始时调用）"""
-    global _runtime_status
-    _runtime_status = None
+def clear_runtime_status(session_id: str = None) -> None:
+    """清空运行时状态（传 session 只清该会话）"""
+    global _last_status_session
+    if session_id:
+        _runtime_by_session.pop(session_id, None)
+        if _last_status_session == session_id:
+            _last_status_session = next(reversed(_runtime_by_session), None)
+        _logger.info("[RuntimeStatus] 运行时状态已重置 | session=%s", session_id)
+        return
+    _runtime_by_session.clear()
+    _last_status_session = None
     _logger.info("[RuntimeStatus] 运行时状态已重置")
 
 

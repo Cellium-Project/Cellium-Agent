@@ -16,6 +16,21 @@ from app.messaging.message_broker import get_message_broker
 
 logger = logging.getLogger(__name__)
 
+_MODE_LABELS = {
+    "plan": "Plan 模式（只读：只调研出方案，不改文件）",
+    "run": "Run 模式（正常执行：可改文件、执行命令）",
+    "delegate": "编排模式（只拆解调度，交给会话执行）",
+}
+
+_COMMAND_HELP = "\n".join([
+    "可用命令：",
+    "/plan — 只读计划模式（只调研出方案，不改文件）",
+    "/run — 正常执行模式（可改文件、执行命令）",
+    "/delegate — 编排模式（只拆解调度，交给会话执行）",
+    "/stop — 停止当前运行的任务",
+    "/help — 查看本帮助",
+])
+
 
 class MessageQueue:
     def __init__(self, max_size: int = 1000):
@@ -559,6 +574,7 @@ class ChannelManager:
 
     async def _start_channel_task(self, message: UnifiedMessage, session_id: str, content_to_agent: str, session_memory):
         from app.server.task_manager import get_task_manager
+        from app.server.session_mode import get_mode
 
         task_mgr = get_task_manager()
         loop = await self._agent_loop_manager.get_loop(session_id)
@@ -575,6 +591,7 @@ class ChannelManager:
             user_input=content_to_agent,
             memory=session_memory,
             system_injection=None,
+            mode=get_mode(session_id),
         )
         if not started:
             raise RuntimeError(f"无法启动任务，session={session_id}")
@@ -610,6 +627,42 @@ class ChannelManager:
 
         self._processed_messages[key] = now
         return False
+
+    def _reply_kwargs(self, message: UnifiedMessage) -> Dict[str, Any]:
+        kwargs = {
+            "guild_id": message.guild_id,
+            "thread_id": message.thread_id,
+        }
+        if message.platform == "qq" and message.msg_id and not message.msg_id.startswith(("scheduler_", "component_")):
+            kwargs["msg_id"] = message.msg_id
+            kwargs["user_id"] = message.user_id
+        return kwargs
+
+    async def _handle_mode_command(self, message: UnifiedMessage) -> bool:
+        text = (message.content or "").strip()
+        if not text.startswith("/"):
+            return False
+        cmd = text.split()[0].lower().split("@", 1)[0]
+        if cmd not in ("/plan", "/run", "/delegate", "/help"):
+            return False
+
+        session_id = message.session_id or "default"
+        if cmd == "/help":
+            reply = _COMMAND_HELP
+        else:
+            from app.server.session_mode import set_mode
+            current = set_mode(session_id, cmd.lstrip("/"))
+            reply = f"✅ 已切换到{_MODE_LABELS.get(current, current)}。发送 /help 查看全部命令。"
+
+        await self.send_message(
+            message.platform,
+            self._resolve_target_id(message),
+            reply,
+            message.message_type,
+            **self._reply_kwargs(message),
+        )
+        logger.info("[ChannelManager] 命令已处理 | session=%s | cmd=%s", session_id, cmd)
+        return True
 
     async def _on_message(self, message: UnifiedMessage):
         logger.info(f"[ChannelManager] Message from {message.platform}: {message.content[:50]}...")
@@ -647,6 +700,9 @@ class ChannelManager:
                         return
             except Exception as e:
                 logger.error(f"[ChannelManager] File message handling failed: {e}")
+
+        if await self._handle_mode_command(message):
+            return
 
         if message.content.strip() == "/stop":
             session_id = message.session_id

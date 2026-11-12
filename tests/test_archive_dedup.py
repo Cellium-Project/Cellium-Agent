@@ -326,6 +326,61 @@ class TestArchiveRestore(ArchiveDirTest):
                          "WebUI 应展示完整历史（含压缩前原文）")
 
 
+class TestCheckpointTurn(ArchiveDirTest):
+    """运行中检查点：中断/闪退也要留下已发生的对话"""
+
+    def test_checkpoint_saves_interrupted_round(self):
+        arch = self._archive()
+        loop = make_loop(arch)
+        m = MemoryManager()
+        m.add_user_message("看下这个项目")
+        loop._checkpoint_turn(m, "s1", "看下这个项目", force=True)
+        m.add_tool_calls_batch([{"tool_name": "ls", "arguments": {}, "tool_call_id": "call_1"}])
+        m.add_tool_result("call_1", {"success": True, "items": []})
+        loop._checkpoint_turn(m, "s1", "看下这个项目", force=True)
+
+        archived = all_archived_messages(arch, "s1")
+        contents = [msg.get("content") for msg in archived]
+        self.assertEqual(contents[0], "看下这个项目", "用户消息应立即落库")
+        self.assertTrue(any(msg.get("role") == "tool" for msg in archived),
+                        "已完成的工具结果应落库")
+        self.assertEqual(len(archived), len(unique_keys(archived)),
+                         "重复检查点不应产生重复消息")
+
+    def test_checkpoint_throttled_between_writes(self):
+        arch = self._archive()
+        loop = make_loop(arch)
+        m = MemoryManager()
+        m.add_user_message("u1")
+        loop._checkpoint_turn(m, "s1", "u1", force=True)
+        m.add_assistant_message("a1")
+        loop._checkpoint_turn(m, "s1", "u1")   # 新增不足 6 条且未到间隔 → 跳过
+        self.assertEqual([msg.get("content") for msg in all_archived_messages(arch, "s1")],
+                         ["u1"], "节流窗口内不应重复写库")
+        loop._checkpoint_turn(m, "s1", "u1", force=True)  # 收尾强制
+        self.assertEqual([msg.get("content") for msg in all_archived_messages(arch, "s1")],
+                         ["u1", "a1"], "强制检查点应补上增量")
+
+    def test_checkpoint_anchors_new_round(self):
+        arch = self._archive()
+        loop = make_loop(arch)
+        m = MemoryManager()
+        m.add_user_message("u1")
+        m.add_assistant_message("a1")
+        loop._checkpoint_turn(m, "s1", "u1", force=True)
+        m.add_user_message("u2")
+        loop._checkpoint_turn(m, "s1", "u2", force=True)
+        m.add_assistant_message("a2")
+        loop._checkpoint_turn(m, "s1", "u2", force=True)
+
+        archived = all_archived_messages(arch, "s1")
+        self.assertEqual([msg.get("content") for msg in archived], ["u1", "a1", "u2", "a2"],
+                         "检查点应增量归档，不重复也不遗漏")
+        last_round = arch.get_by_session("s1", 100)[-1]["messages"]
+        self.assertEqual([msg.get("content") for msg in last_round], ["a2"],
+                         "已归档过的消息不应重复写入")
+
+
 class TestThinkFragmentConsistency(unittest.TestCase):
     """engine 与 stream_normalizer 复用同一 _think_fragment_tail，防止分叉"""
 
