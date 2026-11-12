@@ -195,6 +195,31 @@ class TestSecurityPolicy(unittest.TestCase):
         self.assertFalse(result["allowed"])
         self.assertEqual(result["risk_level"], RiskLevel.CRITICAL.value)
 
+    def test_pattern_kill_blocked(self):
+        """按名称/模式杀进程会误杀当前进程或 shell 自身，应拦截"""
+        for cmd in (
+            "pkill -f app.py",
+            "pkill python",
+            "pgrep -f app.py | xargs kill",
+            "kill $(pgrep -f app.py)",
+            "kill `pgrep -f app.py`",
+        ):
+            result = self.policy.check_command(cmd)
+            self.assertFalse(result["allowed"], cmd)
+            self.assertEqual(result["risk_level"], RiskLevel.HIGH.value, cmd)
+
+    def test_kill_by_pid_allowed(self):
+        """按精确 PID 终止应放行"""
+        for cmd in ("kill 12345", "kill -9 12345", "taskkill /pid 12345 /f"):
+            result = self.policy.check_command(cmd)
+            self.assertTrue(result["allowed"], cmd)
+
+    def test_taskkill_im_appends_self_filter(self):
+        """taskkill /im 必须追加排除当前进程，已有其他 /fi 时也要追加"""
+        result = self.policy.check_command("taskkill /f /im python.exe /fi \"STATUS eq running\"")
+        self.assertTrue(result["allowed"])
+        self.assertIn("PID ne", result.get("modified_command", ""))
+
     def test_crontab_edit_blocked(self):
         """测试修改 crontab 拦截"""
         result = self.policy.check_command("crontab -e")

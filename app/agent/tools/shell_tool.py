@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import json
 import logging
 import os
 import pathlib
@@ -46,12 +47,13 @@ def _detect_embedded_python() -> Dict[str, str]:
             }
 
     # 开发环境
+    from app.core.util.workdir import get_workdir
     return {
         "is_embedded": "false",
         "python_path": sys.executable,
         "libs_path": "",
         "pip_cmd": "pip install <package>",
-        "project_root": str(pathlib.Path.cwd()),
+        "project_root": get_workdir(),
     }
 
 
@@ -96,7 +98,9 @@ class ShellTool(BaseTool):
             "- `action=output` `session_id` → 读取自上次读取以来的新输出\n"
             "- `action=close` `session_id` → 结束会话\n"
             "- `action=list` → 列出所有会话\n"
-            "**铁律**: 长运行服务必须 `background=true`；需要持续交互（本地解释器或远程 ssh）用 `session`。"
+            "**铁律**: 长运行服务必须 `background=true`；需要持续交互（本地解释器或远程 ssh）用 `session`。\n"
+            "**杀进程**: 先查 PID（tasklist / ps / pgrep），再 `kill <pid>` 或 `taskkill /pid <pid> /f`；"
+            "禁用 pkill / killall（按名称匹配，可能连宿主进程一起杀）。"
         )
 
         if env_info["is_embedded"] == "true":
@@ -184,8 +188,24 @@ class ShellTool(BaseTool):
     #  子命令实现
     # ================================================================
 
+    @staticmethod
+    def _maybe_parse_argv(cmd):
+        """部分模型会把数组参数写成 JSON 字符串，这里还原成 argv"""
+        if not isinstance(cmd, str):
+            return cmd
+        s = cmd.strip()
+        if not (s.startswith("[") and s.endswith("]")):
+            return cmd
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return cmd
+        if isinstance(parsed, list) and parsed and all(isinstance(x, str) for x in parsed):
+            return parsed
+        return cmd
+
     def _cmd_run(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        cmd = args.get("cmd", "")
+        cmd = self._maybe_parse_argv(args.get("cmd", ""))
         background = args.get("background", False)
         timeout = args.get("timeout")
 

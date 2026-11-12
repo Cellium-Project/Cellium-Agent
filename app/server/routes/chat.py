@@ -847,6 +847,22 @@ def _extract_final_text(content: str) -> str:
     return text.strip()
 
 
+def _is_internal_user_message(msg: dict) -> bool:
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("[系统")
+
+
+def _is_gene_phase_message(msg: dict) -> bool:
+    """Gene 评估/写入阶段是内部流程，不应展示在历史里"""
+    return (
+        msg.get("role") == "system"
+        and isinstance(msg.get("content"), str)
+        and msg["content"].lstrip().startswith("[Gene")
+    )
+
+
 def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
     renderable = []
     i = 0
@@ -855,6 +871,9 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
         role = msg.get("role", "")
 
         if role == "user":
+            if _is_internal_user_message(msg):
+                i += 1
+                continue
             renderable.append({
                 "id": msg.get("id"),
                 "role": "user",
@@ -898,6 +917,20 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
                                     seg["duration_ms"] = round(float(ms))
                                 except (TypeError, ValueError):
                                     pass
+                        j += 1
+                        continue
+
+                    if role == "system":
+                        if _is_gene_phase_message(sub):
+                            break
+                        j += 1
+                        continue
+
+                    if _is_internal_user_message(sub):
+                        j += 1
+                        continue
+
+                    if role == "assistant" and not sub.get("content") and not sub.get("tool_calls"):
                         j += 1
                         continue
 
@@ -1019,6 +1052,17 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
                     "timeline": timeline,
                 })
                 i += 1
+        elif role == "system":
+            # Gene 评估阶段属于内部流程，整段跳过（含其中的工具调用与总结）
+            if _is_gene_phase_message(msg):
+                i += 1
+                while i < len(raw_messages):
+                    nxt = raw_messages[i]
+                    if nxt.get("role") == "user" and not _is_internal_user_message(nxt):
+                        break
+                    i += 1
+            else:
+                i += 1
         else:
             i += 1
 
@@ -1073,6 +1117,19 @@ def _msg_dedupe_key(msg):
     if tool_calls:
         key += (json.dumps(tool_calls, ensure_ascii=False, sort_keys=True),)
     return key
+
+
+def _page_bounds(messages: list, limit: int, offset: int):
+    """分页起点回退到本轮真实用户消息，避免 assistant(tool_calls) 被切走"""
+    total = len(messages)
+    end = max(0, total - offset)
+    start = max(0, end - limit)
+    while start > 0:
+        head = messages[start]
+        if head.get("role") == "user" and not _is_internal_user_message(head):
+            break
+        start -= 1
+    return start, end
 
 
 def _load_archive_messages(archive, session_id):
@@ -1139,8 +1196,7 @@ async def get_session_history(
         return {"session_id": session_id, "messages": [], "count": 0, "total": 0, "has_more": False, "next_offset": 0}
 
     total = len(raw_msgs)
-    end_idx = total - offset
-    start_idx = max(0, end_idx - limit)
+    start_idx, end_idx = _page_bounds(raw_msgs, limit, offset)
     paged_raw = raw_msgs[start_idx:end_idx]
 
     logger.debug(

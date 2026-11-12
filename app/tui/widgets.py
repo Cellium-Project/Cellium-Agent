@@ -1897,7 +1897,16 @@ class ToolCallCard(Static):
                 pass
 
     def add_call(self, call_id, tool, description="", arguments=None):
-        if call_id in self._calls:
+        call = self._calls.get(call_id)
+        if call is not None:
+            # 预显示后补全参数/描述，不重复建行
+            if tool:
+                call["tool"] = tool
+            if description:
+                call["description"] = description
+            if arguments:
+                call["arguments"] = arguments
+            self._tick()
             return
         self._calls[call_id] = {
             "tool": tool,
@@ -1928,6 +1937,10 @@ class ToolCallCard(Static):
         self._tick()
 
     def finish(self):
+        # 没用上结果的占位行（输出截断/中断）标为未执行，避免一直转圈
+        for call in self._calls.values():
+            if call["status"] == "pending":
+                call["status"] = "cancelled"
         self._done = True
         self._frame = 0
         self.update(self._build(done=True))
@@ -2015,6 +2028,8 @@ class ToolCallCard(Static):
                     t.append("● ", style=style)
                 elif c["status"] == "success":
                     t.append("● ", style="green")
+                elif c["status"] == "cancelled":
+                    t.append("● ", style="dim")
                 else:
                     t.append("● ", style="red")
                 name = c["tool"]
@@ -2038,6 +2053,8 @@ class ToolCallCard(Static):
                     args = self._preview_args(c["arguments"], prefix_len)
                     if args:
                         t.append(f"  {args}", style="dim")
+                    elif c.get("description"):
+                        t.append(f"  {c['description']}", style="dim")
                 if c["tool"] == "shell":
                     self._append_shell(t, cid, c, code_bg, diff_colors)
             if diff:
@@ -2102,6 +2119,8 @@ class ToolCallCard(Static):
         t.append("\n")
         if cmd:
             t.append(f"    $ {cmd}", style=f"bold on {code_bg}")
+        elif c.get("description"):
+            t.append(f"    {c['description']}", style="dim")
         if output:
             lines = output.rstrip("\n").split("\n")
             self._foldable.add(cid)
@@ -2120,13 +2139,17 @@ class ToolCallCard(Static):
                     t.append("\n")
                     t.append(f"      {line}", style=f"dim on {code_bg}")
         t.append("\n")
-        if exit_code == 0:
-            t.append("    shell completed", style=f"bold green on {code_bg}")
-        elif exit_code is not None:
-            t.append(f"    shell failed (exit {exit_code})", style=f"bold red on {code_bg}")
+        if c["status"] == "pending":
+            t.append("    shell running", style=f"dim on {code_bg}")
+        elif c["status"] == "cancelled":
+            t.append("    shell 未执行", style=f"dim on {code_bg}")
+        elif c["status"] == "error" or (exit_code is not None and exit_code != 0):
+            code = f" (exit {exit_code})" if exit_code is not None else ""
+            t.append(f"    shell failed{code}", style=f"bold red on {code_bg}")
         else:
-            t.append("    shell completed", style=f"bold on {code_bg}")
-        if elapsed:
+            # 有结果即完成（session/list/background 等没有 exit_code）
+            t.append("    shell completed", style=f"bold green on {code_bg}")
+        if elapsed and c["status"] not in ("pending", "cancelled"):
             t.append(f" · {int(elapsed)}ms", style=f"dim on {code_bg}")
 
     def _append_diff(self, t, cid, c, diff, colors):

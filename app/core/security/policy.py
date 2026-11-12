@@ -101,6 +101,14 @@ class SecurityPolicy:
         (r'stop-process\s+-name\s+.*(?:explorer|csrss|lsass|services|svchost|wininit|winlogon)',
          RiskLevel.CRITICAL, "禁止终止Windows核心进程"),
 
+        # ═══ 按名称/命令行模式杀进程═══
+        (r'\bpkill\b', RiskLevel.HIGH,
+         "pkill 按名称/命令行匹配，可能误杀当前进程（如 python 宿主），请先查 PID 再 kill <pid>"),
+        (r'\bpgrep\b[^|;&\n]*\|\s*(?:xargs\s+)?(?:kill|pkill)\b', RiskLevel.HIGH,
+         "按模式批量杀进程可能命中当前进程，请先查 PID 再 kill <pid>"),
+        (r'\bkill\b[^|;&\n]*(?:\$\(|`)\s*(?:pgrep|ps)\b', RiskLevel.HIGH,
+         "按模式取 PID 再 kill 可能命中当前进程，请先查 PID 再单独 kill <pid>"),
+
         # ═══ 计划任务（持久化攻击面） ═══
         (r'\bschtasks\b\s+/(?:create|delete|change)', RiskLevel.HIGH, "禁止创建/删除计划任务"),
         (r'register-scheduledtask', RiskLevel.HIGH, "禁止PowerShell注册计划任务"),
@@ -133,7 +141,6 @@ class SecurityPolicy:
         (r'\bsystemctl\s+(?:poweroff|reboot|halt)\b', RiskLevel.HIGH, "禁止systemctl关机/重启"),
         (r'\bkill\s+-9\s+-1\b', RiskLevel.CRITICAL, "禁止杀死所有进程"),
         (r'\bkillall\s+', RiskLevel.HIGH, "禁止killall批量杀进程"),
-        (r'\bpkill\s+-9\b', RiskLevel.HIGH, "禁止pkill强制杀进程"),
 
         # ═══ Linux/Mac 定时任务（持久化攻击） ═══
         (r'\bcrontab\s+-[er]\b', RiskLevel.HIGH, "禁止修改crontab"),
@@ -268,17 +275,16 @@ class SecurityPolicy:
         current_pid = os.getpid()
 
         taskkill_im_match = re.search(
-            r'taskkill\s+(/f\s+)?/im\s+(\S+)',
+            r'taskkill\s+(?:/f\s+)?/im\s+(\S+)',
             cmd,
             re.IGNORECASE
         )
         if taskkill_im_match:
             if re.search(rf'/fi\s+["\']?PID\s+ne\s+{current_pid}', cmd, re.IGNORECASE):
                 return None
-            
+
             modified_cmd = cmd.rstrip()
-            if '/fi' not in cmd.lower():
-                modified_cmd += f' /fi "PID ne {current_pid}"'
+            modified_cmd += f' /fi "PID ne {current_pid}"'
             return {
                 "allowed": True,
                 "risk_level": RiskLevel.MEDIUM.value,

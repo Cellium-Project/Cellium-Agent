@@ -117,10 +117,9 @@ class ModelPickerScreen(ModalScreen):
 
     def _reload_models(self):
         try:
-            from app.core.util.agent_config import get_config
-            llm = get_config().get_section("llm") or {}
-            models = llm.get("models", [])
-            current = llm.get("current_model", "")
+            from app.server import session_llm
+            models = session_llm.list_models()
+            current = self.app._current_model_name()
             self._models = models
             self._current = current
             lst = self.query_one("#model-picker-list", OptionList)

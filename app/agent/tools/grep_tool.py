@@ -242,7 +242,8 @@ def _run_rg(args: List[str], search_path: str, rg_path: str = "rg") -> List[str]
 
 
 def _make_rel(filepath: str) -> str:
-    cwd = os.getcwd()
+    from app.core.util.workdir import get_workdir
+    cwd = get_workdir()
     try:
         return os.path.relpath(filepath, cwd)
     except ValueError:
@@ -607,11 +608,8 @@ class GrepTool(BaseTool):
         }
 
     def _resolve_path(self, path: str) -> str:
-        if not path:
-            return os.getcwd()
-        if os.path.isabs(path):
-            return path
-        return os.path.abspath(path)
+        from app.core.util.workdir import resolve_path
+        return resolve_path(path)
 
 
 def _make_rel_line(line: str) -> str:

@@ -550,6 +550,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             dict: 每个 chunk
                 - {"type": "content", "text": str}      内容增量
                 - {"type": "reasoning", "text": str}    思考增量
+                - {"type": "tool_call_start", "index": int, "id": str, "name": str} 工具名一出现就通知（预显示）
                 - {"type": "tool_calls", "calls": [...]} 工具调用（最终聚合）
                 - {"type": "done", "response": ChatResponse} 最终聚合响应
         """
@@ -613,6 +614,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
         tool_calls_map: Dict[int, dict] = {}
+        announced_calls = set()
         finish_reason = ""
         usage = {}
         model_name = ""
@@ -709,6 +711,15 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                         fn = tc.get("function") or {}
                         if fn.get("name"):
                             entry["name"] = fn["name"]
+                        # 名称+id 一出现就通知前端预显示，不等参数聚合完
+                        if idx not in announced_calls and entry["name"] and entry["id"]:
+                            announced_calls.add(idx)
+                            yield {
+                                "type": "tool_call_start",
+                                "index": idx,
+                                "id": entry["id"],
+                                "name": entry["name"],
+                            }
                         if fn.get("arguments"):
                             entry["arguments"] += fn["arguments"]
 
@@ -807,6 +818,13 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                                 "name": block.get("name", "") or "",
                                 "arguments": "",
                             })
+                            if block.get("id") and block.get("name"):
+                                yield {
+                                    "type": "tool_call_start",
+                                    "index": idx,
+                                    "id": block.get("id"),
+                                    "name": block.get("name"),
+                                }
                     elif evt_type == "content_block_delta":
                         delta = item.get("delta") or {}
                         dtype = delta.get("type")

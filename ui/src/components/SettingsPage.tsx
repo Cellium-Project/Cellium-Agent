@@ -254,8 +254,12 @@ const ModelSettings: React.FC = () => {
 
   const handleSave = () => doSave(async () => {
     const saveConfig = { ...config };
-    if (!saveConfig.current_model && saveConfig.models?.length > 0) {
-      saveConfig.current_model = saveConfig.models[0].name;
+    const models: any[] = saveConfig.models || [];
+    const ready = (m: any) => Boolean(m?.api_key && m?.base_url && m?.model);
+    const currentReady = models.some(m => m?.name === saveConfig.current_model && ready(m));
+    if (!currentReady) {
+      const pick = models.find(ready) || models[0];
+      saveConfig.current_model = pick?.name || '';
     }
     await putJSON(API.configUpdate('llm'), { value: saveConfig, persist: true });
     await postJSON(API.modelReloadEngine, {});

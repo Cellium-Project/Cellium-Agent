@@ -26,6 +26,7 @@ CellToolAdapter — 组件→工具适配器
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -713,38 +714,117 @@ class CellToolAdapter(BaseTool):
             logger.warning("[CellToolAdapter] %s 获取命令失败: %s", self.name, e)
             return {}
 
+    _PARAM_SECTIONS = {"args", "arguments", "parameters", "params", "参数"}
+    _SECTION_STOPS = {
+        "returns", "return", "yields", "yield", "raises", "raise", "example", "examples",
+        "note", "notes", "attributes", "see also", "warns", "references", "todo",
+        "返回", "返回值", "异常", "示例", "注意",
+    }
+    _DOC_TYPE_HEADS = {
+        "str", "int", "float", "bool", "list", "dict", "tuple", "set", "any",
+        "optional", "sequence", "mapping", "callable", "bytes", "path", "pathlike",
+        "ndarray", "dataframe", "number",
+    }
+
+    @classmethod
+    def _looks_like_type(cls, text: str) -> bool:
+        text = (text or "").strip()
+        if not text or len(text) > 60:
+            return False
+        if any("\u4e00" <= ch <= "\u9fff" for ch in text):
+            return False
+        head = text.split("[")[0].split(",")[0].split(".")[0].strip().lower()
+        return head in cls._DOC_TYPE_HEADS
+
+    @classmethod
+    def _json_type_from_doc(cls, text: str) -> str:
+        head = (text or "").strip().split("[")[0].split(",")[0].split(".")[0].strip().lower()
+        return {
+            "int": "integer", "float": "number", "number": "number",
+            "bool": "boolean", "list": "array", "sequence": "array", "tuple": "array",
+            "set": "array", "dict": "object", "mapping": "object",
+        }.get(head, "string")
+
+    @classmethod
+    def _parse_param_docs(cls, docstring: str) -> Dict[str, Dict[str, str]]:
+        """解析 Google / NumPy / Epydoc 三种参数文档，支持续行"""
+        docs: Dict[str, Dict[str, str]] = {}
+        if not docstring:
+            return docs
+
+        lines = inspect.cleandoc(docstring).splitlines()
+
+        for line in lines:
+            m = re.match(r"^\s*@param\s+([A-Za-z_]\w*)\s*:\s*(.*)$", line)
+            if m:
+                docs.setdefault(m.group(1), {"desc": "", "type": ""})["desc"] = m.group(2).strip()
+            m = re.match(r"^\s*@type\s+([A-Za-z_]\w*)\s*:\s*(.*)$", line)
+            if m:
+                docs.setdefault(m.group(1), {"desc": "", "type": ""})["type"] = m.group(2).strip()
+
+        section_indent = None
+        param_indent = None
+        current = None
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            indent = len(line) - len(line.lstrip())
+            heading = stripped.rstrip("：:").strip().lower()
+
+            if section_indent is not None and indent <= section_indent:
+                if stripped.endswith((":", "：")) and (
+                    heading in cls._SECTION_STOPS
+                    or not re.match(r"^[A-Za-z_]\w*$", stripped.rstrip("：:"))
+                ):
+                    section_indent = None
+                    param_indent = None
+                    current = None
+                    continue
+
+            if section_indent is None:
+                if heading in cls._PARAM_SECTIONS:
+                    section_indent = indent
+                    param_indent = None
+                    current = None
+                continue
+
+            if re.match(r"^[-=]{3,}$", stripped):
+                continue
+
+            m = re.match(r"^([A-Za-z_]\w*|\*{1,2}\w*)\s*(?:\(([^)]*)\))?\s*[:：]\s*(.*)$", stripped)
+            if m and (param_indent is None or indent <= param_indent):
+                name = m.group(1)
+                if param_indent is None:
+                    param_indent = indent
+                if name in ("self", "cls") or name.startswith("*"):
+                    current = None
+                    continue
+                bracket_type = (m.group(2) or "").strip()
+                bracket_type = re.split(r"[,，]", bracket_type)[0].strip()
+                body = m.group(3).strip()
+                if not bracket_type and cls._looks_like_type(body):
+                    bracket_type = re.split(r"[,，]", body)[0].strip()
+                    body = ""
+                current = {"desc": body, "type": bracket_type}
+                docs[name] = current
+                continue
+
+            if current is not None:
+                extra = stripped
+                if cls._looks_like_type(extra):
+                    continue
+                current["desc"] = (current["desc"] + " " + extra).strip()
+
+        return {k: v for k, v in docs.items() if v.get("desc") or v.get("type")}
+
     @staticmethod
     def _parse_param_descriptions(docstring: str) -> Dict[str, str]:
-        if not docstring:
-            return {}
-        
-        param_descs = {}
-        lines = docstring.split('\n')
-        
-        in_args = False
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            
-            if stripped.lower().startswith('args:'):
-                in_args = True
-                continue
-            
-            if in_args:
-                if stripped and not line.startswith(' '):
-                    if stripped.lower() in ('returns:', 'return:', 'raises:', 'raise:', 'example:', 'examples:', 'note:', 'notes:'):
-                        break
-                
-                if ':' in stripped:
-                    parts = stripped.split(':', 1)
-                    param_part = parts[0].strip()
-                    
-                    param_name = param_part.split('(')[0].strip()
-                    
-                    if param_name and not param_name.startswith('-'):
-                        desc = parts[1].strip() if len(parts) > 1 else ""
-                        param_descs[param_name] = desc
-        
-        return param_descs
+        return {
+            name: info.get("desc", "")
+            for name, info in CellToolAdapter._parse_param_docs(docstring).items()
+        }
 
     @property
     def definition(self) -> Dict:
@@ -766,17 +846,21 @@ class CellToolAdapter(BaseTool):
 
             if method is not None and callable(method):
                 method_doc = method.__doc__ or ""
-                param_descriptions = self._parse_param_descriptions(method_doc)
+                param_docs = self._parse_param_docs(method_doc)
+                param_descriptions = {
+                    name: info.get("desc", "") for name, info in param_docs.items()
+                }
                 
                 sig = inspect.signature(method)
                 for param_name, param in sig.parameters.items():
                     if param_name == "self":
                         continue
 
-                    param_desc = param_descriptions.get(param_name, param_name)
+                    doc_info = param_docs.get(param_name) or {}
+                    param_desc = doc_info.get("desc") or param_name
                     
                     param_info: Dict[str, Any] = {
-                        "type": "string",
+                        "type": self._json_type_from_doc(doc_info.get("type", "")),
                         "description": param_desc,
                     }
 

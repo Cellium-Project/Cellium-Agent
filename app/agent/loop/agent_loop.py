@@ -1796,11 +1796,29 @@ class AgentLoop:
                             _stream_reasoning_end = time.time()
                             _stream_reasoning.append(chunk.get("text", ""))
                             yield {"type": "reasoning", "content": chunk.get("text", ""), "start_time": _stream_reasoning_start}
+                        elif ctype == "tool_call_start":
+                            _pending_name = chunk.get("name", "")
+                            try:
+                                _pending_desc = ToolDescriptionGenerator.generate(
+                                    _pending_name, {}
+                                ).strip().rstrip("：:")
+                            except Exception:
+                                _pending_desc = ""
+                            yield {
+                                "type": "tool_call_pending",
+                                "tool": _pending_name,
+                                "call_id": chunk.get("id", ""),
+                                "index": chunk.get("index", 0),
+                                "description": _pending_desc,
+                                "gene": bool(
+                                    self._loop_state
+                                    and getattr(self._loop_state, "gene_processing_done", False)
+                                ),
+                            }
                         elif ctype == "tool_calls":
                             _stream_tool_calls = chunk.get("calls", [])
                         elif ctype == "done":
                             response = chunk.get("response")
-                        # 每次处理 chunk 后立即检查停止，避免被持续流入的 chunk 饿死
                         if self._loop_controller.is_stop_requested:
                             if not _stop_emitted:
                                 _stop_emitted = True

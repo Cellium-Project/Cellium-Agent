@@ -761,20 +761,23 @@ class WebSearch(BaseCell):
 
         return links
 
-    def _extract_links_regex(self, html: str, engine: str = 'bing'):
-        """正则 fallback 解析器"""
+    def _extract_links_regex(self, html: str, engine: str = 'bing', strict: bool = False):
+        """正则 fallback 解析器
+
+        strict=True 时只用引擎专属规则，不回退到通用 <a> 抓取，
+        避免 HTTP 快速通道把导航/推荐链接当成搜索结果。
+        """
         links = []
         try:
+            generic = re.compile(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', re.DOTALL)
             patterns = []
             if engine == 'bing':
                 patterns = [
                     re.compile(r'<li[^>]*>.*?h="ID=SERP[^>]+>.*?<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
-                    re.compile(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
                 ]
             elif engine == 'baidu':
                 patterns = [
                     re.compile(r'<h3[^>]*class="[^"]*t[^"]*"[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
-                    re.compile(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
                 ]
             elif engine == 'google':
                 patterns = [
@@ -784,8 +787,8 @@ class WebSearch(BaseCell):
                 patterns = [
                     re.compile(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
                 ]
-            else:
-                patterns = [re.compile(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', re.DOTALL)]
+            if not strict or not patterns:
+                patterns = patterns + [generic]
 
             for pattern in patterns:
                 matches = pattern.findall(html)
@@ -951,7 +954,84 @@ class WebSearch(BaseCell):
             logger.info("[WebSearch:%s] 令牌桶限流，等待 %.2f 秒", key, wait_needed)
             time.sleep(max(0.01, min(wait_needed, 0.5)))
 
-    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", engine: str = "auto", **kwargs) -> dict:
+    def _build_engine_url(self, keywords: str, engine: str, time_range: str = "week",
+                          page_index: int = 0) -> str:
+        """构建搜索引擎 URL（含时间筛选与翻页参数）"""
+        cfg = self.SEARCH_ENGINES.get(engine) or self.SEARCH_ENGINES['bing']
+        encoded = urllib.parse.quote(keywords)
+        recent = cfg.get('url_template_recent', {})
+        if time_range and time_range in recent:
+            url = recent[time_range].format(query=encoded)
+        elif engine == 'bing' and re.search(r'\b20\d{2}\b', keywords):
+            url = f"https://www.bing.com/search?q={encoded}"
+        else:
+            url = cfg['url_template'].format(query=encoded)
+
+        if page_index > 0:
+            sep = '&' if '?' in url else '?'
+            if engine == 'bing':
+                url += f"{sep}first={1 + page_index * 10}"
+            elif engine == 'baidu':
+                url += f"{sep}pn={page_index * 10}"
+            elif engine == 'google':
+                url += f"{sep}start={page_index * 10}"
+            elif engine == 'duckduckgo':
+                url += f"{sep}s={page_index * 30}"
+        return url
+
+    def _http_search(self, keywords: str, engine: str, time_range: str = "week",
+                     max_results: int = 10) -> dict:
+        """HTTP 快速搜索：直接拉引擎 HTML 正则解析，浏览器路径的加速前置"""
+        try:
+            import httpx
+        except Exception:
+            return {"success": False, "error": "httpx 不可用"}
+
+        headers = {
+            "User-Agent": self._user_agent or (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        pages = 1 if max_results <= 10 else min(2, (max_results + 9) // 10)
+        collected, seen = [], set()
+        try:
+            with httpx.Client(follow_redirects=True, timeout=8, headers=headers) as client:
+                for page_idx in range(pages):
+                    resp = client.get(self._build_engine_url(keywords, engine, time_range, page_idx))
+                    if resp.status_code >= 400:
+                        break
+                    for link in self._extract_links_regex(resp.text, engine, strict=True):
+                        url = (link.get('url') or '').strip()
+                        if not url or url in seen:
+                            continue
+                        seen.add(url)
+                        collected.append(link)
+                    if len(collected) >= max_results * 2:
+                        break
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        if not collected:
+            return {"success": False, "error": "HTTP 模式未解析到结果"}
+
+        scored = []
+        for link in collected[: max_results * 3]:
+            title = link.get('title', '')
+            url = link.get('url', '')
+            snippet = link.get('snippet', '')
+            scored.append({
+                'title': title,
+                'url': url,
+                'snippet': snippet,
+                'score': self._score_result(title, snippet, url, keywords, ""),
+                'raw_text_brief': self._make_raw_text_brief(title, snippet),
+            })
+        scored.sort(key=lambda x: x['score'], reverse=True)
+        return {"success": True, "results": scored[:max_results], "from_http": True}
+
+    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", engine: str = "auto", site: str = None, filetype: str = None, **kwargs) -> dict:
         """
         用搜索引擎搜索关键词，返回链接列表
 
@@ -967,6 +1047,8 @@ class WebSearch(BaseCell):
             engine: 搜索引擎（默认 auto 自动选择）
                         - auto: 自动选择最优引擎
                         - bing, baidu, google, duckduckgo
+            site: 限定站点（可选），如 github.com
+            filetype: 限定文件类型（可选），如 pdf
 
         Returns:
             {"success": bool, "results": [...]}
@@ -975,6 +1057,10 @@ class WebSearch(BaseCell):
             return {"success": False, "error": "缺少必填参数 'keywords'"}
 
         keywords = keywords.strip()
+        if site:
+            keywords = f"{keywords} site:{str(site).strip()}"
+        if filetype:
+            keywords = f"{keywords} filetype:{str(filetype).strip().lstrip('.')}"
 
         user_engine = engine
         if user_engine and user_engine != 'auto' and user_engine in self.SEARCH_ENGINES:
@@ -1005,6 +1091,17 @@ class WebSearch(BaseCell):
         for engine in engines_to_try:
             self._wait_search_slot(engine)
             logger.info(f"[WebSearch] 尝试使用引擎: {engine}")
+
+            # 先走 HTTP 直连（快），结果足够就不启动浏览器
+            fast = self._http_search(keywords, engine, time_range, max_results)
+            if fast.get('success') and len(fast.get('results') or []) >= min(3, max_results):
+                logger.info(f"[WebSearch] 引擎 {engine} HTTP 快速搜索成功")
+                self._set_engine_health(engine, 'green')
+                fast['engine'] = engine
+                fast['tried_engines'] = [engine]
+                self._set_cached_result(keywords, engine, fast)
+                return fast
+
             result = None
             for attempt in range(2):
                 page = None
@@ -1037,6 +1134,16 @@ class WebSearch(BaseCell):
             result = result or {"success": False, "error": f"{engine} 未获得可用标签页"}
 
             if result.get('success') and result.get('results'):
+                # 去重：同一 URL 只保留评分最高/最先出现的一条
+                seen = set()
+                unique = []
+                for item in result['results']:
+                    key = (item.get('url') or '').strip().rstrip('/')
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(item)
+                result['results'] = unique[:max_results]
                 logger.info(f"[WebSearch] 引擎 {engine} 搜索成功，返回 {len(result['results'])} 条结果")
                 self._set_engine_health(engine, 'green')
                 result.pop('page_error', None)
@@ -1235,6 +1342,57 @@ class WebSearch(BaseCell):
             logger.warning(f"[WebSearch:{engine}] 搜索异常，标签页将被丢弃: {e}")
             return {"success": False, "error": str(e), "page_error": True}
 
+    def _cmd_engines(self) -> dict:
+        """查看可用搜索引擎及健康状态"""
+        health = self.get_engine_health()
+        return {
+            "success": True,
+            "engines": [
+                {
+                    "engine": key,
+                    "name": cfg.get("name", key),
+                    "health": health.get(key, "unknown"),
+                }
+                for key, cfg in self.SEARCH_ENGINES.items()
+            ],
+        }
+
+    def _cmd_resolve(self, url: str) -> dict:
+        """把搜索结果里的跳转链接（Bing ck/a、百度 link）还原成真实 URL
+
+        Args:
+            url: 搜索返回的链接
+        """
+        if not url or not url.strip():
+            return {"success": False, "error": "需要提供 url"}
+        raw = url.strip()
+        resolved = ""
+        if "bing.com" in raw and "/ck/a?" in raw:
+            resolved = self._decode_bing_url(raw)
+        if not resolved:
+            resolved = self.resolve_url(raw)
+        if resolved == raw:
+            try:
+                import requests
+
+                resp = requests.get(
+                    raw,
+                    allow_redirects=True,
+                    timeout=8,
+                    headers={"User-Agent": self._user_agent or "Mozilla/5.0"},
+                )
+                if resp.url and resp.url != raw:
+                    resolved = resp.url
+                resp.close()
+            except Exception as e:
+                return {"success": False, "url": raw, "error": f"解析失败: {e}"}
+        return {
+            "success": True,
+            "url": raw,
+            "resolved": resolved,
+            "changed": resolved != raw,
+        }
+
     def _cmd_close(self) -> dict:
         """关闭浏览器，释放资源"""
         self._close_page()
@@ -1254,8 +1412,16 @@ class WebSearch(BaseCell):
             "available_commands": list(commands.keys()),
             "usage": {
                 "search": {
-                    "args": {"keywords": "搜索关键词", "max_results": "最大结果数", "wait_time": "等待秒数"},
+                    "args": {"keywords": "搜索关键词", "max_results": "最大结果数", "wait_time": "等待秒数", "time_range": "hour/day/week/month", "engine": "auto/bing/baidu/google/duckduckgo"},
                     "example": '{"keywords": "Python教程"}'
+                },
+                "resolve": {
+                    "args": {"url": "搜索返回的跳转链接"},
+                    "example": '{"url": "https://www.bing.com/ck/a?..."} 还原为真实 URL'
+                },
+                "engines": {
+                    "args": {},
+                    "example": "查看各引擎健康状态"
                 }
             },
             "next_tool": "web_fetch"

@@ -272,6 +272,35 @@ class TestEngineIntegration(unittest.TestCase):
         self.assertEqual(events[-1]["response"].content, "正文")
         self.assertEqual(events[-1]["response"].reasoning_content, "先思考")
 
+    def test_engine_stream_tool_call_start_early(self):
+        """工具名+id 一到就发 tool_call_start，供前端预显示"""
+        sse = (
+            'data: {"id":"1","model":"m","choices":[{"index":0,"delta":{"tool_calls":'
+            '[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":""}}]},'
+            '"finish_reason":null}]}\n\n'
+            'data: {"id":"2","model":"m","choices":[{"index":0,"delta":{"tool_calls":'
+            '[{"index":0,"function":{"arguments":"{\\"cmd\\": \\"ls\\"}"}}]},'
+            '"finish_reason":null}]}\n\n'
+            'data: {"id":"3","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        def handler(request):
+            return httpx.Response(200, content=sse.encode(), headers={"Content-Type": "text/event-stream"})
+
+        engine = self._make_engine()
+        engine._transport = _mock_async_transport(handler)
+
+        async def _collect():
+            return [e async for e in engine.chat_stream([{"role": "user", "content": "hi"}])]
+
+        events = asyncio.run(_collect())
+        types = [e["type"] for e in events]
+        self.assertEqual(types, ["tool_call_start", "tool_calls", "done"])
+        self.assertEqual(events[0]["name"], "shell")
+        self.assertEqual(events[0]["id"], "call_1")
+        self.assertEqual(events[1]["calls"][0].arguments, {"cmd": "ls"})
+
     def test_engine_chat_params(self):
         captured = {}
 

@@ -230,21 +230,17 @@ def setup_agent_di(
             _agent_config_holder["flash_mode"] = new_val.get("flash_mode", False) if new_val else False
             shell_cwd = new_val.get("shell_cwd", "") if new_val else ""
             if shell_cwd:
-                if not os.path.isabs(shell_cwd):
-                    shell_cwd = os.path.join(get_config().config_root, shell_cwd)
-                if os.path.isdir(shell_cwd):
-                    from app.agent.shell.cellium_shell import CelliumShell
-                    shell = container.resolve(CelliumShell) if container.has(CelliumShell) else None
-                    if shell:
-                        shell._cwd = shell_cwd
-                        logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s | shell_cwd=%s",
-                                   _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"], shell_cwd)
-                    else:
-                        logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s | shell_cwd=%s (Shell未初始化)",
-                                   _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"], shell_cwd)
+                from app.core.util.workdir import resolve_workdir, set_workdir
+                resolved = set_workdir(resolve_workdir(shell_cwd))
+                from app.agent.shell.cellium_shell import CelliumShell
+                shell = container.resolve(CelliumShell) if container.has(CelliumShell) else None
+                if shell:
+                    shell._cwd = resolved
+                    logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s | shell_cwd=%s",
+                               _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"], resolved)
                 else:
-                    logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
-                               _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
+                    logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s | shell_cwd=%s (Shell未初始化)",
+                               _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"], resolved)
             else:
                 logger.info("[AgentDI] Agent 配置已热更新 | max_iterations=%s | flash_mode=%s",
                            _agent_config_holder["max_iterations"], _agent_config_holder["flash_mode"])
@@ -515,10 +511,10 @@ def setup_agent_di(
 
     # --- 注册 Shell（注入 SecurityPolicy）---
     agent_cfg = _cfg.get_section("agent") or {}
-    shell_cwd = agent_cfg.get("shell_cwd", "") or None
-    if shell_cwd and not os.path.isabs(shell_cwd):
-        shell_cwd = os.path.join(get_config().config_root, shell_cwd)
-    _shell = shell or CelliumShell(security_policy=_security, initial_cwd=shell_cwd)
+    from app.core.util.workdir import resolve_workdir, set_workdir
+    _agent_workdir = set_workdir(resolve_workdir(agent_cfg.get("shell_cwd", "")))
+    _shell = shell or CelliumShell(security_policy=_security, initial_cwd=_agent_workdir)
+    logger.info("[AgentDI] Agent 工作目录: %s", _agent_workdir)
     if not container.has(CelliumShell):
         container.register(CelliumShell, _shell, singleton=True)
 

@@ -452,6 +452,8 @@ def _is_interactive_argv(argv) -> bool:
     if base in ("bash", "sh", "zsh"):
         return "-c" not in argv and not any(a for a in argv[1:] if a and not a.startswith("-"))
     if base in ("python", "python3", "ipython", "node"):
+        if any(a in ("--version", "-V", "--help", "-h") for a in argv[1:]):
+            return False
         return not any(a for a in argv[1:] if a and not a.startswith("-"))
     return False
 
@@ -653,6 +655,22 @@ def _wrap_pwsh_utf8(full_cmd: List[str]) -> List[str]:
 
 def _build_pwsh_cmd(shell_cmd: str, cmd: str) -> List[str]:
     return [shell_cmd] + _pwsh_encoded_args(cmd)
+
+
+_POSIX_SCRIPT_ENV = "__CELLIUM_CMD"
+_POSIX_INLINE_MAX = 65536
+
+
+def _build_posix_cmd(shell_cmd: str, cmd: str) -> Tuple[List[str], Dict[str, str]]:
+    """POSIX 下脚本经环境变量注入，命令行只保留固定包装。
+
+    直接用 `bash -c "<脚本>"` 会让 wrapper 的命令行包含脚本原文，
+    pkill -f / pgrep -f 会把执行命令的 shell 自身也匹配进去而自杀。
+    """
+    if len(cmd) > _POSIX_INLINE_MAX:
+        return [shell_cmd, "-c", cmd], {}
+    wrapper = 'c="$__CELLIUM_CMD"; unset __CELLIUM_CMD; eval "$c"'
+    return [shell_cmd, "-c", wrapper], {_POSIX_SCRIPT_ENV: cmd}
 
 
 # =============================================================================
@@ -1402,6 +1420,7 @@ class CelliumShell:
                     inner = inner[1:-1].replace(r'\"', '"')
             full_cmd = [shell_cmd] + shell_args + [inner]
             stdin_data = None
+            env_extra = {}
         elif self._platform == "win32" and self._shell_name == "powershell":
             stripped = cmd.strip()
             if stripped.lower().startswith("python ") or stripped.lower().startswith("python.exe "):
@@ -1413,16 +1432,19 @@ class CelliumShell:
             else:
                 full_cmd = _build_pwsh_cmd(shell_cmd, cmd)
                 stdin_data = None
+            env_extra = {}
         else:
             shell_cmd, shell_args = self._resolve_shell(cmd)
             if self._platform == "win32" and "powershell" not in shell_cmd.lower():
                 full_cmd = [shell_cmd] + shell_args + [cmd]
+                env_extra = {}
             else:
-                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+                full_cmd, env_extra = _build_posix_cmd(shell_cmd, cmd)
             stdin_data = None
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
         env = self._session_env.copy()
+        env.update(env_extra)
 
         start_time = time.time()
 
@@ -1536,6 +1558,7 @@ class CelliumShell:
                     inner = inner[1:-1].replace(r'\"', '"')
             full_cmd = [shell_cmd] + shell_args + [inner]
             stdin_data = None
+            env_extra = {}
         elif self._platform == "win32" and self._shell_name == "powershell":
             stripped = cmd.strip()
             if stripped.lower().startswith("python ") or stripped.lower().startswith("python.exe "):
@@ -1547,12 +1570,14 @@ class CelliumShell:
             else:
                 full_cmd = _build_pwsh_cmd(shell_cmd, cmd)
                 stdin_data = None
+            env_extra = {}
         else:
             shell_cmd, shell_args = self._resolve_shell(cmd)
             if self._platform == "win32" and "powershell" not in shell_cmd.lower():
                 full_cmd = [shell_cmd] + shell_args + [cmd]
+                env_extra = {}
             else:
-                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+                full_cmd, env_extra = _build_posix_cmd(shell_cmd, cmd)
             stdin_data = None
             if self._platform == "win32" and self._shell_name == "powershell":
                 patched, stdin_data = _patch_python_c_for_stdin(full_cmd)
@@ -1562,6 +1587,7 @@ class CelliumShell:
 
         work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
         env = self._session_env.copy()
+        env.update(env_extra)
 
         start_time = time.time()
         stdout_lines = []
@@ -1748,6 +1774,7 @@ class CelliumShell:
                         inner = inner[1:-1].replace(r'\"', '"')
                 full_cmd = [shell_cmd] + shell_args + [inner]
                 stdin_data = None
+                env_extra = {}
             elif self._platform == "win32" and self._shell_name == "powershell":
                 stripped = cmd.strip()
                 if stripped.lower().startswith("python ") or stripped.lower().startswith("python.exe "):
@@ -1759,12 +1786,14 @@ class CelliumShell:
                 else:
                     full_cmd = _build_pwsh_cmd(shell_cmd, cmd)
                     stdin_data = None
+                env_extra = {}
             else:
-                full_cmd = [shell_cmd] + shell_args + [cmd] if shell_args else [shell_cmd, cmd]
+                full_cmd, env_extra = _build_posix_cmd(shell_cmd, cmd)
                 stdin_data = None
 
             work_dir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
             env = self._session_env.copy()
+            env.update(env_extra)
 
             try:
                 process = subprocess.Popen(

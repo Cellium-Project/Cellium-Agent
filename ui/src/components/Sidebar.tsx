@@ -175,16 +175,49 @@ export const Sidebar: React.FC = () => {
                 }
               }
 
+              if (data.data.type === 'tool_call_pending' && data.data.tool) {
+                const pendingId = data.data.call_id;
+                if (!pendingId || !ctx.timeline.some(
+                  (s) => s.kind === 'tool' && s.call_id === pendingId
+                )) {
+                  ctx.timeline.push({
+                    kind: 'tool',
+                    tool: data.data.tool,
+                    arguments: {},
+                    duration_ms: 0,
+                    description: data.data.description || '',
+                    status: 'running',
+                    call_id: pendingId,
+                  });
+                  updateStreamingMessage({
+                    role: 'assistant',
+                    content: '',
+                    toolTraces: [...ctx.traces],
+                    timeline: [...ctx.timeline],
+                  });
+                }
+              }
+
               if (data.data.type === 'tool_start' && data.data.tool && data.data.arguments) {
-                ctx.timeline.push({
-                  kind: 'tool',
+                const toolSeg = {
+                  kind: 'tool' as const,
                   tool: data.data.tool,
                   arguments: data.data.arguments,
                   duration_ms: 0,
                   description: data.data.description,
-                  status: 'running',
+                  status: 'running' as const,
                   call_id: data.data.call_id,
-                });
+                };
+                const pendingIdx = data.data.call_id
+                  ? ctx.timeline.findIndex(
+                      (s) => s.kind === 'tool' && s.call_id === data.data.call_id
+                    )
+                  : -1;
+                if (pendingIdx >= 0) {
+                  ctx.timeline[pendingIdx] = toolSeg;
+                } else {
+                  ctx.timeline.push(toolSeg);
+                }
                 ctx.traces.push({
                   tool: data.data.tool,
                   arguments: data.data.arguments,

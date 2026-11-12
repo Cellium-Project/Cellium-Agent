@@ -310,12 +310,18 @@ class ReadTool(BaseTool):
             return {"success": False, "error": "file_path is required"}
 
         abs_path = self._resolve_path(file_path)
-        if not os.path.isfile(abs_path):
+        if os.path.isdir(abs_path):
+            return {"success": False, "error": f"Is a directory: {abs_path}"}
+        if not os.path.exists(abs_path):
             return {"success": False, "error": f"File not found: {abs_path}"}
+        if not os.path.isfile(abs_path):
+            return {"success": False, "error": f"Not a regular file: {abs_path}"}
 
-        dedup_result = self._check_dedup(abs_path, offset, limit)
-        if dedup_result:
-            return dedup_result
+        # 带 target/needle 时不能走内容去重，否则会返回上次缓存的整份内容
+        if not target and not needle:
+            dedup_result = self._check_dedup(abs_path, offset, limit)
+            if dedup_result:
+                return dedup_result
 
         file_size = os.path.getsize(abs_path)
 
@@ -370,6 +376,53 @@ class ReadTool(BaseTool):
             "match_column": result["match_column"],
         }
 
+    def _read_target_streaming(
+        self,
+        abs_path: str,
+        target: str,
+        encoding: str,
+        context_lines: int = 3,
+    ) -> Dict[str, Any]:
+        """大文件按 target 流式定位，只保留命中行前后 N 行"""
+        target_lower = target.lower()
+        before, after = [], []
+        match_no = 0
+        match_text = ""
+        total_lines = 0
+
+        with open(abs_path, "r", encoding=encoding, errors="replace") as f:
+            for i, raw in enumerate(f, 1):
+                total_lines = i
+                line = raw.rstrip("\n")
+                if not match_no:
+                    if target_lower in line.lower():
+                        match_no = i
+                        match_text = line
+                    else:
+                        before.append(line)
+                        if len(before) > context_lines:
+                            before.pop(0)
+                elif len(after) < context_lines:
+                    after.append(line)
+
+        if not match_no:
+            return {"success": False, "error": f"Target not found: {target[:50]}"}
+
+        selected = before + [match_text] + after
+        start_no = match_no - len(before)
+        data = "\n".join(f"{start_no + j}\t{selected[j]}" for j in range(len(selected)))
+        return {
+            "success": True,
+            "data": data,
+            "path": abs_path,
+            "lines": len(selected),
+            "total_lines": total_lines,
+            "target_line": match_no,
+            "start_line": start_no,
+            "end_line": start_no + len(selected) - 1,
+            "encoding": encoding,
+        }
+
     def _do_read(
         self,
         abs_path: str,
@@ -378,11 +431,14 @@ class ReadTool(BaseTool):
         limit: int,
         target: str,
     ) -> Dict[str, Any]:
+        encoding = self._detect_encoding(abs_path)
+
+        if target and file_size > _CHUNK * 4:
+            return self._read_target_streaming(abs_path, target, encoding)
+
         if file_size > _CHUNK * 4:
-            encoding = self._detect_encoding(abs_path)
             return _read_file_streaming(abs_path, offset, limit, encoding=encoding, session_id=self._session_id())
 
-        encoding = self._detect_encoding(abs_path)
         with open(abs_path, "r", encoding=encoding, errors="replace") as f:
             content = f.read()
         content = content.replace('\r\n', '\n')
@@ -437,11 +493,8 @@ class ReadTool(BaseTool):
         return result
 
     def _resolve_path(self, path: str) -> str:
-        if not path:
-            return os.getcwd()
-        if os.path.isabs(path):
-            return path
-        return os.path.abspath(path)
+        from app.core.util.workdir import resolve_path
+        return resolve_path(path)
 
     def _detect_encoding(self, path: str) -> str:
         try:

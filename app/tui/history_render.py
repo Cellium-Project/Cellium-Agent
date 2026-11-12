@@ -7,6 +7,23 @@ import re
 _NOTICE_HEADER_RE = re.compile(r"^\[(会话委托完成|子Agent完成)\]")
 
 
+def is_internal_user_message(msg: dict) -> bool:
+    """Agent 内部注入的 user 消息（如"回复为空重试"），不属于真实用户输入"""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("[系统")
+
+
+def is_gene_phase_message(msg: dict) -> bool:
+    """Gene 评估/写入阶段是内部流程，不应展示在历史里"""
+    return (
+        msg.get("role") == "system"
+        and isinstance(msg.get("content"), str)
+        and msg["content"].lstrip().startswith("[Gene")
+    )
+
+
 def is_delegation_notice(content) -> bool:
     text = (content or "").strip()
     if not _NOTICE_HEADER_RE.match(text):
@@ -411,6 +428,11 @@ def build_assistant_timeline(msg: dict, raw_messages: list, index: int) -> dict:
             elif sub.get("role") == "assistant" and sub.get("content") and not sub.get("tool_calls"):
                 break
             elif sub.get("role") == "user":
+                if is_internal_user_message(sub):
+                    j += 1
+                    continue
+                break
+            elif sub.get("role") == "system" and is_gene_phase_message(sub):
                 break
             else:
                 j += 1
@@ -465,7 +487,7 @@ def build_history_plan(session_id: str, limit: int = 100, offset: int = 0) -> tu
         role = m.get("role")
         if role == "user":
             content = m.get("content")
-            if content:
+            if content and not is_internal_user_message(m):
                 plan.append({
                     "kind": "notice" if is_delegation_notice(content) else "user",
                     "content": content,
@@ -509,6 +531,13 @@ def build_history_plan(session_id: str, limit: int = 100, offset: int = 0) -> tu
                         plan.append({"kind": "assistant", "content": c})
             if tool_card is not None:
                 plan.append(tool_card)
+        elif role == "system" and is_gene_phase_message(m):
+            i += 1
+            while i < len(messages):
+                nxt = messages[i]
+                if nxt.get("role") == "user" and not is_internal_user_message(nxt):
+                    break
+                i += 1
         else:
             i += 1
     return plan, dropped

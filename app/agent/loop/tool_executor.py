@@ -42,16 +42,55 @@ class ToolDescriptionGenerator:
         "memory": {
             "search":   "正在搜索历史记忆：{query}",
             "store":    "正在保存记忆：{title}",
+            "update":   "正在更新记忆：{title}",
+            "list":     "正在查看记忆列表",
+            "delete":   "正在删除记忆",
+            "forget":   "正在遗忘记忆：{query}",
+            "merge":    "正在合并记忆",
+            "profile":  "正在读取用户画像",
+            "list_genes":        "正在查看 Gene 列表",
+            "get_gene":          "正在查看 Gene 详情",
+            "read_archive":      "正在读取归档对话",
+            "set_embedding":     "正在配置向量模型",
+            "get_embedding_status":             "正在查看向量索引状态",
+            "get_embedding_migration_status":   "正在查看向量迁移状态",
+            "start_embedding_migration":        "正在启动向量迁移",
             "_default": "正在操作记忆：{command}",
         },
         "web_search": {
             "search":   "正在搜索：{query}",
+            "resolve":  "正在解析跳转链接",
+            "engines":  "正在查看搜索引擎状态",
             "close":    "正在关闭搜索浏览器",
             "help":     "正在查询搜索帮助",
             "_default": "正在搜索：{query}",
         },
         "web_fetch": {
             "read":            "正在阅读网页：{url_short}",
+            "fetch":           "正在获取网页内容：{url_short}",
+            "fetch_many":      "正在并行抓取 {url_count} 个网页",
+            "insight":         "正在分析网页：{query}",
+            "get_viewport_text": "正在读取页面可见文本",
+            "find_in_page":    "正在页面内查找：{keyword_text}",
+            "find_button":     "正在查找页面按钮：{keyword_text}",
+            "js_action":       "正在操作页面元素：{action}",
+            "execute_script":  "正在执行页面脚本",
+            "get_element_tree": "正在读取页面元素树",
+            "save_cookies":    "正在保存页面 Cookie",
+            "load_cookies":    "正在加载页面 Cookie",
+            "network":         "正在抓取页面网络请求",
+            "replay":          "正在重放接口请求",
+            "ws":              "正在监听页面 WebSocket",
+            "mock":            "正在注入接口 Mock 规则",
+            "intercept":       "正在注入请求改写规则",
+            "mocks":           "正在查看拦截规则",
+            "clear_mocks":     "正在清除拦截规则",
+            "export_har":      "正在导出 HAR 抓包文件",
+            "set_block":       "正在屏蔽图片等资源加速加载",
+            "upload":          "正在上传文件到页面",
+            "download":        "正在下载文件",
+            "alert":           "正在处理页面弹窗",
+            "console":         "正在读取页面控制台日志",
             "control":         "正在操控页面：{action}",
             "set_mode":        "正在切换浏览器模式为：{headless}",
             "get_screenshot":  "正在截图：{selector}",
@@ -64,6 +103,7 @@ class ToolDescriptionGenerator:
             "download":    "正在从 QQ 下载文件",
             "send_file":   "正在发送文件到 QQ：{filename}",
             "send_image":  "正在发送图片到 QQ：{filename}",
+            "send_voice":  "正在发送语音到 QQ：{filename}",
             "list":        "正在列出 QQ 下载文件",
             "_default":    "正在处理 QQ 文件",
         },
@@ -77,11 +117,19 @@ class ToolDescriptionGenerator:
         },
         "config": {
             "help":             "正在查看配置工具帮助",
+            "version":          "正在查看 Agent 版本",
             "list_models":      "正在查看可用模型列表",
             "add_model":        "正在添加模型：{model_name}",
             "switch_model":     "正在切换模型到：{model_name}",
             "enable_intent":    "{intent_action}意图感知",
             "set_intent_model": "正在配置意图感知模型：{model}",
+            "list_channels":    "正在查看外部通道配置",
+            "set_telegram":     "正在配置 Telegram 通道",
+            "set_qq":           "正在配置 QQ 通道",
+            "set_feishu":       "正在配置飞书通道",
+            "enable_channel":   "正在{toggle_action}外部通道：{channel}",
+            "set_show_tool_cards":     "正在{toggle_action}工具卡片展示：{channel}",
+            "set_show_thinking_plan":  "正在{toggle_action}执行计划展示：{channel}",
             "_default":         "正在管理配置：{command}",
         },
         "sub_agent": {
@@ -91,6 +139,7 @@ class ToolDescriptionGenerator:
             "status":    "正在查看子 Agent 状态{agent_suffix}",
             "results":   "正在读取子 Agent 结论{agent_suffix}",
             "cancel":    "正在取消子 Agent{agent_suffix}",
+            "help":      "正在查看子 Agent 帮助",
             "_default":  "正在调度子 Agent{agent_suffix}",
         },
         "session_agent": {
@@ -101,6 +150,7 @@ class ToolDescriptionGenerator:
             "list":      "正在查看会话委托列表",
             "sessions":  "正在查看会话列表{keyword_suffix}",
             "rename":    "正在给会话命名{session_suffix}",
+            "help":      "正在查看会话委托帮助",
             "_default":  "正在处理会话委托{session_suffix}",
         },
         "ls": {
@@ -148,6 +198,25 @@ class ToolDescriptionGenerator:
             "search":    "正在搜索 Skill：{query}",
             "_default":  "正在查询 Skill：{command}",
         },
+        "component": {
+            "generate":         "正在生成组件{component_suffix}",
+            "generate_package": "正在生成组件包{component_suffix}",
+            "list":             "正在查看组件列表",
+            "info":             "正在查看组件详情{component_suffix}",
+            "template":         "正在获取组件模板",
+            "reload":           "正在热重载组件",
+            "cleanup":          "正在清理组件缓存",
+            "dir":              "正在获取组件目录",
+            "sandbox_list":     "正在查看免沙箱白名单",
+            "sandbox_add":      "正在把组件加入免沙箱白名单{component_suffix}",
+            "sandbox_remove":   "正在把组件移出免沙箱白名单{component_suffix}",
+            "install_local":    "正在安装本地组件：{basename}",
+            "market_search":    "正在组件市场搜索：{keyword_text}",
+            "market_info":      "正在查看市场组件{component_suffix}",
+            "market_install":   "正在从组件市场安装{component_suffix}",
+            "help":             "正在查看组件构建帮助",
+            "_default":         "正在管理组件：{command}",
+        },
         "_default":    "正在调用 {tool_name}：{param_value}",
     }
 
@@ -160,6 +229,11 @@ class ToolDescriptionGenerator:
             return string.Formatter().vformat(template, (), _SafeDict(context))
         except Exception:
             return template
+
+    @staticmethod
+    def _clean(text: str) -> str:
+        """去掉空参数导致的尾部冒号/空格"""
+        return text.rstrip("：:，, ")
 
     @staticmethod
     def extract_context(tool_name: str, arguments: dict) -> dict:
@@ -275,10 +349,20 @@ class ToolDescriptionGenerator:
                 ctx["intent_action"] = "正在关闭"
             else:
                 ctx["intent_action"] = "正在查询"
+            ctx["toggle_action"] = (
+                "开启" if enabled is True else "关闭" if enabled is False else "调整"
+            )
+            ctx["channel"] = arguments.get("channel_name") or ""
+
+        # Component builder（工具名是 component，文件为 components/component_builder.py）
+        if tool_name == "component":
+            cname = str(arguments.get("name") or arguments.get("slug") or "")[:40]
+            ctx["component_suffix"] = f"：{cname}" if cname else ""
 
         # Memory / Web Search
         ctx["query"] = (arguments.get("query") or arguments.get("q") or arguments.get("keywords") or "")[:30]
         ctx["title"] = (arguments.get("title") or "")[:30]
+        ctx["keyword_text"] = str(arguments.get("keyword") or "")[:30]
 
         # Web
         url = arguments.get("url") or ""
@@ -342,8 +426,12 @@ class ToolDescriptionGenerator:
 
         # Session Agent
         if tool_name == "session_agent":
-            ctx["target"] = str(arguments.get("target") or "")
-            ctx["session_suffix"] = f"：{ctx['target']}" if ctx["target"] else ""
+            # status/results/cancel 允许只传 task_id；send 新建会话时可用 title 兜底
+            target = str(
+                arguments.get("target") or arguments.get("task_id") or arguments.get("title") or ""
+            )
+            ctx["target"] = target
+            ctx["session_suffix"] = f"：{target}" if target else ""
             keyword = str(arguments.get("keyword") or "")[:40]
             ctx["keyword_suffix"] = f"：{keyword}" if keyword else ""
 
@@ -360,15 +448,20 @@ class ToolDescriptionGenerator:
         task_id = str(arguments.get("task_id") or "")
         ctx["task_id_suffix"] = f"：{task_id}" if task_id else ""
 
-        # Component tools fallback
-        if not any([ctx["basename"], ctx["query"], ctx["title"], ctx["cmd"]]):
-            for v in arguments.values():
-                if isinstance(v, str) and len(v.strip()) > 2 and len(v.strip()) < 100:
-                    ctx["param_value"] = v.strip()[:40]
+        # Component tools fallback：优先用命令，其次查询词、标题、首个短参数
+        if not ctx.get("param_value"):
+            for key in ("cmd", "query", "title"):
+                if ctx.get(key):
+                    ctx["param_value"] = str(ctx[key])[:40]
                     break
-                elif isinstance(v, dict) and v:
-                    ctx["param_value"] = f"({len(v)}个文件/项)"
-                    break
+            else:
+                for v in arguments.values():
+                    if isinstance(v, str) and 2 < len(v.strip()) < 100:
+                        ctx["param_value"] = v.strip()[:40]
+                        break
+                    if isinstance(v, dict) and v:
+                        ctx["param_value"] = f"({len(v)}个文件/项)"
+                        break
 
         return ctx
 
@@ -434,13 +527,17 @@ class ToolDescriptionGenerator:
         sub_cmd = context.get("command", "").lower()
         templates = cls.DESC_TEMPLATES
 
+        # 缺任务明细时不再拼 0 个，回落到工具级兜底
+        if tool_name == "sub_agent" and sub_cmd in ("spawn", "parallel") and not context.get("task_count"):
+            return cls._clean(cls.render_template(templates["sub_agent"]["_default"], context))
+
         if tool_name in templates and sub_cmd and sub_cmd in templates[tool_name]:
-            return cls.render_template(templates[tool_name][sub_cmd], context)
+            return cls._clean(cls.render_template(templates[tool_name][sub_cmd], context))
 
         if tool_name in templates and "_default" in templates[tool_name]:
-            return cls.render_template(templates[tool_name]["_default"], context)
+            return cls._clean(cls.render_template(templates[tool_name]["_default"], context))
 
-        return cls.render_template(templates["_default"], context)
+        return cls._clean(cls.render_template(templates["_default"], context))
 
     @staticmethod
     def describe_shell_command(cmd: str, argv: list = None) -> str:

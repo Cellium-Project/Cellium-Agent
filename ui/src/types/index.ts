@@ -83,6 +83,7 @@ export type SSEEventType =
   | 'thinking_streaming'
   | 'reasoning'
   | 'tool_start'
+  | 'tool_call_pending'
   | 'tool_result'
   | 'content_chunk'
   | 'content'

@@ -32,7 +32,12 @@ def resolve_anchor_index(messages: list, anchor, fallback: int = 0) -> int:
 
 
 def plan_slice(messages: list, start_index: int, end_index: int) -> list:
-    from app.tui.history_render import build_assistant_timeline, is_delegation_notice
+    from app.tui.history_render import (
+        build_assistant_timeline,
+        is_delegation_notice,
+        is_internal_user_message,
+        is_gene_phase_message,
+    )
     page = messages[start_index:end_index]
     plan = []
     i = 0
@@ -41,7 +46,7 @@ def plan_slice(messages: list, start_index: int, end_index: int) -> list:
         role = m.get("role")
         if role == "user":
             content = m.get("content")
-            if content:
+            if content and not is_internal_user_message(m):
                 span = (start_index + i, start_index + i + 1)
                 plan.append({
                     "kind": "notice" if is_delegation_notice(content) else "user",
@@ -50,6 +55,14 @@ def plan_slice(messages: list, start_index: int, end_index: int) -> list:
                     "id": m.get("id"),
                 })
             i += 1
+            continue
+        if role == "system" and is_gene_phase_message(m):
+            i += 1
+            while i < len(page):
+                nxt = page[i]
+                if nxt.get("role") == "user" and not is_internal_user_message(nxt):
+                    break
+                i += 1
             continue
         if role != "assistant":
             i += 1

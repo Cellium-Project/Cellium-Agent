@@ -294,7 +294,16 @@ class HybridController:
     def is_done(self) -> bool:
         return self._state.phase == HybridPhase.DONE
     
+    def _plan_progress(self) -> Tuple[int, int]:
+        """当前计划的进度"""
+        total = len(self._state.current_plan)
+        if total <= 0:
+            return 0, 0
+        done = total - len(self._state.pending_steps)
+        return max(0, min(done, total)), total
+
     def get_phase_message(self) -> Dict[str, Any]:
+        done, total = self._plan_progress()
         phase_info = {
             HybridPhase.OBSERVE: {
                 "icon": "",
@@ -309,7 +318,7 @@ class HybridController:
             HybridPhase.EXECUTE: {
                 "icon": "",
                 "message": "执行中",
-                "description": f"执行计划 ({len(self._state.executed_steps)}/{len(self._state.current_plan)})",
+                "description": f"执行计划 ({done}/{total})",
             },
             HybridPhase.EVALUATE: {
                 "icon": "",
@@ -374,7 +383,7 @@ class HybridController:
             loop_state.hybrid_last_observation = None
         
         if self._state.current_plan:
-            executed_count = len(self._state.executed_steps)
+            executed_count, _ = self._plan_progress()
             parts = []
             for i, step in enumerate(self._state.current_plan):
                 tool_name = step.tool.split(":")[-1]

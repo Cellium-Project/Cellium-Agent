@@ -53,25 +53,36 @@ def _save() -> None:
 _OVERRIDES = _load()
 
 
-def list_models() -> list:
+def _raw_models() -> list:
     try:
         from app.core.util.agent_config import get_config
         llm = get_config().get_section("llm") or {}
-        out = []
-        for item in llm.get("models", []) or []:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name") or ""
-            if not name:
-                continue
-            out.append({
-                "name": name,
-                "model": item.get("model") or "",
-                "base_url": item.get("base_url") or "",
-            })
-        return out
+        return [m for m in (llm.get("models") or []) if isinstance(m, dict) and m.get("name")]
     except Exception:
         return []
+
+
+def _entry_ready(entry: dict) -> bool:
+    return bool((entry.get("api_key") or "").strip()) and bool(
+        (entry.get("base_url") or "").strip()
+    ) and bool((entry.get("model") or "").strip())
+
+
+def list_models() -> list:
+    """可用的模型列表（缺 api_key/base_url/model 的占位项不计入）"""
+    return [
+        {
+            "name": m.get("name") or "",
+            "model": m.get("model") or "",
+            "base_url": m.get("base_url") or "",
+        }
+        for m in _raw_models()
+        if _entry_ready(m)
+    ]
+
+
+def _ready_names() -> set:
+    return {m["name"] for m in list_models()}
 
 
 def global_model() -> str:
@@ -79,9 +90,16 @@ def global_model() -> str:
         from app.core.util.agent_config import get_config
         llm = get_config().get_section("llm") or {}
         current = llm.get("current_model") or ""
+        models = llm.get("models") or []
+        ready = _ready_names()
+        if current and current in ready:
+            return current
+        if ready:
+            for item in models:
+                if isinstance(item, dict) and item.get("name") in ready:
+                    return item["name"]
         if current:
             return current
-        models = llm.get("models") or []
         return (models[0].get("name") or "") if models else ""
     except Exception:
         return ""
@@ -89,7 +107,12 @@ def global_model() -> str:
 
 def get_model(session_id: str) -> str:
     with _LOCK:
-        return _OVERRIDES.get(str(session_id or ""), "")
+        name = _OVERRIDES.get(str(session_id or ""), "")
+    if not name:
+        return ""
+    if name not in _ready_names():
+        return ""
+    return name
 
 
 def has_override(session_id: str) -> bool:
@@ -108,8 +131,8 @@ def set_model(session_id: str, model_name: Optional[str]) -> Dict[str, Any]:
     """设置会话模型；传空表示跟随全局"""
     sid = str(session_id or "")
     name = (model_name or "").strip()
-    if name and name not in {m["name"] for m in list_models()}:
-        return {"success": False, "error": f"模型不存在: {name}"}
+    if name and name not in _ready_names():
+        return {"success": False, "error": f"模型不存在或配置不完整（需 api_key / base_url / model）: {name}"}
     with _LOCK:
         if name:
             _OVERRIDES[sid] = name
@@ -146,6 +169,9 @@ def resolve_engine(session_id: str):
 
 def _build_engine(name: str):
     try:
+        if not any(m.get("name") == name for m in _raw_models()):
+            logger.warning("[SessionLLM] 模型已不存在，跳过建引擎 | model=%s", name)
+            return None
         from app.agent.llm.engine import create_llm_engine
         from app.core.util.agent_config import get_config
         cfg = dict(get_config().get_section("llm") or {})

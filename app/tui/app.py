@@ -1559,22 +1559,16 @@ class CelliumTUI(App):
             pass
         try:
             from app.core.util.agent_config import get_config
+            from app.core.util.workdir import get_workdir
         except Exception:
             return os.path.abspath(os.getcwd())
         try:
             agent = get_config().get_section("agent") or {}
-            cwd = agent.get("shell_cwd", "")
-            if cwd:
-                if not os.path.isabs(cwd):
-                    cwd = os.path.join(get_config().config_root, cwd)
-                if os.path.isdir(cwd):
-                    return os.path.abspath(cwd)
+            if agent.get("shell_cwd"):
+                return get_workdir()
         except Exception:
             pass
-        try:
-            return os.path.abspath(get_config().config_root)
-        except Exception:
-            return os.path.abspath(os.getcwd())
+        return os.path.abspath(get_workdir())
 
     def _file_panel_token_pos(self, value):
         idx = -1
@@ -1761,10 +1755,9 @@ class CelliumTUI(App):
     def action_open_model_picker(self):
         from app.tui.model_picker import ModelPickerScreen
         try:
-            from app.core.util.agent_config import get_config
-            llm = get_config().get_section("llm") or {}
-            models = llm.get("models", [])
-            current = llm.get("current_model", "")
+            from app.server import session_llm
+            models = session_llm.list_models()
+            current = self._current_model_name()
             if not models:
                 self._post(self._append_system(self.tr("model.info_failed", "no models configured")))
                 return
@@ -1817,15 +1810,11 @@ class CelliumTUI(App):
 
     async def _switch_model(self, name):
         try:
-            from app.core.util.agent_config import get_config
-            cfg = get_config()
-            llm = cfg.get_section("llm")
-            models = llm.get("models", [])
-            if not any(m.get("name") == name for m in models):
+            from app.server import session_llm
+            if name not in {m["name"] for m in session_llm.list_models()}:
                 await self._append_system(self.tr("model.not_found", name))
                 return
             # 只切当前会话，不动全局配置（其他会话继续用各自的模型）
-            from app.server import session_llm
             result = session_llm.set_model(self.session_id, name)
             if not result.get("success"):
                 await self._append_system(self.tr("model.switch_failed", result.get("error")))
@@ -2311,6 +2300,18 @@ class CelliumTUI(App):
                 self._current_reasoning.finish()
                 self._current_reasoning = None
             await self._append_chunk(evt.get("content", ""))
+        elif t == "tool_call_pending":
+            self._touch_busy()
+            # 触发工具调用即 reasoning 已结束，别把参数生成时间算进思考耗时
+            if self._current_reasoning is not None:
+                self._current_reasoning.finish()
+                self._current_reasoning = None
+            await self._add_tool_card({
+                "tool": evt.get("tool", ""),
+                "arguments": {},
+                "description": evt.get("description", ""),
+                "call_id": evt.get("call_id"),
+            })
         elif t == "tool_start":
             self._touch_busy()
             if self._current_reasoning is not None:
@@ -2705,8 +2706,10 @@ class CelliumTUI(App):
             description=description,
             arguments=arguments,
         )
+        is_new = call_id not in self._tool_cards
         self._tool_cards[call_id] = self._active_tool_card
-        self._tool_count += 1
+        if is_new:
+            self._tool_count += 1
         self.chat.scroll_to_follow()
 
     def _update_tool_card(self, evt):

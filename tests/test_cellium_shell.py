@@ -18,8 +18,58 @@ from app.agent.shell.cellium_shell import (
     CommandType,
     ExecResult,
     READ_ONLY_PATTERNS,
+    _build_posix_cmd,
+    _is_interactive_argv,
 )
+from app.agent.tools.shell_tool import ShellTool
 from app.core.security.policy import SecurityPolicy, RiskLevel
+
+
+class TestShellArrayCmd(unittest.TestCase):
+    """数组 cmd：list 原样传参，JSON 数组字符串也能还原成 argv"""
+
+    def setUp(self):
+        self.shell = CelliumShell()
+        self.tool = ShellTool(self.shell)
+
+    def tearDown(self):
+        self.shell.close()
+
+    def test_parse_argv_string(self):
+        self.assertEqual(
+            ShellTool._maybe_parse_argv('["python", "--version"]'),
+            ["python", "--version"],
+        )
+        self.assertEqual(ShellTool._maybe_parse_argv("echo hi"), "echo hi")
+        self.assertEqual(ShellTool._maybe_parse_argv('["python", ]x'), '["python", ]x')
+
+    def test_argv_and_json_string_both_run(self):
+        for cmd in (["python", "--version"], '["python", "--version"]'):
+            r = self.tool.execute({"command": "run", "cmd": cmd})
+            self.assertTrue(r.get("success"), r)
+            self.assertIn("Python", r.get("output", ""))
+
+    def test_version_flag_not_interactive(self):
+        self.assertFalse(_is_interactive_argv(["python", "--version"]))
+        self.assertFalse(_is_interactive_argv(["python", "-V"]))
+        self.assertTrue(_is_interactive_argv(["python"]))
+
+
+class TestPosixCmdWrapper(unittest.TestCase):
+    """POSIX 包装：脚本不进命令行，避免 pkill/pgrep -f 匹配到 shell 自身"""
+
+    def test_script_not_in_argv(self):
+        cmd = 'pkill -f "app.py"'
+        argv, extra = _build_posix_cmd("/bin/bash", cmd)
+        self.assertEqual(argv[:2], ["/bin/bash", "-c"])
+        self.assertNotIn("app.py", " ".join(argv))
+        self.assertEqual(extra.get("__CELLIUM_CMD"), cmd)
+
+    def test_long_command_falls_back_inline(self):
+        cmd = "echo " + "x" * 70000
+        argv, extra = _build_posix_cmd("/bin/bash", cmd)
+        self.assertEqual(argv[-1], cmd)
+        self.assertEqual(extra, {})
 
 
 class TestCelliumShellBasic(unittest.TestCase):

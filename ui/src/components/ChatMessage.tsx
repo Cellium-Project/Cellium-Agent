@@ -390,6 +390,11 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
     return { isSchedulerTrigger: false };
   }, [isUser, parsedMessage.content]);
 
+  // 刚发出消息、还没有任何内容时为等待态，出现思考/工具后光标淡出
+  const waitingForResponse = Boolean(isStreaming)
+    && (!message.timeline || message.timeline.length === 0)
+    && !message.content;
+
   // 可视区懒渲染：首屏只为近处消息生成 Markdown
   const [visible, setVisible] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -549,9 +554,14 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
             <span className="assistant-content-wrap">
               {visible || isStreaming ? (
                 <>
-                  {renderTimeline(message, isStreaming)}
-                  {isStreaming && (!message.timeline || message.timeline.length === 0) && !message.content && (
-                    <span className="streaming-cursor"><span /><span /><span /></span>
+                  <span className="live-slot">{renderTimeline(message, isStreaming)}</span>
+                  {isStreaming && (
+                    <span
+                      className={`streaming-cursor${waitingForResponse ? '' : ' fade-out'}`}
+                      aria-hidden="true"
+                    >
+                      <span /><span /><span />
+                    </span>
                   )}
                 </>
               ) : (
@@ -583,15 +593,25 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
       | { kind: 'supplement'; content: string; source?: string }
-      | { kind: 'tool-batch'; items: ToolSegment[] }
+      | { kind: 'tools-tree'; items: ToolSegment[] }
       | { kind: 'tool-single'; item: ToolSegment }
       | ThinkingSegment
       | ReasoningSegment;
 
     const groups: GroupItem[] = [];
+    let toolBuffer: ToolSegment[] = [];
+
+    // 工具树按"思考卡片 / 中间输出"分段：中间插入任何非工具内容就收束当前树
+    const flushTools = () => {
+      if (toolBuffer.length > 0) {
+        groups.push({ kind: 'tools-tree', items: toolBuffer });
+        toolBuffer = [];
+      }
+    };
 
     for (const segment of message.timeline) {
       if (segment.kind === 'text') {
+        flushTools();
         const last = groups[groups.length - 1];
         if (last && last.kind === 'merged-text') {
           last.contents.push(segment.content);
@@ -599,25 +619,25 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
           groups.push({ kind: 'merged-text', contents: [segment.content] });
         }
       } else if (segment.kind === 'supplement') {
+        flushTools();
         groups.push({ kind: 'supplement', content: segment.content, source: segment.source });
       } else if (segment.kind === 'thinking') {
+        flushTools();
         groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'reasoning') {
+        // reasoning 完成后不显示，不参与分树：两段可见内容之间的工具应合并
         groups.push(segment as ReasoningSegment);
       } else if (segment.kind === 'tool') {
         if (segment.tool === 'sub_agent' || segment.tool === 'session_agent') {
+          flushTools();
           groups.push({ kind: 'tool-single', item: segment as ToolSegment });
           continue;
         }
-        const last = groups[groups.length - 1];
-        if (last && last.kind === 'tool-batch') {
-          last.items.push(segment as ToolSegment);
-        } else {
-          groups.push({ kind: 'tool-batch', items: [segment as ToolSegment] });
-        }
+        toolBuffer.push(segment as ToolSegment);
       }
       // 'reasoning' segments are intentionally not displayed
     }
+    flushTools();
 
     return (
       <>
@@ -651,8 +671,17 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
               />
             );
           }
-          // tool batch
-          return <ToolBatchCard key={idx} items={group.items} />;
+          if (group.kind === 'tools-tree') {
+            const first = group.items[0];
+            return (
+              <ToolsTree
+                key={`tools-${first.call_id || idx}`}
+                items={group.items}
+                live={Boolean(isStreaming) && idx === groups.length - 1}
+              />
+            );
+          }
+          return null;
         })}
       </>
     );
@@ -844,9 +873,11 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact })
         <span className="tool-trace-name">{String(trace.tool || 'unknown')}</span>
         {(trace.tool === 'sub_agent' || trace.tool === 'session_agent') && trace.description ? (
           <span className="tool-trace-arg">{String(trace.description)}</span>
-        ) : keyArg && (
+        ) : keyArg ? (
           <span className="tool-trace-arg">{keyArg.length > 48 ? keyArg.slice(0, 48) + '…' : keyArg}</span>
-        )}
+        ) : trace.description ? (
+          <span className="tool-trace-arg">{String(trace.description)}</span>
+        ) : null}
         <span className="tool-trace-spacer" />
         {tail}
         <span className="tool-trace-time">{durStr}</span>
@@ -1024,6 +1055,126 @@ const ToolBatchCard: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }
       <div className="tool-trace-body">
         <div className="tool-trace-body-inner tool-batch-items">
           {showBody && subGroups.map((g, i) => (
+            g.items.length === 1
+              ? (
+                <ToolTraceCard
+                  key={i}
+                  compact
+                  trace={{
+                    tool: g.items[0].tool,
+                    arguments: g.items[0].arguments,
+                    result: g.items[0].result,
+                    duration_ms: g.items[0].duration_ms,
+                    description: g.items[0].description,
+                  }}
+                  status={g.items[0].status}
+                />
+              )
+              : <ToolGroupCard key={i} items={g.items} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ToolsTree: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }>[]; live?: boolean }> = ({ items, live }) => {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const running = items.some(i => i.status === 'running');
+  const active = Boolean(live) || running;
+  const errCount = items.filter(i => i.result?.error).length;
+  const totalMs = items.reduce((s, i) => s + (i.duration_ms || 0), 0);
+
+  const showBody = useCollapseMount(expanded);
+  useEffect(() => {
+    // 运行中展开，树结束后自动收起
+    setExpanded(active);
+  }, [active]);
+
+  // 结束时先聚合收起加载动画，再切为完成圆点
+  const [loader, setLoader] = useState<'idle' | 'live' | 'closing'>(active ? 'live' : 'idle');
+  useEffect(() => {
+    if (active) {
+      setLoader('live');
+      return;
+    }
+    setLoader(prev => (prev === 'live' ? 'closing' : prev));
+  }, [active]);
+  useEffect(() => {
+    if (loader !== 'closing') return;
+    const timer = window.setTimeout(() => setLoader('idle'), 320);
+    return () => window.clearTimeout(timer);
+  }, [loader]);
+
+  const actionLabel = (seg: Extract<TimelineSegment, { kind: 'tool' }>): string => {
+    const args = (seg.arguments || {}) as Record<string, any>;
+    switch (seg.tool) {
+      case 'write': return t('chat.actCreate');
+      case 'edit': return t('chat.actEdit');
+      case 'read': return t('chat.actRead');
+      case 'grep':
+      case 'glob':
+      case 'ls': return t('chat.actSearch');
+      case 'shell': return t('chat.actShell');
+      case 'web_fetch':
+      case 'web_search': return t('chat.actWeb');
+      case 'memory': return t('chat.actMemory');
+      case 'file': {
+        const cmd = String(args.command || '');
+        if (cmd === 'delete') return t('chat.actDelete');
+        if (cmd === 'mkdir' || cmd === 'create') return t('chat.actCreate');
+        return t('chat.actFile');
+      }
+      default: return seg.tool || 'tool';
+    }
+  };
+
+  // 第二层：按工具名聚合（不要求连续）；第三层：每次调用
+  const groups: Array<{ tool: string; items: Extract<TimelineSegment, { kind: 'tool' }>[] }> = [];
+  for (const seg of items) {
+    const g = groups.find(x => x.tool === seg.tool);
+    if (g) g.items.push(seg);
+    else groups.push({ tool: seg.tool, items: [seg] });
+  }
+
+  const counts: Array<{ label: string; n: number }> = [];
+  for (const seg of items) {
+    const label = actionLabel(seg);
+    const c = counts.find(x => x.label === label);
+    if (c) c.n += 1;
+    else counts.push({ label, n: 1 });
+  }
+  const summary = counts.map(c => `${c.label} ${c.n}`).join(' · ');
+
+  return (
+    <div className={`tool-batch tools-tree ${running ? 'tool-running' : ''} ${expanded ? 'tool-expanded' : ''}`}>
+      <div
+        className="tool-trace-header"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+      >
+        <span className="tools-slot">
+          {loader === 'idle'
+            ? <span className={`tool-state-dot ${errCount > 0 ? 'error' : 'done'}`} />
+            : <span className={`tools-loader${loader === 'closing' ? ' closing' : ''}`} aria-hidden="true"><span /><span /><span /></span>}
+        </span>
+        <span className="tool-trace-name">{t('chat.toolsTree')}</span>
+        <span className="tool-batch-summary">{summary}</span>
+        <span className="tool-trace-spacer" />
+        {active
+          ? <span className="tool-tail tool-tail-run">{t('chat.executing')}</span>
+          : errCount > 0
+            ? <span className="tool-tail tool-tail-error">{t('chat.errorsCount', { count: errCount })}</span>
+            : <span className="tool-tail tail-done">{t('chat.done')}</span>}
+        {!active && <span className="tool-trace-time">{formatDuration(totalMs)}</span>}
+        <Icons.ChevronDown size={13} className={`tool-trace-chevron ${expanded ? 'rotated' : ''}`} />
+      </div>
+      <div className="tool-trace-body">
+        <div className="tool-trace-body-inner tool-batch-items tools-tree-items">
+          {showBody && groups.map((g, i) => (
             g.items.length === 1
               ? (
                 <ToolTraceCard

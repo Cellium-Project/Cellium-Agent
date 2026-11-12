@@ -202,6 +202,7 @@ export function useChat() {
     setIsStreaming,
     setHasRunningTask,
     updateStreamingMessage,
+    commitStreamingMessage,
     addMessage,
     upsertMessage,
     markLastUserRewindable,
@@ -283,8 +284,12 @@ export function useChat() {
       return;
     }
 
-    // 处理 timeline，提取 JSON thinking
-    const processedTimeline = processTimeline(ctx.timeline);
+    // 处理 timeline，提取 JSON thinking；未执行的占位工具（截断/中断）标为错误，避免一直转圈
+    const processedTimeline = processTimeline(ctx.timeline).map((seg) =>
+      seg.kind === 'tool' && seg.status === 'running' && !seg.result
+        ? { ...seg, status: 'error' as const, result: { error: '未执行' } }
+        : seg
+    );
 
     const finalText = processedTimeline
       .filter(s => s.kind === 'text')
@@ -305,9 +310,8 @@ export function useChat() {
       toolTraces: ctx.traces,
       timeline: processedTimeline,
     };
-    addMessage(finalMessage);
-    updateStreamingMessage(null);
-  }, [addMessage, updateStreamingMessage]);
+    commitStreamingMessage(finalMessage);
+  }, [commitStreamingMessage, updateStreamingMessage]);
 
   const upsertSubagentActivity = useCallback((event: SSEEvent, ctx?: ReturnType<typeof buildStreamingContext>) => {
     const isSession = event.kind === 'session';
@@ -525,6 +529,30 @@ export function useChat() {
         break;
       }
 
+      case 'tool_call_pending': {
+        if (!event.tool) break;
+        if (event.call_id && ctx.timeline.some(
+          (s) => s.kind === 'tool' && s.call_id === event.call_id
+        )) break;
+        flushChunkBuffer(ctx, sessionId, connectionId);
+        ctx.timeline.push({
+          kind: 'tool',
+          tool: event.tool,
+          arguments: {},
+          duration_ms: 0,
+          description: event.description || '',
+          status: 'running',
+          call_id: event.call_id,
+        });
+        updateStreamingMessage({
+          role: 'assistant',
+          content: '',
+          toolTraces: [...ctx.traces],
+          timeline: [...ctx.timeline],
+        });
+        break;
+      }
+
       case 'tool_start': {
         flushChunkBuffer(ctx, sessionId, connectionId);
         
@@ -538,15 +566,32 @@ export function useChat() {
             status: 'running',
             call_id: event.call_id,
           };
-          ctx.timeline.push(toolSeg);
+          const pendingIdx = event.call_id
+            ? ctx.timeline.findIndex(
+                (s) => s.kind === 'tool' && s.call_id === event.call_id
+              )
+            : -1;
+          if (pendingIdx >= 0) {
+            ctx.timeline[pendingIdx] = toolSeg;
+          } else {
+            ctx.timeline.push(toolSeg);
+          }
 
-          ctx.traces.push({
+          const trace = {
             tool: event.tool,
             arguments: event.arguments,
             duration_ms: 0,
             description: event.description,
             call_id: event.call_id,
-          });
+          };
+          const traceIdx = event.call_id
+            ? ctx.traces.findIndex((t) => t.call_id === event.call_id)
+            : -1;
+          if (traceIdx >= 0) {
+            ctx.traces[traceIdx] = { ...ctx.traces[traceIdx], ...trace };
+          } else {
+            ctx.traces.push(trace);
+          }
 
           updateStreamingMessage({
             role: 'assistant',
@@ -1037,7 +1082,7 @@ export function useChat() {
       const finalTimeline = hasText
         ? timeline
         : [...timeline, { kind: 'text' as const, content: '已停止生成' }];
-      addMessage({
+      commitStreamingMessage({
         role: 'assistant',
         content: finalTimeline
           .filter(s => s.kind === 'text')
@@ -1046,15 +1091,16 @@ export function useChat() {
         toolTraces: traces,
         timeline: finalTimeline,
       });
+    } else {
+      updateStreamingMessage(null);
     }
     activeCtxRef.current = null;
-    updateStreamingMessage(null);
     setIsStreaming(false);
     setHasRunningTask(false);
 
     disconnectWebSocket();
     await stopTask(sessionId);
-  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage, disconnectWebSocket, addMessage, setIsStreaming, setHasRunningTask]);
+  }, [currentSessionId, stopTask, streamingMessage, updateStreamingMessage, commitStreamingMessage, disconnectWebSocket, addMessage, setIsStreaming, setHasRunningTask]);
 
   const rewindToMessage = useCallback(async (messageId: string) => {
     const sessionId = currentSessionId || 'default';

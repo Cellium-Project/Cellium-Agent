@@ -257,6 +257,8 @@ class ChannelManager:
     async def _consume_channel_task_queue(self, message: UnifiedMessage, session_id: str, queue: asyncio.Queue):
         sent_any = False
         pending = ""
+        plan_sent = False
+        self._last_thinking_sent = ""
 
         adapter = self._adapters.get(message.platform)
         minimal_output = getattr(adapter, 'minimal_output', False) if adapter else False
@@ -385,10 +387,11 @@ class ChannelManager:
                                 if status_content:
                                     await safe_send(f"> 💭 **Thinking**: {status_content}")
                         elif event_type == "thinking":
-                            if self._should_show_thinking_plan(message.platform, message.message_type):
-                                thinking_content = event.get("content", "Thinking...")
-                                if thinking_content:
-                                    await safe_send(f"> 💭 **Thinking**: {thinking_content}")
+                            if not self._should_show_thinking_plan(message.platform, message.message_type):
+                                continue
+                            thinking_content = event.get("content", "Thinking...")
+                            if thinking_content:
+                                await safe_send(f"> 💭 **Thinking**: {thinking_content}")
                         elif event_type in ("thinking_start", "reasoning"):
                             pass
                         elif event_type == "thinking_streaming":
@@ -434,10 +437,13 @@ class ChannelManager:
                         elif event_type == "hybrid_phase":
                             if not self._should_show_thinking_plan(message.platform, message.message_type):
                                 continue
+                            if plan_sent:
+                                continue
                             phase_msg = event.get("message", "")
                             phase_desc = event.get("description", "")
                             if phase_msg in ("观察中", "完成"):
                                 continue
+                            plan_sent = True
                             if phase_msg and phase_desc:
                                 await safe_send(f"> [{phase_msg}] {phase_desc}")
                             elif phase_msg:

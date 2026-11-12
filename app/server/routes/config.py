@@ -26,6 +26,22 @@ def _get_agent_config():
     return get_config()
 
 
+def _model_ready(model: Dict) -> bool:
+    return bool((model.get("api_key") or "").strip()) and bool(
+        (model.get("base_url") or "").strip()
+    ) and bool((model.get("model") or "").strip())
+
+
+def _pick_current_model(models: list, preferred: str, current: str) -> str:
+    ready = [m for m in models if isinstance(m, dict) and _model_ready(m)]
+    names = {m.get("name") for m in ready}
+    if current and current in names:
+        return current
+    if preferred and preferred in names:
+        return preferred
+    return ready[0].get("name") if ready else current
+
+
 def _sync_model_to_llm_config(name: str, model_dict: Dict, add: bool = False):
     """将模型配置同步到 llm.models 列表"""
     import logging
@@ -49,19 +65,20 @@ def _sync_model_to_llm_config(name: str, model_dict: Dict, add: bool = False):
             merged = {**m, **model_dict}
             models[i] = merged
             config.set("llm.models", models, persist=True)
-            if not current_model:
-                config.set("llm.current_model", name, persist=True)
-                logger.info("[_sync_model_to_llm_config] 设置 current_model=%s", name)
+            target = _pick_current_model(models, name, current_model)
+            if target != current_model:
+                config.set("llm.current_model", target, persist=True)
+                logger.info("[_sync_model_to_llm_config] 设置 current_model=%s", target)
             return
 
     if add:
         models.append(model_dict)
         config.set("llm.models", models, persist=True)
 
-    if not current_model and models:
-        new_current = models[-1].get("name", "")
-        config.set("llm.current_model", new_current, persist=True)
-        logger.info("[_sync_model_to_llm_config] 设置 current_model=%s", new_current)
+    target = _pick_current_model(models, name, current_model)
+    if target and target != current_model:
+        config.set("llm.current_model", target, persist=True)
+        logger.info("[_sync_model_to_llm_config] 设置 current_model=%s", target)
 
 
 class ConfigValue(BaseModel):

@@ -66,6 +66,7 @@ interface AppState {
   markLastUserRewindable: (turnId: string) => void;
   rewindMessagesFrom: (messageId: string) => void;
   updateStreamingMessage: (message: Message | null) => void;
+  commitStreamingMessage: (message: Message) => void;
   setHasMoreHistory: (hasMore: boolean) => void;
   setHistoryOffset: (offset: number) => void;
 
@@ -96,6 +97,9 @@ interface AppState {
   checkTaskStatus: (sessionId: string) => Promise<boolean>; 
   stopTask: (sessionId: string) => Promise<void>;  
 }
+
+let streamMessageSeq = 0;
+const newStreamMessageId = () => `stream-${Date.now().toString(36)}-${++streamMessageSeq}`;
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Initial State
@@ -203,7 +207,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       hasRunningTask: false,
     };
   }),
-  updateStreamingMessage: (message) => set({ streamingMessage: message }),
+  // 流式消息保持稳定 id，落地时沿用同一 key，避免整行 DOM 重挂载导致闪烁
+  updateStreamingMessage: (message) => set((state) => {
+    if (!message) return { streamingMessage: null };
+    const id = message.id || state.streamingMessage?.id || newStreamMessageId();
+    return { streamingMessage: { ...message, id } };
+  }),
+  // 落地与清空在同一次更新内完成，避免出现"流式已清空、正式消息未到"的中间帧
+  commitStreamingMessage: (message) => set((state) => {
+    const id = message.id || state.streamingMessage?.id;
+    const committed = id ? { ...message, id } : message;
+    const exists = Boolean(id) && state.messages.some((m) => m.id === id);
+    return {
+      messages: exists ? state.messages : [...state.messages, committed],
+      streamingMessage: null,
+    };
+  }),
   setHasMoreHistory: (hasMore) => set({ hasMoreHistory: hasMore }),
   setHistoryOffset: (offset) => set({ historyOffset: offset }),
 
@@ -377,16 +396,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (offset === 0) {
         set((state) => {
-          if (state.isStreaming || state.streamingMessage) {
-            return {
-              historyOffset: nextOffset,
-              hasMoreHistory: data.has_more,
-            };
-          }
-
           if (data.messages.length > 0) {
+            // 刷新/重连时可能与流式恢复并发：服务端历史必须落地，
+            // 只保留服务端还没有的本地消息（刚发出的、尚未归档的）
+            const serverIds = new Set(data.messages.map((m) => m.id).filter(Boolean));
+            const serverKeys = new Set(
+              data.messages.map((m) => `${m.role}|${(m.content || '').trim()}`)
+            );
+            const localOnly = state.messages.filter((m) => {
+              if (m.id) return !serverIds.has(m.id);
+              return !serverKeys.has(`${m.role}|${(m.content || '').trim()}`);
+            });
             return {
-              messages: data.messages,
+              messages: [...data.messages, ...localOnly],
               historyOffset: nextOffset,
               hasMoreHistory: data.has_more,
             };
@@ -398,11 +420,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           };
         });
       } else {
-        set((state) => ({
-          messages: [...data.messages, ...state.messages],
-          historyOffset: Math.max(state.historyOffset, nextOffset),
-          hasMoreHistory: data.has_more,
-        }));
+        set((state) => {
+          const seen = new Set(state.messages.map(m => m.id).filter(Boolean));
+          const incoming = data.messages.filter(m => !m.id || !seen.has(m.id));
+          return {
+            messages: [...incoming, ...state.messages],
+            historyOffset: Math.max(state.historyOffset, nextOffset),
+            hasMoreHistory: data.has_more,
+          };
+        });
       }
     } catch (error) {
       console.error('Failed to fetch messages:', error);

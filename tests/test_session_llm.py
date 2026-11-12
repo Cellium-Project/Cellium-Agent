@@ -74,6 +74,75 @@ class TestSessionLlmStore(unittest.TestCase):
             self.assertEqual(build.call_count, 2)
 
 
+class TestReadyModels(unittest.TestCase):
+
+    def test_unready_entries_hidden_and_global_falls_back(self):
+        section = {
+            "current_model": "model-1",
+            "models": [
+                {"name": "model-1", "api_key": "", "base_url": "", "model": ""},
+                {"name": "ok", "api_key": "k", "base_url": "https://x", "model": "m"},
+            ],
+        }
+
+        class _Cfg:
+            def get_section(self, name):
+                return section
+
+        with patch("app.core.util.agent_config.get_config", return_value=_Cfg()):
+            names = [m["name"] for m in session_llm.list_models()]
+            self.assertEqual(names, ["ok"])
+            self.assertEqual(session_llm.global_model(), "ok")
+
+    def test_get_model_ignores_removed_model(self):
+        with patch.object(session_llm, "list_models", return_value=MODELS):
+            session_llm.set_model("s1", "model-b")
+        with patch.object(session_llm, "list_models", return_value=[MODELS[0]]):
+            self.assertEqual(session_llm.get_model("s1"), "")
+            self.assertFalse(session_llm.has_override("s1"))
+
+
+class TestSyncCurrentModel(unittest.TestCase):
+
+    class _FakeCfg:
+        def __init__(self, section):
+            self.section = section
+
+        def get_section(self, name):
+            return self.section
+
+        def set(self, key, value, persist=False):
+            if key == "llm.models":
+                self.section["models"] = value
+            elif key == "llm.current_model":
+                self.section["current_model"] = value
+
+    def _sync(self, section, name, add=True):
+        from app.server.routes import config as config_route
+        with patch.object(config_route, "_get_agent_config", return_value=self._FakeCfg(section)):
+            config_route._sync_model_to_llm_config(
+                name,
+                {"name": name, "api_key": "k", "base_url": "https://x", "model": "m"},
+                add=add,
+            )
+
+    def test_add_model_promotes_current_when_placeholder_invalid(self):
+        section = {
+            "current_model": "model-1",
+            "models": [{"name": "model-1", "api_key": "", "base_url": "", "model": ""}],
+        }
+        self._sync(section, "real")
+        self.assertEqual(section["current_model"], "real")
+
+    def test_add_model_keeps_valid_current(self):
+        section = {
+            "current_model": "a",
+            "models": [{"name": "a", "api_key": "k", "base_url": "https://a", "model": "ma"}],
+        }
+        self._sync(section, "b")
+        self.assertEqual(section["current_model"], "a")
+
+
 class TestManagerIsolation(unittest.TestCase):
 
     def test_create_loop_uses_session_engine(self):

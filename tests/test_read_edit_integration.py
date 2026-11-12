@@ -40,6 +40,51 @@ class TestReadEditWorkflow:
         finally:
             os.remove(f)
 
+    def test_target_after_full_read_not_swallowed_by_dedup(self):
+        f = make_temp_file("\n".join(f"line{i}" for i in range(20)))
+        try:
+            assert self.rt._cmd_read(file_path=f)["success"]
+            r = self.rt._cmd_read(file_path=f, target="line10")
+            assert r["success"]
+            assert r["target_line"] == 11
+            assert r["lines"] == 7
+            assert "line7" in r["data"] and "line13" in r["data"]
+            assert "line0" not in r["data"]
+        finally:
+            os.remove(f)
+
+    def test_needle_after_full_read_not_swallowed_by_dedup(self):
+        f = make_temp_file("a\nb\nc\nneedle_here\nd\n")
+        try:
+            assert self.rt._cmd_read(file_path=f)["success"]
+            r = self.rt._cmd_read(file_path=f, needle="needle_here")
+            assert r["success"]
+            assert r.get("mode") == "edit_context"
+            assert r["match_line"] == 4
+        finally:
+            os.remove(f)
+
+    def test_target_on_large_file(self):
+        f = make_temp_file("\n".join(f"line{i}" for i in range(20000)))
+        try:
+            assert os.path.getsize(f) > 32 * 1024
+            r = self.rt._cmd_read(file_path=f, target="line12345")
+            assert r["success"]
+            assert r["target_line"] == 12346
+            assert r["lines"] == 7
+            assert "line12345" in r["data"]
+        finally:
+            os.remove(f)
+
+    def test_directory_path_reports_is_a_directory(self):
+        d = tempfile.mkdtemp()
+        try:
+            r = self.rt._cmd_read(file_path=d)
+            assert not r["success"]
+            assert "Is a directory" in r["error"]
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_multi_line_replace(self):
         f = make_temp_file("def foo():\n    return 1\n\ndef bar():\n    return 2\n")
         try:

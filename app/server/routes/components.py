@@ -173,17 +173,27 @@ async def load_single_component(name: str):
 
     discovered = discover_components()
     target = None
+    instance = None
     for item in discovered:
-        cls_instance = item["cls"]()
-        if cls_instance.cell_name.lower() == name.lower():
+        try:
+            cls = item.get("cls")
+            if cls is not None:
+                candidate = cls()
+            else:
+                candidate, _info = _instantiate_component(item["module_path"])
+            if candidate is None:
+                continue
+        except Exception:
+            continue
+        if candidate.cell_name.lower() == name.lower():
             target = item
+            instance = candidate
             break
 
-    if not target:
+    if not target or instance is None:
         raise HTTPException(status_code=404, detail=f"未找到组件: {name}")
 
     try:
-        instance, info = _instantiate_component(target["module_path"])
         register_cell(instance)
         _loaded_files.add(target["file"])
         instance._source_file = target["file"]

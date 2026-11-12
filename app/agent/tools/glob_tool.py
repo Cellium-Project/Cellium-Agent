@@ -79,8 +79,5 @@ class GlobTool(BaseTool):
         }
 
     def _resolve_path(self, path: str) -> str:
-        if not path:
-            return os.getcwd()
-        if os.path.isabs(path):
-            return path
-        return os.path.abspath(path)
+        from app.core.util.workdir import resolve_path
+        return resolve_path(path)

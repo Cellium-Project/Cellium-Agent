@@ -41,6 +41,7 @@ const MessageList = memo(({
   const needsScrollToBottomRef = useRef<boolean>(false); // 切换对话后需要滚动到底部
   const loadMoreLockRef = useRef<boolean>(false);
   const lastLoadMoreRef = useRef<number>(0);
+  const rafIds = useRef<number[]>([]);
 
   const allMessages = streamingMessage
     ? [...messages, streamingMessage]
@@ -57,17 +58,26 @@ const MessageList = memo(({
     if (prevSession !== currentSessionId) {
       historyLoadSnapshotRef.current = null;
       isLoadingHistoryRef.current = false;
+      rafIds.current.forEach(id => cancelAnimationFrame(id));
+      rafIds.current = [];
       needsScrollToBottomRef.current = true;
       return;
     }
 
-    // 加载历史消息完成后恢复滚动位置
+    // 加载历史消息完成后恢复滚动位置（两帧校正，避免 markdown/图片撑高后跳）
     if (wasLoadingHistory && !isLoadingMessages && historyLoadSnapshotRef.current !== null && messagesContainerRef.current) {
       const container = messagesContainerRef.current;
       const snapshot = historyLoadSnapshotRef.current;
-      const newScrollHeight = container.scrollHeight;
-      const addedHeight = newScrollHeight - snapshot.scrollHeight;
-      container.scrollTop = snapshot.scrollTop + addedHeight;
+      const restore = () => {
+        container.scrollTop = snapshot.scrollTop + (container.scrollHeight - snapshot.scrollHeight);
+      };
+      restore();
+      const raf1 = requestAnimationFrame(() => {
+        restore();
+        const raf2 = requestAnimationFrame(restore);
+        rafIds.current.push(raf2);
+      });
+      rafIds.current.push(raf1);
       historyLoadSnapshotRef.current = null;
       isLoadingHistoryRef.current = false;
       return;
@@ -88,6 +98,8 @@ const MessageList = memo(({
   const handleScroll = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container || isLoadingMessages || isStreaming || !hasMoreHistory || !currentSessionId) return;
+    // 上一次历史还在恢复位置时不重复触发，避免连续加载
+    if (isLoadingHistoryRef.current) return;
 
     if (container.scrollTop < 100) {
       if (loadMoreLockRef.current) return;

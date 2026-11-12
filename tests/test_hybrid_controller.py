@@ -360,6 +360,54 @@ class TestHybridControllerMaxReplans(unittest.TestCase):
         self.assertEqual(self.controller.state.phase, HybridPhase.DONE)
 
 
+class TestPlanProgress(unittest.TestCase):
+    """执行计划进度不能把历史观察累计到当前计划"""
+
+    def setUp(self):
+        self.controller = HybridController()
+
+    def test_progress_not_exceed_plan_size(self):
+        step = ThoughtStep(tool="search", purpose="搜索", expected_result="")
+        self.controller._state.phase = HybridPhase.EXECUTE
+        self.controller._state.current_plan = [step]
+        self.controller._state.pending_steps = [step]
+        self.controller._state.executed_steps = [
+            Observation(step=step, success=True) for _ in range(16)
+        ]
+
+        desc = self.controller.get_phase_message()["description"]
+        self.assertEqual(desc, "执行计划 (0/1)")
+
+        self.controller.observe_result(step=step, success=True, output="ok")
+        desc = self.controller.get_phase_message()["description"]
+        self.assertEqual(desc, "执行计划 (1/1)")
+
+    def test_progress_follows_new_plan(self):
+        old = ThoughtStep(tool="search", purpose="搜索", expected_result="")
+        self.controller._state.phase = HybridPhase.EXECUTE
+        self.controller._state.initial_observation_done = True
+        self.controller._state.current_plan = [old]
+        self.controller._state.executed_steps = [
+            Observation(step=old, success=True) for _ in range(5)
+        ]
+        self.controller._state.pending_steps = []
+
+        self.controller.process_thought('''
+        ```json
+        {"reasoning": "继续", "plan": [
+            {"tool": "read", "purpose": "读", "expected_result": ""},
+            {"tool": "write", "purpose": "写", "expected_result": ""}
+        ], "action": "execute"}
+        ```
+        ''')
+
+        self.assertEqual(len(self.controller.state.current_plan), 2)
+        self.assertEqual(
+            self.controller.get_phase_message()["description"],
+            "执行计划 (0/2)",
+        )
+
+
 class TestHybridControllerReset(unittest.TestCase):
     """测试重置功能"""
 

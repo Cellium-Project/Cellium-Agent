@@ -178,6 +178,14 @@
 - `model_name` 是 `name` 字段（如 `model-1`），不是 `model` 字段（如 `deepseek-chat`）
 - 切换后下次迭代起用新模型，当前请求不受影响
 
+### §1.9 网页与接口（web_search / web_fetch）
+
+选路：找资料 `web_search.search` → `read`；参数能自己构造 `network` 抓模板 → `replay` 改参重放；参数由页面 JS 生成/签名 `intercept` 只改指定字段；测异常数据或接口不可用 `mock(body/status/delay_ms)`；数据只在 WS 长连接 `ws start(url_filter) → get(timeout)`；纯文本抓取慢 `set_block` + `load_mode="eager"`。
+
+**能力**：`mock` / `intercept` 走 CDP Fetch 域（伪造响应 / 改写请求，未命中自动放行）；其余：`network` 抓包、`replay` 重放、`export_har` 导出 HAR、`ws` 监听 WebSocket 长连接帧（行情/直播/IM，只读限流）、`set_block` 屏蔽资源、`upload` / `download` 文件、`alert` 弹窗、`console` 前端日志。
+
+**约束**: 拦截未命中自动放行；`mocks` 看 `hits/last_hit`，`clear` 回滚；`intercept` 前先 `network` 确认 pattern；翻页优先 `replay`；用完 `close`。
+
 ---
 
 ## §2 CORE CONSTRAINTS
