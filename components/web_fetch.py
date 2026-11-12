@@ -3595,12 +3595,16 @@ try {
         Args:
             selector: 点击后触发下载的元素（与 url 二选一）
             url: 直接访问的下载地址（与 selector 二选一）
-            path: 保存目录，默认项目下 downloads
+            path: 保存目录，默认 workspace/downloads
             timeout: 等待下载完成秒数
         """
         if not selector and not url:
             return {"success": False, "error": "需要提供 selector 或 url"}
-        target_dir = os.path.abspath(path or os.path.join(os.getcwd(), "downloads"))
+        if path:
+            target_dir = os.path.abspath(path)
+        else:
+            from app.core.util.runtime_paths import resolve_dir_writable
+            target_dir = os.path.join(resolve_dir_writable("workspace"), "downloads")
         os.makedirs(target_dir, exist_ok=True)
         before = set(os.listdir(target_dir))
 

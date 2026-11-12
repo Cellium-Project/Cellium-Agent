@@ -23,12 +23,13 @@ _MODE_LABELS = {
 }
 
 _COMMAND_HELP = "\n".join([
-    "可用命令：",
-    "/plan — 只读计划模式（只调研出方案，不改文件）",
-    "/run — 正常执行模式（可改文件、执行命令）",
-    "/delegate — 编排模式（只拆解调度，交给会话执行）",
-    "/stop — 停止当前运行的任务",
-    "/help — 查看本帮助",
+    "可用命令",
+    "------------------------------",
+    "/plan       只读计划，只出方案",
+    "/run        正常执行，可改文件",
+    "/delegate   拆解调度，交给会话执行",
+    "/stop       停止当前任务",
+    "/help       查看本帮助",
 ])
 
 
@@ -652,7 +653,7 @@ class ChannelManager:
         else:
             from app.server.session_mode import set_mode
             current = set_mode(session_id, cmd.lstrip("/"))
-            reply = f"✅ 已切换到{_MODE_LABELS.get(current, current)}。发送 /help 查看全部命令。"
+            reply = f"已切换到 {_MODE_LABELS.get(current, current)}。发送 /help 查看全部命令。"
 
         await self.send_message(
             message.platform,

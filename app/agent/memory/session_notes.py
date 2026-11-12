@@ -42,8 +42,6 @@ class SessionNotes:
     ```
     """
 
-    DEFAULT_NOTES_DIR = os.path.join("memory", "notes")
-    
     # 最大历史目标数量
     MAX_GOAL_HISTORY = 10
     MAX_SECTION_ITEMS = 50
@@ -60,7 +58,10 @@ class SessionNotes:
 
     def __init__(self, session_id: str, notes_dir: str = None):
         self.session_id = session_id
-        self.notes_dir = notes_dir or self.DEFAULT_NOTES_DIR
+        if not notes_dir:
+            from app.core.util.runtime_paths import resolve_dir_writable
+            notes_dir = os.path.join(resolve_dir_writable("memory"), "notes")
+        self.notes_dir = notes_dir
         safe_id = session_id.replace(":", "_").replace("/", "_").replace("\\", "_")
         self.notes_path = os.path.join(self.notes_dir, f"{safe_id}.md")
         self._content: Dict[str, List[str]] = {}

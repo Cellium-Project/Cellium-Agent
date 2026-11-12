@@ -48,6 +48,9 @@ class TraceRecorder:
             enabled: 是否启用追踪
         """
         self.enabled = enabled
+        if trace_dir and not os.path.isabs(trace_dir):
+            from app.core.util.runtime_paths import resolve_dir_writable
+            trace_dir = os.path.join(resolve_dir_writable(), trace_dir)
         self.trace_dir = trace_dir
 
         if trace_dir and enabled:

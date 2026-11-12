@@ -15,13 +15,18 @@ def resolve_workdir(raw: str = None) -> Optional[str]:
 
     - 空 → None（调用方用启动目录）
     - 绝对路径 → 直接使用
-    - 相对路径 → 按启动目录解析（不再拼到 config_root 下）
+    - 相对路径 → 按可写数据根解析（pip 安装=%APPDATA%/CelliumAgent，
+      源码=项目根）
     - 目录不存在则尝试创建；失败回退 None
     """
     raw = (raw or "").strip()
     if not raw:
         return None
-    candidate = raw if os.path.isabs(raw) else os.path.join(os.getcwd(), raw)
+    if os.path.isabs(raw):
+        candidate = raw
+    else:
+        from app.core.util.runtime_paths import resolve_dir_writable
+        candidate = os.path.join(resolve_dir_writable(), raw)
     candidate = os.path.abspath(candidate)
     if os.path.isdir(candidate):
         return candidate

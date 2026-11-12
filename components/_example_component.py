@@ -141,7 +141,8 @@ class ExampleComponent(BaseCell):
     # ================================================================
 
     def _state_file(self) -> Path:
-        return Path("workspace/.cache/component_state") / f"{self.cell_name}.json"
+        from app.core.util.runtime_paths import resolve_dir_writable
+        return Path(resolve_dir_writable("workspace")) / ".cache" / "component_state" / f"{self.cell_name}.json"
 
     def _load_state(self):
         try:

@@ -1850,23 +1850,21 @@ class CelliumTUI(App):
     # ---- 动作 ----
 
     def key_escape(self):
-        now = time.monotonic()
-        if self._busy:
-            if now - self._last_esc <= 0.8:
-                self._last_esc = 0.0
-                if self._current_loop:
-                    self._current_loop.stop()
-                self._busy_status = self.tr("stop.requested")
-                self._refresh_status()
-            else:
-                self._last_esc = now
-                self._busy_status = self.tr("stop.press_again")
-                self._refresh_status()
-        elif now - self._last_esc <= 0.8:
+        # Esc 仅用于停止运行中的任务，不再用于退出应用（退出用 Ctrl+Q / Ctrl+D）
+        if not self._busy:
             self._last_esc = 0.0
-            self.exit()
+            return
+        now = time.monotonic()
+        if now - self._last_esc <= 0.8:
+            self._last_esc = 0.0
+            if self._current_loop:
+                self._current_loop.stop()
+            self._busy_status = self.tr("stop.requested")
+            self._refresh_status()
         else:
             self._last_esc = now
+            self._busy_status = self.tr("stop.press_again")
+            self._refresh_status()
 
     def action_stop_or_exit(self):
         if self._busy:
