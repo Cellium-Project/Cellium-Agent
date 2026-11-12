@@ -3,6 +3,7 @@
 预定义提示词拼图块
 """
 
+import logging
 import os
 import platform
 from datetime import datetime
@@ -12,6 +13,8 @@ from app.agent.prompt.piece import PromptPiece
 
 if TYPE_CHECKING:
     from app.agent.prompt.builder import PromptBuilder
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -63,7 +66,8 @@ def _load_profile(memory) -> tuple:
         user_name = user_rec.get("content", "").strip() if user_rec else ""
         persona = persona_rec.get("content", "").strip() if persona_rec else ""
         return agent_name, user_name, persona
-    except Exception:
+    except Exception as e:
+        logger.debug("[PromptPieces] 读取 profile 失败，按空处理: %s", e)
         return "", "", ""
 
 
@@ -95,19 +99,21 @@ def _inject_into_identity(personality: str, extras: list) -> str:
 
 def get_identity_piece(memory_dir: str = "memory", memory=None) -> PromptPiece:
     personality = _read_personality(memory_dir)
-    agent_name, user_name, persona = _load_profile(memory)
-    extras = []
-    if agent_name:
-        extras.append(f"> 你的名字是「{agent_name}」，用户以此称呼你。")
-    if user_name:
-        extras.append(f"> 用户的称呼是「{user_name}」，回复时以此称呼用户。")
-    if persona:
-        extras.append(f"> 人格补充设定：\n{persona}")
-    personality = _inject_into_identity(personality, extras)
+
+    def _render(ctx: dict = None) -> str:
+        agent_name, user_name, persona = _load_profile(memory)
+        extras = []
+        if agent_name:
+            extras.append(f"> 你的名字是「{agent_name}」，用户以此称呼你。")
+        if user_name:
+            extras.append(f"> 用户的称呼是「{user_name}」，回复时以此称呼用户。")
+        if persona:
+            extras.append(f"> 人格补充设定：\n{persona}")
+        return _inject_into_identity(personality, extras)
 
     return PromptPiece(
         name="identity",
-        content=personality,
+        renderer=_render,
         stability="static",
         priority=0,
         role="system",
@@ -125,14 +131,15 @@ def get_system_info_piece() -> PromptPiece:
 
 
 def get_profile_piece(memory=None, ask_user_name: bool = True) -> PromptPiece:
-    _, user_name, _ = _load_profile(memory)
-    if user_name or not ask_user_name:
-        content = ""
-    else:
-        content = "<system-reminder>\n用户尚未告知称呼，请在合适时机礼貌询问用户希望被如何称呼。\n</system-reminder>"
+    def _render(ctx: dict = None) -> str:
+        _, user_name, _ = _load_profile(memory)
+        if user_name or not ask_user_name:
+            return ""
+        return "<system-reminder>\n用户尚未告知称呼，请在合适时机礼貌询问用户希望被如何称呼。\n</system-reminder>"
+
     return PromptPiece(
         name="profile",
-        content=content,
+        renderer=_render,
         stability="static",
         priority=2,
         role="system",

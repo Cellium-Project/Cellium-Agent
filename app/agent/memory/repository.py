@@ -1259,6 +1259,7 @@ class MemoryRepository:
         return None
 
     def _find_by_memory_key(self, memory_key: str, schema_type: Optional[str] = None) -> Optional[Tuple[str, Dict[str, Any]]]:
+        best: Optional[Tuple[str, Dict[str, Any]]] = None
         for record_id, record in self._catalog.get("records", {}).items():
             if record.get("status") != "active":
                 continue
@@ -1266,8 +1267,9 @@ class MemoryRepository:
                 continue
             if schema_type and record.get("schema_type") != schema_type:
                 continue
-            return record_id, record
-        return None
+            if best is None or (record.get("updated_at") or "") >= (best[1].get("updated_at") or ""):
+                best = (record_id, record)
+        return best
 
     def _is_protected(self, record: Optional[Dict[str, Any]]) -> bool:
         return bool(record) and record.get("memory_key") in PROTECTED_MEMORY_KEYS

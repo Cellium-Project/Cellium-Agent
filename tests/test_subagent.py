@@ -333,8 +333,8 @@ class TestSubAgentComponent(unittest.TestCase):
 
     def test_profile_piece_can_skip_ask_user_name(self):
         from app.agent.prompt.pieces import get_profile_piece
-        self.assertEqual(get_profile_piece(None, ask_user_name=False).content, "")
-        self.assertIn("礼貌询问", get_profile_piece(None).content)
+        self.assertEqual(get_profile_piece(None, ask_user_name=False).render({}), "")
+        self.assertIn("礼貌询问", get_profile_piece(None).render({}))
 
     def test_help_list_status_cancel(self):
         c = SubAgent()
