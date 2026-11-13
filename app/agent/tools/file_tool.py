@@ -21,6 +21,7 @@ class FileTool(BaseTool):
         "- command=fs, action=create: create files from files param. "
         "files MUST be a JSON object mapping file paths to content, e.g. "
         '{"path/a.py": "print(1)", "path/b.txt": "line1\\nline2"}. '
+        "path 可选，作为 files 中相对路径的基准目录（不传则相对工作目录）。"
         "Multi-line content: use real newlines (the JSON string may contain \\n escape or actual line breaks). "
         "Do NOT wrap values in <...>, do NOT embed markdown code fences. "
         "For large files or content with many quotes, prefer shell/session writing instead.\n"
@@ -58,7 +59,7 @@ class FileTool(BaseTool):
                         },
                         "path": {
                             "type": "string",
-                            "description": "[fs/insight] 文件或目录路径",
+                            "description": "[fs/insight] 文件或目录路径；[fs create] 作为 files 中相对路径的基准目录",
                         },
                         "recursive": {
                             "type": "boolean",
@@ -128,7 +129,7 @@ class FileTool(BaseTool):
         elif action == "create":
             if not files:
                 return {"success": False, "error": "files is required. Example: file(command='fs', action='create', files={'D:/path/file.py': 'content'})"}
-            return self._fs_create(files)
+            return self._fs_create(files, path)
 
         else:
             return {"success": False, "error": f"Unknown action: {action}"}
@@ -201,7 +202,7 @@ class FileTool(BaseTool):
             result["size"] = os.path.getsize(abs_path) if result["type"] == "file" else None
         return result
 
-    def _fs_create(self, files: Dict[str, str]) -> Dict[str, Any]:
+    def _fs_create(self, files: Dict[str, str], path: str = None) -> Dict[str, Any]:
         if isinstance(files, str):
             try:
                 files = json.loads(files)
@@ -209,11 +210,18 @@ class FileTool(BaseTool):
                 return {"success": False, "error": f"files JSON parse failed: {e}"}
         if not isinstance(files, dict):
             return {"success": False, "error": f"files must be a dict, got {type(files).__name__}"}
-        
+
+        base = self._resolve_path(path) if path else None
+        if base and os.path.isfile(base):
+            return {"success": False, "error": f"path 必须是目录，文件路径请写进 files 的键: {base}"}
         results = []
         success_count = 0
         for file_path, content in files.items():
-            full_path = self._resolve_path(file_path.replace('/', os.sep).replace('\\', os.sep))
+            rel = str(file_path).replace('/', os.sep).replace('\\', os.sep)
+            if base and not os.path.isabs(rel):
+                full_path = os.path.normpath(os.path.join(base, rel))
+            else:
+                full_path = self._resolve_path(rel)
             try:
                 parent = os.path.dirname(full_path)
                 if parent and not os.path.exists(parent):
