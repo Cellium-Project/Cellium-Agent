@@ -200,6 +200,8 @@ Screen {
 #delegation-bar {
     height: auto;
     max-height: 8;
+    width: 100%;
+    min-width: 0;
     padding: 0 1;
     background: $surface;
     color: $text-muted;

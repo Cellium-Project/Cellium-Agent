@@ -50,7 +50,11 @@ def save() -> None:
         if parent:
             os.makedirs(parent, exist_ok=True)
         with LOCK:
-            payload = {"delegations": {k: _serialize(v) for k, v in DELEGATIONS.items()}}
+            delegations = {k: _serialize(v) for k, v in DELEGATIONS.items()}
+            pending = {
+                k: [m for m in v] for k, v in PENDING_NOTIFY.items() if v
+            }
+        payload = {"delegations": delegations, "pending_notify": pending}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -59,12 +63,32 @@ def save() -> None:
         pass
 
 
+def _restore_pending(data: Dict[str, Any]) -> None:
+    records = data.get("pending_notify") if isinstance(data, dict) else None
+    if not isinstance(records, dict):
+        return
+    with LOCK:
+        PENDING_NOTIFY.clear()
+        for parent, items in records.items():
+            if not isinstance(items, list) or not items:
+                continue
+            queue = deque()
+            for item in items:
+                if isinstance(item, str):
+                    queue.append(item)
+                elif isinstance(item, dict):
+                    queue.append(item)
+            if queue:
+                PENDING_NOTIFY[str(parent)] = queue
+
+
 def load() -> Dict[str, Dict[str, Any]]:
     try:
         with open(_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return {}
+    _restore_pending(data)
     records = data.get("delegations") if isinstance(data, dict) else None
     if not isinstance(records, dict):
         return {}
@@ -74,7 +98,6 @@ def load() -> Dict[str, Dict[str, Any]]:
         if not isinstance(value, dict):
             continue
         info = dict(value)
-        # 重启后进程里的后台任务已经不存在，标记为中断而不是继续 running
         if info.get("status") in _ACTIVE_STATUSES:
             info.update({
                 "status": "unknown",

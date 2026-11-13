@@ -32,7 +32,7 @@ interface AppState {
     task_id?: string; target?: string; target_title?: string; name?: string;
     purpose?: string; status?: string; current_tool?: string; last_tool?: string;
     last_reasoning?: string; tool_calls?: number; elapsed_s?: number;
-    error?: string; success?: boolean;
+    error?: string; success?: boolean; stale?: boolean;
   }) => void;
   removeDelegationActivity: (taskId: string) => void;
   clearDelegationActivity: () => void;
@@ -94,12 +94,14 @@ interface AppState {
   createSession: () => Promise<string>;
   switchSession: (sessionId: string) => Promise<void>;
   fetchMessages: (sessionId: string, offset?: number, force?: boolean) => Promise<void>;
-  checkTaskStatus: (sessionId: string) => Promise<boolean>; 
+  checkTaskStatus: (sessionId: string) => Promise<{ hasRunningTask: boolean; lastEventId: number }>; 
   stopTask: (sessionId: string) => Promise<void>;  
 }
 
 let streamMessageSeq = 0;
 const newStreamMessageId = () => `stream-${Date.now().toString(36)}-${++streamMessageSeq}`;
+
+const optimisticSessions = new Map<string, { session: Session; ts: number }>();
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Initial State
@@ -148,12 +150,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!id || id === 'session:') return {};
     const idx = state.delegationActivity.findIndex(a => a.task_id === id);
     const base = idx >= 0 ? state.delegationActivity[idx] : null;
+    const terminal = new Set(['done', 'error', 'timeout', 'cancelled', 'unknown']);
+    const incomingStatus = event.status ?? base?.status ?? 'running';
+    const status = base?.status && terminal.has(base.status) && !terminal.has(incomingStatus)
+      ? base.status
+      : incomingStatus;
     const item: DelegationActivity = {
       task_id: id,
       target: event.target ?? base?.target ?? '',
       target_title: event.target_title ?? base?.target_title,
       purpose: event.purpose ?? base?.purpose,
-      status: event.status ?? base?.status ?? 'running',
+      status,
       current_tool: event.current_tool ?? (event.status ? undefined : base?.current_tool),
       last_tool: event.last_tool ?? base?.last_tool,
       last_reasoning: event.last_reasoning ?? base?.last_reasoning,
@@ -161,6 +168,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       elapsed_s: event.elapsed_s ?? base?.elapsed_s,
       error: event.error ?? (event.status ? undefined : base?.error),
       success: event.success ?? base?.success,
+      stale: event.stale ?? (event.status ? false : base?.stale),
       updatedAt: Date.now(),
     };
     const next = idx >= 0
@@ -309,7 +317,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchSessions: async () => {
     try {
       const data = await fetchJSON<{ sessions: Session[]; total: number }>(API.sessionList);
-      set({ sessions: data.sessions || [] });
+      const remote = data.sessions || [];
+      const now = Date.now();
+      const remoteIds = new Set(remote.map((s) => s.session_id));
+      for (const [id, entry] of optimisticSessions) {
+        if (remoteIds.has(id) || now - entry.ts > 60000) optimisticSessions.delete(id);
+      }
+      const extras = Array.from(optimisticSessions.values())
+        .filter((e) => !remoteIds.has(e.session.session_id))
+        .map((e) => e.session);
+      set({ sessions: extras.length ? [...extras, ...remote] : remote });
     } catch (error) {
       console.error('Failed to fetch sessions:', error);
     }
@@ -327,6 +344,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         created_at: data.created_at,
         last_active: data.created_at,
       };
+      optimisticSessions.set(data.session_id, { session: newSession, ts: Date.now() });
       set((state) => ({
         sessions: [newSession, ...state.sessions],
         currentSessionId: data.session_id,
@@ -443,13 +461,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         session_id: string;
         has_running_task: boolean;
         task_status: string | null;
+        last_event_id?: number;
       }>(API.chatStatus(sessionId));
 
       set({ hasRunningTask: data.has_running_task });
-      return data.has_running_task;
+      return { hasRunningTask: data.has_running_task, lastEventId: Number(data.last_event_id) || 0 };
     } catch (error) {
       console.error('Failed to check task status:', error);
-      return false;
+      return { hasRunningTask: false, lastEventId: 0 };
     }
   },
 

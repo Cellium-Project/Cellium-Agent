@@ -136,7 +136,8 @@ class SessionStore:
         db_path = os.path.join(os.path.dirname(self.archive_dir), "archive.db")
         if os.path.exists(db_path):
             try:
-                conn = sqlite3.connect(db_path)
+                conn = sqlite3.connect(db_path, timeout=5.0)
+                conn.execute("PRAGMA busy_timeout=5000")
                 try:
                     rows = conn.execute(
                         "SELECT session_id, COUNT(*) AS cnt, MIN(time) AS first_seen, "

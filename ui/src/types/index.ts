@@ -37,6 +37,7 @@ export interface DelegationActivity {
   elapsed_s?: number;
   error?: string;
   success?: boolean;
+  stale?: boolean;
   updatedAt: number;
 }
 

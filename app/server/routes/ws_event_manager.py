@@ -35,7 +35,9 @@ class WSClient:
         self.client_id = client_id
         self.session_id = session_id
         self._closed = False
-        self.published_ids: set = set()  
+        self.published_ids: set = set()
+        self.replaying = False
+        self.replay_backlog: list = []  
 
     async def send(self, message: WSMessage):
         """发送消息到客户端"""
@@ -73,6 +75,9 @@ class WSConnectionManager:
     _SEND_TIMEOUT: float = 5.0
     _SESSION_QUEUE_LIMIT: int = 2000
     _WORKER_IDLE_EXIT: float = 60.0
+    _TERMINAL_EVENT_TYPES = frozenset({
+        "done", "error", "tool_result", "subagent_done", "delegation_done", "messages_rewound",
+    })
 
     def __init__(self):
         self._clients: Dict[str, WSClient] = {}
@@ -208,6 +213,21 @@ class WSConnectionManager:
             client._closed = True
             return False
 
+    def _is_terminal(self, message: WSMessage) -> bool:
+        return bool(message and message.type in self._TERMINAL_EVENT_TYPES)
+
+    def _evict_incremental(self, queue: asyncio.Queue) -> bool:
+        inner = getattr(queue, "_queue", None)
+        if inner is None:
+            return False
+        for index, item in enumerate(inner):
+            if not self._is_terminal(item):
+                del inner[index]
+                if getattr(queue, "_unfinished_tasks", 0) > 0:
+                    queue._unfinished_tasks -= 1
+                return True
+        return False
+
     def enqueue_to_session(self, session_id: str, message: WSMessage) -> bool:
         """把事件投递到 session 队列，由单消费者按序发送"""
         if not self._session_clients.get(session_id):
@@ -231,6 +251,26 @@ class WSConnectionManager:
             queue.put_nowait(message)
             return True
         except asyncio.QueueFull:
+            if self._is_terminal(message):
+                if self._evict_incremental(queue):
+                    queue.put_nowait(message)
+                    self._dropped_events += 1
+                    logger.warning(
+                        f"[WSManager] session {session_id} 队列已满，挤掉增量事件以投递终态 {message.type}"
+                    )
+                    return True
+                try:
+                    queue.get_nowait()
+                    if getattr(queue, "_unfinished_tasks", 0) > 0:
+                        queue._unfinished_tasks -= 1
+                    queue.put_nowait(message)
+                    self._dropped_events += 1
+                    logger.warning(
+                        f"[WSManager] session {session_id} 队列已满，挤掉最旧事件以投递终态 {message.type}"
+                    )
+                    return True
+                except Exception:
+                    pass
             self._dropped_events += 1
             if self._dropped_events % 100 == 1:
                 logger.warning(
@@ -266,16 +306,20 @@ class WSConnectionManager:
                 queue.task_done()
 
     async def broadcast(self, message: WSMessage):
-        """广播到所有客户端"""
+        """广播到所有客户端，各连接并发发送，慢连接只影响自己"""
         if not self._clients:
             logger.debug("[WSManager] 无客户端，跳过广播")
             return
 
-        disconnected = []
-        for client_id, client in list(self._clients.items()):
-            if not await self._safe_send(client, message):
-                disconnected.append(client_id)
+        clients = list(self._clients.items())
+        results = await asyncio.gather(
+            *[self._safe_send(client, message) for _, client in clients],
+            return_exceptions=True,
+        )
 
+        disconnected = [
+            client_id for (client_id, _), ok in zip(clients, results) if ok is not True
+        ]
         for client_id in disconnected:
             await self.remove_client(client_id)
 
@@ -314,6 +358,9 @@ class WSConnectionManager:
         for client_id in list(self._session_clients[session_id]):
             client = self._clients.get(client_id)
             if client:
+                if client.replaying:
+                    client.replay_backlog.append(message)
+                    continue
                 if self._client_seen(client, message.data):
                     continue
                 if not await self._safe_send(client, message):
@@ -323,6 +370,30 @@ class WSConnectionManager:
             await self.remove_client(client_id)
 
         logger.debug(f"[WSManager] session 推送完成: {session_id}, {message.type}")
+
+    async def begin_replay(self, client_id: str) -> None:
+        client = self._clients.get(client_id)
+        if client is None:
+            return
+        client.replaying = True
+        client.replay_backlog = []
+
+    async def finish_replay(self, client_id: str) -> None:
+        """回放结束后按 event_id 补发期间收到的实时事件"""
+        client = self._clients.get(client_id)
+        if client is None:
+            return
+        backlog = client.replay_backlog
+        client.replay_backlog = []
+        client.replaying = False
+        if not backlog:
+            return
+        backlog.sort(key=lambda m: (m.data or {}).get("event_id") or 0)
+        for message in backlog:
+            if self._client_seen(client, message.data):
+                continue
+            if not await self._safe_send(client, message):
+                return
 
     async def send_to_client(self, client_id: str, message: WSMessage):
         """发送到特定客户端"""

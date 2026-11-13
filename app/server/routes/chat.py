@@ -186,7 +186,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     session_memory = session_info.memory
 
     if task_mgr.has_running_task(session_id):
-        history = task_mgr.get_event_history(session_id, after_event_id=request.last_event_id)
+        from app.server.routes.session_events import collect_replay_events
+
+        history = collect_replay_events(session_id, request.last_event_id)
         logger.info("[chat_stream] 重新连接到运行中的任务 | session=%s | replay_from=%d | replay_count=%d",
                    session_id, request.last_event_id, len(history))
         pending_input = task_mgr.get_pending_input(session_id)

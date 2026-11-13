@@ -198,6 +198,7 @@ export function useChat() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const connectionIdRef = useRef(0);
   const lastEventIdBySessionRef = useRef<Record<string, number>>({});
+  const reconnectAttemptRef = useRef(0);
 
   const pendingEchoRef = useRef<Record<string, string | null>>({});
   const isManualCloseRef = useRef(false);
@@ -241,6 +242,15 @@ export function useChat() {
   }
 
   type StreamingContext = ReturnType<typeof buildStreamingContext>;
+
+  // 会话列表随事件刷新：done/新消息到达时更新消息数与活跃时间，节流避免频繁请求
+  const lastSessionsRefreshRef = useRef(0);
+  const refreshSessionsThrottled = useCallback(() => {
+    const now = Date.now();
+    if (now - lastSessionsRefreshRef.current < 3000) return;
+    lastSessionsRefreshRef.current = now;
+    void fetchSessions();
+  }, [fetchSessions]);
 
   // 批量处理chunk，减少渲染次数
   const flushChunkBuffer = useCallback((ctx: StreamingContext, sessionId: string, connectionId: number) => {
@@ -458,13 +468,13 @@ export function useChat() {
     }
     
     if (event.session_id && event.session_id !== sessionId) return;
-    // message_received 必须唤醒已结束的 ctx：TUI/通道/会话委托推送会在空闲时拉起新一轮
-    if (ctx.finalized && event.type !== 'messages_rewound' && event.type !== 'message_received') return;
-
-    if (event.event_id && event.event_id > ctx.lastEventId) {
+    if (event.event_id && event.event_id <= ctx.lastEventId) return;
+    if (event.event_id) {
       ctx.lastEventId = event.event_id;
       lastEventIdBySessionRef.current[sessionId] = event.event_id;
     }
+    // message_received 必须唤醒已结束的 ctx：TUI/通道/会话委托推送会在空闲时拉起新一轮
+    if (ctx.finalized && event.type !== 'messages_rewound' && event.type !== 'message_received') return;
     if (event.type !== 'reasoning' && ctx.timeline.length > 0) {
       const last = ctx.timeline[ctx.timeline.length - 1];
       if (last.kind === 'reasoning' && !last.ended) {
@@ -712,6 +722,7 @@ export function useChat() {
         finalizeMessage(ctx, connectionId);
         setIsStreaming(false);
         setHasRunningTask(false);
+        refreshSessionsThrottled();
         if (event.tracked_turn_id) markLastUserRewindable(event.tracked_turn_id);
         break;
 
@@ -805,7 +816,6 @@ export function useChat() {
         ctx.sawDone = false;
         ctx.stoppedByServer = false;
         ctx.stopRequested = false;
-        ctx.lastEventId = 0;
         // 空闲状态收到外部来源的新回合：同步流式/运行中状态
         // 不能只看 wasFinalized：首屏/切会话后 ctx 是新建的，finalized 也是 false
         if (!useAppStore.getState().isStreaming) {
@@ -818,6 +828,7 @@ export function useChat() {
           toolTraces: [],
           timeline: [],
         });
+        refreshSessionsThrottled();
         break;
       }
 
@@ -837,7 +848,7 @@ export function useChat() {
         break;
       }
     }
-  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity, rewindMessagesFrom, markLastUserRewindable, upsertDelegationActivity]);
+  }, [updateStreamingMessage, finalizeMessage, streamingMessage, setIsStreaming, setHasRunningTask, addMessage, setAgentMode, upsertSubagentActivity, rewindMessagesFrom, markLastUserRewindable, upsertDelegationActivity, refreshSessionsThrottled]);
 
   // 创建新 WebSocket 连接的核心函数
   const createNewConnection = useCallback((
@@ -847,7 +858,9 @@ export function useChat() {
     connectingKey: string
   ) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/session-events/ws?session_id=${encodeURIComponent(sessionId)}`;
+    // 断点续传：带上已处理的最大 event_id，服务端只回放缺失部分
+    const afterEventId = ctx.lastEventId || lastEventIdBySessionRef.current[sessionId] || 0;
+    const wsUrl = `${protocol}//${window.location.host}/api/session-events/ws?session_id=${encodeURIComponent(sessionId)}&after_event_id=${afterEventId}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -856,6 +869,7 @@ export function useChat() {
     ws.onopen = () => {
       console.log('[WS] Connected for chat');
       (window as any)[connectingKey] = false;
+      reconnectAttemptRef.current = 0;
 
       heartbeatTimerRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -866,6 +880,7 @@ export function useChat() {
       ws.send(JSON.stringify({
         type: 'subscribe',
         session_id: sessionId,
+        after_event_id: ctx.lastEventId || lastEventIdBySessionRef.current[sessionId] || 0,
       }));
     };
 
@@ -873,6 +888,7 @@ export function useChat() {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'pong') return;
+        if (msg.type === 'replayed') return;
         if (msg.type === 'subscribed') return;
         if (msg.type === 'connected') return;
 
@@ -909,12 +925,16 @@ export function useChat() {
       }
 
       // 空闲（ctx.finalized）也要重连：否则断线后收不到 TUI/通道/会话委托推送
+      // 指数退避 1s→2s→4s…封顶 30s，避免服务端不可达时刷屏重连
+      const attempt = reconnectAttemptRef.current;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      reconnectAttemptRef.current = attempt + 1;
       reconnectTimerRef.current = setTimeout(() => {
         const newConnectingKey = `ws_connecting_${sessionId}`;
         (window as any)[newConnectingKey] = false;
         const newConnectionId = ++connectionIdRef.current;
         createNewConnection(sessionId, ctx, newConnectionId, newConnectingKey);
-      }, 3000);
+      }, delay);
     };
   }, [handleChatEvent, setIsStreaming]);
 
@@ -1001,8 +1021,13 @@ export function useChat() {
     abortControllerRef.current = new AbortController();
 
     try {
-      const hasTask = await checkTaskStatus(sessionId);
-      if (hasTask) {
+      const status = await checkTaskStatus(sessionId);
+      if (!ctx.lastEventId && status.lastEventId) {
+        // 续传起点：服务端已产出的最大 event_id，避免重连后从头回放
+        ctx.lastEventId = status.lastEventId;
+        lastEventIdBySessionRef.current[sessionId] = status.lastEventId;
+      }
+      if (status.hasRunningTask) {
         const connectionId = ++connectionIdRef.current;
         connectWebSocket(sessionId, ctx, connectionId, true);
       } else {
@@ -1041,7 +1066,6 @@ export function useChat() {
 
     const ctx = buildStreamingContext();
     activeCtxRef.current = ctx;
-    lastEventIdBySessionRef.current[sessionId] = 0;
     pendingEchoRef.current[sessionId] = content.trim();
     updateStreamingMessage({
       role: 'assistant',
@@ -1195,10 +1219,15 @@ export function useChat() {
       const ctx = buildStreamingContext();
       ctx.lastEventId = lastEventIdBySessionRef.current[sessionId] || 0;
 
-      const hasTask = await checkTaskStatus(sessionId);
+      const status = await checkTaskStatus(sessionId);
       if (!mounted) return;
 
-      if (hasTask) {
+      if (!ctx.lastEventId && status.lastEventId) {
+        ctx.lastEventId = status.lastEventId;
+        lastEventIdBySessionRef.current[sessionId] = status.lastEventId;
+      }
+
+      if (status.hasRunningTask) {
         // 有运行任务：恢复流式状态
         activeCtxRef.current = ctx;
         updateStreamingMessage({

@@ -154,6 +154,10 @@ class SessionAgent(BaseCell):
     def cell_name(self) -> str:
         return "session_agent"
 
+    def on_load(self):
+        super().on_load()
+        self._resume_pending_notify()
+
     @staticmethod
     def _fail(error: str, reason: str) -> Dict[str, Any]:
         return {"success": False, "error": error, "reason": reason}
@@ -370,6 +374,7 @@ class SessionAgent(BaseCell):
             timeout: 超时秒数，默认 900，上限 3600
             title: 新建目标会话时使用的名称
         """
+        self._resume_pending_notify(session_id)
         target = (target or "").strip()
         if isinstance(create, str):
             create = create.strip().lower() in ("1", "true", "yes", "y")
@@ -498,6 +503,7 @@ class SessionAgent(BaseCell):
 
     def _cmd_status(self, target: str = "", task_id: str = "", session_id: str = None) -> Dict[str, Any]:
         """查看会话委托状态（target 取该目标最新一条，留空列出全部）"""
+        self._resume_pending_notify(session_id)
         if target and not task_id:
             resolved, err = self._resolve_target(target)
             if err:
@@ -515,6 +521,7 @@ class SessionAgent(BaseCell):
 
     def _cmd_results(self, target: str = "", task_id: str = "", session_id: str = None) -> Dict[str, Any]:
         """读取会话委托的最终结论与目标会话 turn_id"""
+        self._resume_pending_notify(session_id)
         if target and not task_id:
             resolved, err = self._resolve_target(target)
             if err:
@@ -905,7 +912,10 @@ class SessionAgent(BaseCell):
             "notice": build_delegation_notice(info),
             "task_id": str(info.get("task_id") or ""),
             "msg_id": f"dlg_{uuid.uuid4().hex[:8]}_{int(time.time() * 1000)}",
+            "target": str(info.get("target") or ""),
+            "created_at": time.time(),
         })
+        delegation_state.save()
         self._ensure_notify_worker(parent)
 
     def _ensure_notify_worker(self, session_id: str) -> None:
@@ -916,6 +926,22 @@ class SessionAgent(BaseCell):
             _NOTIFY_WORKERS[session_id] = asyncio.create_task(self._notify_worker(session_id))
         except RuntimeError:
             logger.warning("[SessionAgent] 无运行中的事件循环，通知保留在队列 | session=%s", session_id)
+
+    def _resume_pending_notify(self, session_id: str = None) -> int:
+        """父会话重新上线时补投落库的待投递通知"""
+        try:
+            loop = _get_main_loop()
+            if loop is None or not loop.is_running():
+                return 0
+            with _ACTIVE_LOCK:
+                pending = [k for k, v in _PENDING_NOTIFY.items() if v]
+            if session_id:
+                pending = [k for k in pending if k == session_id]
+            for parent in pending:
+                self._ensure_notify_worker(parent)
+            return len(pending)
+        except Exception:
+            return 0
 
     async def _notify_worker(self, session_id: str) -> None:
         """单条通知只投递一次：靠 _delivery 状态推进，不靠队列里是否存在"""
@@ -934,10 +960,10 @@ class SessionAgent(BaseCell):
                 info = task_mgr.get_task_info(session_id)
                 if info is not None and getattr(info.status, "value", "") == "cancelled":
                     logger.info(
-                        "[SessionAgent] 父会话已取消，丢弃待投递通知 | session=%s | pending=%d",
+                        "[SessionAgent] 父会话已取消，通知保留待补投 | session=%s | pending=%d",
                         session_id, len(queue),
                     )
-                    queue.clear()
+                    delegation_state.save()
                     return
 
                 msg_id = str(message.get("msg_id") or "")
@@ -968,10 +994,10 @@ class SessionAgent(BaseCell):
 
                 if time.time() >= deadline:
                     logger.warning(
-                        "[SessionAgent] 通知投递超时，放弃 | session=%s | pending=%d",
+                        "[SessionAgent] 通知投递超时，保留待父会话上线补投 | session=%s | pending=%d",
                         session_id, len(queue),
                     )
-                    queue.clear()
+                    delegation_state.save()
                     return
                 await asyncio.sleep(_NOTIFY_RETRY_INTERVAL)
         finally:

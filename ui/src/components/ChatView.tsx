@@ -308,22 +308,42 @@ export const ChatView: React.FC = () => {
     let alive = true;
     const poll = async () => {
       try {
-        const data = await fetchJSON<{ delegations: any[] }>(
+        const data = await fetchJSON<{ delegations: any[]; error?: string }>(
           API.chatDelegations(currentSessionId)
         );
         if (!alive) return;
+        // 接口返回 error 时列表不可信，不参与"缺失"判定，避免误判为已结束
+        if (data.error) return;
         const items = data.delegations || [];
         const liveIds = new Set(items.map((i: any) => String(i.task_id)));
+        const liveTargets = new Set(items.map((i: any) => String(i.target ?? i.name ?? '')));
         for (const item of items) {
-          missCountRef.current[String(item.task_id)] = 0;
+          const tid = String(item.task_id);
+          missCountRef.current[tid] = 0;
+          // 同一个委托可能先以 session:<target> 占位（WS 无 task_id），
+          // 出现真实 task_id 后合并掉占位行，否则两行并存且占位行永不消失
+          for (const a of useAppStore.getState().delegationActivity) {
+            if (a.task_id.startsWith('session:') && a.task_id !== tid
+              && a.target && a.target === item.target) {
+              removeDelegationActivity(a.task_id);
+              delete missCountRef.current[a.task_id];
+            }
+          }
           upsertDelegationActivity({ ...item, status: item.status || 'running' });
         }
-        // 连续两次轮询都查不到 → 视为已结束（done 事件可能丢失）
+        // 连续三次轮询都查不到 → 视为已结束（done 事件可能丢失）
         for (const a of useAppStore.getState().delegationActivity) {
-          if (TERMINAL_STATUS.includes(a.status) || liveIds.has(a.task_id)) continue;
+          if (TERMINAL_STATUS.includes(a.status)) continue;
+          const live = a.task_id.startsWith('session:')
+            ? liveTargets.has(a.target)
+            : liveIds.has(a.task_id);
+          if (live) {
+            missCountRef.current[a.task_id] = 0;
+            continue;
+          }
           const n = (missCountRef.current[a.task_id] || 0) + 1;
           missCountRef.current[a.task_id] = n;
-          if (n >= 2) {
+          if (n >= 3) {
             upsertDelegationActivity({
               task_id: a.task_id, target: a.target, target_title: a.target_title,
               status: 'done', success: true, elapsed_s: a.elapsed_s,
@@ -567,6 +587,7 @@ export const ChatView: React.FC = () => {
           {visibleDelegations.map((a, idx) => {
             const running = !TERMINAL_STATUS.includes(a.status);
             const tool = a.current_tool || a.last_tool;
+            const showReason = running && idx === visibleDelegations.length - 1;
             const leaving = leavingIds.includes(a.task_id);
             return (
               <div
@@ -585,6 +606,11 @@ export const ChatView: React.FC = () => {
                   ) : null}
                   {a.error && <span className="delegation-banner-error">{a.error}</span>}
                 </div>
+                {showReason && a.last_reasoning && (
+                  <div className="delegation-banner-reason" title={a.last_reasoning}>
+                    {t('chat.delegationReasoning')}：{a.last_reasoning}
+                  </div>
+                )}
               </div>
             );
           })}

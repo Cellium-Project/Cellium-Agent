@@ -665,6 +665,7 @@ body {
 .delegation-banner {
     font-size: 12px;
     line-height: 1.4;
+    min-width: 0;
     overflow: hidden;
     animation: delegation-banner-in 0.18s ease-out both;
 }
@@ -739,6 +740,18 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
+}
+
+.delegation-banner-reason {
+    margin-top: 2px;
+    padding-left: 14px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .delegation-more {
