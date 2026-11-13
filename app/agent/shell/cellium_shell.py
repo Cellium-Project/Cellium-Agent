@@ -493,13 +493,14 @@ _SESSION_RISKY_PROGRAMS = {
 }
 
 
+def _argv_basename(value) -> str:
+    base = str(value).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
 def _session_kind(argv) -> str:
-    """shell=本地交互式 shell；remote=ssh 等远程；repl=python/mysql 等程序输入"""
     if not argv:
         return "shell"
-    base = os.path.basename(str(argv[0])).lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = _argv_basename(argv[0])
     if base in _SHELL_PROGRAMS:
         return "shell"
     if base in _REMOTE_PROGRAMS:

@@ -960,9 +960,10 @@ class SessionAgent(BaseCell):
                 info = task_mgr.get_task_info(session_id)
                 if info is not None and getattr(info.status, "value", "") == "cancelled":
                     logger.info(
-                        "[SessionAgent] 父会话已取消，通知保留待补投 | session=%s | pending=%d",
+                        "[SessionAgent] 父会话已取消，丢弃通知 | session=%s | dropped=%d",
                         session_id, len(queue),
                     )
+                    queue.clear()
                     delegation_state.save()
                     return
 
