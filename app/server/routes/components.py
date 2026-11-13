@@ -117,16 +117,21 @@ async def hot_reload():
 
     try:
         from app.core.util.components_loader import hot_reload
+        from app.core.util.component_tool_registry import get_component_tool_registry
         report = hot_reload(container=container)
+        tool_count = get_component_tool_registry().size
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    updated = report.get("updated", [])
     return {
         "status": "ok",
         "message": f"热重载完成",
         "added": report["added"],
         "removed": report["removed"],
-        "changes": len(report["added"]) + len(report["removed"]),
+        "updated": updated,
+        "changes": len(report["added"]) + len(report["removed"]) + len(updated),
+        "tools": tool_count,
     }
 
 

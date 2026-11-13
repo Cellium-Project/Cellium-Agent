@@ -292,21 +292,38 @@ def _readonly_block_reason(tool_name: str, arguments: Any, mode: str) -> Optiona
             action = str(args.get("action") or "").strip().lower()
             if action in _FILE_WRITE_ACTIONS:
                 return f"{prefix}：文件写入/删除被拦截，{hint}"
+        if sub == "send" or (not sub and args.get("paths")):
+            return f"{prefix}：{label}禁止向聊天发送文件，{hint}"
         return None
 
-    if tool_name == "shell":
-        if sub in ("list", "output"):
+    if tool_name == "shell_task":
+        action = str(args.get("action") or "").strip().lower()
+        if action in ("list", "output"):
             return None
-        if sub in ("kill", "session"):
-            if sub == "session" and str(args.get("action") or "").strip().lower() in ("list", "output"):
-                return None
-            return f"{prefix}：{label}禁止后台任务/持久会话的变更操作。"
-        raw_cmd = args.get("cmd")
+        return f"{prefix}：{label}禁止后台任务变更操作（shell_task {action or '?'}）。"
+
+    if tool_name == "shell_session":
+        action = str(args.get("action") or "").strip().lower()
+        if action in ("list", "output"):
+            return None
+        return f"{prefix}：{label}禁止持久会话的变更操作（shell_session {action or '?'}）。"
+
+    if tool_name == "shell":
+        raw_cmd = args.get("command")
+        legacy = str(raw_cmd).strip().lower() if isinstance(raw_cmd, str) else ""
+        has_alt = args.get("cmd") not in (None, "") or args.get("argv") not in (None, "")
+        if legacy in ("list", "output"):
+            return None
+        if legacy in ("kill", "session"):
+            return f"{prefix}：{label}禁止 {'终止后台任务' if legacy == 'kill' else '持久会话变更'}（shell {legacy}）。"
+        if legacy == "run" and has_alt:
+            raw_cmd = args.get("cmd") or args.get("argv")
         if isinstance(raw_cmd, (list, tuple)):
-            # shell 工具支持数组直执行，必须按 argv 展开后再判黑名单
             cmd = " ".join(str(x) for x in raw_cmd).strip()
+        elif raw_cmd not in (None, ""):
+            cmd = str(raw_cmd).strip()
         else:
-            cmd = str(raw_cmd or "").strip() if sub in ("", "run") else sub
+            cmd = str(args.get("cmd") or "").strip()
         reason = shell_block_reason(cmd)
         if reason:
             return f"{prefix}：{reason}（{cmd[:60]}）。"
@@ -341,7 +358,7 @@ def _readonly_block_reason(tool_name: str, arguments: Any, mode: str) -> Optiona
 _PLAN_INJECTION = """<plan_mode>
 当前模式：PLAN（只读）：只调研、跑验证、出计划，禁止修改文件与系统状态。
 允许：read/ls/glob/grep、file(insight/exists)、memory 检索、web 搜索抓取、
-config/component/skill/scheduler 的查询命令、shell 只读命令与只读管道。
+config/component/skill/scheduler 的查询命令、shell 只读命令/管道、shell_task/shell_session 仅 list/output。
 禁止：edit、session_agent、file 写入/删除、记忆写入、安装/部署、重定向写文件、
 rm/mv/del 等破坏性命令、python -c / bash -c 等解释器逃逸。
 输出：结论 → 分步计划（文件+改动点+风险）→ 验证命令，不贴完整补丁。
@@ -423,7 +440,7 @@ _DELEGATE_INJECTION = """<delegate_mode>
 分工方式任选：按能力（前端/后端/测试/文档）、按工作（模块/目录/功能）、按角色（实现/审查/验证）。
 流程：调研上下文 → 拆成可并行的子任务 → session_agent.send 委托（并行发起，purpose/title 写清目标）→ 汇总结论 → 汇报。
 send 默认 notify=true，委托完成会推回本会话，不必轮询；收到回执后直接汇总。
-允许：read/ls/glob/grep、只读 shell 验证、memory/web 查询、session_agent 的 send/status/results/cancel/list/rename。
+允许：read/ls/glob/grep、只读 shell 验证（shell_task/shell_session 仅 list/output）、memory/web 查询、session_agent 的 send/status/results/cancel/list/rename。
 禁止：edit、file 写入/删除、shell 写命令、安装/部署、记忆写入。
 一次性并行小任务可用 sub_agent；需要持久、可撤回上下文的用 session_agent。
 </delegate_mode>"""

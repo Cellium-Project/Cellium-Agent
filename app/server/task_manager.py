@@ -159,6 +159,28 @@ class BackgroundTaskManager:
             self._supplement_messages[session_id] = []
         return messages
 
+    def has_pending_supplement(self, session_id: str, msg_id: str = "") -> bool:
+        """检查补充队列是否仍有消息（可按 msg_id 精确匹配）"""
+        with self._supplement_lock:
+            queue = self._supplement_messages.get(session_id) or []
+            if not msg_id:
+                return bool(queue)
+            return any(m.get("msg_id") == msg_id for m in queue)
+
+    def claim_supplement_message(self, session_id: str, msg_id: str) -> bool:
+        """抢占一条补充消息，成功返回 True（调用方负责消费）"""
+        if not msg_id:
+            return False
+        with self._supplement_lock:
+            queue = self._supplement_messages.get(session_id)
+            if not queue:
+                return False
+            for i, item in enumerate(queue):
+                if item.get("msg_id") == msg_id:
+                    queue.pop(i)
+                    return True
+            return False
+
     async def start_task(
         self,
         session_id: str,
@@ -168,6 +190,7 @@ class BackgroundTaskManager:
         three_layer_memory=None,
         system_injection: Optional[str] = None,
         mode: Optional[str] = None,
+        attachments: Optional[list] = None,
     ) -> bool:
         """
         启动后台任务
@@ -236,6 +259,7 @@ class BackgroundTaskManager:
                     system_injection=system_injection,
                     mode=mode,
                     gate=gate,
+                    attachments=attachments,
                 )
             )
             self._tasks[session_id] = task
@@ -259,6 +283,7 @@ class BackgroundTaskManager:
         system_injection: Optional[str] = None,
         mode: Optional[str] = None,
         gate: Optional[threading.Lock] = None,
+        attachments: Optional[list] = None,
     ):
         """
         运行 Agent 循环（后台任务）
@@ -289,6 +314,7 @@ class BackgroundTaskManager:
                 session_id=session_id,
                 system_injection=system_injection,
                 mode=mode,
+                attachments=attachments,
             ):
                 for norm in normalizer.feed(raw_event):
                     if terminal_hit:

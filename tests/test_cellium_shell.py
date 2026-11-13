@@ -45,9 +45,14 @@ class TestShellArrayCmd(unittest.TestCase):
 
     def test_argv_and_json_string_both_run(self):
         for cmd in (["python", "--version"], '["python", "--version"]'):
-            r = self.tool.execute({"command": "run", "cmd": cmd})
+            r = self.tool.execute({"command": cmd})
             self.assertTrue(r.get("success"), r)
             self.assertIn("Python", r.get("output", ""))
+
+    def test_legacy_subcommand_still_runs(self):
+        r = self.tool.execute({"command": "run", "cmd": ["python", "--version"]})
+        self.assertTrue(r.get("success"), r)
+        self.assertIn("Python", r.get("output", ""))
 
     def test_version_flag_not_interactive(self):
         self.assertFalse(_is_interactive_argv(["python", "--version"]))

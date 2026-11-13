@@ -277,6 +277,10 @@ class TestSubAgentComponent(unittest.TestCase):
         self.assertEqual(c._allowed_tool_names("read, grep, glob"), ["read", "grep", "glob"])
         self.assertEqual(c._allowed_tool_names(None), ["read", "ls", "glob", "grep"])
         self.assertEqual(c._allowed_tool_names(["read"]), ["read"])
+        self.assertEqual(
+            c._allowed_tool_names(["shell"]),
+            ["shell", "shell_task", "shell_session"],
+        )
 
     def test_tools_blacklist(self):
         c = SubAgent()
@@ -837,20 +841,32 @@ class TestSubAgentIntegration(unittest.TestCase):
 
     def test_parallel_concurrency_limit(self):
         sid = f"conc_{uuid.uuid4().hex[:6]}"
-        c = setup_subagent(lambda: SlowEngine(0.3))
+        active = {"now": 0, "peak": 0}
+        lock = threading.Lock()
+
+        class TrackEngine(SlowEngine):
+            async def chat(self, messages, tools=None, **kwargs):
+                with lock:
+                    active["now"] += 1
+                    active["peak"] = max(active["peak"], active["now"])
+                try:
+                    return await super().chat(messages, tools=tools, **kwargs)
+                finally:
+                    with lock:
+                        active["now"] -= 1
+
+        c = setup_subagent(lambda: TrackEngine(0.3))
         old = c.MAX_PARALLEL_SUBAGENTS
         c.MAX_PARALLEL_SUBAGENTS = 2
         try:
-            t0 = time.time()
             r = call_cmd(lambda: c._cmd_parallel(
                 tasks=[{"name": f"c{i}", "task": "任务"} for i in range(6)],
                 timeout=10, session_id=sid,
             ))
-            dur = time.time() - t0
         finally:
             c.MAX_PARALLEL_SUBAGENTS = old
         self.assertTrue(r["success"], r)
-        self.assertLess(dur, 1.4, f"应受并发上限约束（串行需 ~1.8s），实际 {dur:.2f}s")
+        self.assertEqual(active["peak"], 2, f"应受并发上限约束，实际峰值 {active['peak']}")
 
     def test_parallel_concurrent(self):
         import components.sub_agent as subagent_mod

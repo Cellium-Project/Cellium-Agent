@@ -621,13 +621,36 @@ class FakeTaskManager:
         self.start_ok = start_ok
         self.enqueued = []
         self.started = []
+        self.pending = {}
+        self.cancelled = False
 
     def has_running_task(self, session_id):
         return self.running
 
+    def get_task_info(self, session_id):
+        if not self.cancelled:
+            return None
+        status = type("S", (), {"value": "cancelled"})()
+        return type("I", (), {"status": status})()
+
     def enqueue_supplement_message(self, session_id, payload):
         self.enqueued.append((session_id, payload))
+        self.pending.setdefault(session_id, []).append(payload)
         return True
+
+    def has_pending_supplement(self, session_id, msg_id=""):
+        queue = self.pending.get(session_id) or []
+        if not msg_id:
+            return bool(queue)
+        return any(m.get("msg_id") == msg_id for m in queue)
+
+    def claim_supplement_message(self, session_id, msg_id):
+        queue = self.pending.setdefault(session_id, [])
+        for i, item in enumerate(queue):
+            if item.get("msg_id") == msg_id:
+                queue.pop(i)
+                return True
+        return False
 
     async def start_task(self, **kwargs):
         self.started.append(kwargs)
@@ -679,13 +702,63 @@ class TestNotifyDelivery(SessionAgentTestBase):
 
     def test_failed_delivery_retries_until_ok(self):
         async def _scenario():
-            self.sa._deliver_parent_message = AsyncMock(side_effect=[False, True])
+            self.sa._deliver_parent_message = AsyncMock(side_effect=["failed", "consumed"])
             with patch.object(sa_mod, "_NOTIFY_RETRY_INTERVAL", 0.01):
                 await self.sa._notify_parent("A", dict(self._INFO))
                 await asyncio.sleep(0.2)
             self.assertEqual(self.sa._deliver_parent_message.await_count, 2)
             self.assertEqual(len(sa_mod._PENDING_NOTIFY.get("A") or []), 0)
             self.assertNotIn("A", sa_mod._NOTIFY_WORKERS)
+
+        asyncio.run(_scenario())
+
+    def test_parent_finishing_after_enqueue_still_delivers(self):
+        async def _scenario():
+            tm = FakeTaskManager(running=True)
+            loop = FakeLoop([])
+            with patch("app.server.task_manager.get_task_manager", return_value=tm):
+                with patch("app.agent.loop.agent_loop_manager.AgentLoopManager.get_instance",
+                           return_value=FakeManager(loop)):
+                    with patch("app.agent.loop.session_manager.get_session_manager",
+                               return_value=FakeSessionManager()):
+                        with patch("app.server.session_mode.get_mode", return_value="run"):
+                            with patch.object(sa_mod, "_NOTIFY_RETRY_INTERVAL", 0.01):
+                                await self.sa._notify_parent("A", dict(self._INFO))
+                                await asyncio.sleep(0.05)
+                                self.assertEqual(len(tm.enqueued), 1)
+                                tm.running = False
+                                await asyncio.sleep(0.15)
+            self.assertEqual(len(tm.started), 1, "父会话结束后应接手消费而不是滞留")
+            self.assertEqual(len(sa_mod._PENDING_NOTIFY.get("A") or []), 0)
+
+        asyncio.run(_scenario())
+
+    def test_consumed_message_not_requeued(self):
+        async def _scenario():
+            tm = FakeTaskManager(running=True)
+            with patch("app.server.task_manager.get_task_manager", return_value=tm):
+                with patch.object(sa_mod, "_NOTIFY_RETRY_INTERVAL", 0.01):
+                    await self.sa._notify_parent("A", dict(self._INFO))
+                    await asyncio.sleep(0.05)
+                    self.assertEqual(len(tm.enqueued), 1)
+                    tm.enqueued.clear()
+                    tm.pending.clear()
+                    await asyncio.sleep(0.15)
+            self.assertEqual(tm.enqueued, [], "已消费的回执不得重复入队")
+            self.assertEqual(len(sa_mod._PENDING_NOTIFY.get("A") or []), 0)
+
+        asyncio.run(_scenario())
+
+    def test_cancelled_parent_drops_notification(self):
+        async def _scenario():
+            tm = FakeTaskManager(running=True)
+            tm.cancelled = True
+            with patch("app.server.task_manager.get_task_manager", return_value=tm):
+                with patch.object(sa_mod, "_NOTIFY_RETRY_INTERVAL", 0.01):
+                    await self.sa._notify_parent("A", dict(self._INFO))
+                    await asyncio.sleep(0.1)
+            self.assertEqual(tm.enqueued, [], "父会话已取消不应再投递")
+            self.assertEqual(len(sa_mod._PENDING_NOTIFY.get("A") or []), 0)
 
         asyncio.run(_scenario())
 

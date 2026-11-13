@@ -159,6 +159,10 @@ class AgentLoop:
         self.session_id = session_id
         self.flash_mode = flash_mode
         self._stream_partial_text = ""
+        self._turn_images: List[str] = []
+        self._pending_images: List[str] = []
+        self._retained_images: List[str] = []
+        self._retained_session: Optional[str] = None
         self._status_enabled = bool(publish_runtime_status)
         self._checkpoint_state: Dict[str, Dict[str, float]] = {}
 
@@ -816,7 +820,7 @@ class AgentLoop:
             if isinstance(item, str) and item in self.tools
         }
 
-    READ_ONLY_TOOLS = {"file", "memory", "web_search", "web_fetch", "read_file", "file_read", "shell"}
+    READ_ONLY_TOOLS = {"file", "memory", "web_search", "web_fetch", "read_file", "file_read", "shell", "shell_task", "shell_session"}
     WRITE_TOOLS = {"write_to_file", "file_write", "mkdir", "delete", "edit", "move", "copy"}
 
     def _can_parallel(self, tool_name: str) -> bool:
@@ -887,6 +891,12 @@ class AgentLoop:
                     session_id=effective_session,
                     platform_context=platform_context,
                 )
+                if isinstance(result, dict) and result.get("_image_refs"):
+                    refs = result.pop("_image_refs") or []
+                    if not self._vision_can_send():
+                        result = {"success": False, "error": "当前模型不支持图片输入，无法查看图片"}
+                    else:
+                        self._pending_images.extend(str(p) for p in refs if p)
                 duration_ms = (time.time() - t0) * 1000
                 if result.get("_stopped_by_user"):
                     logger.info("[AgentLoop] 工具被用户停止中断 | tool=%s", tool_name)
@@ -1228,12 +1238,19 @@ class AgentLoop:
 
 
     async def run_stream(self, user_input: str, memory: MemoryManager = None, session_id: str = None,
-                         system_injection: str = None, mode: str = None, delegated_from: str = None):
+                         system_injection: str = None, mode: str = None, delegated_from: str = None,
+                         attachments: List[Dict] = None):
 
         """流式执行 Agent 循环"""
         effective_memory = memory or self.memory
         effective_session = session_id or self.session_id
         start_time = time.time()
+
+        self._turn_images = self._build_turn_images(attachments)
+        self._pending_images = []
+        if effective_session != self._retained_session:
+            self._retained_images = []
+            self._retained_session = effective_session
 
         from app.core.security.run_mode import (
             normalize_mode, plan_injection, run_injection, delegate_injection,
@@ -1396,15 +1413,38 @@ class AgentLoop:
                         from app.server.task_manager import get_task_manager
                         task_mgr = get_task_manager()
                         supplements = task_mgr.drain_supplement_messages(effective_session)
+                        _now = time.time()
+                        _fresh = []
+                        _stale = []
+                        for _s in supplements:
+                            _age = _now - float(_s.get("created_at") or _s.get("received_at") or _now)
+                            if _age <= 300 or _s.get("source") == "session_agent":
+                                _fresh.append(_s)
+                            else:
+                                _stale.append(_s)
+                        if _stale:
+                            logger.warning(
+                                "[AgentLoop] 丢弃过期补充消息 | session=%s | dropped=%d | task_ids=%s",
+                                effective_session, len(_stale),
+                                [_s.get("task_id") for _s in _stale],
+                            )
+                        supplements = _fresh
                         for sup in supplements:
                             sup_content = sup.get("content", "")
                             if sup_content:
                                 logger.info(f"[AgentLoop] 注入补充消息 | content={sup_content[:50]}...")
                                 effective_memory.add_user_message(sup_content)
+                                extra = self._build_turn_images(sup.get("attachments"))
+                                for path in extra:
+                                    if path not in self._turn_images:
+                                        self._turn_images.append(path)
+                                self._turn_images = self._turn_images[:self._MAX_TURN_IMAGES]
                                 supplement_event = {
                                     "type": "supplement_injected",
                                     "content": sup_content,
                                     "source": sup.get("source", "unknown"),
+                                    "notice": sup.get("notice"),
+                                    "task_id": sup.get("task_id"),
                                 }
                                 logger.info(f"[AgentLoop] yield supplement_injected | content={sup_content[:30]}")
                                 yield supplement_event
@@ -1693,6 +1733,7 @@ class AgentLoop:
                         user_input="", response_content=None,
                         session_id=effective_session, memory=effective_memory,
                     )
+                llm_messages = self._apply_vision_parts(llm_messages)
                 # 经 PromptDiffTracker 流式调用 LLM（自动追踪前缀缓存 + 逐 chunk 输出）
                 _stream_reasoning = []
                 _stream_reasoning_start = None
@@ -1721,6 +1762,30 @@ class AgentLoop:
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
+                        has_images = bool(self._turn_images or self._retained_images)
+                        if has_images and self._vision_mode() == "auto" and self._is_vision_error(e):
+                            from app.agent.llm.vision_capability import mark_unsupported
+                            mark_unsupported(getattr(self.llm, "model", ""))
+                            self._turn_images = []
+                            self._retained_images = []
+                            logger.warning("[AgentLoop] 模型不支持图片输入，回退为纯文本重试 | error=%s", e)
+                            try:
+                                async for chunk in self._prompt_diff_tracker.chat_stream(
+                                    llm_engine=self.llm,
+                                    messages=self._strip_vision_parts(llm_messages),
+                                    tools=tool_defs,
+                                    max_tokens=self._resolve_runtime_max_tokens(_active_constraint),
+                                ):
+                                    _stream_queue.put_nowait(chunk)
+                                if effective_memory is not None:
+                                    effective_memory.add_ephemeral_message(
+                                        "system",
+                                        "当前模型不支持图片输入，已回退为文本；只能依据文件名/描述回答，不要声称看到了图片。",
+                                    )
+                                return
+                            except Exception as retry_err:
+                                _stream_error = retry_err
+                                return
                         _stream_error = e
                     finally:
                         _stream_finished.set()
@@ -2405,21 +2470,36 @@ class AgentLoop:
                     try:
                         from app.server.task_manager import get_task_manager
                         _tail_sups = get_task_manager().drain_supplement_messages(effective_session)
+                        _now = time.time()
+                        _tail_fresh = []
+                        _tail_stale = []
+                        for _s in _tail_sups:
+                            _age = _now - float(_s.get("created_at") or _s.get("received_at") or _now)
+                            if _age <= 300 or _s.get("source") == "session_agent":
+                                _tail_fresh.append(_s)
+                            else:
+                                _tail_stale.append(_s)
+                        if _tail_stale:
+                            logger.warning(
+                                "[AgentLoop] 丢弃过期补充消息 | session=%s | dropped=%d | task_ids=%s",
+                                effective_session, len(_tail_stale),
+                                [_s.get("task_id") for _s in _tail_stale],
+                            )
+                        _tail_sups = _tail_fresh
                     except Exception:
                         _tail_sups = []
-                    _tail_content = "\n\n".join(
-                        s.get("content", "") for s in _tail_sups if s.get("content")
-                    ).strip()
+                    _tail_ready = [s for s in _tail_sups if (s.get("content") or "").strip()]
                 else:
                     logger.warning("[AgentLoop] 已达最大迭代，补充消息留待下次任务")
-                if _tail_content:
+                    _tail_ready = []
+                if _tail_ready:
                     _lag = max(
-                        (time.time() - s.get("received_at", time.time()) for s in _tail_sups),
+                        (time.time() - s.get("received_at", time.time()) for s in _tail_ready),
                         default=0.0,
                     )
                     logger.info(
                         "[AgentLoop] 最终回复后消费补充消息 | n=%d | 滞后%.1fs",
-                        len(_tail_sups), _lag,
+                        len(_tail_ready), _lag,
                     )
                     # Gene 评估收尾轮：先清标志，补充轮不继承 Gene 状态
                     if self._loop_state and getattr(self._loop_state, 'gene_processing_done', False):
@@ -2427,12 +2507,18 @@ class AgentLoop:
                         self._loop_state.gene_creation_prompt = None
                         self._loop_state.gene_processing_done = False
                         self._loop_state.gene_tool_call_count = 0
-                    effective_memory.add_user_message(_tail_content)
-                    yield {
-                        "type": "supplement_injected",
-                        "content": _tail_content,
-                        "source": "pre_final_drain",
-                    }
+                    for _s in _tail_ready:
+                        _body = (_s.get("content") or "").strip()
+                        if not _body:
+                            continue
+                        effective_memory.add_user_message(_body)
+                        yield {
+                            "type": "supplement_injected",
+                            "content": _body,
+                            "source": "pre_final_drain",
+                            "notice": _s.get("notice"),
+                            "task_id": _s.get("task_id"),
+                        }
                     continue
 
                 # Mechanism B: 复杂任务触发，在最终回复后由主 Agent 处理 Gene
@@ -2513,6 +2599,116 @@ class AgentLoop:
                 self._tool_executor.set_turn_context(None, None)
             except Exception:
                 pass
+
+    _MAX_TURN_IMAGES = 4
+    _MAX_KEEP_IMAGES = 3
+
+    def _vision_mode(self) -> str:
+        mode = getattr(self.llm, "vision_mode", None)
+        if mode is None:
+            info = getattr(self.llm, "model_info", None)
+            mode = "auto" if getattr(info, "supports_vision", False) else "off"
+        return mode
+
+    def _vision_can_send(self) -> bool:
+        if self._vision_mode() == "off":
+            return False
+        if self._vision_mode() == "auto":
+            from app.agent.llm.vision_capability import is_unsupported
+            if is_unsupported(getattr(self.llm, "model", "")):
+                return False
+        return True
+
+    def _keep_last_images(self) -> int:
+        return self._MAX_KEEP_IMAGES
+
+    def _build_turn_images(self, attachments) -> List[str]:
+        paths = []
+        seen = set()
+        for att in attachments or []:
+            if not isinstance(att, dict) or att.get("file_type") != "image":
+                continue
+            path = att.get("vision_local_path") or att.get("local_path") or ""
+            if not path or path in seen or not os.path.isfile(path):
+                continue
+            seen.add(path)
+            paths.append(path)
+            if len(paths) >= self._MAX_TURN_IMAGES:
+                break
+        return paths
+
+    def _image_content_parts(self, paths: List[str]):
+        from app.core.util.attachment_store import image_to_part
+        parts = []
+        for path in paths:
+            part = image_to_part(path)
+            if not part:
+                continue
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{part['mime']};base64,{part['b64']}"},
+                "_filename": part["filename"],
+            })
+        return parts
+
+    def _apply_vision_parts(self, messages: List[Dict]) -> List[Dict]:
+        pending = list(dict.fromkeys(p for p in self._pending_images if p))
+        self._pending_images = []
+        keep = self._keep_last_images()
+        if not self._vision_can_send():
+            self._retained_images = []
+            return messages
+
+        # 历史图片 + 本轮图片合并到当前 user 消息，保持尾部之前的前缀稳定
+        history = self._retained_images[-keep:] if keep else []
+        base = [p for p in dict.fromkeys(list(history) + list(self._turn_images)) if p]
+        base_parts = self._image_content_parts(base)
+        if base_parts:
+            parts = [{k: v for k, v in p.items() if k != "_filename"} for p in base_parts]
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    messages[i] = {**msg, "content": parts + [{"type": "text", "text": msg["content"]}]}
+                    break
+
+        pending_parts = self._image_content_parts(pending)
+        if pending_parts:
+            names = ", ".join(p["_filename"] for p in pending_parts)
+            content = [{k: v for k, v in p.items() if k != "_filename"} for p in pending_parts]
+            content.append({"type": "text", "text": f"[图片] {names}"})
+            messages.append({"role": "user", "content": content})
+
+        if keep:
+            merged = list(dict.fromkeys(
+                list(self._retained_images) + list(self._turn_images) + pending
+            ))
+            self._retained_images = merged[-keep:]
+        else:
+            self._retained_images = []
+        return messages
+
+    @staticmethod
+    def _strip_vision_parts(messages: List[Dict]) -> List[Dict]:
+        stripped = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                text = "\n".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+                msg = {**msg, "content": text}
+            stripped.append(msg)
+        return stripped
+
+    @staticmethod
+    def _is_vision_error(err: Exception) -> bool:
+        text = str(err).lower()
+        if not text:
+            return False
+        if not any(k in text for k in ("image", "vision", "multimodal")):
+            return False
+        return any(k in text for k in ("support", "invalid", "unsupported", "400", "content"))
 
     def _get_tools_definition(self) -> List[Dict]:
         """获取所有工具的 LLM 定义（只读类模式只下发允许的工具）"""

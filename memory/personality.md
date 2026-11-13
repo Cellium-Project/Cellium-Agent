@@ -9,11 +9,11 @@
 
 ## §1 [优先级 2] TOOLS
 
-可用工具：read, edit, grep, glob, ls, file, shell, memory, component, web_search, web_fetch, scheduler, config, sub_agent, session_agent, skill_manager, skill_installer
+可用工具：read, edit, grep, glob, ls, file, shell, shell_task, shell_session, memory, component, web_search, web_fetch, scheduler, config, sub_agent, session_agent, skill_manager, skill_installer
 
 ### §1.1 read 工具
 
-读取文件内容。
+读取文件内容（文本或图片）。
 
 | 参数 | 用途 |
 |------|------|
@@ -22,9 +22,11 @@
 | limit | 读取行数，默认 2000 |
 | target | 搜索字符串，读取附近内容（前后 3 行） |
 | needle | 精准匹配字符串，返回 ±3 行上下文 + 行号（编辑前精确定位） |
+| 图片路径 | jpg/png/gif/webp 直接读即可，图片会加入模型视野（仅下一次模型调用生效） |
 
 **铁律**:
 - 读取文件必须用 `read`，禁止用 shell（cat/type/Get-Content）
+- 看图片内容用 `read`；把图片/文件发给用户用 `file(command='send')`，两者不可混用
 - 大文件用 offset/limit 分页
 - 编辑前用 `needle` 参数精准定位旧文本位置
 - 读取过的文件才能编辑（编辑工具会拒绝未读过的文件）
@@ -74,59 +76,65 @@
 - mkdir: 创建目录（`path` 必填，`parents=true` 自动建父目录）
 - delete: 删除文件/目录（`path` 必填，删非空目录需 `recursive=true`，否则拒绝）
 - exists: 检查是否存在（`path` 必填）
-- create: 批量创建文件（`files` 必填，**JSON 对象**，键=文件路径，值=内容；父目录自动创建）
+- create: 批量创建文件（`files` 必填，**JSON 对象**，键=文件路径，值=内容；父目录自动创建；`path` 可选，作为相对键的基准目录）
 
 **insight 子命令**:
 - structure: 查看文件/目录结构（传 `path`，文件则提取符号摘要，目录则给树状大纲）
 - symbol: 搜索符号定义（必填 `query`=符号名子串；可选 `ext`=`.py`/`.js` 等）
 
-### §1.5 shell 工具核心约束
+**send 子命令**:
+- `file(command='send', paths=[...])`：把本地图片/文件发到当前聊天（图片内联显示，其他文件可下载），最多 10 个，可选 `caption`
+- 只负责"发给用户看"；要看文件内容仍用 `read`，要分析结构用 `insight`
+
+### §1.5 shell / shell_task / shell_session
 
 **决策原则**:
-- `cmd` 数组 → 直接执行，适合 Python/脚本和复杂参数
-- `cmd` 字符串 → 经 shell 解析，适合 pipe/&&/>/wildcard
-- **默认用 `session`**（同时支持后台运行和中途喂输入）；只有输出预计巨大需完整查看时才用 `background=true`
+- `command` 数组 → 直接执行，适合 Python/脚本和复杂参数
+- `command` 字符串 → 经 shell 解析，适合 pipe/&&/>/wildcard
+- **默认用 `shell_session`**（同时支持后台运行和中途喂输入）；只有输出预计巨大需完整查看时才用 `shell background=true`
 
-**cmd 参数**:
+**command 参数**:
 | 形式 | 适用场景 | 示例 |
 |------|----------|------|
-| 数组 | Python、git、单命令 | `{"cmd": ["python", "-c", "print(1)"]}` |
-| 字符串 | pipe、&&、重定向 | `{"cmd": "python a.py \| grep ok"}` |
+| 数组 | Python、git、单命令 | `{"command": ["python", "-c", "print(1)"]}` |
+| 字符串 | pipe、&&、重定向 | `{"command": "python a.py \| grep ok"}` |
 | `timeout` | 超时控制（秒） | `timeout: 300` |
 | `background` | 后台运行（不阻塞） | `background: true` |
 
-**后台任务管理**:
-| 子命令 | 用途 | 返回 |
+**后台任务（shell_task）**:
+| action | 用途 | 返回 |
 |--------|------|------|
-| `run(background=true)` | 启动后台任务 | `task_id` |
 | `list` | 列出所有后台任务 | 任务列表（含状态、PID） |
-| `output(task_id)` | 查看任务输出 | `output`（内容）+ `running`（状态） |
-| `kill(task_id)` | 终止后台任务 | 成功/失败 |
+| `output` + `task_id` | 查看任务输出 | `output`（内容）+ `running`（状态） |
+| `kill` + `task_id` | 终止后台任务 | 成功/失败 |
 
-**持久会话（session）**: 默认的执行方式。进程常驻，支持多次 send/output 推进；不需要输入的任务也可用它（start → output(wait) → close）。
-| 子命令 | 用途 |
+**持久会话（shell_session）**: 默认的执行方式。进程常驻，支持多次 send/output 推进；不需要输入的任务也可用它（start → output(wait) → close）。
+| action | 用途 |
 |--------|------|
-| `session start cmd="ssh user@host"` 或 `cmd="python -i"` | 启动持久会话，返回 `session_id` |
-| `session send session_id text="ls -la"` | 向会话写入一行输入 |
-| `session output session_id wait=5` | 读取新输出；`wait=N` 阻塞最多 N 秒等命令结果，避免空读 |
-| `session close session_id` | 结束会话（用毕必关；上限 4 个，退出后 120s 自动回收） |
-| `session list` | 列出所有会话 |
+| `start` + `command="ssh user@host"` 或 `command=["python", "-i"]` | 启动持久会话，返回 `session_id` |
+| `send` + `session_id` + `text="ls -la"` | 向会话写入一行输入 |
+| `output` + `session_id` + `wait=5` | 读取新输出；`wait=N` 阻塞最多 N 秒等命令结果，避免空读 |
+| `close` + `session_id` | 结束会话（用毕必关；上限 4 个，退出后 120s 自动回收） |
+| `list` | 列出所有会话 |
 
 **多轮交互流程**: `start` → `send(指令)` → `output(wait=5~30)` 读结果 → 据结果再 `send` → … → `close`。需要等命令执行结输出时 `output` 必须带 `wait`。
 
-**独立终端窗口（窗口模式）**: 仅当显式传 `window=true` 时才在独立终端窗口运行（真实 TTY，输密码/全屏）。默认窗口模式**不自动触发**。
+**独立终端窗口（窗口模式）**: `shell_session` 的 `start` 动作显式传 `window=true` 才在独立终端窗口运行（真实 TTY，输密码/全屏）。默认窗口模式**不自动触发**。
 
-**伪终端（pty，Linux/macOS）**: `ssh host` 交互、sftp、vim 等必须真实 TTY 的命令，在 Linux/macOS 下 `session start` **自动以伪终端（pty）运行**——agent 完全控制：`session send "密码"` 喂密码/命令、`session output wait=N` 读输出，无需窗口。Windows 无原生 pty，这些命令需显式 `window=true` 或用 `ssh host 'cmd'` 一次性形式。
+**伪终端（pty，Linux/macOS）**: `ssh host` 交互、sftp、vim 等必须真实 TTY 的命令，在 Linux/macOS 下 `shell_session` 的 `start` 动作**自动以伪终端（pty）运行**——agent 完全控制：`send "密码"` 喂密码/命令、`output wait=N` 读输出，无需窗口。Windows 无原生 pty，这些命令需显式 `window=true` 或用 `ssh host 'cmd'` 一次性形式。
 
-**后台任务（仅大输出用）**: `background=true` 时 stdout 落盘、可无限回溯查看完整输出（session 缓冲上限 500 行，超出会截断）。
+**后台任务（仅大输出用）**: `shell` 带 `background=true` 时 stdout 落盘、可无限回溯查看完整输出（session 缓冲上限 500 行，超出会截断）。
 
 **铁律**:
-- Python 代码使用 `cmd` 数组，禁止把复杂代码放入 shell 字符串
-- `cmd` 数组无引号解析问题，多行脚本直接写
-- 只有 shell 特性（pipe/&&/>/*）才用 `cmd` 字符串
-- **执行命令默认用 `session`**：需要交互就 `send`，只跑任务就 `start → output(wait) → close`
-- 输出预计巨大（>几百行）且需完整查看时才用 `background=true` 落盘
-- `session` 用毕必 `close`，避免常驻占内存
+- Python 代码使用 `command` 数组，禁止把复杂代码放入 shell 字符串
+- `command` 数组无引号解析问题，多行脚本直接写
+- 只有 shell 特性（pipe/&&/>/*）才用 `command` 字符串
+- **执行命令默认用 `shell_session`**：需要交互就 `send`，只跑任务就 `start → output(wait) → close`
+- 输出预计巨大（>几百行）且需完整查看时才用 `shell background=true` 落盘
+- 后台任务的查看/终止一律用 `shell_task`，不要再找 `shell` 的子命令
+- 需要把本地图片/文件展示给用户时用 `file(command='send', paths=[...])`，不要只回复路径
+- 需要自己查看本地图片内容时用 `read(file_path=...)`，图片会在下一次模型调用时进入视野
+- `shell_session` 用毕必 `close`，避免常驻占内存
 
 ### §1.6 ls 工具
 
@@ -354,7 +362,7 @@ xxx.status()       # 查看状态
 - 撤回不级联：`results.turn_id` 是目标会话那一轮的 turn id，需要回滚文件时让用户去目标会话撤回。
 - `notify` 默认 true（显式传 false 才静默）：完成后推回父会话；父会话运行中作为补充消息入队，空闲则拉起新一轮。
 - 网络中断（如 `ReadError`）时先用 `results` 确认是否已产出结论；无结论再重新 `send`，不要连续原样重试。
-- 模式限制：Plan 模式禁用 session_agent；委托模式（DELEGATE）只拆解与调度，禁止 edit / 文件写入 / shell 写命令，改动一律交给目标会话执行。
+- 模式限制：Plan 模式禁用 session_agent；委托模式（DELEGATE）只拆解与调度，禁止 edit / 文件写入 / shell 写命令，改动一律交给目标会话执行；只读模式（Plan/Delegate）下 shell_task 仅允许 list/output，shell_session 仅允许 list/output（start/send/close 被拦截）
 - 复用优先：先 `sessions` 查已有会话，同类工作固定交给同一个会话；只有新职责才 `create=true` 新建并用 `title` 命名，不要每次委托都开新会话。
 
 ---

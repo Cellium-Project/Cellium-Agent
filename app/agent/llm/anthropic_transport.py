@@ -117,6 +117,26 @@ class AnthropicTransport:
             raise RuntimeError(f"Anthropic API 返回非 JSON 响应: {preview}") from e
 
     @classmethod
+    def _sanitize_schema(cls, schema):
+        """Anthropic 不支持 oneOf/anyOf，折叠为单一类型，避免 400"""
+        if isinstance(schema, list):
+            return [cls._sanitize_schema(s) for s in schema]
+        if not isinstance(schema, dict):
+            return schema
+
+        variants = schema.get("oneOf") or schema.get("anyOf")
+        merged = {}
+        if variants:
+            for variant in variants:
+                if isinstance(variant, dict) and variant.get("type") not in (None, "null"):
+                    merged = dict(variant)
+                    break
+
+        out = {k: v for k, v in schema.items() if k not in ("oneOf", "anyOf")}
+        out.update(merged)
+        return {k: cls._sanitize_schema(v) for k, v in out.items()}
+
+    @classmethod
     def _convert_tools(cls, tools: List[Dict]) -> List[Dict]:
         anthropic_tools = []
         for tool in tools or []:
@@ -124,7 +144,9 @@ class AnthropicTransport:
             anthropic_tools.append({
                 "name": fn.get("name", ""),
                 "description": fn.get("description", ""),
-                "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+                "input_schema": cls._sanitize_schema(
+                    fn.get("parameters", {"type": "object", "properties": {}})
+                ),
             })
         return anthropic_tools
 
@@ -132,7 +154,8 @@ class AnthropicTransport:
     def build_request_body(cls, body: Dict) -> Dict:
         messages = body.get("messages", [])
         system = "\n\n".join(
-            m["content"] for m in messages if m["role"] == "system" and m.get("content")
+            m["content"] for m in messages
+            if m["role"] == "system" and isinstance(m.get("content"), str) and m.get("content")
         )
 
         # OpenAI 消息 → Anthropic blocks：tool_calls→tool_use，tool→tool_result
@@ -173,7 +196,30 @@ class AnthropicTransport:
             else:
                 if not content:
                     continue
-                converted.append({"role": "user", "content": content})
+                if isinstance(content, list):
+                    blocks = []
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") == "text":
+                            blocks.append({"type": "text", "text": part.get("text", "")})
+                        elif part.get("type") == "image_url":
+                            url = (part.get("image_url") or {}).get("url", "")
+                            if isinstance(url, str) and url.startswith("data:") and ";base64," in url:
+                                media, data = url[5:].split(";base64,", 1)
+                                blocks.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media,
+                                        "data": data,
+                                    },
+                                })
+                    if not blocks:
+                        continue
+                    converted.append({"role": "user", "content": blocks})
+                else:
+                    converted.append({"role": "user", "content": content})
 
         merged: List[Dict] = []
         for m in converted:

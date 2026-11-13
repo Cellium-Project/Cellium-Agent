@@ -6,8 +6,11 @@ export interface Attachment {
   file_type: string;
   file_size: number;
   url: string;
+  thumb_url?: string;
   local_path: string;  // 本地文件路径
   upload_time: string;
+  width?: number;
+  height?: number;
 }
 
 export interface Session {
@@ -46,11 +49,23 @@ export interface ToolTrace {
   call_id?: string;  
 }
 
+export interface SupplementNoticeData {
+  type?: 'delegation' | 'subagent';
+  title?: string;
+  status?: string;
+  elapsed?: string;
+  body?: string;
+  error?: string;
+  footer?: string;
+  turn_id?: string;
+  task_id?: string;
+}
+
 export type TimelineSegment =
   | { kind: 'text'; content: string }
-  | { kind: 'supplement'; content: string; source?: string }
+  | { kind: 'supplement'; content: string; source?: string; notice?: SupplementNoticeData }
   | { kind: 'thinking'; content: string }
-  | { kind: 'reasoning'; content: string; startedAt?: number; durationMs?: number }
+  | { kind: 'reasoning'; content: string; startedAt?: number; durationMs?: number; ended?: boolean; finishedAt?: number }
   | { kind: 'tool'; tool: string; arguments: Record<string, any>; duration_ms: number; description?: string; result?: any; status: 'running' | 'done' | 'error'; call_id?: string };  // ★ 唯一标识符
 
 export interface Message {
@@ -118,6 +133,8 @@ export interface SSEEvent {
   message_id?: string;
   tracked_turn_id?: string;
   removed_count?: number;
+  notice?: SupplementNoticeData | null;
+  source?: string;
   // 子 Agent 后台进度
   name?: string;
   status?: string;

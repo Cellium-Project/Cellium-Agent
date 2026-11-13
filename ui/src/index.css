@@ -741,16 +741,6 @@ body {
     max-width: 100%;
 }
 
-.delegation-banner-reason {
-    margin-top: 2px;
-    padding-left: 14px;
-    font-size: 11px;
-    color: var(--text-tertiary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .delegation-more {
     font-size: 11px;
     color: var(--text-tertiary);
@@ -906,11 +896,6 @@ body {
 
     .delegation-banner-line {
         gap: 6px;
-    }
-
-    .delegation-banner-reason {
-        font-size: 10px;
-        padding-left: 12px;
     }
 
     .message-row.supplement-row {

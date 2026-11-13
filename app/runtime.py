@@ -83,6 +83,8 @@ def setup_containers(cfg):
         three_layer_memory=services["memory"],
         tools={
             "shell": services["shell_tool"],
+            "shell_task": services.get("shell_task_tool"),
+            "shell_session": services.get("shell_session_tool"),
             "memory": services["memory_tool"],
             "file": services["file_tool"],
             "read": services["read_tool"],

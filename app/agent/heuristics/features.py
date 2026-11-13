@@ -57,26 +57,24 @@ def get_call_signature(call: Dict) -> str:
 
     if tool_name == "shell":
         command = args.get("command", "")
-        if command == "run":
-            # argv 优先
-            argv = args.get("argv")
-            if argv and isinstance(argv, list):
-                cmd_str = " ".join(str(a) for a in argv[:3])[:60]
-                return f"shell:run:argv:{cmd_str}"
-            cmd = args.get("cmd", "")[:60]
-            return f"shell:run:{cmd}"
-        if command == "session":
-            action = args.get("action", "")
-            sid = args.get("session_id", "")[:8]
-            if action == "send":
-                text = args.get("text", "")
-                h = _content_hash(text, 6)
-                return f"shell:session:{action}:{sid}:{h}"
-            if action in ("start",):
-                start_cmd = str(args.get("cmd", ""))[:30]
-                return f"shell:session:{action}:{start_cmd}"
-            return f"shell:session:{action}:{sid}"
-        return f"shell:{command}"
+        if isinstance(command, (list, tuple)):
+            cmd_str = " ".join(str(a) for a in command[:3])[:60]
+            return f"shell:array:{cmd_str}"
+        return f"shell:{str(command)[:60]}"
+
+    if tool_name == "shell_task":
+        action = args.get("action", "")
+        task_id = str(args.get("task_id", ""))[:8]
+        return f"shell_task:{action}:{task_id}"
+
+    if tool_name == "shell_session":
+        action = args.get("action", "")
+        sid = str(args.get("session_id", ""))[:8]
+        if action == "send":
+            return f"shell_session:send:{sid}:{_content_hash(args.get('text', ''), 6)}"
+        if action == "start":
+            return f"shell_session:start:{str(args.get('command', ''))[:30]}"
+        return f"shell_session:{action}:{sid}"
 
     if tool_name == "memory":
         command = args.get("command", "default")

@@ -100,6 +100,8 @@ class ToolScorer:
 
         intent_keywords = {
             "shell": ["执行", "命令", "运行", "run", "cmd", "shell", "bash", "终端"],
+            "shell_task": ["后台任务", "任务输出", "终止任务", "background", "task"],
+            "shell_session": ["会话", "ssh", "repl", "长连接", "session"],
             "memory": ["记忆", "记住", "回忆", "memory", "保存", "搜索历史"],
             "file": ["文件", "读取", "写入", "创建", "删除", "file", "read", "write", "目录"],
             "web_search": ["搜索", "查找", "search", "google", "bing"],

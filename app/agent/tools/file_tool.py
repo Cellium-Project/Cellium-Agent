@@ -26,7 +26,10 @@ class FileTool(BaseTool):
         "Do NOT wrap values in <...>, do NOT embed markdown code fences. "
         "For large files or content with many quotes, prefer shell/session writing instead.\n"
         "- command=insight, mode=structure: view file or directory structure outline\n"
-        "- command=insight, mode=symbol: search for symbol definitions\n\n"
+        "- command=insight, mode=symbol: search for symbol definitions\n"
+        "- command=send: send local images/files into the chat (images inline, files downloadable). "
+        "paths 传绝对路径（可多个，最多 10 个），不要只回复路径。\n\n"
+        "Use `read` to read file contents (text or image); use `file send` to show files to the user. "
         "Use `ls` to list directory contents. Use `glob` to find files by name pattern. "
         "Use `fs` for create/delete/mkdir/exists operations."
     )
@@ -44,7 +47,7 @@ class FileTool(BaseTool):
                     "properties": {
                         "command": {
                             "type": "string",
-                            "enum": ["fs", "insight"],
+                            "enum": ["fs", "insight", "send"],
                             "description": "要执行的子命令",
                         },
                         "action": {
@@ -86,6 +89,15 @@ class FileTool(BaseTool):
                                 "多行内容用真实换行或 \\n 转义；禁止用 <...> 包裹、禁止混入 markdown 代码围栏；"
                                 "大文件/含大量引号的内容改用 shell 或 session 写入。"
                             ),
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "[send] 必填。要发送到聊天的本地文件绝对路径列表，最多 10 个",
+                        },
+                        "caption": {
+                            "type": "string",
+                            "description": "[send] 可选说明文字",
                         },
                     },
                     "required": ["command"],
@@ -133,6 +145,56 @@ class FileTool(BaseTool):
 
         else:
             return {"success": False, "error": f"Unknown action: {action}"}
+
+    _MAX_SEND_FILES = 10
+
+    @staticmethod
+    def _normalize_send_paths(paths) -> list:
+        if isinstance(paths, str):
+            s = paths.strip()
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        paths = parsed
+                except Exception:
+                    pass
+            if isinstance(paths, str):
+                paths = [p.strip() for p in s.split(",") if p.strip()]
+        if not isinstance(paths, (list, tuple)):
+            return []
+        return [str(p).strip() for p in paths if str(p).strip()]
+
+    def _cmd_send(self, paths=None, caption: str = "") -> Dict[str, Any]:
+        from app.core.util.attachment_store import save_local_file
+
+        items = self._normalize_send_paths(paths)
+        if not items:
+            return {"success": False, "error": "缺少 paths 参数"}
+
+        attachments = []
+        errors = []
+        for path in items[:self._MAX_SEND_FILES]:
+            try:
+                attachments.append(save_local_file(path))
+            except FileNotFoundError:
+                errors.append(f"文件不存在: {path}")
+            except Exception as e:
+                errors.append(f"{path}: {e}")
+
+        if not attachments:
+            return {"success": False, "error": "；".join(errors) or "没有可发送的文件"}
+
+        result = {
+            "success": True,
+            "attachments": attachments,
+            "message": f"已发送 {len(attachments)} 个文件",
+        }
+        if caption:
+            result["caption"] = caption
+        if errors:
+            result["errors"] = errors
+        return result
 
     def _cmd_insight(
         self,

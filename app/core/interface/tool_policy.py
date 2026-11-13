@@ -6,11 +6,13 @@ MODE_BLACKLIST = "blacklist"
 MODE_WHITELIST = "whitelist"
 
 DEFAULT_BLOCKED_TOOLS: FrozenSet[str] = frozenset({
-    "shell", "file", "edit", "read", "ls", "glob", "grep", "memory",
+    "shell", "shell_task", "shell_session", "file", "edit", "read", "ls", "glob", "grep", "memory",
     "config", "web_search", "web_fetch", "scheduler",
     "component", "skill_installer", "skill_manager", "sub_agent", "session_agent",
     "qq_files", "weixin_files", "telegram_files", "feishu_files",
 })
+
+SHELL_FAMILY: FrozenSet[str] = frozenset({"shell", "shell_task", "shell_session"})
 
 class ToolPolicy:
     """blacklist=拒绝列表内的，whitelist=只放行列表内的"""
@@ -25,7 +27,10 @@ class ToolPolicy:
 
     def allows(self, tool_name: str) -> bool:
         if self.mode == MODE_WHITELIST:
-            return tool_name in self.tools
+            if tool_name in self.tools:
+                return True
+            # 白名单放行 shell 时，其任务/会话管理工具一并放行
+            return tool_name in SHELL_FAMILY and "shell" in self.tools
         return tool_name not in self.tools
 
     def block_reason(self, tool_name: str) -> str:

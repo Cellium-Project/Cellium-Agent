@@ -104,6 +104,25 @@ def _clip_preview(value, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def build_delegation_notice(info: Dict[str, Any]) -> Dict[str, Any]:
+    info = info or {}
+    status = info.get("status") or "error"
+    ok = status == "done"
+    content, _ = _clip_result(info.get("result_content") or "")
+    turn_id = str(info.get("turn_id") or "")
+    return {
+        "type": "delegation",
+        "title": info.get("target_title") or info.get("target") or "",
+        "status": "成功" if ok else "失败",
+        "elapsed": f"{_elapsed_seconds(info):g}s",
+        "body": content,
+        "error": str(info.get("error") or ""),
+        "footer": f"（如需回滚文件，请到该会话用 turn_id={turn_id} 撤回）" if turn_id else "",
+        "turn_id": turn_id,
+        "task_id": str(info.get("task_id") or ""),
+    }
+
+
 def _get_main_loop():
     """获取主事件循环"""
     from app.agent.di_config import _main_loop
@@ -881,7 +900,12 @@ class SessionAgent(BaseCell):
             f"结论:\n{content}\n"
             f"（如需回滚文件，请到该会话用 turn_id={info.get('turn_id')} 撤回）"
         )
-        _PENDING_NOTIFY.setdefault(parent, deque()).append(message)
+        _PENDING_NOTIFY.setdefault(parent, deque()).append({
+            "content": message,
+            "notice": build_delegation_notice(info),
+            "task_id": str(info.get("task_id") or ""),
+            "msg_id": f"dlg_{uuid.uuid4().hex[:8]}_{int(time.time() * 1000)}",
+        })
         self._ensure_notify_worker(parent)
 
     def _ensure_notify_worker(self, session_id: str) -> None:
@@ -894,7 +918,7 @@ class SessionAgent(BaseCell):
             logger.warning("[SessionAgent] 无运行中的事件循环，通知保留在队列 | session=%s", session_id)
 
     async def _notify_worker(self, session_id: str) -> None:
-        """与子 Agent 一致：父会话运行中入队补充消息，空闲则拉起新一轮"""
+        """单条通知只投递一次：靠 _delivery 状态推进，不靠队列里是否存在"""
         deadline = time.time() + _NOTIFY_RETRY_WINDOW
         try:
             while True:
@@ -902,55 +926,123 @@ class SessionAgent(BaseCell):
                 if not queue:
                     return
                 message = queue[0]
-                if await self._deliver_parent_message(session_id, message):
-                    queue.popleft()
-                    continue
-                if time.time() >= deadline:
-                    logger.warning(
-                        "[SessionAgent] 通知超过重试窗口仍未送达，保留在队列 | session=%s | pending=%d",
+                if isinstance(message, str):
+                    message = {"content": message, "notice": None}
+
+                from app.server.task_manager import get_task_manager
+                task_mgr = get_task_manager()
+                info = task_mgr.get_task_info(session_id)
+                if info is not None and getattr(info.status, "value", "") == "cancelled":
+                    logger.info(
+                        "[SessionAgent] 父会话已取消，丢弃待投递通知 | session=%s | pending=%d",
                         session_id, len(queue),
                     )
+                    queue.clear()
+                    return
+
+                msg_id = str(message.get("msg_id") or "")
+                state = message.get("_delivery") or "new"
+
+                if state == "queued":
+                    if not msg_id or not task_mgr.has_pending_supplement(session_id, msg_id):
+                        queue.popleft()
+                        continue
+                    if not task_mgr.has_running_task(session_id):
+                        if not task_mgr.claim_supplement_message(session_id, msg_id):
+                            queue.popleft()
+                            continue
+                        content = (message.get("content") or "").strip()
+                        if content and await self._start_turn(session_id, content):
+                            queue.popleft()
+                            continue
+                        task_mgr.enqueue_supplement_message(
+                            session_id, self._build_payload(session_id, message)
+                        )
+                else:
+                    result = await self._deliver_parent_message(session_id, message)
+                    if result == "consumed":
+                        queue.popleft()
+                        continue
+                    if result == "queued":
+                        message["_delivery"] = "queued"
+
+                if time.time() >= deadline:
+                    logger.warning(
+                        "[SessionAgent] 通知投递超时，放弃 | session=%s | pending=%d",
+                        session_id, len(queue),
+                    )
+                    queue.clear()
                     return
                 await asyncio.sleep(_NOTIFY_RETRY_INTERVAL)
         finally:
             if _NOTIFY_WORKERS.get(session_id) is asyncio.current_task():
                 _NOTIFY_WORKERS.pop(session_id, None)
 
-    async def _deliver_parent_message(self, session_id: str, message: str) -> bool:
+    def _build_payload(self, session_id: str, message: Dict[str, Any]) -> Dict[str, Any]:
+        content = (message.get("content") if isinstance(message, dict) else message) or ""
+        notice = message.get("notice") if isinstance(message, dict) else None
+        msg_id = str(message.get("msg_id") or "") if isinstance(message, dict) else ""
+        if not msg_id:
+            msg_id = f"session_agent_{int(time.time() * 1000)}"
+            if isinstance(message, dict):
+                message["msg_id"] = msg_id
+        task_id = ""
+        if isinstance(notice, dict):
+            task_id = str(notice.get("task_id") or "")
+        if not task_id and isinstance(message, dict):
+            task_id = str(message.get("task_id") or "")
+        return {
+            "content": content,
+            "source": "session_agent",
+            "msg_id": msg_id,
+            "received_at": time.time(),
+            "created_at": time.time(),
+            "platform": "session_agent",
+            "message_type": "event",
+            "notice": notice,
+            "task_id": task_id,
+        }
+
+    async def _start_turn(self, session_id: str, content: str) -> bool:
         try:
             from app.agent.loop.agent_loop_manager import AgentLoopManager
             from app.agent.loop.session_manager import get_session_manager
             from app.server.session_mode import get_mode
             from app.server.task_manager import get_task_manager
 
-            task_mgr = get_task_manager()
-            queued_payload = {
-                "content": message,
-                "source": "session_agent",
-                "msg_id": f"session_agent_{int(time.time() * 1000)}",
-                "received_at": time.time(),
-                "platform": "session_agent",
-                "message_type": "event",
-            }
-            if task_mgr.has_running_task(session_id):
-                return bool(task_mgr.enqueue_supplement_message(session_id, queued_payload))
             mgr = AgentLoopManager.get_instance()
             agent_loop = await mgr.get_loop(session_id)
             session_info = get_session_manager().get_or_create(session_id)
-            started = await task_mgr.start_task(
+            started = await get_task_manager().start_task(
                 session_id=session_id,
                 agent_loop=agent_loop,
-                user_input=message,
+                user_input=content,
                 memory=session_info.memory,
                 mode=get_mode(session_id),
             )
             if started:
                 self._attach_channel_reply(session_id)
-                return True
-            return bool(task_mgr.enqueue_supplement_message(session_id, queued_payload))
+            return bool(started)
+        except Exception as e:
+            logger.warning("[SessionAgent] 拉起父会话失败 | session=%s | error=%s", session_id, e)
+            return False
+
+    async def _deliver_parent_message(self, session_id: str, message: Dict[str, Any]) -> str:
+        """首次投递，返回 consumed / queued / failed"""
+        try:
+            from app.server.task_manager import get_task_manager
+
+            task_mgr = get_task_manager()
+            payload = self._build_payload(session_id, message)
+            if task_mgr.has_running_task(session_id):
+                return "queued" if task_mgr.enqueue_supplement_message(session_id, payload) else "failed"
+            content = (message.get("content") if isinstance(message, dict) else message) or ""
+            if await self._start_turn(session_id, content):
+                return "consumed"
+            return "queued" if task_mgr.enqueue_supplement_message(session_id, payload) else "failed"
         except Exception as e:
             logger.warning("[SessionAgent] 通知父会话失败 | session=%s | error=%s", session_id, e)
-            return False
+            return "failed"
 
     @staticmethod
     def _attach_channel_reply(session_id: str) -> None:

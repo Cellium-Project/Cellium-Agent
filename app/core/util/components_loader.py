@@ -72,6 +72,22 @@ def register_cell(cell: ICell):
     """注册组件到全局注册表"""
     key = cell.cell_name.lower()
     if key in _cell_registry:
+        existing = _cell_registry[key]
+        try:
+            from app.core.util.component_tool_registry import DEFAULT_COMPONENT_MODULES
+            expected_module = DEFAULT_COMPONENT_MODULES.get(key)
+        except Exception:
+            expected_module = None
+        if (
+            expected_module
+            and type(existing).__module__ == expected_module
+            and type(cell).__module__ != expected_module
+        ):
+            logger.warning(
+                f"[Component] '{key}' 是默认组件名，拒绝覆盖 ({type(cell).__name__})"
+            )
+            return
+
         logger.warning(f"组件已存在，将被覆盖: {key} ({type(_cell_registry[key]).__name__})")
     _cell_registry[key] = cell
     logger.info(f"[Component] 已注册: {key}")
@@ -493,6 +509,7 @@ def _extract_cell_classes_from_package(pkg_dir: pathlib.Path) -> tuple:
                 pass
 
     found = []
+    seen_classes = set()
     scanned_modules = set()
 
     for py_file in pkg_dir.rglob("*.py"):
@@ -528,7 +545,8 @@ def _extract_cell_classes_from_package(pkg_dir: pathlib.Path) -> tuple:
             if issubclass(obj, BaseCell) or (
                 issubclass(obj, ICell) and obj is not ICell and obj is not BaseCell
             ):
-                if not inspect.isabstract(obj):
+                if not inspect.isabstract(obj) and name not in seen_classes:
+                    seen_classes.add(name)
                     found.append({
                         "class_name": name,
                         "module_path": f"components.{pkg_name}.{name}",
@@ -541,6 +559,19 @@ def _extract_cell_classes_from_package(pkg_dir: pathlib.Path) -> tuple:
 # ============================================================
 # 加载与热加载
 # ============================================================
+
+def _package_mtime(pkg_dir: pathlib.Path) -> float:
+    """包组件 mtime = 包内所有 .py 的最大 mtime（递归）"""
+    mtime = 0.0
+    for py_file in pkg_dir.rglob("*.py"):
+        if "__pycache__" in py_file.parts:
+            continue
+        try:
+            mtime = max(mtime, os.path.getmtime(py_file))
+        except OSError:
+            pass
+    return mtime
+
 
 def load_components(
     container: DIContainer = None,
@@ -580,7 +611,10 @@ def load_components(
             source_file = info.get("source_file")
             if source_file:
                 _loaded_files.add(source_file)
-                _file_mtimes[source_file] = os.path.getmtime(source_file)
+                if info.get("is_package"):
+                    _file_mtimes[source_file] = _package_mtime(pathlib.Path(source_file))
+                else:
+                    _file_mtimes[source_file] = os.path.getmtime(source_file)
                 instance._source_file = source_file
 
             if hasattr(instance, "on_load"):
@@ -838,34 +872,127 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
     current_files = set()
     discovered = discover_components()
 
+    by_file: Dict[str, List[Dict[str, Any]]] = {}
     for item in discovered:
-        file_path = item["file"]
-        current_files.add(file_path)
+        current_files.add(item["file"])
+        by_file.setdefault(item["file"], []).append(item)
 
-        is_package = item.get("is_package", False)
+    for file_path, items in by_file.items():
+        is_package = any(i.get("is_package", False) for i in items)
 
         if file_path not in _loaded_files:
-            try:
-                instance, info = _instantiate_component(item["module_path"], purge_cache=True)
-                register_cell(instance)
-                _loaded_files.add(file_path)
-                if is_package:
-                    pkg_path = pathlib.Path(file_path)
-                    max_mtime = 0
-                    init_file = pkg_path / "__init__.py"
-                    if init_file.exists():
-                        max_mtime = os.path.getmtime(init_file)
-                    for py_file in pkg_path.glob("*.py"):
+            loaded_any = False
+            for item in items:
+                try:
+                    instance, _info = _instantiate_component(item["module_path"], purge_cache=True)
+                    register_cell(instance)
+                    loaded_any = True
+                    instance._source_file = file_path
+
+                    if hasattr(instance, "on_load"):
                         try:
-                            max_mtime = max(max_mtime, os.path.getmtime(py_file))
-                        except Exception:
-                            pass
-                    _file_mtimes[file_path] = max_mtime
-                else:
-                    _file_mtimes[file_path] = os.path.getmtime(file_path)
+                            instance.on_load()
+                        except Exception as e:
+                            logger.warning(f"[HotReload] {instance.cell_name} on_load 失败: {e}")
+
+                    if container:
+                        container.register(type(instance), instance)
+
+                    register_to_config(item["module_path"])
+                    report["added"].append({"name": instance.cell_name, "class": item["class_name"]})
+                    logger.info(f"[HotReload] 新组件: {instance.cell_name} ({item['class_name']})")
+                except Exception as e:
+                    logger.error(f"[HotReload] 加载新组件失败 {item['class_name']}: {e}")
+
+            if loaded_any:
+                _loaded_files.add(file_path)
+                try:
+                    if is_package:
+                        _file_mtimes[file_path] = _package_mtime(pathlib.Path(file_path))
+                    else:
+                        _file_mtimes[file_path] = os.path.getmtime(file_path)
+                except OSError:
+                    pass
+            continue
+
+        try:
+            if is_package:
+                current_mtime = _package_mtime(pathlib.Path(file_path))
+            else:
+                current_mtime = os.path.getmtime(file_path)
+        except OSError:
+            continue
+
+        if _file_mtimes.get(file_path) == current_mtime:
+            continue
+
+        logger.info(f"[HotReload] 检测到组件更新: {file_path} (mtime changed)")
+
+        new_class_names = {item["class_name"] for item in items}
+        for name, cell in list(_cell_registry.items()):
+            if getattr(cell, '_source_file', '') != file_path:
+                continue
+            cls_name = type(cell).__name__
+            if cls_name in new_class_names:
+                continue
+            try:
+                from app.core.util.component_tool_registry import get_component_tool_registry
+                get_component_tool_registry().unregister(name)
+            except Exception:
+                pass
+            if hasattr(cell, "on_unload"):
+                try:
+                    cell.on_unload()
+                except Exception:
+                    pass
+            unregister_cell(name)
+            unregister_from_config(f"components.{pathlib.Path(file_path).stem}.{cls_name}")
+            report["removed"].append({"name": name, "class": cls_name})
+            logger.info(f"[HotReload] 已清理被删除或重命名的类: {name} ({cls_name})")
+
+        for item in items:
+            try:
+                old_instance = None
+                old_cell_name = None
+                for name, cell in list(_cell_registry.items()):
+                    if (getattr(cell, '_source_file', '') == file_path
+                            and type(cell).__name__ == item["class_name"]):
+                        old_instance = cell
+                        old_cell_name = name
+                        break
+
+                if old_cell_name:
+                    try:
+                        from app.core.util.component_tool_registry import get_component_tool_registry
+                        registry = get_component_tool_registry()
+                        registry.unregister(old_cell_name)
+                        logger.debug(f"[HotReload] 已注销旧工具注册表项: {old_cell_name}")
+                    except Exception as e:
+                        logger.debug(f"[HotReload] 注销旧工具注册表项失败 {old_cell_name}: {e}")
+
+                if old_instance and hasattr(old_instance, "on_unload"):
+                    old_instance.on_unload()
+
+                instance, _info = _instantiate_component(item["module_path"], purge_cache=True)
+
+                from app.core.util.cell_tool_adapter import get_exempted_names
+                use_sandbox = instance.cell_name not in get_exempted_names()
+
+                if use_sandbox:
+                    try:
+                        from app.core.util.component_sandbox import ComponentSandbox
+                        sandbox = ComponentSandbox.reload_sandbox(instance.cell_name)
+                        sandbox.initialize(str(file_path), item["class_name"])
+                        sandbox._source_file = file_path
+                        logger.info(f"[HotReload] 已重启并初始化沙箱: {instance.cell_name}")
+                    except Exception as e:
+                        logger.warning(f"[HotReload] 沙箱重启失败，使用直接模式: {e}")
+                        use_sandbox = False
+
+                register_cell(instance)
                 instance._source_file = file_path
 
-                if hasattr(instance, "on_load"):
+                if hasattr(instance, "on_load") and not use_sandbox:
                     try:
                         instance.on_load()
                     except Exception as e:
@@ -874,106 +1001,26 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 if container:
                     container.register(type(instance), instance)
 
-                register_to_config(item["module_path"])
-                report["added"].append({"name": instance.cell_name, "class": item["class_name"]})
-                logger.info(f"[HotReload] 新组件: {instance.cell_name} ({item['class_name']})")
+                report["updated"].append({"name": instance.cell_name, "class": item["class_name"]})
+                logger.info(f"[HotReload] 已更新: {instance.cell_name} ({item['class_name']})")
             except Exception as e:
-                logger.error(f"[HotReload] 加载新组件失败 {item['class_name']}: {e}")
-        else:
-            try:
-                if is_package:
-                    pkg_path = pathlib.Path(file_path)
-                    current_mtime = 0
-                    init_file = pkg_path / "__init__.py"
-                    if init_file.exists():
-                        current_mtime = os.path.getmtime(init_file)
-                    for py_file in pkg_path.glob("*.py"):
-                        try:
-                            current_mtime = max(current_mtime, os.path.getmtime(py_file))
-                        except Exception:
-                            pass
-                else:
-                    current_mtime = os.path.getmtime(file_path)
+                logger.error(f"[HotReload] 更新组件失败 {item['class_name']}: {e}")
 
-                if file_path in _file_mtimes and _file_mtimes[file_path] != current_mtime:
-                    logger.info(f"[HotReload] 检测到组件更新: {item['class_name']} (mtime changed)")
-                    try:
-                        old_instance = None
-                        old_cell_name = None
-                        for name, cell in list(_cell_registry.items()):
-                            if getattr(cell, '_source_file', '') == file_path:
-                                old_instance = cell
-                                old_cell_name = name
-                                break
-                        
-                        if old_cell_name:
-                            try:
-                                from app.core.util.component_tool_registry import get_component_tool_registry
-                                registry = get_component_tool_registry()
-                                registry.unregister(old_cell_name)
-                                logger.debug(f"[HotReload] 已注销旧工具注册表项: {old_cell_name}")
-                            except Exception as e:
-                                logger.debug(f"[HotReload] 注销旧工具注册表项失败 {old_cell_name}: {e}")
-                        
-                        if old_instance and hasattr(old_instance, "on_unload"):
-                            old_instance.on_unload()
-
-                        instance, info = _instantiate_component(item["module_path"], purge_cache=True)
-
-                        from app.core.util.cell_tool_adapter import get_exempted_names
-                        use_sandbox = instance.cell_name not in get_exempted_names()
-                        
-                        if use_sandbox:
-                            try:
-                                from app.core.util.component_sandbox import ComponentSandbox
-                                sandbox_name = old_cell_name or instance.cell_name
-                                sandbox = ComponentSandbox.reload_sandbox(sandbox_name)
-                                sandbox.initialize(str(file_path), item["class_name"])
-                                sandbox._source_file = file_path
-                                logger.info(f"[HotReload] 已重启并初始化沙箱: {sandbox_name}")
-                            except Exception as e:
-                                logger.warning(f"[HotReload] 沙箱重启失败，使用直接模式: {e}")
-                                use_sandbox = False
-                        
-                        info = {
-                            "class_name": item["class_name"],
-                            "module_path": item["module_path"],
-                            "source_file": str(file_path),
-                            "is_new": False,
-                        }
-                        register_cell(instance)
-                        _loaded_files.add(file_path)
-                        _file_mtimes[file_path] = current_mtime
-                        instance._source_file = file_path
-
-                        if hasattr(instance, "on_load") and not use_sandbox:
-                            try:
-                                instance.on_load()
-                            except Exception as e:
-                                logger.warning(f"[HotReload] {instance.cell_name} on_load 失败: {e}")
-
-                        if container:
-                            container.register(type(instance), instance)
-
-                        report["updated"].append({"name": instance.cell_name, "class": item["class_name"]})
-                        logger.info(f"[HotReload] 已更新: {instance.cell_name} ({item['class_name']})")
-                    except Exception as e:
-                        logger.error(f"[HotReload] 更新组件失败 {item['class_name']}: {e}")
-            except OSError:
-                pass
+        _file_mtimes[file_path] = current_mtime
     
     removed_files = _loaded_files - current_files
     for file_path in removed_files:
         if os.path.exists(file_path):
             continue
-        target_name = None
-        for name, cell in list(_cell_registry.items()):
-            if getattr(cell, '_source_file', '') == file_path:
-                target_name = name
-                break
 
-        if target_name:
-            cls_name = type(_cell_registry[target_name]).__name__
+        targets = [
+            (name, cell)
+            for name, cell in list(_cell_registry.items())
+            if getattr(cell, '_source_file', '') == file_path
+        ]
+
+        for target_name, target_cell in targets:
+            cls_name = type(target_cell).__name__
             module_path = f"components.{pathlib.Path(file_path).stem}.{cls_name}"
 
             try:
@@ -1000,7 +1047,7 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                     logger.info(f"[HotReload] 已从免沙箱白名单移除: {target_name}")
             except Exception as e:
                 logger.debug(f"[HotReload] 清理免沙箱白名单失败 {target_name}: {e}")
-            
+
             try:
                 from app.core.util.component_tool_registry import get_component_tool_registry
                 registry = get_component_tool_registry()
@@ -1008,28 +1055,28 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
                 logger.debug(f"[HotReload] 已从工具注册表移除: {target_name}")
             except Exception as e:
                 logger.debug(f"[HotReload] 从工具注册表移除失败 {target_name}: {e}")
-            
-            if file_path in _load_errors:
-                del _load_errors[file_path]
-                logger.debug(f"[HotReload] 已清理错误缓存: {file_path}")
-            
+
             report["removed"].append({"name": target_name, "class": cls_name})
             logger.info(f"[HotReload] 已卸载: {target_name}")
-        
+
+        if file_path in _load_errors:
+            del _load_errors[file_path]
+            logger.debug(f"[HotReload] 已清理错误缓存: {file_path}")
+
         _loaded_files.discard(file_path)
         _file_mtimes.pop(file_path, None)
 
-    if report.get("added") or report.get("updated"):
-        try:
-            from app.core.util.component_tool_registry import get_component_tool_registry
-            registry = get_component_tool_registry()
-            registry.sync_from_components_loader()
-            added_count = len(report.get("added", []))
-            updated_count = len(report.get("updated", []))
-            logger.info(f"[HotReload] 已同步到工具注册表: {added_count} 新增, {updated_count} 更新")
-        except Exception as e:
-            logger.warning(f"[HotReload] 同步到工具注册表失败: {e}")
-    
+    try:
+        from app.core.util.component_tool_registry import get_component_tool_registry
+        registry = get_component_tool_registry()
+        registry.sync_from_components_loader()
+        logger.info(
+            "[HotReload] 已同步到工具注册表: %d 新增, %d 更新, 当前 %d 个组件工具",
+            len(report.get("added", [])), len(report.get("updated", [])), registry.size,
+        )
+    except Exception as e:
+        logger.warning(f"[HotReload] 同步到工具注册表失败: {e}")
+
     return report
 
 

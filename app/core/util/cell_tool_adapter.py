@@ -26,6 +26,7 @@ CellToolAdapter — 组件→工具适配器
 import inspect
 import logging
 import os
+import pathlib
 import re
 import sys
 import threading
@@ -237,20 +238,29 @@ class CellToolAdapter(BaseTool):
         return type(self._cell).__name__
 
     def _get_component_source(self) -> Optional[str]:
+        """组件源路径：单文件组件返回 .py；包组件返回包目录（沙箱按包加载以支持相对导入）"""
         try:
             source_file = inspect.getsourcefile(type(self._cell))
             if not source_file:
                 return None
 
-            parent_dir = os.path.dirname(source_file)
-            init_path = os.path.join(parent_dir, "__init__.py")
-            if os.path.exists(init_path):
-                root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                components_dir = os.path.join(root_dir, "components")
-                if os.path.abspath(parent_dir).startswith(os.path.abspath(components_dir)):
-                    if source_file.endswith("__init__.py"):
-                        return parent_dir
+            from app.core.util.components_loader import get_scan_dirs
+
+            path = pathlib.Path(source_file).resolve()
+            for scan_dir in get_scan_dirs():
+                try:
+                    rel = path.relative_to(scan_dir.resolve())
+                except (ValueError, OSError):
+                    continue
+                if len(rel.parts) == 1:
                     return source_file
+
+                pkg = path.parent
+                while (pkg / "__init__.py").exists():
+                    if pkg.parent.resolve() == scan_dir.resolve():
+                        return str(pkg)
+                    pkg = pkg.parent
+                return source_file
 
             return source_file
         except (TypeError, OSError):

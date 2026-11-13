@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, memo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useChat } from '../hooks/useChat';
@@ -95,6 +95,37 @@ const MessageList = memo(({
     }
   }, [currentSessionId, isLoadingMessages, allMessages.length, messagesContainerRef, messagesEndRef]);
 
+  // 流式内容签名：新消息追加或流式文本/推理增长时都视为「有新内容」
+  const streamSig = useMemo(() => {
+    if (!streamingMessage) return '';
+    const segs = streamingMessage.timeline || [];
+    const chars = segs.reduce((n, s) => n + (((s as { content?: string }).content || '').length), 0);
+    return `${segs.length}:${chars}:${(streamingMessage.content || '').length}`;
+  }, [streamingMessage]);
+
+  const lastCountRef = useRef(0);
+  const lastSigRef = useRef('');
+
+  // 新消息 / 流式增长时跟随到底部（用户主动上滑阅读时保持原地）
+  useEffect(() => {
+    const countChanged = allMessages.length !== lastCountRef.current;
+    const sigChanged = streamSig !== lastSigRef.current;
+    lastCountRef.current = allMessages.length;
+    lastSigRef.current = streamSig;
+
+    const container = messagesContainerRef.current;
+    if (!container || isLoadingMessages) return;
+    if (!countChanged && !sigChanged) return;
+
+    const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distance > 240) return;
+
+    const raf = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+    });
+    rafIds.current.push(raf);
+  }, [allMessages.length, streamSig, isLoadingMessages, messagesContainerRef, messagesEndRef]);
+
   const handleScroll = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container || isLoadingMessages || isStreaming || !hasMoreHistory || !currentSessionId) return;
@@ -151,11 +182,41 @@ const MessageList = memo(({
   );
 });
 
+async function makeImageDerivative(
+  file: File,
+  maxEdge: number,
+  maxPixels: number,
+  quality = 0.85,
+): Promise<Blob | null> {
+  if (!file.type.startsWith('image/') || file.type === 'image/svg+xml') return null;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(
+      1,
+      maxEdge / Math.max(bitmap.width, bitmap.height),
+      Math.sqrt(maxPixels / (bitmap.width * bitmap.height)),
+    );
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close?.();
+    return await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+  } catch {
+    return null;
+  }
+}
+
 export const ChatView: React.FC = () => {
   const { t } = useTranslation();
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const [rewindTargetId, setRewindTargetId] = useState<string | null>(null);
   const [rewindNotice, setRewindNotice] = useState('');
   const [rewindFiles, setRewindFiles] = useState<{ path: string; added: number; removed: number; kind?: string; binary?: boolean }[]>([]);
@@ -358,36 +419,62 @@ export const ChatView: React.FC = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const uploadFiles = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
-    
     setUploading(true);
+    setUploadError('');
     const uploadedAttachments: Attachment[] = [];
-    
+    const errors: string[] = [];
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const formData = new FormData();
       formData.append('file', file);
-      
+
+      if (file.type.startsWith('image/') && file.type !== 'image/svg+xml') {
+        const visionBlob = await makeImageDerivative(file, 1568, 1_150_000, 0.85);
+        if (visionBlob) formData.append('vision', visionBlob, 'vision.webp');
+        const thumbBlob = await makeImageDerivative(file, 320, 320 * 320, 0.8);
+        if (thumbBlob) formData.append('thumb', thumbBlob, 'thumb.webp');
+      }
+
       try {
-        const response = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        
-        if (!response.ok) throw new Error('上传失败');
-        
-        const result = await response.json();
-        uploadedAttachments.push(result);
-      } catch (error) {
-        console.error('上传失败:', error);
+        const response = await fetch('/api/upload', { method: 'POST', body: formData });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          throw new Error(detail.detail || `上传失败 (${response.status})`);
+        }
+        uploadedAttachments.push(await response.json());
+      } catch (error: any) {
+        errors.push(`${file.name}: ${error.message}`);
       }
     }
-    
+
     setAttachments(prev => [...prev, ...uploadedAttachments]);
+    if (errors.length > 0) setUploadError(errors.join('；'));
     setUploading(false);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await uploadFiles(files);
     e.target.value = '';
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length > 0) {
+      e.preventDefault();
+      await uploadFiles(files);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      e.preventDefault();
+      await uploadFiles(e.dataTransfer.files);
+    }
   };
 
   const handleRemoveAttachment = (index: number) => {
@@ -480,7 +567,6 @@ export const ChatView: React.FC = () => {
           {visibleDelegations.map((a, idx) => {
             const running = !TERMINAL_STATUS.includes(a.status);
             const tool = a.current_tool || a.last_tool;
-            const showReason = running && idx === visibleDelegations.length - 1;
             const leaving = leavingIds.includes(a.task_id);
             return (
               <div
@@ -499,11 +585,6 @@ export const ChatView: React.FC = () => {
                   ) : null}
                   {a.error && <span className="delegation-banner-error">{a.error}</span>}
                 </div>
-                {showReason && a.last_reasoning && (
-                  <div className="delegation-banner-reason">
-                    {t('chat.delegationReasoning')}：{a.last_reasoning}
-                  </div>
-                )}
               </div>
             );
           })}
@@ -526,18 +607,32 @@ export const ChatView: React.FC = () => {
         onRewind={handleRequestRewind}
       />
 
-      <div className="chat-input-container">
+      <div
+        className="chat-input-container"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={handleDrop}
+      >
+        {uploadError && <div className="upload-error">{uploadError}</div>}
         {attachments.length > 0 && (
           <div className="attachments-preview">
             {attachments.map((att, idx) => (
               <div key={idx} className="attachment-item">
-                <div className="attachment-icon">
-                  {att.file_type === 'image' ? (
-                    <Icons.Image size={14} />
-                  ) : (
-                    <Icons.File size={14} />
-                  )}
-                </div>
+                {att.file_type === 'image' && (att.thumb_url || att.url) ? (
+                  <img
+                    className="attachment-item-thumb"
+                    src={att.thumb_url || att.url}
+                    alt={att.filename}
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="attachment-icon">
+                    {att.file_type === 'image' ? (
+                      <Icons.Image size={14} />
+                    ) : (
+                      <Icons.File size={14} />
+                    )}
+                  </div>
+                )}
                 <span className="attachment-filename">{att.filename}</span>
                 <button 
                   className="attachment-remove"
@@ -566,6 +661,7 @@ export const ChatView: React.FC = () => {
             onChange={(e) => setInputValue(e.target.value)}
             onInput={handleInput}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={isStreaming ? t('chat.placeholderStreaming') : t('chat.placeholder')}
             rows={1}
           />

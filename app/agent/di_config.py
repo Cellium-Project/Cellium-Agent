@@ -26,7 +26,7 @@ from app.agent.shell.cellium_shell import CelliumShell
 from app.agent.loop.memory import MemoryManager
 from app.agent.memory.three_layer import ThreeLayerMemory
 from app.agent.security.policy import SecurityPolicy
-from app.agent.tools.shell_tool import ShellTool
+from app.agent.tools.shell_tool import ShellTool, ShellTaskTool, ShellSessionTool
 from app.agent.tools.memory_tool import MemoryTool
 from app.agent.tools.file_tool import FileTool
 from app.agent.tools.read_tool import ReadTool
@@ -550,6 +550,14 @@ def setup_agent_di(
     if not container.has(ShellTool):
         container.register(ShellTool, _tool, singleton=True)
 
+    _task_tool = ShellTaskTool(shell=_shell)
+    if not container.has(ShellTaskTool):
+        container.register(ShellTaskTool, _task_tool, singleton=True)
+
+    _session_tool = ShellSessionTool(shell=_shell)
+    if not container.has(ShellSessionTool):
+        container.register(ShellSessionTool, _session_tool, singleton=True)
+
     # --- 注册 MemoryTool（注入 ThreeLayerMemory）---
     _mem_tool = MemoryTool(three_layer_memory=_memory)
     if not container.has(MemoryTool):
@@ -609,6 +617,8 @@ def resolve_agent_services(container: DIContainer = None):
         "shell": container.resolve(CelliumShell),
         "memory": container.resolve(ThreeLayerMemory),
         "shell_tool": container.resolve(ShellTool),
+        "shell_task_tool": container.resolve(ShellTaskTool) if container.has(ShellTaskTool) else None,
+        "shell_session_tool": container.resolve(ShellSessionTool) if container.has(ShellSessionTool) else None,
         "memory_tool": container.resolve(MemoryTool) if container.has(MemoryTool) else None,
         "file_tool": container.resolve(FileTool) if container.has(FileTool) else None,
         "read_tool": container.resolve(ReadTool) if container.has(ReadTool) else None,

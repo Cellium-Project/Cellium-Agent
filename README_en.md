@@ -553,10 +553,42 @@ Conversation archives use SQLite by default (`memory/archive.db`, WAL mode) and 
 | Config Auto-Maintenance | Auto-append discovered new components to settings.yaml enabled_components |
 | Channel Binding | qq_files / telegram_files / weixin_files / feishu_files are injected only when the matching channel is ready; enabling takes effect on hot reload, and WeChat additionally requires a completed QR login |
 
-**Reserved Tool Names** (cannot be overridden by components):
-- `shell` — ShellTool
-- `memory` — MemoryTool
-- `file` — FileTool
+**Reserved Tool Names** (built-in, cannot be overridden by components):
+
+| Tool | Description |
+|------|-------------|
+| `shell` | Run commands (foreground/background; `command` accepts a string or argv array) |
+| `shell_task` | Background task manager (list / output / kill) |
+| `shell_session` | Persistent session (start / send / output / close / list) |
+| `memory` | Memory search and write |
+| `file` | File operations (fs / insight / send: send images/files into chat) |
+| `read` | Read files (image files go straight into the model's view) |
+| `edit` | Edit files |
+| `grep` | Search content |
+| `glob` | Find files by name |
+| `ls` | List directories |
+| `config` | Read/write config |
+
+**Default Components** (shipped with the package, written to `enabled_components` on first launch):
+
+| Component file | Tool name | Description |
+|----------------|-----------|-------------|
+| `component_builder.py` | `component` | Generate, install, uninstall components at runtime |
+| `skill_installer.py` | `skill_installer` | Install skill packages |
+| `skill_manager.py` | `skill_manager` | Skill management |
+| `scheduler.py` | `scheduler` | Scheduled tasks |
+| `web_search.py` | `web_search` | Web search |
+| `web_fetch.py` | `web_fetch` | Web fetch |
+| `qq_files.py` | `qq_files` | QQ file transfer |
+| `telegram_files.py` | `telegram_files` | Telegram file transfer |
+| `weixin_files.py` | `weixin_files` | WeChat file transfer |
+| `feishu_files.py` | `feishu_files` | Feishu file transfer |
+| `sub_agent.py` | `sub_agent` | Parallel sub-agents |
+| `session_agent.py` | `session_agent` | Session delegation |
+
+`_example_component.py` is a template (the `_` prefix excludes it from auto-loading); copy and rename it to start a new component.
+
+Default component names are protected too: user components cannot register as `scheduler`, `component`, `sub_agent`, etc. — the registration is rejected with a warning, so new components must use a different name.
 
 ### Native Self-Extension
 

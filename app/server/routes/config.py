@@ -494,6 +494,9 @@ async def reload_llm_engine():
 
     logger = logging.getLogger(__name__)
 
+    from app.agent.llm.vision_capability import clear as clear_vision_cache
+    clear_vision_cache()
+
     config = _get_agent_config()
     llm_config = config.get_section("llm")
 

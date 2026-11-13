@@ -102,6 +102,10 @@ class TestPlanBlock(unittest.TestCase):
     def test_edit_blocked(self):
         self.assertIn("Plan 模式禁止", plan_block_reason("edit", {"path": "a.py"}))
         self.assertIn("Plan 模式禁止", plan_block_reason("skill_installer", {"command": "install"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("file", {"command": "send", "paths": ["a.png"]}))
+        self.assertIn("委托模式禁止", delegate_block_reason("file", {"command": "send", "paths": ["a.png"]}))
+        self.assertIsNone(plan_block_reason("file", {"command": "insight", "path": "a.py"}))
+        self.assertIsNone(plan_block_reason("read", {"file_path": "a.png"}))
 
     def test_file_write_blocked_insight_allowed(self):
         self.assertIn("Plan 模式禁止", plan_block_reason("file", {"command": "fs", "action": "create"}))
@@ -110,15 +114,26 @@ class TestPlanBlock(unittest.TestCase):
         self.assertIsNone(plan_block_reason("file", {"command": "insight", "mode": "structure"}))
 
     def test_shell_blacklist(self):
-        self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": "pytest -q"}))
-        self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": "git log | head -5"}))
-        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "run", "cmd": "rm -rf x"}))
-        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "run", "cmd": "python -c \"1\""}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "pytest -q"}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "git log | head -5"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "rm -rf x"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "python -c \"1\""}))
+        self.assertIsNone(plan_block_reason("shell_task", {"action": "list"}))
+        self.assertIsNone(plan_block_reason("shell_task", {"action": "output", "task_id": "t"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell_task", {"action": "kill", "task_id": "t"}))
+        self.assertIsNone(plan_block_reason("shell_session", {"action": "list"}))
+        self.assertIsNone(plan_block_reason("shell_session", {"action": "output", "session_id": "s"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell_session", {"action": "start", "command": "ssh host"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell_session", {"action": "send", "session_id": "s", "text": "ls"}))
+
+    def test_shell_legacy_format(self):
         self.assertIsNone(plan_block_reason("shell", {"command": "list"}))
         self.assertIsNone(plan_block_reason("shell", {"command": "output", "task_id": "t"}))
         self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "kill", "task_id": "t"}))
-        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "session"}))
-        self.assertIsNone(plan_block_reason("shell", {"command": "session", "action": "list"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "session", "cmd": "bash"}))
+        self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": "pytest -q"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "run", "cmd": "rm -rf x"}))
+        self.assertIn("Plan 模式禁止", plan_block_reason("shell", {"command": "run", "argv": ["git", "push"]}))
 
     def test_shell_simple_mode(self):
         self.assertIsNone(plan_block_reason("shell", {"command": "git status"}))
@@ -161,6 +176,8 @@ class TestPlanBlock(unittest.TestCase):
         self.assertEqual(normalize_mode("delegate"), "delegate")
         self.assertEqual(normalize_mode("bad"), "run")
         self.assertIn("PLAN（只读）", plan_injection())
+        self.assertIn("shell_task", plan_injection())
+        self.assertIn("shell_session", plan_injection())
         self.assertLess(len(plan_injection()), 420, "提示词应保持精简")
         self.assertIn("<user_habit>", plan_injection("计划不超过 5 步，优先 pytest"))
         self.assertNotIn("<user_habit>", plan_injection())
@@ -177,8 +194,15 @@ class TestPlanBlock(unittest.TestCase):
         self.assertTrue(is_delegate("delegate"))
         self.assertIn("委托模式禁止", delegate_block_reason("edit", {"path": "a.py"}))
         self.assertIn("委托模式禁止", delegate_block_reason("file", {"command": "fs", "action": "create"}))
-        self.assertIn("委托模式禁止", delegate_block_reason("shell", {"command": "run", "cmd": "rm -rf x"}))
-        self.assertIsNone(delegate_block_reason("shell", {"command": "run", "cmd": "pytest -q"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("shell", {"command": "rm -rf x"}))
+        self.assertIsNone(delegate_block_reason("shell", {"command": "pytest -q"}))
+        self.assertIsNone(delegate_block_reason("shell_task", {"action": "list"}))
+        self.assertIsNone(delegate_block_reason("shell_task", {"action": "output", "task_id": "t"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("shell_task", {"action": "kill", "task_id": "t"}))
+        self.assertIsNone(delegate_block_reason("shell_session", {"action": "list"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("shell_session", {"action": "start", "command": "bash"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("shell_session", {"action": "send", "session_id": "s", "text": "ls"}))
+        self.assertIn("委托模式禁止", delegate_block_reason("shell_session", {"action": "close", "session_id": "s"}))
         self.assertIsNone(delegate_block_reason("session_agent", {"command": "send", "target": "B"}))
         self.assertIsNone(delegate_block_reason("read", {"path": "a.py"}))
         self.assertIn("委托模式禁止", mode_block_reason("edit", {}, "delegate"))
@@ -188,6 +212,7 @@ class TestPlanBlock(unittest.TestCase):
         text = delegate_injection()
         self.assertIn("DELEGATE", text)
         self.assertIn("session_agent", text)
+        self.assertIn("shell_task", text)
         self.assertIn("禁止", text)
         # 明确要求复用会话并给出分工维度
         self.assertIn("优先复用", text)
@@ -201,9 +226,9 @@ class TestPlanBlock(unittest.TestCase):
             ["git", "commit", "-m", "x"],
             ["python", "-c", "open(1)"],
         ):
-            self.assertIsNotNone(plan_block_reason("shell", {"command": "run", "cmd": cmd}), cmd)
+            self.assertIsNotNone(plan_block_reason("shell", {"command": cmd}), cmd)
             self.assertIsNotNone(
-                delegate_block_reason("shell", {"command": "run", "cmd": cmd}), cmd
+                delegate_block_reason("shell", {"command": cmd}), cmd
             )
         for cmd in (
             "git -C repo commit -m x",
@@ -222,7 +247,7 @@ class TestPlanBlock(unittest.TestCase):
             "docker --context foo run x",
             "kubectl --namespace x apply",
         ):
-            self.assertIsNotNone(plan_block_reason("shell", {"command": "run", "cmd": cmd}), cmd)
+            self.assertIsNotNone(plan_block_reason("shell", {"command": cmd}), cmd)
 
     def test_shell_readonly_still_allowed(self):
         for cmd in (
@@ -230,7 +255,7 @@ class TestPlanBlock(unittest.TestCase):
             "git log --grep commit", "npm test", "npm run lint",
             "docker ps", "kubectl get pods", "find . -name test.py",
         ):
-            self.assertIsNone(plan_block_reason("shell", {"command": "run", "cmd": cmd}), cmd)
+            self.assertIsNone(plan_block_reason("shell", {"command": cmd}), cmd)
 
     def test_normalize_non_string_inputs(self):
         self.assertEqual(normalize_mode(1), "run")

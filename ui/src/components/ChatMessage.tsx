@@ -2,7 +2,7 @@ import React, { memo, useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import type { Message, TimelineSegment, HistoryResponse } from '../types';
+import type { Message, TimelineSegment, HistoryResponse, Attachment, SupplementNoticeData } from '../types';
 import { useAppStore } from '../stores/appStore';
 import { API, fetchJSON } from '../utils/api';
 import { Icons } from './Icons';
@@ -45,8 +45,8 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function parseAttachmentsFromMessage(content: string): { content: string; attachments: Array<{ filename: string; file_type: string; file_size: number; local_path: string }> } {
-  const attachments: Array<{ filename: string; file_type: string; file_size: number; local_path: string }> = [];
+function parseAttachmentsFromMessage(content: string): { content: string; attachments: Array<Partial<Attachment> & { filename: string; file_type: string; file_size: number; local_path: string }> } {
+  const attachments: Array<Partial<Attachment> & { filename: string; file_type: string; file_size: number; local_path: string }> = [];
   
   const attachmentBlockRegex = /\[附件信息\]([\s\S]*?)(?=\n\n|$)/g;
   let blockMatch;
@@ -54,7 +54,7 @@ function parseAttachmentsFromMessage(content: string): { content: string; attach
   while ((blockMatch = attachmentBlockRegex.exec(content)) !== null) {
     const blockContent = blockMatch[1];
     
-    const itemRegex = /- 文件: (.+?) \(类型: (.+?), 大小: (\d+) bytes\)\n\s+本地路径: (.+?)(?=\n|$)/g;
+    const itemRegex = /- 文件: (.+?) \(类型: (.+?), 大小: (\d+) bytes\)\n(?:\s+本地路径: (.+?)\n)?(?:\s+URL: (.+?)\n)?/g;
     let itemMatch;
     
     while ((itemMatch = itemRegex.exec(blockContent)) !== null) {
@@ -62,7 +62,9 @@ function parseAttachmentsFromMessage(content: string): { content: string; attach
         filename: itemMatch[1],
         file_type: itemMatch[2],
         file_size: parseInt(itemMatch[3]),
-        local_path: itemMatch[4],
+        local_path: itemMatch[4] || '',
+        url: itemMatch[5] || undefined,
+        thumb_url: itemMatch[5] || undefined,
       });
     }
   }
@@ -71,6 +73,49 @@ function parseAttachmentsFromMessage(content: string): { content: string; attach
   
   return { content: cleanedContent, attachments };
 }
+
+const AttachmentList: React.FC<{ attachments: Array<Partial<Attachment>> }> = ({ attachments }) => {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <div className="message-attachments">
+      {attachments.map((att, idx) => {
+        const isImage = att.file_type === 'image';
+        const href = att.url || undefined;
+        const thumb = att.thumb_url || att.url;
+        if (isImage && thumb) {
+          return (
+            <a
+              key={idx}
+              className="attachment-thumb"
+              href={href || thumb}
+              target="_blank"
+              rel="noreferrer"
+              title={att.filename}
+            >
+              <img src={thumb} alt={att.filename || 'image'} loading="lazy" />
+            </a>
+          );
+        }
+        const body = (
+          <>
+            <div className="message-attachment-icon">
+              {isImage ? <Icons.Image size={14} /> : <Icons.File size={14} />}
+            </div>
+            <span className="message-attachment-name">{att.filename}</span>
+            <span className="message-attachment-size">{formatFileSize(att.file_size || 0)}</span>
+          </>
+        );
+        return href ? (
+          <a key={idx} className="message-attachment-item attachment-link" href={href} download={att.filename} target="_blank" rel="noreferrer">
+            {body}
+          </a>
+        ) : (
+          <div key={idx} className="message-attachment-item">{body}</div>
+        );
+      })}
+    </div>
+  );
+};
 
 function parseSchedulerTrigger(content: string): { isSchedulerTrigger: boolean; taskName?: string; fullContent?: string } {
   // 检查是否包含定时任务触发关键字
@@ -311,9 +356,20 @@ function isSupplementNotice(content: string): boolean {
   return hasTarget && hasStatus && hasFooter;
 }
 
-const SupplementNotice: React.FC<{ content: string; source?: string }> = ({ content }) => {
+const SupplementNotice: React.FC<{ content: string; source?: string; notice?: SupplementNoticeData }> = ({ content, source, notice }) => {
   const { t } = useTranslation();
-  const parsed = useMemo(() => parseSupplementNotice(content), [content]);
+  const legacy = useMemo(() => parseSupplementNotice(content), [content]);
+  const parsed = useMemo(() => {
+    if (!notice) return legacy;
+    return {
+      title: notice.title || legacy.title,
+      status: notice.status || legacy.status,
+      elapsed: notice.elapsed || legacy.elapsed,
+      body: notice.body || legacy.body,
+      error: notice.error || legacy.error,
+      footer: notice.footer || legacy.footer,
+    };
+  }, [notice, legacy]);
   const [expanded, setExpanded] = useState(false);
   const [panelMounted, setPanelMounted] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -533,21 +589,7 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
               )}
               <div className="user-text">{parsedMessage.content}</div>
               {parsedMessage.attachments && parsedMessage.attachments.length > 0 && (
-                <div className="message-attachments">
-                  {parsedMessage.attachments.map((att, idx) => (
-                    <div key={idx} className="message-attachment-item">
-                      <div className="message-attachment-icon">
-                        {att.file_type === 'image' ? (
-                          <Icons.Image size={14} />
-                        ) : (
-                          <Icons.File size={14} />
-                        )}
-                      </div>
-                      <span className="message-attachment-name">{att.filename}</span>
-                      <span className="message-attachment-size">{formatFileSize(att.file_size)}</span>
-                    </div>
-                  ))}
-                </div>
+                <AttachmentList attachments={parsedMessage.attachments} />
               )}
             </>
           ) : (
@@ -566,6 +608,9 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
               )}
             </span>
           )}
+          {!isUser && message.attachments && message.attachments.length > 0 && (
+            <AttachmentList attachments={message.attachments} />
+          )}
         </div>
         {isUser && onRewind && message.can_rewind && (
           <button
@@ -582,18 +627,40 @@ export const ChatMessage = memo<ChatMessageProps>(({ message, isStreaming, onRew
   );
 });
 
+function isReasoningLive(
+  segment: Extract<TimelineSegment, { kind: 'reasoning' }>,
+  timeline: TimelineSegment[],
+): boolean {
+  if (segment.ended) return false;
+  const idx = timeline.indexOf(segment);
+  if (idx < 0) return false;
+  for (let i = idx + 1; i < timeline.length; i++) {
+    const next = timeline[i];
+    if (next.kind === 'text' || next.kind === 'tool' || next.kind === 'supplement') return false;
+  }
+  return true;
+}
+
 function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNode {
   if (message.timeline && message.timeline.length > 0) {
     type ToolSegment = Extract<TimelineSegment, { kind: 'tool' }>;
     type ThinkingSegment = Extract<TimelineSegment, { kind: 'thinking' }>;
     type ReasoningSegment = Extract<TimelineSegment, { kind: 'reasoning' }>;
+    type ReasoningItem = {
+      kind: 'reasoning';
+      content: string;
+      startedAt?: number;
+      durationMs?: number;
+      finishedAt?: number;
+      live: boolean;
+    };
     type GroupItem =
       | { kind: 'merged-text'; contents: string[] }
-      | { kind: 'supplement'; content: string; source?: string }
+      | { kind: 'supplement'; content: string; source?: string; notice?: SupplementNoticeData }
       | { kind: 'tools-tree'; items: ToolSegment[] }
       | { kind: 'tool-single'; item: ToolSegment }
       | ThinkingSegment
-      | ReasoningSegment;
+      | ReasoningItem;
 
     const groups: GroupItem[] = [];
     let toolBuffer: ToolSegment[] = [];
@@ -617,13 +684,20 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
         }
       } else if (segment.kind === 'supplement') {
         flushTools();
-        groups.push({ kind: 'supplement', content: segment.content, source: segment.source });
+        groups.push({ kind: 'supplement', content: segment.content, source: segment.source, notice: segment.notice });
       } else if (segment.kind === 'thinking') {
         flushTools();
         groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'reasoning') {
-        // reasoning 完成后不显示，不参与分树：两段可见内容之间的工具应合并
-        groups.push(segment as ReasoningSegment);
+        flushTools();
+        groups.push({
+          kind: 'reasoning',
+          content: segment.content,
+          startedAt: segment.startedAt,
+          durationMs: segment.durationMs,
+          finishedAt: segment.finishedAt,
+          live: isReasoningLive(segment, message.timeline!),
+        });
       } else if (segment.kind === 'tool') {
         if (segment.tool === 'sub_agent' || segment.tool === 'session_agent') {
           flushTools();
@@ -644,13 +718,21 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
             return <React.Fragment key={idx}>{renderContentWithCollapsibleJson(merged)}</React.Fragment>;
           }
           if (group.kind === 'supplement') {
-            return <SupplementNotice key={idx} content={group.content} source={group.source} />;
+            return <SupplementNotice key={idx} content={group.content} source={group.source} notice={group.notice} />;
           }
           if (group.kind === 'thinking') {
             return <JsonBlockCard key={idx} jsonStr={group.content} isThinking />;
           }
           if (group.kind === 'reasoning') {
-            return <ReasoningBlock key={idx} content={group.content} startedAt={group.startedAt} durationMs={group.durationMs} streaming={isStreaming && idx === groups.length - 1} />;
+            return (
+              <ReasoningBlock
+                key={idx}
+                content={group.content}
+                startedAt={group.startedAt}
+                durationMs={group.durationMs}
+                streaming={Boolean(isStreaming) && group.live}
+              />
+            );
           }
           if (group.kind === 'tool-single') {
             const seg = group.item;
@@ -789,7 +871,7 @@ function ToolCallContent({ trace, status, compact }: ToolTraceCardProps & { comp
           filePath={String(trace.arguments?.file_path || trace.result?.path || '')}
         />
       )}
-      {trace.tool === 'shell' && status !== 'running' && (trace.result?.output || trace.result?.stderr) && (
+      {['shell', 'shell_task', 'shell_session'].includes(trace.tool) && status !== 'running' && (trace.result?.output || trace.result?.stderr) && (
         <ShellOutputCard result={trace.result} />
       )}
       <pre className="tool-args">{argsStr}</pre>
@@ -841,7 +923,7 @@ const ToolTraceCard: React.FC<ToolTraceCardProps> = ({ trace, status, compact })
         </span>
       );
     }
-    if (trace.tool === 'shell') {
+    if (trace.tool === 'shell' || trace.tool === 'shell_task' || trace.tool === 'shell_session') {
       const out = String(trace.result?.output || '');
       const lines = out ? out.split('\n').filter(Boolean).length : 0;
       const code = trace.result?.exit_code;
@@ -1113,7 +1195,9 @@ const ToolsTree: React.FC<{ items: Extract<TimelineSegment, { kind: 'tool' }>[];
       case 'grep':
       case 'glob':
       case 'ls': return t('chat.actSearch');
-      case 'shell': return t('chat.actShell');
+      case 'shell':
+      case 'shell_task':
+      case 'shell_session': return t('chat.actShell');
       case 'web_fetch':
       case 'web_search': return t('chat.actWeb');
       case 'memory': return t('chat.actMemory');

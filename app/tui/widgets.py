@@ -552,7 +552,10 @@ class DelegationNotice(Static):
         from app.tui.history_render import parse_delegation_notice
         super().__init__("")
         self.add_class("delegation-notice")
-        self._notice = parse_delegation_notice(content)
+        if isinstance(content, dict):
+            self._notice = dict(content)
+        else:
+            self._notice = parse_delegation_notice(content)
         self._body = [ln for ln in (self._notice.get("body") or "").splitlines() if ln.strip()]
         self._expanded = False
 
@@ -2048,14 +2051,14 @@ class ToolCallCard(Static):
                         args = self._preview_args(c["arguments"], 3 + len(name))
                         if args:
                             t.append(f"  {args}", style="dim")
-                elif c["tool"] != "shell":
+                elif c["tool"] not in ("shell", "shell_task", "shell_session"):
                     prefix_len = 3 + len(name)
                     args = self._preview_args(c["arguments"], prefix_len)
                     if args:
                         t.append(f"  {args}", style="dim")
                     elif c.get("description"):
                         t.append(f"  {c['description']}", style="dim")
-                if c["tool"] == "shell":
+                if c["tool"] in ("shell", "shell_task", "shell_session"):
                     self._append_shell(t, cid, c, code_bg, diff_colors)
             if diff:
                 self._append_diff(t, cid, c, diff, diff_colors)
@@ -2104,13 +2107,13 @@ class ToolCallCard(Static):
     def _append_shell(self, t, cid, c, code_bg, colors):
         _code_bg, add_bg, _del_bg, add_fg, _del_fg = colors
         args = c["arguments"] or {}
-        cmd = args.get("command") or ""
-        if not cmd and isinstance(args.get("argv"), list):
-            cmd = " ".join(str(a) for a in args["argv"])
+        cmd = args.get("command") or args.get("cmd") or ""
+        if isinstance(cmd, list):
+            cmd = " ".join(str(a) for a in cmd)
         if not cmd:
             action = (args.get("action") or "").strip()
             if action:
-                cmd = f"session {action}"
+                cmd = f"{c['tool']} {action}" if c["tool"] != "shell" else f"session {action}"
         result = c["result"] if isinstance(c["result"], dict) else {}
         output = result.get("output") or ""
         output = _strip_ansi(output)

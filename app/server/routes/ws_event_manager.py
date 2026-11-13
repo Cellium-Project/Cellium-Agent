@@ -70,12 +70,19 @@ class WSConnectionManager:
     _lock: Optional[asyncio.Lock] = None
     _main_loop: Optional[asyncio.AbstractEventLoop] = None
 
+    _SEND_TIMEOUT: float = 5.0
+    _SESSION_QUEUE_LIMIT: int = 2000
+    _WORKER_IDLE_EXIT: float = 60.0
+
     def __init__(self):
         self._clients: Dict[str, WSClient] = {}
         self._session_clients: Dict[str, Set[str]] = {}
         self._client_counter = 0
         self._cleanup_task: Optional[asyncio.Task] = None
         self._max_published_ids: int = 10000
+        self._session_queues: Dict[str, asyncio.Queue] = {}
+        self._session_workers: Dict[str, asyncio.Task] = {}
+        self._dropped_events: int = 0
 
     @classmethod
     def _get_lock(cls) -> asyncio.Lock:
@@ -187,6 +194,77 @@ class WSConnectionManager:
 
         logger.debug(f"[WSManager] 客户端 {client_id} 关联 session: {old_session} -> {session_id}")
 
+    async def _safe_send(self, client: WSClient, message: WSMessage) -> bool:
+        """发送单条消息，带超时；超时视为客户端失效并断开"""
+        try:
+            await asyncio.wait_for(client.send(message), timeout=self._SEND_TIMEOUT)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f"[WSManager] 发送超时 {self._SEND_TIMEOUT}s，断开客户端 {client.client_id}")
+            await client.close()
+            return False
+        except Exception as e:
+            logger.warning(f"[WSManager] 发送到 {client.client_id} 失败: {e}")
+            client._closed = True
+            return False
+
+    def enqueue_to_session(self, session_id: str, message: WSMessage) -> bool:
+        """把事件投递到 session 队列，由单消费者按序发送"""
+        if not self._session_clients.get(session_id):
+            return False
+
+        queue = self._session_queues.get(session_id)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=self._SESSION_QUEUE_LIMIT)
+            self._session_queues[session_id] = queue
+
+        worker = self._session_workers.get(session_id)
+        if worker is None or worker.done():
+            try:
+                self._session_workers[session_id] = asyncio.create_task(
+                    self._session_worker(session_id)
+                )
+            except RuntimeError:
+                return False
+
+        try:
+            queue.put_nowait(message)
+            return True
+        except asyncio.QueueFull:
+            self._dropped_events += 1
+            if self._dropped_events % 100 == 1:
+                logger.warning(
+                    f"[WSManager] session {session_id} 队列已满({self._SESSION_QUEUE_LIMIT})，"
+                    f"丢弃事件 {message.type}，累计丢弃 {self._dropped_events}"
+                )
+            return False
+
+    async def _session_worker(self, session_id: str):
+        """session 队列消费者，保证同一 session 事件顺序"""
+        queue = self._session_queues.get(session_id)
+        if queue is None:
+            return
+
+        while True:
+            try:
+                message = await asyncio.wait_for(queue.get(), timeout=self._WORKER_IDLE_EXIT)
+            except asyncio.TimeoutError:
+                if queue.empty() and not self._session_clients.get(session_id):
+                    if self._session_queues.get(session_id) is queue:
+                        self._session_queues.pop(session_id, None)
+                    self._session_workers.pop(session_id, None)
+                    return
+                continue
+            except asyncio.CancelledError:
+                raise
+
+            try:
+                await self.send_to_session(session_id, message)
+            except Exception as e:
+                logger.warning(f"[WSManager] session {session_id} 推送异常: {e}")
+            finally:
+                queue.task_done()
+
     async def broadcast(self, message: WSMessage):
         """广播到所有客户端"""
         if not self._clients:
@@ -194,11 +272,8 @@ class WSConnectionManager:
             return
 
         disconnected = []
-        for client_id, client in self._clients.items():
-            try:
-                await client.send(message)
-            except Exception as e:
-                logger.warning(f"[WSManager] 广播到 {client_id} 失败: {e}")
+        for client_id, client in list(self._clients.items()):
+            if not await self._safe_send(client, message):
                 disconnected.append(client_id)
 
         for client_id in disconnected:
@@ -241,10 +316,7 @@ class WSConnectionManager:
             if client:
                 if self._client_seen(client, message.data):
                     continue
-                try:
-                    await client.send(message)
-                except Exception as e:
-                    logger.warning(f"[WSManager] 发送到 {client_id} 失败: {e}")
+                if not await self._safe_send(client, message):
                     disconnected.append(client_id)
 
         for client_id in disconnected:
@@ -262,10 +334,7 @@ class WSConnectionManager:
         if self._client_seen(client, message.data):
             return
 
-        try:
-            await client.send(message)
-        except Exception as e:
-            logger.warning(f"[WSManager] 发送到 {client_id} 失败: {e}")
+        if not await self._safe_send(client, message):
             await self.remove_client(client_id)
 
     def get_client_count(self) -> int:
@@ -291,10 +360,7 @@ def ws_publish_event(event_type: str, data: Dict[str, Any], session_id: Optional
         manager = WSConnectionManager.get_instance_sync()
 
         if session_id:
-            if session_id in manager._session_clients and manager._session_clients[session_id]:
-                await manager.send_to_session(session_id, message)
-            # else: 没有订阅者时不广播，静默丢弃
-            # 避免发送给不应该收到此消息的客户端（如 Sidebar 的 WebSocket）
+            manager.enqueue_to_session(session_id, message)
         else:
             await manager.broadcast(message)
 

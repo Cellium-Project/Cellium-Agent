@@ -41,6 +41,38 @@ from app.core.util.components_loader import get_all_cells, get_cell
 
 logger = logging.getLogger(__name__)
 
+# 内置工具名 — 组件不可覆盖
+BUILTIN_TOOL_NAMES: Set[str] = {
+    "shell",
+    "shell_task",
+    "shell_session",
+    "memory",
+    "file",
+    "read",
+    "edit",
+    "grep",
+    "glob",
+    "ls",
+    "config",
+}
+
+# 默认组件名 → 唯一允许使用该名称的模块（用户组件不能冒用默认组件名）
+DEFAULT_COMPONENT_MODULES: Dict[str, str] = {
+    "component": "components.component_builder",
+    "skill_installer": "components.skill_installer",
+    "skill_manager": "components.skill_manager",
+    "scheduler": "components.scheduler",
+    "web_search": "components.web_search",
+    "web_fetch": "components.web_fetch",
+    "qq_files": "components.qq_files",
+    "telegram_files": "components.telegram_files",
+    "weixin_files": "components.weixin_files",
+    "feishu_files": "components.feishu_files",
+    "sub_agent": "components.sub_agent",
+    "session_agent": "components.session_agent",
+}
+DEFAULT_COMPONENT_TOOL_NAMES: Set[str] = set(DEFAULT_COMPONENT_MODULES)
+
 
 class ComponentToolRegistry:
     """
@@ -63,11 +95,7 @@ class ComponentToolRegistry:
     """
 
     #系统保留的工具名 — 组件不能覆盖这些（默认内置工具）
-    RESERVED_TOOL_NAMES: Set[str] = {
-        "shell",      # ShellTool — 系统命令执行
-        "memory",     # MemoryTool — 记忆管理
-        "file",       # FileTool — 文件操作
-    }
+    RESERVED_TOOL_NAMES: Set[str] = set(BUILTIN_TOOL_NAMES)
 
     def __init__(self):
         self._lock: threading.RLock = threading.RLock()
@@ -121,6 +149,14 @@ class ComponentToolRegistry:
                 logger.warning(
                     "[ComponentToolRegistry] '%s' 是系统保留名，组件 %s 无法注册",
                     tool_name, adapter.component_type,
+                )
+                return None
+
+            builtin_module = DEFAULT_COMPONENT_MODULES.get(tool_name)
+            if builtin_module and getattr(type(cell), "__module__", "") != builtin_module:
+                logger.warning(
+                    "[ComponentToolRegistry] '%s' 是默认组件名，组件 %s（%s）无法覆盖",
+                    tool_name, adapter.component_type, getattr(type(cell), "__module__", ""),
                 )
                 return None
 

@@ -207,11 +207,13 @@ class SubAgent(BaseCell):
         return "\n\n".join(parts)
 
     _TOOL_RULE_FRAGMENTS = {
-        "read": "read：读文件用 read（禁止 shell cat/type）；大文件用 offset/limit；定位用 needle",
+        "read": "read：读文件用 read（禁止 shell cat/type）；图片直接读会进入模型视野；大文件用 offset/limit；定位用 needle",
         "edit": "edit：先 read 再 edit；old_string 必须唯一（除非 replace_all）",
         "grep": "grep：搜内容用 grep（禁止 shell grep/findstr）；先 files_with_matches 再 content",
-        "file": "file：fs=mkdir/delete/exists/create；insight=structure/symbol",
-        "shell": "shell：Python/脚本用 argv；需要管道/重定向才用 cmd",
+        "file": "file：fs=mkdir/delete/exists/create；insight=structure/symbol；send=把文件发到聊天",
+        "shell": "shell：Python/脚本用 command 数组；需要管道/重定向才用 command 字符串",
+        "shell_task": "shell_task：后台任务用 list/output/kill，不再走 shell 子命令",
+        "shell_session": "shell_session：ssh/REPL 用 start→send→output(wait)→close",
         "ls": "ls：列目录用 ls（禁止 shell ls/dir）",
         "glob": "glob：按文件名找文件用 glob，搜内容用 grep",
         "memory": "memory：上下文缺失先 search；store/profile/read_archive 按需用",
@@ -253,6 +255,10 @@ class SubAgent(BaseCell):
                     logger.warning("[SubAgent] 工具 %s 在子 Agent 禁用列表，已忽略", t)
                     continue
                 names.append(t)
+        if "shell" in names:
+            for extra in ("shell_task", "shell_session"):
+                if extra not in names:
+                    names.append(extra)
         return list(dict.fromkeys(names))
 
     def _collect_tool_instances(self, allowed_names: List[str]) -> Dict[str, Any]:
@@ -276,6 +282,12 @@ class SubAgent(BaseCell):
             "file": FileTool, "grep": GrepTool, "glob": GlobTool,
             "ls": LSTool, "memory": MemoryTool,
         }
+        if "shell_task" in allowed_names:
+            from app.agent.tools.shell_tool import ShellTaskTool
+            builtin_map["shell_task"] = ShellTaskTool
+        if "shell_session" in allowed_names:
+            from app.agent.tools.shell_tool import ShellSessionTool
+            builtin_map["shell_session"] = ShellSessionTool
         for name, cls in builtin_map.items():
             if name not in allowed_names:
                 continue
@@ -934,6 +946,23 @@ class SubAgent(BaseCell):
         return "\n".join(lines)
 
     @staticmethod
+    def _build_done_notice(payload: Dict[str, Any]) -> Dict[str, Any]:
+        content = (payload.get("content") or "").strip()
+        if len(content) > 4000:
+            content = content[:4000] + "...[截断]"
+        return {
+            "type": "subagent",
+            "title": payload.get("name") or "",
+            "status": "成功" if payload.get("success") else "失败",
+            "elapsed": f"{payload.get('duration_s')}s",
+            "body": content,
+            "error": str(payload.get("error") or ""),
+            "footer": "如需完整结果可调用 sub_agent.results(name)。",
+            "turn_id": str(payload.get("turn_id") or ""),
+            "task_id": str(payload.get("task_id") or ""),
+        }
+
+    @staticmethod
     def _publish_done_event(session_id, payload) -> None:
         """向会话广播子 Agent 完成事件（仅 UI 展示，不触发唤醒）"""
         if not session_id:
@@ -962,7 +991,9 @@ class SubAgent(BaseCell):
         message = self._build_done_message(payload)
         if not auto_resume:
             return
-        _PENDING_NOTIFY.setdefault(parent_session_id, deque()).append(message)
+        _PENDING_NOTIFY.setdefault(parent_session_id, deque()).append(
+            {"content": message, "notice": self._build_done_notice(payload)}
+        )
         self._ensure_notify_worker(parent_session_id)
 
     def _ensure_notify_worker(self, session_id: str) -> None:
@@ -983,6 +1014,8 @@ class SubAgent(BaseCell):
                 if not queue:
                     return
                 message = queue[0]
+                if isinstance(message, str):
+                    message = {"content": message, "notice": None}
                 if await self._deliver_parent_message(session_id, message):
                     queue.popleft()
                     continue
@@ -997,17 +1030,20 @@ class SubAgent(BaseCell):
             if _NOTIFY_WORKERS.get(session_id) is asyncio.current_task():
                 _NOTIFY_WORKERS.pop(session_id, None)
 
-    async def _deliver_parent_message(self, session_id: str, message: str) -> bool:
+    async def _deliver_parent_message(self, session_id: str, message: Dict[str, Any]) -> bool:
         try:
             from app.server.task_manager import get_task_manager
             from app.agent.loop.agent_loop_manager import AgentLoopManager
             from app.agent.loop.session_manager import get_session_manager
             from app.server.session_mode import get_mode
+            content = (message.get("content") if isinstance(message, dict) else message) or ""
+            notice = message.get("notice") if isinstance(message, dict) else None
             task_mgr = get_task_manager()
             queued_payload = {
-                "content": message, "source": "sub_agent",
+                "content": content, "source": "sub_agent",
                 "msg_id": f"subagent_{int(time.time() * 1000)}", "received_at": time.time(),
                 "platform": "sub_agent", "message_type": "event",
+                "notice": notice,
             }
             if task_mgr.has_running_task(session_id):
                 return bool(task_mgr.enqueue_supplement_message(session_id, queued_payload))
@@ -1017,7 +1053,7 @@ class SubAgent(BaseCell):
             started = await task_mgr.start_task(
                 session_id=session_id,
                 agent_loop=agent_loop,
-                user_input=message,
+                user_input=content,
                 memory=session_info.memory,
                 mode=get_mode(session_id),
             )

@@ -263,7 +263,7 @@ class EmptyResultChainRule(BaseRule):
         tool_name = error_info.get("tool", "") if error_info else ""
         available_tools = context.available_tools or []
 
-        if tool_name == "shell":
+        if tool_name in ("shell", "shell_task", "shell_session"):
             suggestions.append("考虑使用 file 工具直接读取文件，而非 shell 命令")
             suggestions.append("检查命令语法是否正确，路径是否存在")
             if "sqlite" in str(error_info.get("args", {})).lower():

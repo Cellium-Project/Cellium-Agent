@@ -5,6 +5,16 @@ import type { SSEEvent, Message, ToolTrace, TimelineSegment, Attachment } from '
 import { mergeSubagentSegment, describeSubagent } from '../utils/subagent';
 import type { SubagentInfo } from '../utils/subagent';
 
+function collectResultAttachments(target: Attachment[], result: any) {
+  const list = result?.attachments;
+  if (!Array.isArray(list)) return;
+  for (const att of list) {
+    if (!att || !att.url) continue;
+    const exists = target.some(a => (att.file_id && a.file_id === att.file_id) || a.url === att.url);
+    if (!exists) target.push(att as Attachment);
+  }
+}
+
 /**
  * 从内容中提取 JSON thinking 数据（仅匹配代码块或纯 JSON，保持兼容）
  */
@@ -218,6 +228,7 @@ export function useChat() {
     return {
       timeline: [] as TimelineSegment[],
       traces: [] as ToolTrace[],
+      attachments: [] as Attachment[],
       lastEventId: 0,
       finalized: false,
       stopRequested: false,
@@ -309,6 +320,7 @@ export function useChat() {
       content: finalText,
       toolTraces: ctx.traces,
       timeline: processedTimeline,
+      attachments: ctx.attachments.length > 0 ? ctx.attachments : undefined,
     };
     commitStreamingMessage(finalMessage);
   }, [commitStreamingMessage, updateStreamingMessage]);
@@ -455,8 +467,12 @@ export function useChat() {
     }
     if (event.type !== 'reasoning' && ctx.timeline.length > 0) {
       const last = ctx.timeline[ctx.timeline.length - 1];
-      if (last.kind === 'reasoning' && last.startedAt && !last.durationMs) {
-        last.durationMs = Date.now() - last.startedAt;
+      if (last.kind === 'reasoning' && !last.ended) {
+        last.ended = true;
+        last.finishedAt = Date.now();
+        if (last.startedAt && !last.durationMs) {
+          last.durationMs = last.finishedAt - last.startedAt;
+        }
         updateStreamingMessage({
           role: 'assistant',
           content: '',
@@ -604,6 +620,7 @@ export function useChat() {
       }
 
       case 'tool_result': {
+        collectResultAttachments(ctx.attachments, event.result);
         const targetCallId = event.call_id;
         if (targetCallId && ctx.traces.length > 0) {
           for (let i = ctx.timeline.length - 1; i >= 0; i--) {
@@ -630,6 +647,7 @@ export function useChat() {
             content: '',
             toolTraces: [...ctx.traces],
             timeline: [...ctx.timeline],
+            attachments: ctx.attachments.length > 0 ? [...ctx.attachments] : undefined,
           });
         } else if (event.tool && ctx.traces.length > 0) {
           for (let i = ctx.timeline.length - 1; i >= 0; i--) {
@@ -656,6 +674,7 @@ export function useChat() {
             content: '',
             toolTraces: [...ctx.traces],
             timeline: [...ctx.timeline],
+            attachments: ctx.attachments.length > 0 ? [...ctx.attachments] : undefined,
           });
         }
         break;
@@ -679,6 +698,9 @@ export function useChat() {
 
       case 'done':
         ctx.sawDone = true;
+        if (import.meta.env.DEV) {
+          console.log('[timeline]', ctx.timeline.map(s => s.kind).join(' > '));
+        }
         pendingEchoRef.current[sessionId] = null;
         // 在完成前刷新所有缓冲的chunk
         flushChunkBuffer(ctx, sessionId, connectionId);
@@ -803,6 +825,8 @@ export function useChat() {
         ctx.timeline.push({
           kind: 'supplement',
           content: event.content || '',
+          source: event.source,
+          notice: event.notice || undefined,
         });
         updateStreamingMessage({
           role: 'assistant',
@@ -1090,6 +1114,7 @@ export function useChat() {
           .join('\n\n'),
         toolTraces: traces,
         timeline: finalTimeline,
+        attachments: streamingMessage.attachments,
       });
     } else {
       updateStreamingMessage(null);

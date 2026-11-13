@@ -1,7 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-MemoryTool — LLM 可直接调用的长期记忆工具
-"""
 
 import logging
 from typing import Any, Dict, Optional

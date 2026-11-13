@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from .base_tool import BaseTool
 from .file_cache import cache_read, get_read_state, is_file_read
+from app.core.util.image_info import VISION_EXTS
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,8 @@ class ReadTool(BaseTool):
         "- By default, reads up to 2000 lines starting from the beginning\n"
         "- Use offset and limit to paginate large files\n"
         "- Use target to read content around a specific string\n"
-        "- Use needle to find exact match context for editing (returns ±3 lines around match with line numbers)\n\n"
+        "- Use needle to find exact match context for editing (returns ±3 lines around match with line numbers)\n"
+        "- 图片文件（jpg/jpeg/png/gif/webp）会直接加入模型视野，只对下一次模型调用生效\n\n"
         "NEVER use shell commands (cat, type, Get-Content) to read files. ALWAYS use this tool."
     )
 
@@ -317,6 +319,9 @@ class ReadTool(BaseTool):
         if not os.path.isfile(abs_path):
             return {"success": False, "error": f"Not a regular file: {abs_path}"}
 
+        if os.path.splitext(abs_path)[1].lower() in VISION_EXTS:
+            return self._read_image(abs_path)
+
         # 带 target/needle 时不能走内容去重，否则会返回上次缓存的整份内容
         if not target and not needle:
             dedup_result = self._check_dedup(abs_path, offset, limit)
@@ -340,6 +345,25 @@ class ReadTool(BaseTool):
             return result
         except Exception as e:
             return {"success": False, "error": f"Read failed: {e}"}
+
+    def _read_image(self, abs_path: str) -> Dict[str, Any]:
+        from app.core.util.attachment_store import image_to_part
+
+        part = image_to_part(abs_path)
+        if part is None:
+            return {"success": False, "error": f"图片读取失败或超过 4MB: {abs_path}"}
+        return {
+            "success": True,
+            "path": abs_path,
+            "image": {
+                "path": abs_path,
+                "filename": part["filename"],
+                "width": part["width"],
+                "height": part["height"],
+            },
+            "data": f"[图片] {part['filename']} ({part['width']}x{part['height']})",
+            "_image_refs": [abs_path],
+        }
 
     def _cmd_read_edit_context(
         self,

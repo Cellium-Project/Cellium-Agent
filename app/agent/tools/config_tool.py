@@ -126,9 +126,9 @@ class ConfigTool(BaseTool):
         api_key: str = "",
         base_url: str = "",
         temperature: float = 0.7,
-        vision: bool = True,
+        vision: str = "auto",
     ) -> dict:
-        """添加新模型到 llm.models"""
+        """添加新模型到 llm.models；vision=auto/on/off"""
         if not name or not model or not api_key or not base_url:
             return {
                 "success": False,
@@ -145,6 +145,9 @@ class ConfigTool(BaseTool):
             if any(m.get("name") == name for m in models):
                 return {"success": False, "error": f"模型 name 已存在: {name}"}
 
+            vision_mode = vision if isinstance(vision, str) else ("on" if vision else "off")
+            if vision_mode not in ("auto", "on", "off"):
+                vision_mode = "auto"
             new_model = {
                 "name": name,
                 "api_key": api_key,
@@ -152,7 +155,7 @@ class ConfigTool(BaseTool):
                 "model": model,
                 "temperature": float(temperature),
                 "timeout": 120,
-                "vision": bool(vision),
+                "vision": vision_mode,
             }
             models.append(new_model)
 

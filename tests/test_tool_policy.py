@@ -38,6 +38,13 @@ class TestToolPolicy(unittest.TestCase):
         self.assertFalse(p.allows("shell"))
         self.assertFalse(p.allows("scheduler"))
 
+    def test_whitelist_shell_allows_task_and_session(self):
+        p = ToolPolicy(mode=MODE_WHITELIST, tools={"shell"})
+        self.assertTrue(p.allows("shell"))
+        self.assertTrue(p.allows("shell_task"))
+        self.assertTrue(p.allows("shell_session"))
+        self.assertFalse(p.allows("memory"))
+
     def test_from_context_none(self):
         self.assertIsNone(ToolPolicy.from_context(None))
         self.assertIsNone(ToolPolicy.from_context({}))

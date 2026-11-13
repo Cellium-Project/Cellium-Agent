@@ -5,6 +5,7 @@
 
 import logging
 import os
+import pathlib
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -21,6 +22,16 @@ from app.core.util.components_loader import (
 from app.core.util.component_tool_registry import get_component_tool_registry
 
 logger = logging.getLogger(__name__)
+
+
+def _iter_watched_files(scan_dir: pathlib.Path):
+    """递归列出需监控的组件源文件（含包组件内部模块）"""
+    for py_file in scan_dir.rglob("*.py"):
+        if "__pycache__" in py_file.parts:
+            continue
+        if py_file.parent == scan_dir and py_file.name.startswith("_"):
+            continue
+        yield py_file
 
 
 class ComponentWatcher:
@@ -244,13 +255,7 @@ class ComponentWatcher:
             return
 
         for scan_dir in scan_dirs:
-            for py_file in sorted(scan_dir.glob("*.py")):
-                # 跳过特殊文件
-                if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                    continue
-                if py_file.name == "__init__.py":
-                    continue
-
+            for py_file in sorted(_iter_watched_files(scan_dir)):
                 try:
                     abs_path = str(py_file.resolve())
                     current_files.add(abs_path)
@@ -297,12 +302,7 @@ class ComponentWatcher:
         for scan_dir in scan_dirs:
             if not scan_dir or not scan_dir.exists():
                 continue
-            for py_file in scan_dir.glob("*.py"):
-                if py_file.name.startswith("_") and py_file.name != "__init__.py":
-                    continue
-                if py_file.name == "__init__.py":
-                    continue
-
+            for py_file in _iter_watched_files(scan_dir):
                 try:
                     abs_path = str(py_file.resolve())
                     self._file_snapshot[abs_path] = os.path.getmtime(abs_path)

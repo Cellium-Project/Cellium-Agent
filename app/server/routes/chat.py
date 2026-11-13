@@ -211,6 +211,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             local_path = att.get('local_path', '')
             if local_path:
                 attachment_info += f"  本地路径: {local_path}\n"
+            url = att.get('url', '')
+            if url:
+                attachment_info += f"  URL: {url}\n"
         user_input = user_input + attachment_info
 
     from app.server.session_mode import get_mode, set_mode
@@ -221,6 +224,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         user_input=user_input,
         memory=session_memory,
         mode=mode,
+        attachments=request.attachments,
     )
 
     if not started:
@@ -282,6 +286,7 @@ async def supplement_chat(request: SupplementRequest):
         "received_at": __import__('time').time(),
         "platform": None,
         "message_type": None,
+        "attachments": request.attachments or [],
     })
     if not queued:
         agent_loop = await _get_session_loop(session_id)
@@ -295,6 +300,7 @@ async def supplement_chat(request: SupplementRequest):
             user_input=message,
             memory=session_info.memory,
             mode=get_mode(session_id),
+            attachments=request.attachments,
         )
         if not started:
             re_queued = task_mgr.enqueue_supplement_message(session_id, {
@@ -304,6 +310,7 @@ async def supplement_chat(request: SupplementRequest):
                 "received_at": __import__('time').time(),
                 "platform": None,
                 "message_type": None,
+                "attachments": request.attachments or [],
             })
             if re_queued:
                 return {"status": "queued", "session_id": session_id, "mode": "queued_running"}
@@ -1000,7 +1007,13 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
                         seg["description"] = intent.strip()
                     elif seg["tool"] == "shell":
                         cmd = args.get("command", "")[:80] if isinstance(args, dict) else ""
+                        if isinstance(cmd, list):
+                            cmd = " ".join(str(x) for x in cmd)[:80]
                         seg["description"] = f"正在执行：{cmd}..." if cmd else "正在执行命令"
+                    elif seg["tool"] in ("shell_task", "shell_session"):
+                        action = (args.get("action") or "") if isinstance(args, dict) else ""
+                        label = "后台任务" if seg["tool"] == "shell_task" else "持久会话"
+                        seg["description"] = f"正在操作{label}：{action}" if action else f"正在操作{label}"
                     elif seg["tool"] == "file":
                         action = args.get("action", "") if isinstance(args, dict) else ""
                         seg["description"] = f"正在查看：{action}" if action else "正在操作文件"
@@ -1017,16 +1030,34 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
                         elif seg_["type"] == "text":
                             timeline.append({"kind": "text", "content": seg_["content"]})
 
+                collected_attachments = []
+                seen = set()
+                for seg in timeline:
+                    if seg["kind"] != "tool":
+                        continue
+                    result = seg.get("result")
+                    if not isinstance(result, dict):
+                        continue
+                    for att in result.get("attachments") or []:
+                        if not isinstance(att, dict):
+                            continue
+                        key = att.get("url") or att.get("file_id")
+                        if key and key not in seen:
+                            seen.add(key)
+                            collected_attachments.append(att)
+
                 renderable.append({
                     "id": msg.get("id"),
                     "role": "assistant",
                     "content": final_text or "",
                     "toolTraces": tool_traces,
                     "timeline": timeline,
+                    "attachments": collected_attachments,
                 })
                 i = j
 
             else:
+                collected_attachments = []
                 timeline = []
                 reasoning = msg.get("reasoning_content")
                 if reasoning:
@@ -1050,6 +1081,7 @@ def _messages_to_renderable(raw_messages: list, tracked_ids=None) -> list:
                     "content": content or "",
                     "toolTraces": [],
                     "timeline": timeline,
+                    "attachments": collected_attachments,
                 })
                 i += 1
         elif role == "system":

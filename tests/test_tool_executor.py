@@ -102,6 +102,13 @@ class TestToolDescriptionGenerator(unittest.TestCase):
             "glob", {"pattern": "**/*.py"}))
         self.assertNotIn("正在调用 glob", ToolDescriptionGenerator.generate("glob", {"pattern": "**/*.py"}))
 
+    def test_generate_read_image_and_file_send(self):
+        g = ToolDescriptionGenerator.generate
+        self.assertEqual("正在查看图片：a.png", g("read", {"file_path": "/x/a.png"}))
+        self.assertEqual("正在发送 2 个文件", g("file", {"command": "send", "paths": ["/x/a.png", "/x/b.zip"]}))
+        self.assertEqual("正在发送 1 个文件", g("file", {"paths": ["/x/a.png"]}))
+        self.assertEqual("正在发送 2 个文件", g("file", {"paths": "/x/a.png,/x/b.zip"}))
+
     def test_generate_im_file_tools(self):
         g = ToolDescriptionGenerator.generate
         self.assertIn("从飞书下载文件：report.pdf", g("feishu_files", {

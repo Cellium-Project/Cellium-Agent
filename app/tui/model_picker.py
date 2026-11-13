@@ -438,6 +438,7 @@ class ModelAddScreen(ModalScreen):
         ("base_url", "settings.model.base_url", "https://api.openai.com/v1", False),
         ("model_id", "settings.model.model", "glm-5.2", False),
         ("api_key", "settings.model.api_key", "sk-...", True),
+        ("vision", "settings.model.vision", "auto / y / n", False),
     ]
 
     CSS = """
@@ -501,6 +502,7 @@ class ModelAddScreen(ModalScreen):
                 "base_url": self._initial.get("base_url", ""),
                 "model_id": self._initial.get("model", ""),
                 "api_key": self._initial.get("api_key", ""),
+                "vision": str(self._initial.get("vision", "auto")),
             }
 
     def _editing_name(self):
@@ -613,6 +615,14 @@ class ModelAddScreen(ModalScreen):
     def _persist(self, name, base_url, model_id, api_key):
         from app.server.routes.config import _sync_model_to_llm_config
 
+        vision_raw = (self._values.get("vision") or "auto").strip().lower()
+        if vision_raw in ("y", "yes", "1", "on", "true"):
+            vision_mode = "on"
+        elif vision_raw in ("n", "no", "0", "off", "false"):
+            vision_mode = "off"
+        else:
+            vision_mode = "auto"
+
         model_dict = {
             "name": name,
             "provider": "openai",
@@ -621,5 +631,6 @@ class ModelAddScreen(ModalScreen):
             "api_key": api_key,
             "temperature": 0.7,
             "timeout": 120,
+            "vision": vision_mode,
         }
         _sync_model_to_llm_config(name, model_dict, add=True)

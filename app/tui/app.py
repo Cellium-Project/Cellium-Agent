@@ -2152,13 +2152,13 @@ class CelliumTUI(App):
     async def _agent_worker(self, text):
         epoch = self._session_epoch
         try:
+            await self._append_user(text, force_scroll=True)
+            self._last_user_msg = text
             if not self._history_ready.is_set():
                 try:
                     await asyncio.wait_for(self._history_ready.wait(), timeout=15)
                 except asyncio.TimeoutError:
                     pass
-            await self._append_user(text, force_scroll=True)
-            self._last_user_msg = text
             if not self._bootstrap_ready.is_set():
                 await self._append_system(self.tr("initializing"))
                 try:
@@ -2346,11 +2346,15 @@ class CelliumTUI(App):
             pass
         elif t == "supplement_injected":
             content = evt.get("content", "")
+            notice = evt.get("notice")
             if self._current_response is not None:
                 self._current_response = None
                 self._current_md = ""
                 self._md_buffer.reset()
-            if content:
+            if isinstance(notice, dict) and notice.get("type") in ("delegation", "subagent"):
+                await self.chat.mount(DelegationNotice(notice))
+                self.chat.scroll_to_follow()
+            elif content:
                 preview = content if len(content) <= 60 else content[:60] + "…"
                 await self._append_system(self.tr("supplement.injected", preview))
                 await self._append_system(self.tr("supplement.continue"))
@@ -2813,15 +2817,9 @@ class CelliumTUI(App):
         lines = []
         visible = state[-3:]
         hidden = len(state) - len(visible)
-        running_keys = [
-            str(v.get("task_id")) for v in visible
-            if (v.get("status") or "running") not in self._DELEGATION_TERMINAL
-        ]
-        last_running = running_keys[-1] if running_keys else None
         for info in visible:
             status = info.get("status") or "running"
             name = info.get("target_title") or info.get("target") or "?"
-            key = str(info.get("task_id") or "")
             if status in self._DELEGATION_TERMINAL:
                 if status == "done":
                     prefix = "[green]✓[/]"
@@ -2842,14 +2840,13 @@ class CelliumTUI(App):
                 parts.append(f"[dim]{escape(self.tr('delegation.attempt', info['tool_calls']))}[/]")
             if info.get("elapsed_s"):
                 parts.append(f"[dim]{int(float(info['elapsed_s']))}s[/]")
+            reasoning = info.get("last_reasoning")
+            if reasoning:
+                label = self.tr("delegation.reasoning")
+                parts.append(f"[dim]{escape(label)}: {escape(str(reasoning)[:40])}[/]")
             if status in self._DELEGATION_TERMINAL and info.get("error"):
                 parts.append(f"[red]{escape(str(info['error'])[:60])}[/]")
             lines.append(" · ".join(parts))
-            if key == last_running and info.get("last_reasoning"):
-                lines.append(
-                    f"[dim]{self.tr('delegation.reasoning')}："
-                    f"{escape(str(info['last_reasoning'])[:120])}[/]"
-                )
         if hidden > 0:
             lines.append(f"[dim]{escape(self.tr('delegation.more', hidden))}[/]")
         self._delegation_text = "\n".join(lines)

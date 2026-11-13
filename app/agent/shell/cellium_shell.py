@@ -468,6 +468,45 @@ _TERMINAL_PROGRAMS = {
     "top", "htop", "mosh",
 }
 
+_SHELL_PROGRAMS = {
+    "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
+    "cmd", "powershell", "pwsh",
+}
+
+_REMOTE_PROGRAMS = {"ssh", "mosh", "telnet", "sftp", "ftp", "scp"}
+
+# 会话输入里只有首 token 命中这些程序才做完整黑名单检查（避免误伤密码/REPL 数据）
+_SESSION_RISKY_PROGRAMS = {
+    "rm", "remove-item", "del", "erase", "rd", "rmdir", "unlink", "shred",
+    "truncate", "dd", "format", "diskpart", "mkfs", "shutdown", "reboot",
+    "poweroff", "halt", "init", "reg", "bcdedit", "bootcfg", "msconfig",
+    "sc", "set-service", "stop-service", "restart-service", "net",
+    "useradd", "userdel", "chown", "chmod", "icacls", "takeown", "attrib",
+    "cipher", "taskkill", "pkill", "killall", "kill", "stop-process",
+    "iptables", "ufw", "netsh", "gpupdate", "set-executionpolicy",
+    "certutil", "bitsadmin", "mshta", "rundll32", "regsvr32", "wmic",
+    "sudo", "runas", "env", "nohup", "setsid", "timeout", "nice",
+    "command", "exec", "eval", "xargs", "watch", "parallel", "iex",
+    "invoke-expression", "start-process", "start-job",
+    "python", "python3", "py", "node", "perl", "ruby", "powershell", "pwsh",
+    "cmd", "bash", "sh", "zsh",
+}
+
+
+def _session_kind(argv) -> str:
+    """shell=本地交互式 shell；remote=ssh 等远程；repl=python/mysql 等程序输入"""
+    if not argv:
+        return "shell"
+    base = os.path.basename(str(argv[0])).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base in _SHELL_PROGRAMS:
+        return "shell"
+    if base in _REMOTE_PROGRAMS:
+        return "remote"
+    return "repl"
+
+
 def _needs_terminal(argv) -> bool:
     if not argv or not isinstance(argv, (list, tuple)):
         return False
@@ -737,6 +776,7 @@ class CelliumShell:
         self._cwd = initial_cwd if initial_cwd and os.path.isdir(initial_cwd) else os.getcwd()
         self._session_cwd: Dict[str, str] = {}
         self.security = security_policy
+        self._session_send_check = True
 
         try:
             from app.core.util.agent_config import get_config
@@ -745,6 +785,7 @@ class CelliumShell:
             DEFAULT_TIMEOUT_SECONDS = int(cfg.get("security.command_timeout", DEFAULT_TIMEOUT_SECONDS))
             MAX_OUTPUT_BYTES = int(cfg.get("security.max_output_bytes", MAX_OUTPUT_BYTES))
             HARD_TIMEOUT_SECONDS = int(cfg.get("security.shell_hard_timeout", HARD_TIMEOUT_SECONDS))
+            self._session_send_check = bool(cfg.get("security.session_send_check", True))
         except Exception:
             pass
 
@@ -862,6 +903,36 @@ class CelliumShell:
                 return {"success": False, "allowed": False, "reason": f"危险命令模式: {pattern}"}
 
         return {"success": True, "allowed": True, "timeout": DEFAULT_TIMEOUT_SECONDS}
+
+    def _check_session_input(self, text: str) -> Dict[str, Any]:
+        """会话输入检查：只对“像命令”的行做黑名单校验，避免误伤密码/普通输入"""
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if re.search(r";|\||&&|\$\(|`", line):
+                for candidate in (line, line.replace('"', "").replace("'", "")):
+                    sec = self._check_security(candidate)
+                    if not sec["allowed"]:
+                        return sec
+                continue
+
+            tokens = _split_cmd_argv(line)
+            if not tokens:
+                continue
+            base = os.path.basename(tokens[0]).lower()
+            if base.endswith(".exe"):
+                base = base[:-4]
+            base = base.replace("'", "").replace('"', "")
+            if base not in _SESSION_RISKY_PROGRAMS:
+                continue
+            # 用去引号后的 token 拼接，防止 "rm" "-rf" "/" / r''m 绕过
+            joined = " ".join(tokens)
+            for candidate in (joined, joined.replace("'", "").replace('"', "")):
+                sec = self._check_security(candidate)
+                if not sec["allowed"]:
+                    return sec
+        return {"allowed": True}
 
     # ================================================================
     #  兼容旧接口
@@ -1144,6 +1215,15 @@ class CelliumShell:
         sec = self._check_security(cmd_str)
         if not sec["allowed"]:
             return {"success": False, "error": f"安全拦截: {sec['reason']}"}
+
+        modified = sec.get("modified_command")
+        if modified:
+            return self._run_command(
+                modified,
+                timeout=timeout,
+                run_in_background=run_in_background,
+                cwd=cwd,
+            )
 
         effective_timeout = timeout or sec.get("timeout", DEFAULT_TIMEOUT_SECONDS)
 
@@ -1962,7 +2042,8 @@ class CelliumShell:
                 "argv": argv,
                 "cmd": " ".join(argv),
                 "mode": mode,
-                "tip": "命令已在独立终端窗口运行（需密码/全屏交互），请在窗口中操作；用 session list 查状态、session close <id> 结束",
+                "readable": False,
+                "tip": "命令已在独立终端窗口运行（需密码/全屏交互），窗口输出无法被读取；需要日志请改用 shell background=true，Linux/macOS 用默认 pty 可读输出",
             }
         if pty:
             return {
@@ -1991,6 +2072,12 @@ class CelliumShell:
         if not sess.is_alive():
             self._sessions.pop(session_id, None)
             return {"success": False, "error": f"会话已退出: {session_id}"}
+
+        if self._session_send_check and _session_kind(getattr(sess, "argv", None)) == "shell":
+            sec = self._check_session_input(text)
+            if not sec["allowed"]:
+                return {"success": False, "error": f"安全拦截: {sec['reason']}"}
+
         if not sess.send(text):
             return {"success": False, "error": f"写入失败，会话可能已退出: {session_id}"}
         return {"success": True, "session_id": session_id, "sent": text}
@@ -2007,7 +2094,8 @@ class CelliumShell:
                 "alive": sess.is_alive(),
                 "exit_code": sess.exit_code(),
                 "mode": "window",
-                "note": "该会话在独立终端窗口运行，请检查窗口内容",
+                "readable": False,
+                "note": "该会话在独立终端窗口运行，输出无法读取；请检查窗口内容，需要日志改用 shell background=true",
             }
         if not sess.is_alive() and not sess.output(new_only=False):
             self._sessions.pop(session_id, None)

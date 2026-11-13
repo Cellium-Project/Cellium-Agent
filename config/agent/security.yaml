@@ -13,6 +13,8 @@ security:
   command_timeout: 120
   shell_hard_timeout: 60
   max_output_bytes: 8192
+  # 持久会话 send 的输入是否走命令黑名单（仅本地 shell 会话生效；ssh/REPL 输入不检查）
+  session_send_check: true
   section: security
   api_key:
     enabled: false

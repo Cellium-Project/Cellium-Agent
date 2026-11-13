@@ -556,10 +556,42 @@ Agent 通过 FeatureExtractor 实时感知运行状态，动态调整决策策�
 | 配置自动维护 | 发现新组件自动追加到 settings.yaml 的 enabled_components |
 | 通道绑定 | qq_files / telegram_files / weixin_files / feishu_files 仅在对应通道就绪后注入；配置保存即热启用，微信还需扫码登录成功 |
 
-**保留工具名**（不可被组件覆盖）：
-- `shell` — ShellTool
-- `memory` — MemoryTool
-- `file` — FileTool
+**保留工具名**（内置工具，不可被组件覆盖）：
+
+| 工具 | 说明 |
+|------|------|
+| `shell` | 执行命令（前台/后台；`command` 支持字符串或 argv 数组） |
+| `shell_task` | 后台任务管理（list / output / kill） |
+| `shell_session` | 持久会话（start / send / output / close / list） |
+| `memory` | 记忆检索与写入 |
+| `file` | 文件操作（fs / insight / send：发送图片文件到聊天） |
+| `read` | 读取文件（图片文件会直接进入模型视野） |
+| `edit` | 编辑文件 |
+| `grep` | 搜索内容 |
+| `glob` | 按文件名查找 |
+| `ls` | 列目录 |
+| `config` | 配置读写 |
+
+**默认组件**（随包提供，首次启动自动写入 `enabled_components`）：
+
+| 组件文件 | 工具名 | 说明 |
+|----------|--------|------|
+| `component_builder.py` | `component` | 运行时生成、安装、卸载组件 |
+| `skill_installer.py` | `skill_installer` | 安装技能包 |
+| `skill_manager.py` | `skill_manager` | 技能管理 |
+| `scheduler.py` | `scheduler` | 定时任务 |
+| `web_search.py` | `web_search` | 网页搜索 |
+| `web_fetch.py` | `web_fetch` | 网页抓取 |
+| `qq_files.py` | `qq_files` | QQ 文件收发 |
+| `telegram_files.py` | `telegram_files` | Telegram 文件收发 |
+| `weixin_files.py` | `weixin_files` | 微信文件收发 |
+| `feishu_files.py` | `feishu_files` | 飞书文件收发 |
+| `sub_agent.py` | `sub_agent` | 子 Agent 并行执行 |
+| `session_agent.py` | `session_agent` | 会话委托 |
+
+`_example_component.py` 为模板文件（`_` 前缀不参与自动加载），复制改名即可编写新组件。
+
+默认组件名同样受保护：用户组件不能用 `scheduler`、`component`、`sub_agent` 等默认组件名注册，否则会被拒绝并记录警告；新增组件请使用不同名称。
 
 ### 原生组件自扩展
 

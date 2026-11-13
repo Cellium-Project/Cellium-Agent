@@ -37,6 +37,7 @@ class ToolDescriptionGenerator:
         "file": {
             "fs":       "{fs_desc}",
             "insight":  "{insight_desc}",
+            "send":     "{send_desc}",
             "_default": "正在操作文件：{basename}",
         },
         "memory": {
@@ -56,6 +57,20 @@ class ToolDescriptionGenerator:
             "get_embedding_migration_status":   "正在查看向量迁移状态",
             "start_embedding_migration":        "正在启动向量迁移",
             "_default": "正在操作记忆：{command}",
+        },
+        "shell_task": {
+            "list":     "正在查看后台任务列表",
+            "output":   "正在获取任务输出：{task_id_suffix}",
+            "kill":     "正在终止任务：{task_id_suffix}",
+            "_default": "正在操作后台任务",
+        },
+        "shell_session": {
+            "start":    "正在启动持久会话：{command}",
+            "send":     "正在向会话 {session_id} 发送指令",
+            "output":   "正在读取会话 {session_id} 输出",
+            "close":    "正在关闭会话 {session_id}",
+            "list":     "正在查看持久会话列表",
+            "_default": "正在操作持久会话",
         },
         "web_search": {
             "search":   "正在搜索：{query}",
@@ -250,11 +265,23 @@ class ToolDescriptionGenerator:
             or arguments.get("filePath")
             or ""
         )
+        if not path:
+            paths_arg = arguments.get("paths")
+            if isinstance(paths_arg, (list, tuple)) and paths_arg:
+                path = str(paths_arg[0])
+            elif isinstance(paths_arg, str) and paths_arg.strip():
+                path = paths_arg.split(",")[0].strip()
         ctx["basename"] = os.path.basename(path) if path else ""
         ctx["dir_path"] = path
         ctx["target"] = ctx["basename"] or path
 
-        ctx["command"] = (arguments.get("command") or "").strip()
+        raw_command = arguments.get("command")
+        if isinstance(raw_command, (list, tuple)):
+            ctx["command"] = " ".join(str(x) for x in raw_command).strip()
+        else:
+            ctx["command"] = str(raw_command or "").strip()
+        ctx["action"] = str(arguments.get("action") or "").strip()
+        ctx["session_id"] = str(arguments.get("session_id") or "").strip()
 
         if tool_name == "read":
             needle = arguments.get("needle") or ""
@@ -265,6 +292,8 @@ class ToolDescriptionGenerator:
                 ctx["read_desc"] = f"正在定位 {ctx['basename']} 中的匹配位置"
             elif target:
                 ctx["read_desc"] = f"正在查找 {ctx['basename']} 中的：{target[:30]}"
+            elif ctx["basename"].lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                ctx["read_desc"] = f"正在查看图片：{ctx['basename']}"
             elif offset is not None and limit is not None:
                 ctx["read_desc"] = f"正在读取 {ctx['basename']} 第{offset}-{offset + limit}行"
             elif offset is not None:
@@ -295,6 +324,8 @@ class ToolDescriptionGenerator:
                 ctx["grep_desc"] = f"正在搜索：{pattern[:40]}" if pattern else f"正在搜索代码"
 
         elif tool_name == "file":
+            if not ctx["command"] and arguments.get("paths"):
+                ctx["command"] = "send"
             cmd = ctx["command"]
 
             if cmd == "fs":
@@ -323,7 +354,7 @@ class ToolDescriptionGenerator:
                     ctx["fs_desc"] = "正在操作文件系统"
 
             elif cmd == "insight":
-                insight_mode = arguments.get("mode", "grep")
+                insight_mode = arguments.get("mode", "structure")
                 query = (arguments.get("query") or "")[:30]
                 if insight_mode == "grep":
                     ctx["insight_desc"] = f"正在搜索：{query}"
@@ -333,6 +364,16 @@ class ToolDescriptionGenerator:
                     ctx["insight_desc"] = f"正在搜索符号：{query}"
                 else:
                     ctx["insight_desc"] = "正在探索工程"
+
+            elif cmd == "send":
+                paths = arguments.get("paths")
+                if isinstance(paths, str):
+                    count = len([p for p in paths.split(",") if p.strip()])
+                elif isinstance(paths, (list, tuple)):
+                    count = len(paths)
+                else:
+                    count = 0
+                ctx["send_desc"] = f"正在发送 {count} 个文件" if count else "正在发送文件"
 
             else:
                 ctx["fs_desc"] = "正在操作文件系统"
@@ -484,44 +525,46 @@ class ToolDescriptionGenerator:
             return intent.strip()
 
         if tool_name == "shell":
-            cmd_value = arguments.get("cmd", "")
+            cmd_value = arguments.get("command", arguments.get("cmd", ""))
+            if isinstance(cmd_value, str) and cmd_value.strip().lower() in (
+                "run", "list", "output", "kill", "session",
+            ):
+                cmd_value = arguments.get("cmd") or arguments.get("argv") or cmd_value
             if isinstance(cmd_value, list):
-                cmd = " ".join(cmd_value)
+                cmd = " ".join(str(x) for x in cmd_value)
             else:
                 cmd = (cmd_value or "").strip()
-            sub_cmd = (arguments.get("command") or "").strip()
-            if sub_cmd == "run" and cmd:
-                return cls.describe_shell_command(cmd, cmd_value if isinstance(cmd_value, list) else None)
-            elif sub_cmd == "run":
-                return "正在执行命令"
-            elif sub_cmd == "list":
-                return "正在查看后台任务列表"
-            elif sub_cmd == "output":
-                task_id = arguments.get("task_id", "")
-                return f"正在获取任务输出：{task_id}"
-            elif sub_cmd == "kill":
-                task_id = arguments.get("task_id", "")
-                return f"正在终止任务：{task_id}"
-            elif sub_cmd == "session":
-                action = (arguments.get("action") or "").strip().lower()
-                if action == "start":
-                    return f"正在启动持久会话：{cmd}" if cmd else "正在启动持久会话"
-                elif action == "send":
-                    sid = arguments.get("session_id", "")
-                    txt = (arguments.get("text") or "")[:40]
-                    return f"正在向会话 {sid} 发送：{txt}"
-                elif action == "output":
-                    sid = arguments.get("session_id", "")
-                    return f"正在读取会话 {sid} 输出"
-                elif action == "close":
-                    sid = arguments.get("session_id", "")
-                    return f"正在关闭会话 {sid}"
-                elif action == "list":
-                    return "正在查看持久会话列表"
-                return "正在操作持久会话"
-            elif cmd:
+            if cmd:
                 return cls.describe_shell_command(cmd, cmd_value if isinstance(cmd_value, list) else None)
             return "正在执行 shell 命令"
+
+        if tool_name == "shell_task":
+            action = (arguments.get("action") or "").strip().lower()
+            task_id = arguments.get("task_id", "")
+            if action == "list":
+                return "正在查看后台任务列表"
+            if action == "output":
+                return f"正在获取任务输出：{task_id}"
+            if action == "kill":
+                return f"正在终止任务：{task_id}"
+            return "正在操作后台任务"
+
+        if tool_name == "shell_session":
+            action = (arguments.get("action") or "").strip().lower()
+            sid = arguments.get("session_id", "")
+            cmd_value = arguments.get("command", "")
+            cmd = " ".join(str(x) for x in cmd_value) if isinstance(cmd_value, list) else (cmd_value or "")
+            if action == "start":
+                return f"正在启动持久会话：{cmd}" if cmd else "正在启动持久会话"
+            if action == "send":
+                return f"正在向会话 {sid} 发送：{(arguments.get('text') or '')[:40]}"
+            if action == "output":
+                return f"正在读取会话 {sid} 输出"
+            if action == "close":
+                return f"正在关闭会话 {sid}"
+            if action == "list":
+                return "正在查看持久会话列表"
+            return "正在操作持久会话"
 
         context = cls.extract_context(tool_name, arguments)
         sub_cmd = context.get("command", "").lower()
@@ -914,8 +957,8 @@ class ToolExecutor:
                                 paths.append(str(key))
                 elif base:
                     paths.append(base)
-            elif tool_name == "shell":
-                shell_tool = self._builtin_tools.get("shell")
+            elif tool_name in ("shell", "shell_session"):
+                shell_tool = self._builtin_tools.get(tool_name) or self._builtin_tools.get("shell")
                 cwd = (
                     getattr(shell_tool, "_cwd", None)
                     or getattr(getattr(shell_tool, "shell", None), "_cwd", None)
@@ -956,7 +999,7 @@ class ToolExecutor:
             registry = get_component_tool_registry()
             component_tools = registry.get_component_tools()
             new_tools = {**component_tools, **self._builtin_tools}
-            if set(new_tools.keys()) != set(self.tools.keys()):
+            if new_tools != self.tools:
                 self.tools = new_tools
                 if self._on_tools_changed:
                     self._on_tools_changed(self.tools)
@@ -1011,7 +1054,7 @@ class ToolExecutor:
             registry = get_component_tool_registry()
             component_tools = registry.get_component_tools()
             new_tools = {**component_tools, **self._builtin_tools}
-            if set(new_tools.keys()) != set(self.tools.keys()):
+            if new_tools != self.tools:
                 self.tools = new_tools
                 if self._on_tools_changed:
                     self._on_tools_changed(self.tools)

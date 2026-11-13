@@ -352,7 +352,15 @@ def cell_name(self) -> str:
 
         # 保留字检查（白名单组件跳过）
         if not skip_reserved:
-            reserved = {"shell", "memory", "file", "component", "system"}
+            reserved = {"system"}
+            try:
+                from app.core.util.component_tool_registry import (
+                    BUILTIN_TOOL_NAMES,
+                    DEFAULT_COMPONENT_TOOL_NAMES,
+                )
+                reserved |= set(BUILTIN_TOOL_NAMES) | set(DEFAULT_COMPONENT_TOOL_NAMES)
+            except Exception:
+                reserved |= {"shell", "shell_task", "shell_session", "memory", "file", "component"}
             if name in reserved:
                 issues.append({
                     "rule": "cell_name",
@@ -455,7 +463,7 @@ def cell_name(self) -> str:
                 try:
                     source_file = inspect.getfile(type(cell))
                 except TypeError:
-                    return issues
+                    return issues, warnings
 
             with open(source_file, "r", encoding="utf-8") as f:
                 source_code = f.read()
