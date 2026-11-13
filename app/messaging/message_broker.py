@@ -104,6 +104,14 @@ class MessageBroker:
             return list(history)
         return [e for e in history if (e.get("event_id") or 0) > after_id]
 
+    def get_latest_event(self, session_id: str) -> Optional[Dict]:
+        history = self._event_history.get(session_id)
+        return history[-1] if history else None
+
+    def get_event_count(self, session_id: str) -> int:
+        history = self._event_history.get(session_id)
+        return len(history) if history else 0
+
     def get_latest_event_id(self, session_id: str) -> int:
         history = self._event_history.get(session_id)
         if not history:
@@ -126,13 +134,18 @@ class MessageBroker:
         if len(history) > self.MAX_HISTORY_SIZE:
             history[:] = history[-self.MAX_HISTORY_SIZE:]
 
-    def clear_session(self, session_id: str, clear_subscribers: bool = False):
-        """清理任务态数据（历史/计数/主队列），默认保留订阅者"""
+    def clear_session(self, session_id: str, clear_subscribers: bool = False, reset_counter: bool = False):
+        """清理任务态数据（历史/主队列），默认保留订阅者
+
+        event_id 计数器默认保留：客户端（WebUI/TUI）用 event_id 做增量游标，
+        跨任务重置会让旧游标把新任务的事件全部过滤掉。
+        """
         self._queues.pop(session_id, None)
         if clear_subscribers:
             self._subscribers.pop(session_id, None)
         self._event_history.pop(session_id, None)
-        self._event_counters.pop(session_id, None)
+        if reset_counter:
+            self._event_counters.pop(session_id, None)
 
     def is_subscribed(self, session_id: str, queue: asyncio.Queue) -> bool:
         """检测队列是否仍在该 session 订阅集合中（供订阅者自检）"""

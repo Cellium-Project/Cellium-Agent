@@ -664,12 +664,17 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
 
     const groups: GroupItem[] = [];
     let toolBuffer: ToolSegment[] = [];
+    let reasoningBuffer: ReasoningItem[] = [];
 
-    // 工具树按"思考卡片 / 中间输出"分段：中间插入任何非工具内容就收束当前树
+    // 工具树先出，推理卡排在工具树下方；推理不参与分树，避免把工具树切碎
     const flushTools = () => {
       if (toolBuffer.length > 0) {
         groups.push({ kind: 'tools-tree', items: toolBuffer });
         toolBuffer = [];
+      }
+      if (reasoningBuffer.length > 0) {
+        groups.push(...reasoningBuffer);
+        reasoningBuffer = [];
       }
     };
 
@@ -689,8 +694,7 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
         flushTools();
         groups.push(segment as ThinkingSegment);
       } else if (segment.kind === 'reasoning') {
-        flushTools();
-        groups.push({
+        reasoningBuffer.push({
           kind: 'reasoning',
           content: segment.content,
           startedAt: segment.startedAt,
@@ -706,7 +710,6 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
         }
         toolBuffer.push(segment as ToolSegment);
       }
-      // 'reasoning' segments are intentionally not displayed
     }
     flushTools();
 

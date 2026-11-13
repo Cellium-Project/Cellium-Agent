@@ -73,13 +73,12 @@ class SessionCompactor:
     def track_tool_call(self):
         self._tool_call_count += 1
 
-    def should_compact(
+    def token_usage(
         self,
         memory: "MemoryManager",
         current_messages: List[Dict] = None,
         tools_count: int = 0,
-    ) -> bool:
-        """检查是否需要压缩"""
+    ) -> int:
         if current_messages is not None:
             if self.llm is not None and hasattr(self.llm, "estimate_tokens_calibrated"):
                 token_count = self.llm.estimate_tokens_calibrated(current_messages)
@@ -94,7 +93,20 @@ class SessionCompactor:
                     token_count = actual
         else:
             token_count = self._estimate_tokens(memory)
+        return token_count
 
+    def should_compact(
+        self,
+        memory: "MemoryManager",
+        current_messages: List[Dict] = None,
+        tools_count: int = 0,
+    ) -> bool:
+        """检查是否需要压缩"""
+        return self.should_compact_tokens(
+            self.token_usage(memory, current_messages=current_messages, tools_count=tools_count)
+        )
+
+    def should_compact_tokens(self, token_count: int) -> bool:
         if self._tool_call_count >= self.tool_call_threshold:
             logger.info("[SessionCompactor] 工具调用触发压缩 | tool_calls=%d", self._tool_call_count)
             return True
@@ -123,25 +135,16 @@ class SessionCompactor:
         tools_count: int = 0,
     ) -> bool:
         """估算输入是否已达到上下文窗口"""
+        return self.is_over_window_tokens(
+            self.token_usage(memory, current_messages=current_messages, tools_count=tools_count)
+        )
+
+    def is_over_window_tokens(self, token_count: int) -> bool:
         if self.llm is None:
             return False
         cw = getattr(self.llm, "context_window", None)
         if not cw or cw <= 0:
             return False
-        if current_messages is not None:
-            if self.llm is not None and hasattr(self.llm, "estimate_tokens_calibrated"):
-                token_count = self.llm.estimate_tokens_calibrated(current_messages)
-            else:
-                from app.agent.llm.engine import _estimate_messages_tokens
-                token_count = _estimate_messages_tokens(current_messages)
-            if tools_count:
-                token_count += tools_count * 150
-            if self.llm is not None and hasattr(self.llm, "get_last_prompt_tokens"):
-                actual = self.llm.get_last_prompt_tokens()
-                if actual > token_count:
-                    token_count = actual
-        else:
-            token_count = self._estimate_tokens(memory)
         return token_count > cw
 
     def request_compact(self, fallback: bool = False):

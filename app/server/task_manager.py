@@ -270,6 +270,12 @@ class BackgroundTaskManager:
                 pass
             raise
 
+        try:
+            from app.server.routes.ws_event_manager import ws_publish_event
+            ws_publish_event("session_updated", {"session_id": session_id, "running": True})
+        except Exception:
+            pass
+
         logger.info("[TaskManager] 后台任务已启动 | session=%s | input=%s", session_id, user_input[:50] if user_input else "(空)")
         return True
 
@@ -320,13 +326,13 @@ class BackgroundTaskManager:
                     if terminal_hit:
                         continue
                     self.broker.publish(session_id, norm)
-                    event = self.broker.get_event_history(session_id)[-1]
+                    event = self.broker.get_latest_event(session_id) or {}
                     info.last_event_id = int(event.get("event_id", 0) or 0)
                     if event.get("type") == "tool_start":
                         info.iteration += 1
                         logger.debug("[TaskManager] 工具调用 | session=%s | iteration=%d", session_id, info.iteration)
 
-                    info.event_count = len(self.broker.get_event_history(session_id))
+                    info.event_count = self.broker.get_event_count(session_id)
 
                     if event.get("type") in ("done", "error", "stopped"):
                         logger.info("[TaskManager] 收到完成事件 | session=%s | type=%s", session_id, event.get("type"))
@@ -345,8 +351,8 @@ class BackgroundTaskManager:
 
         except asyncio.CancelledError:
             self.broker.publish(session_id, {"type": "stopped", "reason": "user_cancelled"})
-            cancel_event = self.broker.get_event_history(session_id)[-1]
-            info.event_count = len(self.broker.get_event_history(session_id))
+            cancel_event = self.broker.get_latest_event(session_id) or {}
+            info.event_count = self.broker.get_event_count(session_id)
             info.last_event_id = int(cancel_event.get("event_id", 0) or 0)
             self._apply_terminal_status(info, "stopped", error_message="user_cancelled")
             logger.info("[TaskManager] 任务已取消 | session=%s", session_id)
@@ -354,8 +360,8 @@ class BackgroundTaskManager:
         except Exception as e:
             from app.core.util.error_text import describe_error
             self.broker.publish(session_id, {"type": "error", "error": describe_error(e)})
-            error_event = self.broker.get_event_history(session_id)[-1]
-            info.event_count = len(self.broker.get_event_history(session_id))
+            error_event = self.broker.get_latest_event(session_id) or {}
+            info.event_count = self.broker.get_event_count(session_id)
             info.last_event_id = int(error_event.get("event_id", 0) or 0)
             self._apply_terminal_status(info, "error", error_message=describe_error(e))
             logger.error("[TaskManager] 任务出错 | session=%s | error=%s", session_id, e, exc_info=True)
@@ -377,6 +383,11 @@ class BackgroundTaskManager:
                 pass
             await queue.put(None)
             self._pending_inputs.pop(session_id, None)
+            try:
+                from app.server.routes.ws_event_manager import ws_publish_event
+                ws_publish_event("session_updated", {"session_id": session_id, "running": False})
+            except Exception:
+                pass
             task_mgr = get_task_manager()
             info = task_mgr.get_task_info(session_id)
             if info and info.status.value in ("completed", "cancelled", "error"):

@@ -798,10 +798,6 @@ class CelliumTUI(App):
     def on_app_focus(self, event):
         if self.input is not None:
             try:
-                self.refresh()
-            except Exception:
-                pass
-            try:
                 if self.focused is None or self.focused is not self.input:
                     self.input.focus()
             except Exception:
@@ -3145,24 +3141,15 @@ class CelliumTUI(App):
         self._history_meta = meta
         self._history_has_more = meta.get("has_more", False)
         self._history_live_start = int(meta.get("end") or 0)
-        try:
-            self.chat.refresh(layout=True)
-        except Exception:
-            pass
-        import asyncio
-        for _ in range(4):
-            await asyncio.sleep(0)
-        if was_following:
-            self.chat.force_scroll_bottom()
-        else:
+        if widgets:
             try:
-                self.chat.scroll_to(
-                    y=min(prev_scroll_y, self.chat.max_scroll_y),
-                    animate=False,
-                    immediate=True,
-                )
+                self.chat.refresh(layout=True)
             except Exception:
                 pass
+            for _ in range(2):
+                await asyncio.sleep(0)
+        if was_following:
+            self.chat.force_scroll_bottom()
         return True
 
     async def _load_history(self):
@@ -3232,15 +3219,6 @@ class CelliumTUI(App):
                     await asyncio.sleep(0)
                 if was_following:
                     self.chat.force_scroll_bottom()
-                else:
-                    try:
-                        self.chat.scroll_to(
-                            y=min(prev_scroll_y, self.chat.max_scroll_y),
-                            animate=False,
-                            immediate=True,
-                        )
-                    except Exception:
-                        pass
                 self.set_timer(0.15, self._scroll_history_done)
                 self._restoring_history = False
                 self._history_ready.set()

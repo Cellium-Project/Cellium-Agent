@@ -1718,12 +1718,11 @@ class AgentLoop:
                 logger.info("[AgentLoop] 迭代 %d: 准备调用 LLM (消息数=%d, tools=%d)",
                            iteration, len(llm_messages), len(tool_defs))
 
-                _over_window = self._session_compactor.is_over_window(
+                _tokens = self._session_compactor.token_usage(
                     effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
                 )
-                if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact(
-                    effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
-                )):
+                _over_window = self._session_compactor.is_over_window_tokens(_tokens)
+                if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
                     logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
@@ -2334,12 +2333,11 @@ class AgentLoop:
                         self.save_agent_created_gene(response.content)
 
                     # 会话笔记压缩（在下一次迭代开始时执行）
-                    _over_window = self._session_compactor.is_over_window(
+                    _tokens = self._session_compactor.token_usage(
                         effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
                     )
-                    if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact(
-                        effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
-                    )):
+                    _over_window = self._session_compactor.is_over_window_tokens(_tokens)
+                    if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
                         self._session_compactor.request_compact(fallback=_over_window)
 
                     continue

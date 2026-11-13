@@ -1022,8 +1022,10 @@ export function useChat() {
 
     try {
       const status = await checkTaskStatus(sessionId);
-      if (!ctx.lastEventId && status.lastEventId) {
-        // 续传起点：服务端已产出的最大 event_id，避免重连后从头回放
+      if (status.lastEventId < ctx.lastEventId) {
+        ctx.lastEventId = status.lastEventId;
+        lastEventIdBySessionRef.current[sessionId] = status.lastEventId;
+      } else if (!ctx.lastEventId && status.lastEventId) {
         ctx.lastEventId = status.lastEventId;
         lastEventIdBySessionRef.current[sessionId] = status.lastEventId;
       }
@@ -1063,7 +1065,10 @@ export function useChat() {
     addMessage({ role: 'user', content: content.trim(), attachments });
     setIsStreaming(true);
     setHasRunningTask(true);
+    useAppStore.getState().updateSession({ session_id: sessionId, running: true } as any);
 
+    // 游标保持上一轮的值：服务端 event_id 跨任务单调递增，新事件必然更大；
+    // 归零会让 ws 以 after_event_id=0 连接，服务端回放整段历史，旧工具卡会被重新塞进 timeline
     const ctx = buildStreamingContext();
     activeCtxRef.current = ctx;
     pendingEchoRef.current[sessionId] = content.trim();
@@ -1222,7 +1227,12 @@ export function useChat() {
       const status = await checkTaskStatus(sessionId);
       if (!mounted) return;
 
-      if (!ctx.lastEventId && status.lastEventId) {
+      // 服务端游标低于本地（进程重启/任务重建）时本地游标作废，
+      // 否则新事件 id 全会落在旧游标之下被丢弃
+      if (status.lastEventId < ctx.lastEventId) {
+        ctx.lastEventId = status.lastEventId;
+        lastEventIdBySessionRef.current[sessionId] = status.lastEventId;
+      } else if (!ctx.lastEventId && status.lastEventId) {
         ctx.lastEventId = status.lastEventId;
         lastEventIdBySessionRef.current[sessionId] = status.lastEventId;
       }
