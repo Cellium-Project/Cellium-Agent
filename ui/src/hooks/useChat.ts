@@ -750,27 +750,6 @@ export function useChat() {
           break;
         }
         ctx.stoppedByServer = true;
-        const stopMsg = (() => {
-          switch (event.reason) {
-            case 'user_cancelled':
-              return '已停止生成';
-            case 'max_iterations_exceeded':
-              return '已停止：达到最大迭代次数';
-            case 'loop_detected':
-              return '已停止：检测到重复输出';
-            case 'empty_response':
-              return '已停止：回复为空';
-            default:
-              return event.reason ? `已停止：${event.reason}` : '已停止生成';
-          }
-        })();
-        ctx.timeline.push({ kind: 'text', content: stopMsg });
-        updateStreamingMessage({
-          role: 'assistant',
-          content: '[正在停止...]',
-          toolTraces: ctx.traces,
-          timeline: [...ctx.timeline],
-        });
         finalizeMessage(ctx, connectionId);
         setIsStreaming(false);
         setHasRunningTask(false);
@@ -1132,19 +1111,20 @@ export function useChat() {
         result: tr.result ?? { stopped: true },
       }));
       const hasText = timeline.some(seg => seg.kind === 'text' && seg.content.trim());
-      const finalTimeline = hasText
-        ? timeline
-        : [...timeline, { kind: 'text' as const, content: '已停止生成' }];
-      commitStreamingMessage({
-        role: 'assistant',
-        content: finalTimeline
-          .filter(s => s.kind === 'text')
-          .map(s => s.content)
-          .join('\n\n'),
-        toolTraces: traces,
-        timeline: finalTimeline,
-        attachments: streamingMessage.attachments,
-      });
+      if (!hasText && traces.length === 0) {
+        updateStreamingMessage(null);
+      } else {
+        commitStreamingMessage({
+          role: 'assistant',
+          content: timeline
+            .filter(s => s.kind === 'text')
+            .map(s => s.content)
+            .join('\n\n'),
+          toolTraces: traces,
+          timeline,
+          attachments: streamingMessage.attachments,
+        });
+      }
     } else {
       updateStreamingMessage(null);
     }

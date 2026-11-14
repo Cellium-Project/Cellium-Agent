@@ -65,7 +65,6 @@ class CommandCodeProvider(BaseProvider):
             "model": model_id,
             "temperature": DEFAULT_TEMPERATURE,
             "timeout": DEFAULT_TIMEOUT,
-            "vision": False,
             "thinking": self.get_default_thinking(),
         }
         return cfg

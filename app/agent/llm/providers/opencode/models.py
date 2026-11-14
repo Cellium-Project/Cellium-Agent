@@ -63,7 +63,6 @@ class OpenCodeProvider(BaseProvider):
             "model": model_id,
             "temperature": DEFAULT_TEMPERATURE,
             "timeout": DEFAULT_TIMEOUT,
-            "vision": False,
             "thinking": self.get_default_thinking(),
             "session_id": uuid.uuid4().hex,
         }

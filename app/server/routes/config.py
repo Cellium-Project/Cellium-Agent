@@ -61,7 +61,7 @@ def _sync_model_to_llm_config(name: str, model_dict: Dict, add: bool = False):
 
     for i, m in enumerate(models):
         if m.get("name") == name:
-            # 合并旧字段，避免覆盖 vision 等额外配置
+            # 合并旧字段，避免覆盖 streaming 等额外配置
             merged = {**m, **model_dict}
             models[i] = merged
             config.set("llm.models", models, persist=True)

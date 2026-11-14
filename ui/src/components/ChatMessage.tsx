@@ -713,6 +713,11 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
     }
     flushTools();
 
+    let liveGroupIdx = -1;
+    groups.forEach((g, i) => {
+      if (g.kind !== 'reasoning') liveGroupIdx = i;
+    });
+
     return (
       <>
         {groups.map((group, idx) => {
@@ -759,7 +764,7 @@ function renderTimeline(message: Message, isStreaming?: boolean): React.ReactNod
               <ToolsTree
                 key={`tools-${first.call_id || idx}`}
                 items={group.items}
-                live={Boolean(isStreaming) && idx === groups.length - 1}
+                live={Boolean(isStreaming) && idx === liveGroupIdx}
               />
             );
           }

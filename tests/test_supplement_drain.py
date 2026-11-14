@@ -124,6 +124,30 @@ class TestSupplementRouteFallback(unittest.TestCase):
             res = asyncio.run(chat_mod.supplement_chat(req))
         self.assertEqual(res["status"], "ignored")
 
+    def test_stream_endpoint_queues_message_when_running(self):
+        tm = BackgroundTaskManager()
+        tm._info["s1"] = _fake_info()
+
+        import app.server.routes.chat as chat_mod
+
+        async def _fake_loop(_sid):
+            return object()
+
+        req = chat_mod.ChatRequest(message="中途补充", session_id="s1")
+        with mock.patch.object(chat_mod, "get_task_manager", lambda: tm), \
+                mock.patch.object(chat_mod, "_get_session_loop", _fake_loop), \
+                mock.patch.object(chat_mod, "get_session_manager",
+                                  lambda: mock.Mock(get_or_create=lambda sid: mock.Mock(memory=None))), \
+                mock.patch("app.server.routes.session_events.collect_replay_events",
+                           lambda *a, **k: []), \
+                mock.patch("app.server.routes.ws_event_manager.ws_publish_event",
+                           lambda *a, **k: None):
+            res = asyncio.run(chat_mod.chat_stream(req, mock.Mock()))
+
+        self.assertEqual(res["status"], "queued")
+        queued = tm.drain_supplement_messages("s1")
+        self.assertEqual(queued[0]["content"], "中途补充")
+
 
 if __name__ == "__main__":
     unittest.main()

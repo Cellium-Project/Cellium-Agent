@@ -715,7 +715,7 @@ export const ChatView: React.FC = () => {
             <button
               className="btn-send"
               onClick={handleSend}
-              disabled={(!inputValue.trim() && attachments.length === 0) || isStreaming}
+              disabled={!inputValue.trim() && attachments.length === 0}
               title={isStreaming ? t('chat.sendSupplementTitle') : t('chat.sendTitle')}
             >
               <Icons.Send size={18} />

@@ -67,6 +67,5 @@ class MiniMaxProvider(BaseProvider):
             "model": model_id,
             "temperature": DEFAULT_TEMPERATURE,
             "timeout": DEFAULT_TIMEOUT,
-            "vision": False,
         }
         return cfg

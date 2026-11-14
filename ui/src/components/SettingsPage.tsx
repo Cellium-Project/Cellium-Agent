@@ -463,16 +463,6 @@ const ModelSettings: React.FC = () => {
                             onChange={e => updateModelField(index, 'timeout', parseInt(e.target.value))} />
                         </div>
                       </div>
-                      <div className="form-row">
-                        <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                          <FieldLabel label={t('settings.model.vision')} desc={t('settings.model.visionDesc')} />
-                          <label className="toggle-switch">
-                            <input type="checkbox" checked={!!model.vision} onChange={e => updateModelField(index, 'vision', e.target.checked)} />
-                            <span className="toggle-slider"></span>
-                            <span className="toggle-label">{model.vision ? t('settings.model.visionEnabled') : t('settings.model.visionDisabled')}</span>
-                          </label>
-                        </div>
-                      </div>
                     </div>
                   </div>
                 ))}

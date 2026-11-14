@@ -66,7 +66,6 @@ class BaseProvider(ABC):
             "model": model_id,
             "temperature": 0.7,
             "timeout": 120,
-            "vision": False,
         }
         thinking = self.get_default_thinking()
         if thinking:

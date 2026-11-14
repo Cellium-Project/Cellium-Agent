@@ -111,21 +111,6 @@ def _estimate_tokens(text: str) -> int:
     return int(chinese_chars / 1.75 + other_chars / 4.0) + 1
 
 
-def _resolve_vision_mode(raw) -> str:
-    """vision 三态：auto / on / off"""
-    if raw is None:
-        return "auto"
-    if isinstance(raw, bool):
-        return "on" if raw else "off"
-    if isinstance(raw, str):
-        value = raw.strip().lower()
-        if value in ("off", "false", "no", "0"):
-            return "off"
-        if value in ("on", "true", "yes", "1"):
-            return "on"
-    return "auto"
-
-
 def _estimate_messages_tokens(messages: List[Dict]) -> int:
     """估算消息列表总 token 数"""
     total = 0
@@ -1200,9 +1185,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         thinking_enabled = model_thinking.get("enabled", False)
         thinking_budget = model_thinking.get("budget_tokens")
 
-        model_vision_mode = _resolve_vision_mode(model_config.get("vision", "auto"))
-        model_vision = model_vision_mode != "off"
-
         engine = OpenAICompatibleEngine(
             api_key=api_key,
             base_url=base_url,
@@ -1215,10 +1197,10 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             omit_max_tokens=bool(model_config.get("omit_max_tokens", True)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
-            vision=model_vision,
+            vision=True,
             provider="anthropic",
         )
-        engine.vision_mode = model_vision_mode
+        engine.vision_mode = "auto"
         if model_thinking.get("reasoning_effort"):
             engine._reasoning_effort = model_thinking["reasoning_effort"]
 
@@ -1271,9 +1253,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         thinking_enabled = model_thinking.get("enabled", False)
         thinking_budget = model_thinking.get("budget_tokens")
 
-        model_vision_mode = _resolve_vision_mode(model_config.get("vision", "auto"))
-        model_vision = model_vision_mode != "off"
-
         engine_cls = OpenAICompatibleEngine
         engine_kwargs = {}
         if "opencode.ai" in base_url:
@@ -1297,12 +1276,12 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             omit_max_tokens=bool(model_config.get("omit_max_tokens", True)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
-            vision=model_vision,
+            vision=True,
             **engine_kwargs,
         )
         if model_thinking.get("reasoning_effort"):
             engine._reasoning_effort = model_thinking["reasoning_effort"]
-        engine.vision_mode = model_vision_mode
+        engine.vision_mode = "auto"
 
         info = engine.model_info
         logger.info(
@@ -1320,7 +1299,6 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
         thinking_config = config_dict.get("thinking", {})
         thinking_enabled = thinking_config.get("enabled", False)
         thinking_budget = thinking_config.get("budget_tokens")
-        model_vision_mode = _resolve_vision_mode(oc.get("vision", "auto"))
         engine = OpenAICompatibleEngine(
             api_key="ollama",
             base_url=oc.get("base_url", "http://localhost:11434/v1"),
@@ -1333,9 +1311,9 @@ def create_llm_engine(config_dict: Dict = None) -> BaseLLMEngine:
             omit_max_tokens=bool(oc.get("omit_max_tokens", True)),
             thinking=thinking_enabled,
             thinking_budget=thinking_budget,
-            vision=model_vision_mode != "off",
+            vision=True,
         )
-        engine.vision_mode = model_vision_mode
+        engine.vision_mode = "auto"
         info = engine.model_info
         logger.info(
             "[LLMFactory] 已创建 Ollama 引擎 | model=%s | ctx=%d out=%d vision=%s",

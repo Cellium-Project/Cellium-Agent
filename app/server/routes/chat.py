@@ -199,6 +199,18 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         for event in history:
             ws_publish_event("chat_event", event, session_id=session_id)
 
+        if request.message and request.message.strip():
+            if task_mgr.enqueue_supplement_message(session_id, {
+                "content": request.message.strip(),
+                "source": "webui",
+                "msg_id": None,
+                "received_at": __import__('time').time(),
+                "platform": None,
+                "message_type": None,
+                "attachments": request.attachments or [],
+            }):
+                return {"status": "queued", "session_id": session_id}
+
         return {"status": "reconnecting", "session_id": session_id, "history_count": len(history)}
         
     if not request.message or not request.message.strip():
@@ -237,6 +249,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             "received_at": __import__('time').time(),
             "platform": None,
             "message_type": None,
+            "attachments": request.attachments or [],
         })
         if re_queued:
             return {"status": "queued", "session_id": session_id}
