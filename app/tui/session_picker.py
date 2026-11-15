@@ -164,7 +164,13 @@ class DeleteConfirmScreen(ModalScreen):
 
     #delete-confirm-body {
         height: auto;
-        padding: 2;
+        padding: 2 2 0 2;
+    }
+
+    #delete-confirm-hint {
+        height: auto;
+        padding: 1 2 0 2;
+        color: $text-muted;
     }
 
     #delete-confirm-actions {
@@ -183,9 +189,14 @@ class DeleteConfirmScreen(ModalScreen):
     def compose(self):
         with Vertical(id="delete-confirm-panel"):
             yield Static(self._message, id="delete-confirm-body")
+            yield Static(self._hint(), id="delete-confirm-hint")
             with Horizontal(id="delete-confirm-actions"):
                 yield Button(self._cancel_label, id="cancel")
                 yield Button(self._confirm_label, id="confirm", variant="error")
+
+    def _hint(self):
+        tr = getattr(self.app, "tr", None)
+        return tr("common.confirm_hint") if tr else "Y / N"
 
     def on_button_pressed(self, event):
         self.dismiss(event.button.id == "confirm")

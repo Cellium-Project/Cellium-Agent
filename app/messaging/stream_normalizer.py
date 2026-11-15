@@ -2,8 +2,11 @@
 """流式 thinking/正文 分离状态机"""
 
 import json
+import logging
 import re
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 _THINK_PREFIXES = {
     "<", "<t", "<th", "<thi", "<thin", "<think",
@@ -320,7 +323,9 @@ class StreamNormalizer:
         cached = getattr(self, "_last_early_reasoning", None)
         if cached:
             return [{"type": "thinking_streaming", "content": cached, "final": True}]
-        return [{"type": "content", "content": raw}]
+        # 解析失败的思考块直接丢弃：原文是协议 JSON，混进正文会污染回答
+        logger.debug("[StreamNormalizer] 丢弃无法解析的思考块: %r", raw[:200])
+        return []
 
     @staticmethod
     def _find_json_end(raw: str) -> int:

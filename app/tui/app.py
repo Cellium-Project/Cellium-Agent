@@ -108,6 +108,13 @@ Screen {
 #session-list {
     height: 1fr;
     scrollbar-gutter: stable;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
+    scrollbar-color: $border-primary;
+    scrollbar-color-hover: $text-tertiary;
+    scrollbar-color-active: $primary;
     padding: 0 1;
     border: none;
     background: transparent;
@@ -118,6 +125,23 @@ Screen {
 #session-list:focus {
     border: none;
     background-tint: transparent;
+}
+
+#session-list > .option-list--option-highlighted {
+    background: transparent;
+    color: $primary;
+    text-style: bold;
+}
+
+#session-list:focus > .option-list--option-highlighted {
+    background: transparent;
+    color: $primary;
+    text-style: bold;
+}
+
+#session-list > .option-list--option-hover {
+    background: transparent;
+    text-style: bold;
 }
 
 #chat.no-scrollbar {
@@ -493,11 +517,8 @@ class CelliumTUI(App):
         self._current_response = None
         self._current_md = ""
         self._md_buffer = MarkdownBuffer()
-        self._thought_mode = False    # 是否处于 JSON 思考协议解析中
-        self._thought_raw = ""        # 思考协议原始 JSON 累积
-        self._thought_fenced = False  # 思考协议是否被 ```json 代码块包裹
-        self._pending_text = ""       # 待定文本
         self._md_render_timer = None  # Markdown 流式渲染节流定时器
+        self._response_finalized = True  # 当前回复段落是否已收尾
         self._tool_cards = {}
         self._subagent_cards = {}
         self._active_tool_card = None
@@ -517,6 +538,10 @@ class CelliumTUI(App):
         self._delegation_text = ""
         self._delegation_frame = 0
         self._session_list_entries = []
+        self._session_metas = []
+        self._session_group_collapsed = {"earlier": True}
+        self._session_group_touched = set()
+        self._session_group_index = {}
 
         self.header = None
         self.body = None
@@ -1018,6 +1043,8 @@ class CelliumTUI(App):
         self._update_model_placeholder()
         if self.hint:
             self.hint.update(self.tr("hint"))
+        if self.session_list is not None and self._session_metas:
+            self._render_session_list(self._session_metas)
         self._refresh_status()
 
     def on_button_pressed(self, event):
@@ -1028,7 +1055,11 @@ class CelliumTUI(App):
 
     def on_option_list_option_selected(self, event):
         if getattr(event.option_list, "id", "") == "session-list":
-            self._post(self._switch_session(event.option.id))
+            option_id = getattr(event.option, "id", None) or ""
+            if option_id.startswith("__group__"):
+                self._toggle_session_group(option_id[len("__group__"):])
+                return
+            self._post(self._switch_session(option_id))
             return
         if getattr(event.option_list, "id", "") == "palette-list" and self._palette_active:
             option = getattr(event, "option", None)
@@ -1225,29 +1256,133 @@ class CelliumTUI(App):
         except Exception as e:
             await self._append_system(self.tr("session.list_error", e))
             return
+        self._session_metas = metas
+        self._render_session_list(metas)
+
+    def _group_sessions(self, metas):
+        from datetime import date, datetime, timedelta
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        week_start = today - timedelta(days=6)
+        buckets = {"today": [], "yesterday": [], "thisWeek": [], "earlier": []}
+        for meta in metas:
+            raw = str(meta.last_active or meta.created_at or "").strip()
+            try:
+                day = datetime.fromisoformat(raw).date()
+            except Exception:
+                day = None
+            if day == today:
+                buckets["today"].append(meta)
+            elif day == yesterday:
+                buckets["yesterday"].append(meta)
+            elif day is not None and day >= week_start:
+                buckets["thisWeek"].append(meta)
+            else:
+                buckets["earlier"].append(meta)
+        return [(key, items) for key, items in buckets.items() if items]
+
+    def _render_session_list(self, metas):
         self.session_list.clear_options()
         from app.core.util.session_status import is_session_running
+
+        groups = self._group_sessions(metas)
+        current_group = next(
+            (
+                key for key, items in groups
+                if any(meta.session_id == self.session_id for meta in items)
+            ),
+            None,
+        )
+        collapsed_state = dict(self._session_group_collapsed)
+        if current_group and current_group not in self._session_group_touched:
+            collapsed_state[current_group] = False
+
         entries = []
-        for meta in metas:
-            entry = {
-                "sid": meta.session_id,
-                "title": str(meta.title or meta.session_id),
-                "count": meta.message_count or 0,
-                "current": meta.session_id == self.session_id,
-                "running": is_session_running(meta.session_id),
-                "frame": self._global_blink_counter,
-            }
-            entries.append(entry)
+        group_index = {}
+        option_index = 0
+        current_index = None
+        muted = ""
+        try:
+            muted = self.get_css_variables().get("text-muted") or ""
+        except Exception:
+            muted = ""
+        header_open = f"[not bold {muted}]" if muted else "[dim]"
+        for group_key, group_metas in groups:
+            collapsed = bool(collapsed_state.get(group_key))
+            marker = "▸" if collapsed else "▾"
+            # 分组头的颜色写死在标记里，避免被 OptionList 的选中态改色
+            header = (
+                f"{header_open}{marker} {self.tr('sidebar.' + group_key)}"
+                f" ({len(group_metas)})[/]"
+            )
             try:
                 self.session_list.add_option(
-                    Option(self._session_prompt(entry), id=meta.session_id)
+                    Option(header, id=f"__group__{group_key}")
                 )
             except Exception as e:
-                # 单条标题异常不应中断整个会话列表
-                logger.warning("[TUI] 会话项渲染失败 | %s | %s", meta.session_id, e)
+                logger.warning("[TUI] 会话分组渲染失败 | %s | %s", group_key, e)
+                continue
+            group_index[group_key] = option_index
+            option_index += 1
+            if collapsed:
+                continue
+            for meta in group_metas:
+                entry = {
+                    "sid": meta.session_id,
+                    "title": str(meta.title or meta.session_id),
+                    "count": meta.message_count or 0,
+                    "current": meta.session_id == self.session_id,
+                    "running": is_session_running(meta.session_id),
+                    "frame": self._global_blink_counter,
+                    "index": option_index,
+                    "group": group_key,
+                }
+                try:
+                    self.session_list.add_option(
+                        Option(self._session_prompt(entry), id=meta.session_id)
+                    )
+                except Exception as e:
+                    # 单条标题异常不应中断整个会话列表
+                    logger.warning("[TUI] 会话项渲染失败 | %s | %s", meta.session_id, e)
+                    continue
+                entries.append(entry)
+                if entry["current"]:
+                    current_index = option_index
+                option_index += 1
         self._session_list_entries = entries
+        self._session_group_index = group_index
+        if current_index is not None:
+            try:
+                self.session_list.highlighted = current_index
+                self.session_list.scroll_to_highlight()
+            except Exception:
+                pass
         # 首次布局前算不到真实宽度，稍后重算一次
         self.set_timer(0.2, self._reload_session_prompts)
+
+    def _toggle_session_group(self, group_key):
+        self._session_group_touched.add(group_key)
+        collapsed = not self._session_group_collapsed.get(group_key, False)
+        self._session_group_collapsed[group_key] = collapsed
+        self._render_session_list(getattr(self, "_session_metas", None) or [])
+        index = None
+        if not collapsed:
+            index = next(
+                (
+                    entry["index"] for entry in self._session_list_entries
+                    if entry.get("group") == group_key
+                ),
+                None,
+            )
+        if index is None:
+            index = self._session_group_index.get(group_key)
+        if index is not None:
+            try:
+                self.session_list.highlighted = index
+                self.session_list.scroll_to_highlight()
+            except Exception:
+                pass
 
     def _session_list_width(self) -> int:
         try:
@@ -1268,9 +1403,12 @@ class CelliumTUI(App):
     def _reload_session_prompts(self):
         """布局完成后按真实宽度重算，避免首帧过宽换行"""
         entries = getattr(self, "_session_list_entries", None) or []
-        for idx, entry in enumerate(entries):
+        for entry in entries:
+            index = entry.get("index")
+            if index is None:
+                continue
             try:
-                self.session_list.replace_option_prompt_at_index(idx, self._session_prompt(entry))
+                self.session_list.replace_option_prompt_at_index(index, self._session_prompt(entry))
             except Exception:
                 pass
 
@@ -1313,13 +1451,16 @@ class CelliumTUI(App):
         except Exception:
             return
         frame = self._global_blink_counter
-        for idx, entry in enumerate(entries):
+        for entry in entries:
+            index = entry.get("index")
+            if index is None:
+                continue
             running = is_session_running(entry["sid"])
             if running != entry.get("running") or (running and entry.get("frame") != frame):
                 entry["running"] = running
                 entry["frame"] = frame
                 try:
-                    lst.replace_option_prompt_at_index(idx, self._session_prompt(entry, frame))
+                    lst.replace_option_prompt_at_index(index, self._session_prompt(entry, frame))
                 except Exception:
                     pass
 
@@ -1347,10 +1488,8 @@ class CelliumTUI(App):
         self._current_reasoning = None
         self._current_response = None
         self._current_md = ""
-        self._thought_mode = False
-        self._thought_raw = ""
-        self._thought_fenced = False
-        self._pending_text = ""
+        self._md_buffer.reset()
+        self._response_finalized = True
         self._tool_cards = {}
         self._subagent_cards = {}
         self._tool_count = 0
@@ -2149,6 +2288,8 @@ class CelliumTUI(App):
 
     async def _agent_worker(self, text):
         epoch = self._session_epoch
+        self._response_finalized = False
+        cancelled = False
         try:
             await self._append_user(text, force_scroll=True)
             self._last_user_msg = text
@@ -2212,6 +2353,7 @@ class CelliumTUI(App):
                 self._current_loop = None
                 return
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except Exception as e:
             self._post(self._append_system(self.tr("error.exec", e)))
@@ -2220,6 +2362,19 @@ class CelliumTUI(App):
             self._busy_status = ""
             self._stop_busy_animation()
             self._current_loop = None
+            # 兜底收尾：任务状态先置为结束、终止事件（done/error）后发布，
+            # 先等一小会儿让监听器消费完终止事件，避免最后一段正文被丢
+            if not cancelled and not self._response_finalized and not self._history_stale(epoch):
+                try:
+                    for _ in range(20):
+                        if self._response_finalized:
+                            break
+                        await asyncio.sleep(0.05)
+                    if not self._response_finalized:
+                        await self._finalize_render()
+                        self._finish_response()
+                except Exception:
+                    pass
 
     def _get_agent_mgr(self):
         """后台线程中获取 AgentLoopManager"""
@@ -2295,7 +2450,7 @@ class CelliumTUI(App):
             if self._current_reasoning is not None:
                 self._current_reasoning.finish()
                 self._current_reasoning = None
-            await self._append_chunk(evt.get("content", ""))
+            await self._append_text(evt.get("content", ""))
         elif t == "tool_call_pending":
             self._touch_busy()
             # 触发工具调用即 reasoning 已结束，别把参数生成时间算进思考耗时
@@ -2337,6 +2492,8 @@ class CelliumTUI(App):
             self._finish_response()
             await self._sync_rewindable(mark_last=True, turn_id=evt.get("tracked_turn_id"))
         elif t == "error":
+            await self._finalize_render()
+            self._finish_response()
             await self._append_system(self.tr("error", evt.get("error", "")))
         elif t == "heuristic_redirect":
             await self._append_system(self.tr("redirect"))
@@ -2346,9 +2503,8 @@ class CelliumTUI(App):
             content = evt.get("content", "")
             notice = evt.get("notice")
             if self._current_response is not None:
-                self._current_response = None
-                self._current_md = ""
-                self._md_buffer.reset()
+                await self._finalize_render()
+                self._finish_response()
             if isinstance(notice, dict) and notice.get("type") in ("delegation", "subagent"):
                 await self.chat.mount(DelegationNotice(notice))
                 self.chat.scroll_to_follow()
@@ -2396,93 +2552,6 @@ class CelliumTUI(App):
         self._current_thinking._refresh()
         self.chat.scroll_to_follow()
 
-    async def _append_chunk(self, content):
-        if not content:
-            return
-        if self._thought_mode:
-            self._thought_raw += content
-            await self._check_thought_complete()
-            return
-        self._pending_text += content
-        if self._find_thought_start(self._pending_text) is not None:
-            await self._check_pending_thought()
-        else:
-            await self._flush_pending_text()
-
-    async def _check_pending_thought(self):
-        start = self._find_thought_start(self._pending_text)
-        if start is None:
-            await self._flush_pending_text()
-            return
-        pre = self._pending_text[:start]
-        self._thought_fenced = bool(re.search(r'```json\s*$', pre, re.IGNORECASE))
-        pre = re.sub(r'```json\s*$', '', pre, flags=re.IGNORECASE).strip()
-
-        if pre:
-            await self._append_text(pre)
-
-        self._thought_mode = True
-        self._thought_raw = self._pending_text[start:]
-        self._pending_text = ""
-        self._ensure_thinking_block_mount()
-        await self._check_thought_complete()
-
-    async def _check_thought_complete(self):
-        if not self._thought_closed(self._thought_raw):
-            if len(self._thought_raw) > 4000:
-                await self._append_text(self._thought_raw)
-                self._finish_thought()
-            return
-
-        json_end = self._find_json_end(self._thought_raw)
-        json_str = self._thought_raw[:json_end]
-
-        reasoning = ""
-        data = None
-        try:
-            data = json.loads(json_str)
-            if isinstance(data, dict) and "reasoning" in data and "action" in data:
-                reasoning = str(data.get("reasoning", ""))
-        except (json.JSONDecodeError, ValueError):
-            data = None
-
-        if data is None or not isinstance(data, dict) or "action" not in data:
-            await self._append_text(self._thought_raw)
-            if self._current_thinking is not None:
-                try:
-                    self._current_thinking.remove()
-                except Exception:
-                    pass
-                self._current_thinking = None
-            self._finish_thought()
-            return
-
-        if reasoning and self._current_thinking is not None:
-            self._current_thinking.append_text(reasoning)
-
-        rest = self._thought_raw[json_end:]
-
-        rest = rest.strip()
-        if self._thought_fenced and rest.startswith("```"):
-            rest = rest[3:].strip()
-
-        if rest:
-            await self._append_text(rest)
-
-        self._finish_thought()
-
-    def _extract_reasoning(self, raw: str) -> str:
-        m = re.search(r'\{\s*"reasoning"\s*:\s*("(?:\\.|[^"\\])*"|\[[^\]]*\]|\S*)', raw)
-        if not m:
-            return ""
-        val = m.group(1).strip()
-        if val.startswith('"') and val.endswith('"'):
-            try:
-                return json.loads(val)
-            except Exception:
-                return val[1:-1]
-        return val
-
     async def _append_text(self, text):
         if not text:
             return
@@ -2501,6 +2570,7 @@ class CelliumTUI(App):
                 return
             self._current_response = AssistantMessage("")
             await self.chat.mount(self._current_response)
+            self._response_finalized = False
         self._md_buffer.append(text)
         self._current_md = self._md_buffer.get_content()
         await self._schedule_md_render()
@@ -2551,10 +2621,12 @@ class CelliumTUI(App):
         resp = self._current_response
         if resp is None or not self._md_buffer.has_changed():
             return
+        if self._is_user_selecting():
+            self._pending_render_after_select = True
+            return
         try:
             import asyncio
             asyncio.ensure_future(self._render_now(force_layout=True))
-            self._md_buffer.mark_rendered()
         except Exception as e:
             logging.warning(f"Failed to schedule markdown render: {e}")
 
@@ -2564,114 +2636,21 @@ class CelliumTUI(App):
             md = self._current_md
             if resp is not None and md:
                 await resp.update(md, layout=force_layout)
+                self._md_buffer.mark_rendered()
                 self.chat.scroll_to_follow()
         except Exception as e:
             logging.warning(f"Failed to render markdown: {e}")
 
-    async def _flush_pending_text(self):
-        if not self._pending_text:
-            return
-        if self._is_thought_prefix(self._pending_text):
-            return 
-        await self._append_text(self._pending_text)
-        self._pending_text = ""
-
-    def _is_thought_prefix(self, text: str) -> bool:
-        m = re.search(r'```([a-z]*)\s*$', text, re.IGNORECASE)
-        if m and "json".startswith(m.group(1)):
-            return True
-
-        brace = text.rfind("{")
-        if brace == -1:
-            return False
-        tail = text[brace + 1:]
-        prefix_len = 0
-        i = 0
-        while i < len(tail) and tail[i].isspace():
-            i += 1
-        if i < len(tail) and tail[i] == '"':
-            i += 1
-        for j, ch in enumerate("reasoning"):
-            if i + j >= len(tail):
-                return True
-            if tail[i + j] != ch:
-                return False
-            prefix_len += 1
-        if len(tail) - i == prefix_len:
-            return True
-        rest = tail[i + prefix_len:]
-        return rest in ('"', '')
-
-    def _find_thought_start(self, text):
-        stripped = text.lstrip()
-        offset = len(text) - len(stripped)
-
-        m = re.match(r'```json\s*\n?\s*(\{\s*"reasoning)', stripped, re.IGNORECASE)
-        if m:
-            return offset + m.start(1)
-
-        if m := re.match(r'\{\s*"reasoning"\s*:', stripped):
-            return offset + m.start()
-
-        return None
-
-    def _ensure_thinking_block_mount(self):
-        if self._current_thinking is None:
-            self._current_thinking = ThinkingBlock("")
-            if self._current_response is not None:
-                self.chat.mount(self._current_thinking, before=self._current_response)
-            else:
-                self.chat.mount(self._current_thinking)
-        self.chat.scroll_to_follow()
-
-    def _find_json_end(self, raw: str) -> int:
-        depth = 0
-        in_str = False
-        esc = False
-        for i, ch in enumerate(raw):
-            if esc:
-                esc = False
-                continue
-            if ch == "\\" and in_str:
-                esc = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return i + 1 
-        return -1
-
-    def _thought_closed(self, raw: str) -> bool:
-        return self._find_json_end(raw) != -1
-
-    def _finish_thought(self):
-        self._thought_mode = False
-        self._thought_raw = ""
-        self._thought_fenced = False
-        if self._current_thinking is not None:
-            self._current_thinking.finish()
-            self._current_thinking = None
-        self.chat.scroll_to_follow()
-
     async def _add_tool_card(self, evt):
+        # 工具卡片要插在正文之后：先按新布局把缓冲内容渲染上屏再丢弃引用，
+        # 否则末尾新增的行会被旧高度裁掉
         if self._current_response is not None and self._current_md:
-            await self._render_now()
+            await self._render_now(force_layout=True)
         if self._current_response is not None:
             self._current_response = None
             self._current_md = ""
             self._md_buffer.reset()
-            self._pending_text = ""
-        if self._thought_mode:
-            self._thought_mode = False
-            self._thought_raw = ""
-            self._thought_fenced = False
+            self._response_finalized = True
         if self._current_thinking is not None:
             self._current_thinking.finish()
             self._current_thinking = None
@@ -2951,12 +2930,15 @@ class CelliumTUI(App):
                 except Exception:
                     pass
                 self._md_render_timer = None
-            if self._pending_text and not self._thought_mode:
-                await self._append_text(self._pending_text)
-                self._pending_text = ""
+            selecting = self._is_user_selecting()
+            if selecting:
+                # 选区期间 update 会跳过重排布局，等鼠标松开再渲染，避免裁掉尾部
+                self._pending_render_after_select = True
             if self._current_response is not None and self._current_md:
                 try:
                     await self._current_response.update(self._current_md, layout=True)
+                    if not selecting:
+                        self._md_buffer.mark_rendered()
                 except Exception:
                     pass
             try:
@@ -3003,10 +2985,7 @@ class CelliumTUI(App):
         self._current_response = None
         self._current_md = ""
         self._md_buffer.reset()
-        self._thought_mode = False
-        self._thought_raw = ""
-        self._thought_fenced = False
-        self._pending_text = ""
+        self._response_finalized = True
         if self._active_tool_card is not None:
             self._active_tool_card.finish()
             self._active_tool_card = None
@@ -3018,10 +2997,7 @@ class CelliumTUI(App):
         self._current_response = None
         self._current_md = ""
         self._md_buffer.reset()
-        self._thought_mode = False
-        self._thought_raw = ""
-        self._thought_fenced = False
-        self._pending_text = ""
+        self._response_finalized = True
         self._tool_cards = {}
         self._subagent_cards = {}
         self._active_tool_card = None

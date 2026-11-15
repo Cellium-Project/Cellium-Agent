@@ -311,6 +311,8 @@ class BackgroundTaskManager:
 
         normalizer = self._normalizers.setdefault(session_id, StreamNormalizer())
 
+        pending_terminal: Optional[Dict[str, Any]] = None
+
         try:
             last_terminal_event: Optional[Tuple[str, Optional[str]]] = None
             terminal_hit = False
@@ -325,6 +327,12 @@ class BackgroundTaskManager:
                 for norm in normalizer.feed(raw_event):
                     if terminal_hit:
                         continue
+                    if norm.get("type") in ("done", "error", "stopped"):
+                        pending_terminal = norm
+                        last_terminal_event = (norm.get("type"), norm.get("error") or norm.get("reason"))
+                        terminal_hit = True
+                        logger.info("[TaskManager] 收到完成事件 | session=%s | type=%s", session_id, norm.get("type"))
+                        continue
                     self.broker.publish(session_id, norm)
                     event = self.broker.get_latest_event(session_id) or {}
                     info.last_event_id = int(event.get("event_id", 0) or 0)
@@ -333,11 +341,6 @@ class BackgroundTaskManager:
                         logger.debug("[TaskManager] 工具调用 | session=%s | iteration=%d", session_id, info.iteration)
 
                     info.event_count = self.broker.get_event_count(session_id)
-
-                    if event.get("type") in ("done", "error", "stopped"):
-                        logger.info("[TaskManager] 收到完成事件 | session=%s | type=%s", session_id, event.get("type"))
-                        last_terminal_event = (event.get("type"), event.get("error") or event.get("reason"))
-                        terminal_hit = True
 
             if last_terminal_event:
                 event_type, error_message = last_terminal_event
@@ -350,20 +353,15 @@ class BackgroundTaskManager:
             )
 
         except asyncio.CancelledError:
-            self.broker.publish(session_id, {"type": "stopped", "reason": "user_cancelled"})
-            cancel_event = self.broker.get_latest_event(session_id) or {}
-            info.event_count = self.broker.get_event_count(session_id)
-            info.last_event_id = int(cancel_event.get("event_id", 0) or 0)
+            pending_terminal = {"type": "stopped", "reason": "user_cancelled"}
             self._apply_terminal_status(info, "stopped", error_message="user_cancelled")
             logger.info("[TaskManager] 任务已取消 | session=%s", session_id)
 
         except Exception as e:
             from app.core.util.error_text import describe_error
-            self.broker.publish(session_id, {"type": "error", "error": describe_error(e)})
-            error_event = self.broker.get_latest_event(session_id) or {}
-            info.event_count = self.broker.get_event_count(session_id)
-            info.last_event_id = int(error_event.get("event_id", 0) or 0)
-            self._apply_terminal_status(info, "error", error_message=describe_error(e))
+            error_message = describe_error(e)
+            pending_terminal = {"type": "error", "error": error_message}
+            self._apply_terminal_status(info, "error", error_message=error_message)
             logger.error("[TaskManager] 任务出错 | session=%s | error=%s", session_id, e, exc_info=True)
 
         finally:
@@ -377,6 +375,14 @@ class BackgroundTaskManager:
                     self.broker.publish(session_id, norm)
             except Exception:
                 pass
+            if pending_terminal is not None:
+                try:
+                    self.broker.publish(session_id, pending_terminal)
+                    event = self.broker.get_latest_event(session_id) or {}
+                    info.event_count = self.broker.get_event_count(session_id)
+                    info.last_event_id = int(event.get("event_id", 0) or 0)
+                except Exception:
+                    pass
             try:
                 self.broker.publish_terminal(session_id)
             except Exception:
