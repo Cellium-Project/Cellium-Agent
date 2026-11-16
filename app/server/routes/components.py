@@ -6,24 +6,62 @@
 Agent 可以通过此 API 了解自身能力，并动态增删功能模块。
 
 接口列表:
-  GET    /api/components              → 组件总览（已加载 + 可用命令）
-  GET    /api/components/scan         → 扫描目录发现新组件（不加载）
-  POST   /api/components/reload       → 热重载（增量扫描 + 自动注册/卸载）
-  POST   /api/components/{name}/load  → 手动加载指定组件
-  DELETE /api/components/{name}       → 卸载指定组件
-  GET    /api/components/rules        → 查看组件使用铁律
+  GET    /api/components                     → 组件总览（已加载 + 可用命令）
+  GET    /api/components/scan                → 扫描目录发现新组件（不加载）
+  POST   /api/components/reload              → 热重载（增量扫描 + 自动注册/卸载）
+  POST   /api/components/{name}/load         → 手动加载指定组件
+  DELETE /api/components/{name}              → 卸载组件（默认连磁盘文件一起删）
+  GET    /api/components/rules               → 查看组件使用铁律
+  GET    /api/components/market/search       → 组件市场搜索
+  GET    /api/components/market/info         → 组件市场元信息
+  POST   /api/components/market/install      → 从组件市场下载安装
 """
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+import pathlib
+
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/components", tags=["components"])
 
-# 延迟导入避免循环引用
+_builder_fallback = None
+
+
+def _is_builtin(name: str) -> bool:
+    from app.core.util.component_tool_registry import DEFAULT_COMPONENT_MODULES
+    return (name or "").lower() in DEFAULT_COMPONENT_MODULES
 
 
 def _get_container():
     from app.core.di.container import get_container
     return get_container()
+
+
+def _component_builder():
+    """优先用已加载的 component 组件，未加载时回退到独立实例"""
+    from app.core.util.components_loader import get_cell
+    cell = get_cell("component")
+    if cell is not None:
+        return cell
+    global _builder_fallback
+    if _builder_fallback is None:
+        from components.component_builder import ComponentBuilder
+        _builder_fallback = ComponentBuilder()
+    return _builder_fallback
+
+
+class DepsInstallRequest(BaseModel):
+    specs: list[str] = []
+
+
+class MarketInstallRequest(BaseModel):
+    slug: str = ""
+    version: str = ""
+    force: bool = False
+    dry_run: bool = False
+    install_deps: bool = False
 
 
 @router.get("")
@@ -53,12 +91,15 @@ async def list_components():
     }
 
     for name, cell in cells.items():
+        builtin = _is_builtin(name)
         result["components"].append({
             "cell_name": name,
             "class": type(cell).__name__,
             "commands": commands.get(name, {}),
             "command_count": len(commands.get(name, {})),
             "source_file": getattr(cell, '_source_file', None),
+            "is_builtin": builtin,
+            "removable": not builtin,
         })
 
     return result
@@ -164,22 +205,39 @@ async def discover_and_load():
 
 @router.post("/{name}/load")
 async def load_single_component(name: str):
-    """手动按组件名加载单个组件"""
-    # 先查找该组件的 module_path
+    """手动加载单个组件，name 支持 cell_name / 类名 / module_path / 文件名"""
     from app.core.util.components_loader import (
         discover_components,
         _instantiate_component,
         register_cell,
         register_to_config,
-        get_config_path,
+        sync_tool_registry,
         _loaded_files,
     )
     from app.core.di.container import get_container
 
+    key = (name or "").strip().lower()
+    if not key:
+        raise HTTPException(status_code=400, detail="缺少组件名")
+
+    def _rank(item) -> int:
+        if str(item.get("module_path", "")).lower() == key:
+            return 0
+        if str(item.get("class_name", "")).lower() == key:
+            return 1
+        if pathlib.Path(str(item.get("file", ""))).stem.lower() == key:
+            return 2
+        return 3
+
     discovered = discover_components()
+    ordered = sorted(discovered, key=_rank)
+
     target = None
     instance = None
-    for item in discovered:
+    failures = []
+    for item in ordered:
+        exact = _rank(item) < 3
+        cls_name = item.get("class_name", "")
         try:
             cls = item.get("cls")
             if cls is not None:
@@ -187,16 +245,41 @@ async def load_single_component(name: str):
             else:
                 candidate, _info = _instantiate_component(item["module_path"])
             if candidate is None:
-                continue
-        except Exception:
+                raise RuntimeError("实例化为空")
+        except Exception as e:
+            from app.core.util.components_loader import (
+                dependency_hint,
+                missing_dependency_specs,
+            )
+
+            reason = f"{type(e).__name__}: {e}"
+            hint = dependency_hint(e, str(item.get("file", "")))
+            if hint:
+                reason = f"{hint}（{reason}）"
+            failures.append(f"{cls_name}: {reason}")
+            if exact:
+                specs = missing_dependency_specs(e, str(item.get("file", "")))
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "detail": (
+                            f"组件加载失败 [{cls_name}] ({item.get('module_path')}): {reason}"
+                        ),
+                        "component": cls_name,
+                        "dependencies": {"targets": specs},
+                    },
+                )
             continue
-        if candidate.cell_name.lower() == name.lower():
+        if exact or candidate.cell_name.lower() == key:
             target = item
             instance = candidate
             break
 
     if not target or instance is None:
-        raise HTTPException(status_code=404, detail=f"未找到组件: {name}")
+        detail = f"未找到组件: {name}"
+        if failures:
+            detail += "；候选加载失败 → " + " | ".join(failures[:3])
+        raise HTTPException(status_code=404, detail=detail)
 
     try:
         register_cell(instance)
@@ -211,9 +294,12 @@ async def load_single_component(name: str):
 
         register_to_config(target["module_path"])
 
+        tools = sync_tool_registry()
+
         return {
             "status": "ok",
             "message": f"组件 [{instance.cell_name}] 已加载",
+            "tools": tools,
             "component": {
                 "cell_name": instance.cell_name,
                 "class": target["class_name"],
@@ -226,32 +312,93 @@ async def load_single_component(name: str):
 
 
 @router.delete("/{name}")
-async def unload_component(name: str):
-    """卸载指定组件"""
-    from app.core.util.components_loader import unregister_cell, unregister_from_config, get_cell
+async def unload_component(name: str, delete_files: bool = True):
+    """卸载组件；delete_files=True（默认）连磁盘文件一起删，内置组件不可卸载"""
+    from app.core.util.components_loader import remove_component
 
-    cell = get_cell(name)
+    result = remove_component(name, delete_files=delete_files)
 
-    if not cell:
-        raise HTTPException(status_code=404, detail=f"组件不存在或未加载: {name}")
-
-    cls_name = type(cell).__name__
-    source_file = getattr(cell, '_source_file', '')
-
-    # 构造 module_path
-    import pathlib
-    if source_file:
-        stem = pathlib.Path(source_file).stem
-        module_path = f"components.{stem}.{cls_name}"
-        unregister_from_config(module_path)
-
-    success = unregister_cell(name)
+    if not result.get("success"):
+        reason = result.get("reason")
+        detail = result.get("error") or "卸载失败"
+        if reason == "builtin":
+            raise HTTPException(status_code=403, detail=detail)
+        if reason == "not_found":
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=500, detail=detail)
 
     return {
-        "status": "ok" if success else "warning",
-        "message": f"组件 [{name}] 已卸载" if success else f"卸载失败: {name}",
-        "unloaded_class": cls_name,
+        "status": "ok",
+        "message": (
+            f"组件 [{result['name']}] 已卸载并删除文件"
+            if result.get("deleted")
+            else f"组件 [{result['name']}] 已卸载"
+        ),
+        **result,
     }
+
+
+@router.post("/deps/install")
+async def install_dependencies(req: DepsInstallRequest):
+    """安装组件依赖（用户确认后调用）"""
+    specs = [str(s).strip() for s in (req.specs or []) if str(s).strip()]
+    if not specs:
+        raise HTTPException(status_code=400, detail="缺少依赖列表")
+
+    result = await asyncio.to_thread(_component_builder()._pip_install, specs)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=(result.get("output") or result.get("error") or "pip install 失败")[-800:],
+        )
+    return result
+
+
+@router.post("/upload")
+async def upload_component(
+    file: UploadFile = File(...),
+    force: bool = False,
+    install_deps: bool = False,
+):
+    """上传本地组件文件（.py 或压缩包）并安装"""
+    import shutil
+    import tempfile
+
+    filename = pathlib.Path(file.filename or "").name
+    if not filename:
+        raise HTTPException(status_code=400, detail="缺少文件名")
+    if not filename.lower().endswith(
+        (".py", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")
+    ):
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {filename}")
+
+    limit = 50 * 1024 * 1024
+    tmpdir = tempfile.mkdtemp(prefix="cellium_upload_")
+    try:
+        dest = pathlib.Path(tmpdir) / filename
+        size = 0
+        with open(dest, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(status_code=400, detail="文件超过 50MB")
+                f.write(chunk)
+
+        result = await asyncio.to_thread(
+            _component_builder()._cmd_install_local,
+            path=str(dest),
+            force=force,
+            install_deps=install_deps,
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "安装失败")
+        return result
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        await file.close()
 
 
 @router.get("/rules")
@@ -288,3 +435,49 @@ async def get_rules():
         "template_location": "components/_example_component.py",
         "note": "复制示例组件文件，改名为 your_tool.py 即可开始编写新组件",
     }
+
+
+# ════════════════════════════════════════════════════════════════
+#  组件市场
+# ════════════════════════════════════════════════════════════════
+
+@router.get("/market/search")
+def market_search(
+    keyword: str = "",
+    category: str = "",
+    tags: str = "",
+    page: int = 1,
+    page_size: int = 10,
+    refresh: bool = False,
+):
+    """搜索组件市场（同源 https://components.cellium.top）"""
+    return _component_builder()._cmd_market_search(
+        keyword=keyword,
+        category=category,
+        tags=tags,
+        page=page,
+        page_size=page_size,
+        refresh=refresh,
+    )
+
+
+@router.get("/market/info")
+def market_info(slug: str = "", version: str = ""):
+    """查看市场组件详情：版本、安装包地址、校验值、README"""
+    if not (slug or "").strip():
+        raise HTTPException(status_code=400, detail="缺少参数 slug")
+    return _component_builder()._cmd_market_info(slug=slug, version=version)
+
+
+@router.post("/market/install")
+def market_install(req: MarketInstallRequest):
+    """从组件市场下载安装：下载 → 校验 → 审查 → 装入 → 热重载"""
+    if not (req.slug or "").strip():
+        raise HTTPException(status_code=400, detail="缺少参数 slug")
+    return _component_builder()._cmd_market_install(
+        slug=req.slug,
+        version=req.version,
+        force=req.force,
+        dry_run=req.dry_run,
+        install_deps=req.install_deps,
+    )

@@ -43,26 +43,6 @@ async def lifespan_context(app: FastAPI):
     loop_manager = AgentLoopManager.get_instance()
     start_executor(loop_manager)
     
-    import sys
-    import os
-    
-    async def open_browser_delayed():
-        await asyncio.sleep(0.1)
-        try:
-            import webbrowser
-            from app.core.util.agent_config import get_config
-            cfg = get_config()
-            host = cfg.get("server.host", "127.0.0.1")
-            port = cfg.get("server.port", 18000)
-            webbrowser.open(f"http://{host}:{port}")
-        except Exception:
-            pass
-
-    if getattr(app.state, "auto_open_browser", True) and (
-        sys.platform == "win32" or sys.platform == "darwin" or os.environ.get("DISPLAY")
-    ):
-        asyncio.create_task(open_browser_delayed())
-
     yield
 
 

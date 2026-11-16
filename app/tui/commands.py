@@ -15,6 +15,7 @@ COMMANDS: List[Dict] = [
     {"slash": "delete",  "desc_key": "cmd.desc.delete",  "aliases": ["rm"]},
     {"slash": "new",     "desc_key": "cmd.desc.new",     "aliases": ["n"]},
     {"slash": "settings","desc_key": "cmd.desc.settings","aliases": ["s"]},
+    {"slash": "components","desc_key": "cmd.desc.components","aliases": ["component", "comp"]},
     {"slash": "exit",    "desc_key": "cmd.desc.exit",    "aliases": ["quit", "q"]},
 ]
 

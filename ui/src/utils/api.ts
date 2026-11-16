@@ -76,6 +76,19 @@ export const API = {
   skillInstall: `${API_BASE}/skills/install`,
   skillRefreshIndex: `${API_BASE}/skills/refresh-index`,
 
+  // Components
+  components: `${API_BASE}/components`,
+  componentsScan: `${API_BASE}/components/scan`,
+  componentsReload: `${API_BASE}/components/reload`,
+  componentLoad: (name: string) => `${API_BASE}/components/${encodeURIComponent(name)}/load`,
+  componentUnload: (name: string) => `${API_BASE}/components/${encodeURIComponent(name)}`,
+  componentUpload: `${API_BASE}/components/upload`,
+  componentDepsInstall: `${API_BASE}/components/deps/install`,
+  componentMarketSearch: `${API_BASE}/components/market/search`,
+  componentMarketInfo: (slug: string, version?: string) =>
+    `${API_BASE}/components/market/info?slug=${encodeURIComponent(slug)}${version ? `&version=${encodeURIComponent(version)}` : ''}`,
+  componentMarketInstall: `${API_BASE}/components/market/install`,
+
   // Genes
   genes: `${API_BASE}/genes`,
   geneStats: `${API_BASE}/genes/stats`,
@@ -102,7 +115,16 @@ export async function fetchJSON<T>(url: string, options?: RequestInit): Promise<
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
+    const detail = (error as any)?.detail;
+    const err: any = new Error(
+      typeof detail === 'string'
+        ? detail
+        : detail
+          ? JSON.stringify(detail)
+          : `HTTP ${response.status}`,
+    );
+    err.payload = error;
+    throw err;
   }
 
   return response.json();

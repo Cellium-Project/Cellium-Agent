@@ -28,8 +28,9 @@ def main():
     parser.add_argument("--port", type=int, default=None, help="端口")
     args = parser.parse_args()
 
-    from app.core.bootstrap import bootstrap_agent, setup_uvicorn_logging
+    from app.core.bootstrap import bootstrap_agent, setup_uvicorn_logging, wait_until_ready
     result = bootstrap_agent(host=args.host, port=args.port)
+    wait_until_ready(result.host, result.port, open_browser=True)
     uvicorn.run(result.fastapi_app, host=result.host, port=result.port, log_config=setup_uvicorn_logging())
 
 def main_tui():

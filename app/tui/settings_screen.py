@@ -31,15 +31,16 @@ class SettingsScreen(Screen):
     }
 
     #settings-navigation {
-        width: 24;
+        width: 22%;
         min-width: 20;
-        max-width: 30;
+        max-width: 40;
         padding: 0 0 0 1;
         background: transparent;
     }
 
     #settings-nav-list {
         height: 1fr;
+        max-height: 100%;
         padding: 0 1;
         border: none;
         background: transparent;
@@ -48,6 +49,25 @@ class SettingsScreen(Screen):
     #settings-nav-list:focus {
         border: none;
         background-tint: transparent;
+    }
+
+    #settings-back-btn {
+        width: 1fr;
+        height: 3;
+        margin: 0;
+        min-width: 0;
+        padding: 0 3;
+        content-align: left middle;
+        color: $text-muted;
+        border: none;
+        background: transparent;
+    }
+
+    #settings-back-btn:hover,
+    #settings-back-btn:focus {
+        background: transparent;
+        color: $primary;
+        text-style: bold;
     }
 
     #settings-content {
@@ -144,6 +164,7 @@ class SettingsScreen(Screen):
             with Vertical(id="settings-navigation"):
                 yield Static("", id="settings-sidebar-title")
                 yield OptionList(id="settings-nav-list")
+                yield Button(self.app.tr("settings.back"), id="settings-back-btn")
             with Vertical(id="settings-content"):
                 yield VerticalScroll(id="settings-content-scroll")
         yield Static("", id="settings-footer")
@@ -155,6 +176,7 @@ class SettingsScreen(Screen):
         self.query_one("#settings-footer", Static).update(self.app.tr("settings.footer"))
         self.nav.add_options([
             Option(self.app.tr("settings.nav.channel"), id="channel"),
+            Option(self.app.tr("settings.nav.components"), id="components"),
             Option(self.app.tr("settings.nav.appearance"), id="appearance"),
         ])
         self.nav.highlighted = 0
@@ -252,6 +274,9 @@ class SettingsScreen(Screen):
             if tab_id == "channel":
                 await self.content.mount(Static(self.app.tr("settings.nav.channel"), classes="settings-heading"))
                 await self._render_channels()
+            elif tab_id == "components":
+                await self.content.mount(Static(self.app.tr("settings.nav.components"), classes="settings-heading"))
+                await self._render_components()
             else:
                 await self.content.mount(Static(self.app.tr("settings.nav.appearance"), classes="settings-heading"))
                 await self._render_appearance()
@@ -364,6 +389,12 @@ class SettingsScreen(Screen):
     def on_button_pressed(self, event):
         if event.button.id == "save-channel-btn":
             self._save_channel_settings()
+        elif event.button.id == "settings-back-btn":
+            self.action_back_to_chat()
+
+    async def _render_components(self):
+        from app.tui.component_screen import ComponentPanel
+        await self.content.mount(ComponentPanel())
 
     def _switch_theme(self, theme):
         self.app.theme = theme
@@ -391,10 +422,15 @@ class SettingsScreen(Screen):
     async def _render_tab_keep_focus(self):
         self.query_one("#settings-sidebar-title", Static).update(self.app.tr("settings.title"))
         self.query_one("#settings-footer", Static).update(self.app.tr("settings.footer"))
+        try:
+            self.query_one("#settings-back-btn", Button).label = self.app.tr("settings.back")
+        except Exception:
+            pass
         idx = self.nav.highlighted if self.nav.highlighted is not None else 0
         self.nav.clear_options()
         self.nav.add_options([
             Option(self.app.tr("settings.nav.channel"), id="channel"),
+            Option(self.app.tr("settings.nav.components"), id="components"),
             Option(self.app.tr("settings.nav.appearance"), id="appearance"),
         ])
         safe_idx = min(idx, len(self.nav._options) - 1) if self.nav._options else 0
@@ -405,3 +441,5 @@ class SettingsScreen(Screen):
                 self._update_appearance_texts()
             elif tab_id == "channel":
                 await self._render_channels()
+            elif tab_id == "components":
+                await self._render_tab()

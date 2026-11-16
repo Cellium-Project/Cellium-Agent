@@ -127,6 +127,10 @@ Screen {
     background-tint: transparent;
 }
 
+#session-list > .option-list--option {
+    color: $text-muted;
+}
+
 #session-list > .option-list--option-highlighted {
     background: transparent;
     color: $primary;
@@ -141,6 +145,7 @@ Screen {
 
 #session-list > .option-list--option-hover {
     background: transparent;
+    color: $primary;
     text-style: bold;
 }
 
@@ -557,6 +562,7 @@ class CelliumTUI(App):
         self._bootstrap_ready = asyncio.Event()
         self._bootstrap_frame = 0
         self._bootstrap_shown = False
+        self._web_ready = False
         self._history_offset = 0
         self._history_has_more = False
         self._history_loading_more = False
@@ -937,7 +943,7 @@ class CelliumTUI(App):
 
     def _refresh_status(self):
         web = ""
-        if self.bootstrap and self.bootstrap.fastapi_app is not None:
+        if self.bootstrap and self.bootstrap.fastapi_app is not None and self._web_ready:
             web = f"http://{self.bootstrap.host}:{self.bootstrap.port}"
 
         cache = self._prompt_cache_status()
@@ -1861,6 +1867,8 @@ class CelliumTUI(App):
             self.action_toggle_theme()
         elif cmd == "/settings":
             self.action_open_settings()
+        elif cmd == "/components":
+            self.action_open_components()
         elif cmd == "/session":
             if arg:
                 if arg.startswith("delete"):
@@ -2256,6 +2264,12 @@ class CelliumTUI(App):
         if isinstance(self.screen, SettingsScreen):
             return
         self.push_screen(SettingsScreen(current_theme=self.theme))
+
+    def action_open_components(self):
+        from app.tui.component_screen import ComponentScreen
+        if isinstance(self.screen, ComponentScreen):
+            return
+        self.push_screen(ComponentScreen())
 
     def action_clear_chat(self):
         self._clear_chat()

@@ -71,6 +71,8 @@ yarn-debug.log*
 yarn-error.log*
 memory/**/
 memory/*.db
+memory/*.db-shm
+memory/*.db-wal
 memory/*.json
 !memory/personality.md
 
@@ -90,3 +92,6 @@ workspace/.edit_journal/
 # Skill 系统自动生成的索引文件（会自动重新生成）
 components/skills/_index.json
 *.temp
+
+# 组件市场安装账本（本机运行时状态，随安装/卸载自动维护）
+components/.market_installed.json

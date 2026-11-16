@@ -21,6 +21,8 @@ from typing import Any, Dict, Optional, Union
 
 from app.core.interface.base_cell import BaseCell
 from app.core.util.components_loader import (
+    MARKET_RECORD_FILE,
+    pip_command,
     get_all_cells,
     get_all_commands,
     get_cell,
@@ -1444,8 +1446,66 @@ class MyIntegration(BaseCell):
         "exec": "动态执行代码",
     }
     _SKIP_DIRS = {"__pycache__", ".git", ".venv", "node_modules"}
+    _SKIP_IMPORTS = {"app", "components", "config", "libs"}
+    # import 名和 pip 包名不一致的常见情况
+    _PIP_NAME_ALIASES = {
+        "pil": "pillow",
+        "yaml": "pyyaml",
+        "cv2": "opencv-python",
+        "sklearn": "scikit-learn",
+        "skimage": "scikit-image",
+        "bs4": "beautifulsoup4",
+        "dateutil": "python-dateutil",
+        "dotenv": "python-dotenv",
+        "jwt": "pyjwt",
+        "serial": "pyserial",
+        "openssl": "pyopenssl",
+        "mysqldb": "mysqlclient",
+        "psycopg2": "psycopg2-binary",
+        "crypto": "pycryptodome",
+        "magic": "python-magic",
+        "docx": "python-docx",
+        "pptx": "python-pptx",
+        "fitz": "pymupdf",
+        "win32api": "pywin32",
+        "win32con": "pywin32",
+        "win32gui": "pywin32",
+        "pythoncom": "pywin32",
+        "pkg_resources": "setuptools",
+        "dns": "dnspython",
+        "levenshtein": "python-levenshtein",
+    }
 
-    def _cmd_install_local(self, path: str = "", force: bool = False, dry_run: bool = False) -> Dict[str, Any]:
+    def _cmd_deps_install(self, specs: str = "", **kwargs) -> Dict[str, Any]:
+        """安装组件依赖（组件报 ModuleNotFoundError 时调用）
+
+        Args:
+            specs: 依赖列表，逗号分隔，如 "aiotieba>=4.8, requests"
+
+        Returns:
+            {"success": True, "command": ..., "output": ...}
+        """
+        import re as _re
+
+        raw = (specs or "").strip()
+        if not raw:
+            return {
+                "success": False,
+                "error": "缺少参数 specs",
+                "hint": '示例: {"command":"deps_install","specs":"aiotieba>=4.8"}',
+            }
+        items = [s for s in _re.split(r"[,;]+", raw) if s.strip()]
+        if not items:
+            return {"success": False, "error": f"无法解析依赖: {raw}"}
+
+        result = self._pip_install(items)
+        result["specs"] = items
+        if result.get("success"):
+            result["message"] = f"依赖已安装: {', '.join(items)}，现在可以重新加载组件"
+        return result
+
+    def _cmd_install_local(self, path: str = "", force: bool = False, dry_run: bool = False,
+                           install_deps: bool = False) -> Dict[str, Any]:
         """从本地文件夹或压缩包安装组件（先审查再装入）
 
         支持的来源格式:
@@ -1528,6 +1588,8 @@ class MyIntegration(BaseCell):
                     "audit": audit,
                 }
 
+            deps = self._dependency_report(kind, comp_path, audit)
+
             result: Dict[str, Any] = {
                 "success": True,
                 "name": name,
@@ -1536,11 +1598,23 @@ class MyIntegration(BaseCell):
                 "target": str(target),
                 "dry_run": bool(dry_run),
                 "audit": audit,
+                "dependencies": deps,
                 "overwritten": target.exists(),
             }
+            if deps["targets"]:
+                result["hint"] = (
+                    f"缺依赖，装完组件后还需执行: {deps['install_command']}"
+                )
+                result["next"] = {
+                    "command": "deps_install",
+                    "specs": ",".join(deps["targets"]),
+                }
 
             if dry_run:
-                result["hint"] = "预览模式，未写入。确认无误后去掉 dry_run 再调用"
+                tips = ["预览模式，未写入。确认无误后去掉 dry_run 再调用"]
+                if deps["targets"]:
+                    tips.append(f"缺依赖，需执行: {deps['install_command']}")
+                result["hint"] = "；".join(tips)
                 return result
 
             try:
@@ -1556,6 +1630,9 @@ class MyIntegration(BaseCell):
                     shutil.copy2(comp_path, target)
             except Exception as e:
                 return {"success": False, "error": f"写入组件目录失败: {e}", "target": str(target)}
+
+            if install_deps and deps["targets"]:
+                result["dependency_install"] = self._pip_install(deps["targets"])
 
             try:
                 reload_result = self._cmd_reload()
@@ -1732,6 +1809,11 @@ class MyIntegration(BaseCell):
             py_files = sorted(p for p in comp_path.rglob("*.py") if p.is_file())
             root = comp_path
 
+        # 包内自带的模块不算第三方依赖
+        local_mods = {p.stem for p in py_files}
+        if kind == "package":
+            local_mods |= {p.name for p in comp_path.iterdir() if p.is_dir()}
+
         total_bytes = sum(p.stat().st_size for p in py_files)
         cells: list = []
         risky: list = []
@@ -1794,14 +1876,14 @@ class MyIntegration(BaseCell):
                             risky.append({"call": name, "file": rel, "why": why})
                             break
 
-            for node in tree.body:
+            for node in ast.walk(tree):
                 mods = []
                 if isinstance(node, ast.Import):
                     mods = [a.name.split(".")[0] for a in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     mods = [node.module.split(".")[0]]
                 for mod in mods:
-                    if mod in stdlib or mod in {"app", "components", "config", "libs"}:
+                    if mod in stdlib or mod in self._SKIP_IMPORTS or mod in local_mods:
                         continue
                     try:
                         if importlib.util.find_spec(mod) is None:
@@ -1836,6 +1918,89 @@ class MyIntegration(BaseCell):
         }
 
     @staticmethod
+    def _requirement_name(spec: str) -> str:
+        import re as _re
+        return _re.split(r"[<>=!~\[;\s]", (spec or "").strip(), 1)[0].strip()
+
+    @staticmethod
+    def _is_pkg_installed(name: str) -> bool:
+        from importlib import metadata
+        try:
+            metadata.version(name)
+            return True
+        except Exception:
+            return False
+
+    def _declared_dependencies(self, kind: str, comp_path) -> list:
+        """收集组件声明的依赖：requirements.txt 或文件头 `# 依赖:`"""
+        import re as _re
+        from pathlib import Path
+
+        specs: list = []
+        if kind == "package":
+            req = comp_path / "requirements.txt"
+            if req.is_file():
+                for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = line.split("#", 1)[0].strip()
+                    if line and not line.startswith("-"):
+                        specs.append(line)
+        else:
+            try:
+                for line in comp_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    m = _re.match(r"^#\s*依赖\s*[:：]\s*(.+)$", line.strip())
+                    if m:
+                        specs.extend(s.strip() for s in m.group(1).split(",") if s.strip())
+                        break
+            except OSError:
+                pass
+        return specs
+
+    @classmethod
+    def _pip_name(cls, module: str) -> str:
+        key = (module or "").strip()
+        return cls._PIP_NAME_ALIASES.get(key.lower(), key)
+
+    def _dependency_report(self, kind: str, comp_path, audit: Dict[str, Any]) -> Dict[str, Any]:
+        """汇总缺哪些依赖、装它们该用什么命令"""
+        declared = self._declared_dependencies(kind, comp_path)
+        not_installed = [
+            s for s in declared if not self._is_pkg_installed(self._requirement_name(s))
+        ]
+        missing_modules = sorted({d["module"] for d in audit.get("missing_deps", [])})
+
+        targets = list(not_installed)
+        declared_names = {self._requirement_name(s).lower() for s in declared}
+        for mod in missing_modules:
+            pkg = self._pip_name(mod)
+            if pkg.lower() not in declared_names:
+                targets.append(pkg)
+
+        return {
+            "declared": declared,
+            "not_installed": not_installed,
+            "missing_modules": missing_modules,
+            "targets": targets,
+            "install_command": pip_command(targets) if targets else "",
+        }
+
+    @staticmethod
+    def _pip_install(specs: list) -> Dict[str, Any]:
+        import subprocess
+        import sys
+
+        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *specs]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except Exception as e:
+            return {"success": False, "error": str(e), "command": " ".join(cmd)}
+        output = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
+        return {
+            "success": proc.returncode == 0,
+            "command": " ".join(cmd),
+            "output": output,
+        }
+
+    @staticmethod
     def _extract_cell_name(node, ast_mod) -> str:
         for item in node.body:
             if isinstance(item, ast_mod.Assign):
@@ -1857,7 +2022,7 @@ class MyIntegration(BaseCell):
     _MARKET_TIMEOUT = 20             # 单次网络请求超时
     _MARKET_MAX_BYTES = 50 * 1024 * 1024
     _MARKET_RETRIES = 3              # 网络抖动重试次数（下载支持断点续传）
-    _MARKET_RECORD = ".market_installed.json"   # 市场安装记录（slug → 组件文件）
+    _MARKET_RECORD = MARKET_RECORD_FILE   # 市场安装记录（slug → 组件文件）
     _market_cache: Dict[str, Any] = {"base": "", "at": 0.0, "data": None}
 
     def _market_base(self) -> str:
@@ -2300,6 +2465,7 @@ class MyIntegration(BaseCell):
         version: str = "",
         force: bool = False,
         dry_run: bool = False,
+        install_deps: bool = False,
     ) -> Dict[str, Any]:
         """
         从组件市场下载并安装组件（下载 → 校验 → 审查 → 装入 → 热重载）
@@ -2386,7 +2552,9 @@ class MyIntegration(BaseCell):
                     "actual_sha256": got["sha256"],
                 }
 
-            result = self._cmd_install_local(path=str(dest), force=force, dry_run=dry_run)
+            result = self._cmd_install_local(
+                path=str(dest), force=force, dry_run=dry_run, install_deps=install_deps
+            )
             result["market"] = {
                 "slug": meta.get("slug", target),
                 "version": ver,
@@ -2439,6 +2607,7 @@ class MyIntegration(BaseCell):
                 {"command": "reload", "args": {}, "description": "手动触发热重载扫描"},
                 {"command": "dir", "args": {}, "description": "获取组件文件夹真实路径（自动区分 pip/绿色版）"},
                 {"command": "install_local", "args": {"path": "<文件夹或压缩包路径>"}, "description": "从本地文件夹/zip/tar.gz 安装组件（自动审查结构、组件类、依赖后装入）"},
+                {"command": "deps_install", "args": {"specs": "aiotieba>=4.8"}, "description": "安装组件依赖（组件报 ModuleNotFoundError 时用）"},
                 {"command": "cleanup", "args": {"dry_run": True}, "description": "预览/清理组件缓存"},
                 {"command": "sandbox_list", "args": {}, "description": "查看免沙箱白名单（内置+自定义）"},
                 {"command": "sandbox_add", "args": {"name": "<组件名>"}, "description": "把组件加入免沙箱白名单，改后自动热重载"},
@@ -2448,6 +2617,7 @@ class MyIntegration(BaseCell):
                 "这是系统内置组件（白名单豁免），负责创建和管理其他 Cellium 组件",
                 "安装市场组件的标准链路：market_search 找组件 → market_info 看版本与包地址 → market_install 安装",
                 "market_install 会先校验 sha256/size（元信息有时），再复用本地安装的审查流程，装完自动热重载",
+                "安装结果里的 dependencies.targets 非空表示缺依赖：调用 deps_install(specs=...) 安装后再 load 组件",
                 "市场地址默认 https://components.cellium.top，可用环境变量 CELLIUM_COMPONENTS_BASE 指向镜像",
                 "generate 创建单文件组件，适合简单功能",
                 "generate_package 创建包组件（文件夹形式），适合复杂功能，便于模块解耦",

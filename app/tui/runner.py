@@ -73,6 +73,17 @@ def _start_web_server(app, result):
         )
         t.start()
         app._server_thread = t
+
+        from app.core.bootstrap import wait_until_ready
+
+        def _mark_ready():
+            app._web_ready = True
+            try:
+                app.call_from_thread(app._refresh_status)
+            except Exception:
+                pass
+
+        wait_until_ready(result.host, result.port, open_browser=False, on_ready=_mark_ready)
     except Exception:
         pass
 

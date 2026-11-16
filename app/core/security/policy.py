@@ -82,8 +82,9 @@ def _split_unquoted(text: str, seps) -> List[str]:
 
 
 def _tokens(segment: str) -> List[str]:
+    posix = os.name != "nt" and "\\" not in segment
     try:
-        parts = shlex.split(segment, posix=(os.name != "nt"))
+        parts = shlex.split(segment, posix=posix)
     except Exception:
         parts = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', segment)
     return [str(p).strip('"\'') for p in parts]
@@ -101,6 +102,14 @@ def _is_host_runtime(name: str) -> bool:
     if base.endswith(".exe"):
         base = base[:-4]
     return base in _HOST_RUNTIMES or bool(_HOST_RUNTIME_RE.match(base))
+
+
+_WIN_ABS_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
+
+
+def _is_foreign_abs(path: str) -> bool:
+    """当前系统解析不了的另一种平台的绝对路径（如 POSIX 上的 C:\\Windows\\Temp）"""
+    return os.name != "nt" and bool(_WIN_ABS_RE.match(path or ""))
 
 
 
@@ -499,6 +508,8 @@ class SecurityPolicy:
             return False
         boundary_key = os.path.normcase(boundary)
         for target in targets:
+            if _is_foreign_abs(target):
+                return False
             full = os.path.abspath(
                 target if os.path.isabs(target) else os.path.join(base, target)
             )

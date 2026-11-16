@@ -4,10 +4,12 @@ import ast
 import importlib
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import pathlib
 import re
+import shutil
 import sys
 import time
 from typing import Any, Dict, List, Optional, Set, Type
@@ -33,6 +35,8 @@ _component_classes: Dict[str, type] = {}        # class_name → class (原始�
 _loaded_files: Set[str] = set()                 # 已加载的文件路径集合
 _file_mtimes: Dict[str, float] = {}              # 文件路径 → mtime（用于检测变更）
 _load_errors: Dict[str, Dict] = {}               # 文件路径 → 加载错误信息（供 LLM 查询）
+
+MARKET_RECORD_FILE = ".market_installed.json"   # 市场安装账本，与 component_builder 共用
 
 
 def get_all_cells() -> Dict[str, ICell]:
@@ -116,6 +120,18 @@ def unregister_cell(name: str) -> bool:
         logger.info(f"[Component] 已卸载: {key}")
         return True
     return False
+
+
+def sync_tool_registry() -> int:
+    """同步 _cell_registry 到 ComponentToolRegistry（含清理孤儿），返回工具数（失败 -1）"""
+    try:
+        from app.core.util.component_tool_registry import get_component_tool_registry
+        registry = get_component_tool_registry()
+        registry.sync_from_components_loader()
+        return registry.size
+    except Exception as e:
+        logger.warning(f"[Component] 同步工具注册表失败: {e}")
+        return -1
 
 
 def clear_registry():
@@ -674,6 +690,60 @@ def load_components(
     return loaded
 
 
+def pip_command(specs: List[str]) -> str:
+    """装依赖的命令：pipx / uv tool 要装进它自己的 venv，否则用当前解释器"""
+    import sys
+
+    quoted = [f'"{s}"' if re.search(r"[<>=!~]", s) else s for s in specs]
+    args = " ".join(quoted)
+    prefix = sys.prefix.lower()
+    sep = os.sep
+    if f"{sep}pipx{sep}venvs{sep}" in prefix:
+        return f"pipx inject cellium-agent {args}"
+    if f"{sep}uv{sep}tools{sep}" in prefix:
+        return f"uv tool install cellium-agent --with {args}"
+    return f'"{sys.executable}" -m pip install {args}'
+
+
+def _declared_specs(file_path: str) -> List[str]:
+    """读组件头部 `# 依赖: a, b>=1.0` 声明"""
+    if not file_path:
+        return []
+    try:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
+            for line in f.read().splitlines()[:200]:
+                m = re.match(r"^#\s*依赖\s*[:：]\s*(.+)$", line.strip())
+                if m:
+                    return [s.strip() for s in m.group(1).split(",") if s.strip()]
+    except OSError:
+        pass
+    return []
+
+
+def missing_dependency_specs(exc: Exception, file_path: str = "") -> List[str]:
+    """从 ImportError 推出要 pip install 的 specs（优先用组件声明）"""
+    if not isinstance(exc, ImportError):
+        return []
+    declared = _declared_specs(file_path)
+    if declared:
+        return declared
+    mod = str(getattr(exc, "name", "") or "").split(".")[0]
+    return [mod] if mod else []
+
+
+def dependency_hint(exc: Exception, file_path: str = "") -> str:
+    """缺依赖时给出安装建议（优先用组件头部 `# 依赖: xxx` 声明）"""
+    specs = missing_dependency_specs(exc, file_path)
+    if not specs:
+        return ""
+    mod = str(getattr(exc, "name", "") or "").split(".")[0] or specs[0]
+    declared = "、".join(specs)
+    return (
+        f"缺少依赖 {mod}，组件声明: {declared}；"
+        f"请用运行本程序的解释器安装: {pip_command(specs)}"
+    )
+
+
 def _instantiate_component(module_path: str, purge_cache: bool = False) -> tuple:
     parts = module_path.rsplit(".", 1)
     if len(parts) != 2:
@@ -1076,6 +1146,305 @@ def hot_reload(container: DIContainer = None) -> Dict[str, Any]:
         )
     except Exception as e:
         logger.warning(f"[HotReload] 同步到工具注册表失败: {e}")
+
+    return report
+
+
+# ============================================================
+# 彻底卸载（注销 + 清缓存 + 删文件）
+# ============================================================
+
+def _same_path(a, b) -> bool:
+    if not a or not b:
+        return False
+    try:
+        return pathlib.Path(a).resolve() == pathlib.Path(b).resolve()
+    except OSError:
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
+def _is_within(child, parent) -> bool:
+    if not child or not parent:
+        return False
+    try:
+        pathlib.Path(child).resolve().relative_to(pathlib.Path(parent).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _vet_removable_path(path: pathlib.Path) -> Optional[str]:
+    """校验待删路径：必须是用户组件目录下的 .py 或包目录。返回拒绝原因或 None"""
+    if not path.exists():
+        return None
+    root = pathlib.Path(get_components_dir())
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        resolved, root_resolved = path, root
+
+    if resolved == root_resolved:
+        return "拒绝删除组件根目录"
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return f"路径不在用户组件目录内，拒绝删除: {resolved}"
+
+    if resolved.is_dir():
+        if resolved.name == "skills":
+            return "拒绝删除内置 skills 目录"
+        if not (resolved / "__init__.py").exists():
+            return f"不是合法的包组件目录（缺少 __init__.py）: {resolved}"
+    elif resolved.suffix != ".py":
+        return f"不是组件文件（.py）: {resolved}"
+    return None
+
+
+def _forget_market_records(target_path: str) -> List[str]:
+    """从市场安装账本移除指向该组件的条目，返回清掉的 slug"""
+    cleaned: List[str] = []
+    if not target_path:
+        return cleaned
+    record_path = pathlib.Path(get_components_dir()) / MARKET_RECORD_FILE
+    try:
+        if not record_path.exists():
+            return cleaned
+        data = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return cleaned
+    if not isinstance(data, dict):
+        return cleaned
+
+    stem = pathlib.Path(target_path).stem.lower()
+    dropped = []
+    for slug, info in list(data.items()):
+        if not isinstance(info, dict):
+            continue
+        tgt = str(info.get("target") or "")
+        name = str(info.get("name") or "").lower()
+        if tgt:
+            if _same_path(tgt, target_path):
+                dropped.append(slug)
+        elif name == stem or str(slug).lower() in (stem, f"cellium-{stem}"):
+            dropped.append(slug)
+
+    if dropped:
+        for slug in dropped:
+            data.pop(slug, None)
+        try:
+            record_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            cleaned.extend(f"market:{slug}" for slug in dropped)
+        except OSError as e:
+            logger.warning(f"[Uninstall] 写入市场安装记录失败: {e}")
+    return cleaned
+
+
+def remove_component(
+    name: str,
+    *,
+    delete_files: bool = True,
+    dry_run: bool = False,
+    container: DIContainer = None,
+) -> Dict[str, Any]:
+    """彻底卸载组件：注销 + 清缓存 + 删文件，单文件与包组件都支持
+
+    name 支持 cell_name / 类名 / module_path；delete_files=False 时只卸载不删文件。
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return {"success": False, "error": "缺少组件名"}
+    key = raw.lower()
+
+    cell = _cell_registry.get(key)
+    source = str(getattr(cell, "_source_file", "") or "") if cell is not None else ""
+
+    if not source:
+        for item in discover_components():
+            file_path = str(item.get("file", "") or "")
+            if (
+                str(item.get("module_path", "")).lower() == key
+                or str(item.get("class_name", "")).lower() == key
+                or pathlib.Path(file_path).stem.lower() == key
+            ):
+                source = file_path
+                break
+
+    # 内置组件保护
+    try:
+        from app.core.util.component_tool_registry import DEFAULT_COMPONENT_MODULES
+    except Exception:
+        DEFAULT_COMPONENT_MODULES = {}
+    guarded = {key}
+    if cell is not None:
+        guarded.add(str(getattr(cell, "cell_name", "")).lower())
+    for gname in guarded:
+        if gname in DEFAULT_COMPONENT_MODULES:
+            return {
+                "success": False,
+                "error": f"内置组件不可卸载: {gname}",
+                "name": gname,
+                "builtin": True,
+                "reason": "builtin",
+            }
+
+    path = pathlib.Path(source) if source else None
+    kind = "package" if (path is not None and path.is_dir()) else "file"
+
+    report: Dict[str, Any] = {
+        "success": True,
+        "name": key,
+        "class": type(cell).__name__ if cell is not None else "",
+        "path": str(path) if path is not None else "",
+        "kind": kind,
+        "delete_files": bool(delete_files),
+        "dry_run": bool(dry_run),
+        "deleted": False,
+        "unloaded": [],
+        "cleaned": [],
+        "errors": [],
+    }
+
+    if path is not None and not path.exists():
+        report["note"] = "磁盘文件已不存在，仅做注销"
+    elif delete_files and path is not None:
+        problem = _vet_removable_path(path)
+        if problem:
+            # 文件不可删（不在用户组件目录内/不是合法组件），降级为「只卸载不删文件」
+            report["delete_skipped"] = problem
+            report["warning"] = problem
+
+    if dry_run:
+        report["would_delete"] = (
+            str(path) if (delete_files and path and not report.get("delete_skipped")) else ""
+        )
+        return report
+
+    # 收集挂在该文件上的所有实例
+    targets: List[tuple] = []
+    if cell is not None:
+        targets.append((key, cell))
+    if source:
+        for other_name, other_cell in list(_cell_registry.items()):
+            if any(other_name == t[0] for t in targets):
+                continue
+            if _same_path(getattr(other_cell, "_source_file", "") or "", source):
+                targets.append((other_name, other_cell))
+
+    # 注销实例
+    for target_name, target_cell in targets:
+        cls_name = type(target_cell).__name__
+
+        try:
+            from app.core.util.component_sandbox import ComponentSandbox
+            if target_name in ComponentSandbox.get_all_sandbox_names():
+                ComponentSandbox.remove_sandbox(target_name)
+                report["cleaned"].append(f"sandbox:{target_name}")
+        except Exception as e:
+            report["errors"].append(f"清理沙箱失败 {target_name}: {e}")
+
+        try:
+            from app.core.util.cell_tool_adapter import load_sandbox_whitelist, save_sandbox_whitelist
+            whitelist = load_sandbox_whitelist()
+            if target_name in whitelist:
+                whitelist.discard(target_name)
+                save_sandbox_whitelist(whitelist)
+                report["cleaned"].append(f"whitelist:{target_name}")
+        except Exception as e:
+            logger.debug(f"[Uninstall] 清理免沙箱白名单失败 {target_name}: {e}")
+
+        if hasattr(target_cell, "on_unload"):
+            try:
+                target_cell.on_unload()
+            except Exception as e:
+                report["errors"].append(f"on_unload 失败 {target_name}: {e}")
+
+        try:
+            from app.core.util.component_tool_registry import get_component_tool_registry
+            get_component_tool_registry().unregister(target_name)
+            report["cleaned"].append(f"tool:{target_name}")
+        except Exception as e:
+            logger.debug(f"[Uninstall] 注销工具失败 {target_name}: {e}")
+
+        _component_classes.pop(cls_name, None)
+        if unregister_cell(target_name):
+            report["unloaded"].append(target_name)
+
+    if not report["class"] and targets:
+        report["class"] = type(targets[0][1]).__name__
+
+    # 清配置、模块缓存与文件记录
+    if source:
+        stem = pathlib.Path(source).stem
+        try:
+            config = load_settings()
+            stale = [
+                e for e in (config.get("enabled_components") or [])
+                if str(e).startswith(f"components.{stem}.")
+            ]
+            for entry in stale:
+                unregister_from_config(entry)
+                report["cleaned"].append(f"config:{entry}")
+        except Exception as e:
+            logger.debug(f"[Uninstall] 清理配置失败 {stem}: {e}")
+
+        prefixes = (f"components.{stem}", f"_component_{stem}_")
+        for mod_name, mod in list(sys.modules.items()):
+            candidate = (
+                mod_name in prefixes
+                or mod_name.startswith(f"components.{stem}.")
+                or mod_name.startswith(f"_component_{stem}_")
+                or mod_name == stem
+                or mod_name.startswith(f"{stem}.")
+            )
+            if not candidate:
+                continue
+            mod_file = str(getattr(mod, "__file__", "") or "")
+            if not mod_file:
+                continue
+            # 只清真正来自该组件文件的模块，避免误删同名模块
+            if _same_path(mod_file, source) or (
+                path is not None and path.is_dir() and _is_within(mod_file, path)
+            ):
+                sys.modules.pop(mod_name, None)
+        importlib.invalidate_caches()
+
+        _loaded_files.discard(source)
+        _file_mtimes.pop(source, None)
+        _load_errors.pop(source, None)
+
+        market_cleaned = _forget_market_records(str(path))
+        report["cleaned"].extend(market_cleaned)
+
+    # 删除文件（单 py 或整个包目录）
+    if delete_files and path is not None and path.exists() and not report.get("delete_skipped"):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            report["deleted"] = True
+            report["cleaned"].append(f"file:{path}")
+            logger.info(f"[Uninstall] 已删除组件文件: {path}")
+        except Exception as e:
+            report["success"] = False
+            report["reason"] = "delete_failed"
+            report["errors"].append(f"删除文件失败: {e}")
+
+    # 同步工具注册表，清掉孤儿工具
+    try:
+        from app.core.util.component_tool_registry import get_component_tool_registry
+        get_component_tool_registry().sync_from_components_loader()
+    except Exception as e:
+        report["errors"].append(f"同步工具注册表失败: {e}")
+
+    if not report["unloaded"] and not report["deleted"] and report["success"]:
+        report["success"] = False
+        report["reason"] = "not_found"
+        report.setdefault("error", f"未找到可卸载的组件: {raw}")
 
     return report
 

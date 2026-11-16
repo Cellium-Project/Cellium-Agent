@@ -144,9 +144,52 @@ def bootstrap_agent(host: str = None, port: int = None, enable_webapp: bool = Tr
     _print_event_system_info()
 
     logger.info("=" * 50)
-    logger.info("服务已启动: http://%s:%d", _host, _port)
-    logger.info("WebUI 入口: http://localhost:%d/", _port)
-    logger.info("API 文档: http://%s:%d/docs", _host, _port)
+    logger.info("正在初始化 WebUI（监听 %s:%d），就绪后会提示可访问地址", _host, _port)
     logger.info("=" * 50)
 
     return BootstrapResult(host=_host, port=_port, fastapi_app=app, container=container)
+
+
+def wait_until_ready(host: str = "127.0.0.1", port: int = 18000,
+                     timeout: float = 120.0, open_browser: bool = False,
+                     on_ready=None):
+    """后台线程等 HTTP 服务真正可响应后再提示入口地址（uvicorn bind 在 bootstrap 之后）"""
+    import threading
+    import time
+    import urllib.request
+
+    def _probe():
+        probe_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+        url = f"http://{probe_host}:{port}/"
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(url, timeout=1) as resp:
+                    if resp.status < 500:
+                        break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            logger.error("WebUI 在 %s:%d 未能在 %.0fs 内就绪", probe_host, port, timeout)
+            return
+
+        logger.info("=" * 50)
+        logger.info("服务已就绪: http://%s:%d", probe_host, port)
+        logger.info("WebUI 入口: http://localhost:%d/", port)
+        logger.info("API 文档: http://%s:%d/docs", probe_host, port)
+        logger.info("=" * 50)
+        if on_ready is not None:
+            try:
+                on_ready()
+            except Exception:
+                pass
+        if open_browser:
+            try:
+                import webbrowser
+                webbrowser.open(f"http://{probe_host}:{port}")
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_probe, daemon=True, name="webui-ready-probe")
+    thread.start()
+    return thread
