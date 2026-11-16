@@ -8,6 +8,27 @@ from typing import Optional, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _archive_terms(query: str) -> List[str]:
+    return [t for t in (query or "").lower().split() if t][:6]
+
+
+def _archive_snippet(text: str, terms: List[str], width: int = 180) -> str:
+    pos = min((text.find(t) for t in terms if t in text), default=-1)
+    if pos < 0:
+        return text[:width]
+    start = max(0, pos - width // 3)
+    return text[start:start + width]
+
+
+def _archive_context(messages: list, idx: int, span: int = 1) -> List[Dict]:
+    lo, hi = max(0, idx - span), min(len(messages), idx + span + 1)
+    return [
+        {"role": m.get("role", ""), "content": str(m.get("content") or "")[:300]}
+        for m in messages[lo:hi]
+        if isinstance(m, dict)
+    ]
+
+
 class ArchiveStore:
     def __init__(self, base_dir: str = "memory/archive"):
         self.base_dir = base_dir
@@ -134,6 +155,64 @@ class ArchiveStore:
                 except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
                     continue
         return records
+
+    def search_messages(self, query: str, session_id: str = "", limit: int = 10,
+                        context: int = 1, max_records: int = 2000) -> List[Dict]:
+        """按关键词在归档原始消息里检索，返回命中消息及上下文（供压缩后召回细节）"""
+        terms = _archive_terms(query)
+        if not terms:
+            return []
+        hits: List[Dict] = []
+        scanned = 0
+        try:
+            all_files = sorted(
+                [f for f in os.listdir(self.base_dir) if f.endswith(".jsonl")], reverse=True
+            )
+        except OSError:
+            return []
+
+        for fname in all_files:
+            if scanned >= max_records:
+                break
+            file_path = os.path.join(self.base_dir, fname)
+            try:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    lines = f.readlines()
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("[ArchiveStore] 检索时读取失败，跳过: %s (%s)", fname, e)
+                continue
+            for line in reversed(lines):
+                if scanned >= max_records:
+                    break
+                try:
+                    record = json.loads(line)
+                except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+                    continue
+                if session_id and record.get("session_id") != session_id:
+                    continue
+                scanned += 1
+                messages = record.get("messages") or []
+                for idx, msg in enumerate(messages):
+                    if not isinstance(msg, dict):
+                        continue
+                    text = str(msg.get("content") or "")
+                    low = text.lower()
+                    if not low:
+                        continue
+                    score = sum(1 for t in terms if t in low)
+                    if not score:
+                        continue
+                    hits.append({
+                        "record_id": record.get("id", ""),
+                        "session_id": record.get("session_id", ""),
+                        "time": record.get("time", ""),
+                        "role": msg.get("role", ""),
+                        "score": score,
+                        "snippet": _archive_snippet(text, terms),
+                        "context": _archive_context(messages, idx, context),
+                    })
+        hits.sort(key=lambda h: (h["score"], h["time"]), reverse=True)
+        return hits[:max(1, limit)]
 
     def get_latest_by_session(self, session_id: str) -> Optional[Dict]:
         records = self.get_by_session(session_id, limit=1)

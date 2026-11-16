@@ -3,7 +3,7 @@ import httpx
 import uuid
 from typing import Dict, List
 
-from ..base import BaseProvider
+from ..base import BaseProvider, parse_context_length
 from .config import (
     PROVIDER_ID, PROVIDER_NAME, BASE_URL,
     MODELS_ENDPOINT, CHAT_ENDPOINT, REASONING_PARAM,
@@ -51,11 +51,12 @@ class OpenCodeProvider(BaseProvider):
             models.append({
                 "id": item.get("id", ""),
                 "name": item.get("name", item.get("id", "")),
-                "context_length": item.get("context_length", 128000),
+                "context_length": parse_context_length(item) or None,
             })
         return models
 
-    def create_model_config(self, api_key: str, model_id: str, model_name: str = "") -> Dict:
+    def create_model_config(self, api_key: str, model_id: str, model_name: str = "",
+                            context_length: int = None) -> Dict:
         cfg = {
             "name": f"opencode-{model_id.split('/')[-1]}",
             "api_key": api_key,
@@ -66,4 +67,6 @@ class OpenCodeProvider(BaseProvider):
             "thinking": self.get_default_thinking(),
             "session_id": uuid.uuid4().hex,
         }
+        if context_length:
+            cfg["context_window"] = int(context_length)
         return cfg

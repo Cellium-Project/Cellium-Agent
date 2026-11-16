@@ -39,8 +39,10 @@ class MemoryTool(BaseTool):
                         "command": {
                             "type": "string",
                             "description": "要执行的命令",
-                            "enum": ["search", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration", "profile"],
+                            "enum": ["search", "recall", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration", "profile"],
                         },
+                        "session_id": {"type": "string", "description": "[recall] 限定会话 ID，留空则全库检索"},
+                        "context": {"type": "integer", "description": "[recall] 命中消息前后各带几条上下文，默认 1"},
                         "subcommand": {"type": "string", "description": "[profile] 子命令：get / set_agent_name / set_user_name / set_persona / set_plan_habit"},
                         "name": {"type": "string", "description": "[profile] set_agent_name/set_user_name 时的名称值"},
                         "persona": {"type": "string", "description": "[profile] set_persona 时的人格补充内容（如性格特征、说话风格等）"},
@@ -563,6 +565,37 @@ class MemoryTool(BaseTool):
         except Exception as e:
             logger.error("[MemoryTool] read_archive 失败 | error=%s", e)
             return {"success": False, "error": f"读取失败: {e}"}
+
+    def _cmd_recall(self, query: str = "", session_id: str = "", limit: int = 8,
+                    context: int = 1) -> dict:
+        """在会话归档里检索原始消息（压缩掉的细节用它找回）"""
+        if not self._check_memory():
+            return {"success": False, "error": "长期记忆系统未初始化"}
+        if not query or not str(query).strip():
+            return {"success": False, "error": "需要提供 query（关键词，空格分隔多个）"}
+
+        archive = getattr(self.memory, "archive", None)
+        if archive is None or not hasattr(archive, "search_messages"):
+            return {"success": False, "error": "当前归档实现不支持检索"}
+
+        try:
+            hits = archive.search_messages(
+                query=str(query),
+                session_id=session_id or "",
+                limit=max(1, min(int(limit or 8), 30)),
+                context=max(0, min(int(context or 1), 3)),
+            )
+        except Exception as e:
+            logger.error("[MemoryTool] recall 失败 | error=%s", e)
+            return {"success": False, "error": f"检索失败: {e}"}
+
+        if not hits:
+            return {
+                "success": True,
+                "count": 0,
+                "message": "归档里没有匹配的原始消息，可以换关键词再试",
+            }
+        return {"success": True, "count": len(hits), "results": hits}
 
     # ================================================================
     # Profile 管理（助手名字 / 用户称呼）

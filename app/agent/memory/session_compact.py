@@ -52,15 +52,19 @@ class SessionCompactor:
     def __init__(
         self,
         llm_engine: "BaseLLMEngine" = None,
-        token_threshold: int = 100000,
+        token_threshold: int = None,
         tool_call_threshold: int = 21,
         keep_recent_messages: int = 10,
         max_notes_length: int = 2000,
         repository: "MemoryRepository" = None,
         archive=None,
+        compact_ratio: float = 0.8,
     ):
         self.llm = llm_engine
-        self.token_threshold = token_threshold
+        # token_threshold 显式给出时按绝对值，否则按模型窗口 × compact_ratio
+        self._explicit_threshold = int(token_threshold) if token_threshold else 0
+        self.compact_ratio = float(compact_ratio or 0.8)
+        self.token_threshold = self._explicit_threshold or 100000
         self.tool_call_threshold = tool_call_threshold
         self.keep_recent_messages = keep_recent_messages
         self.max_notes_length = max_notes_length
@@ -106,16 +110,29 @@ class SessionCompactor:
             self.token_usage(memory, current_messages=current_messages, tools_count=tools_count)
         )
 
+    def compact_threshold(self) -> int:
+        """触发压缩的 token 阈值：显式配置优先，否则按模型窗口 × compact_ratio"""
+        if self._explicit_threshold:
+            return self._explicit_threshold
+        cw = getattr(self.llm, "context_window", 0) or 0
+        if cw > 0:
+            return max(1, int(cw * self.compact_ratio))
+        return self.token_threshold
+
     def should_compact_tokens(self, token_count: int) -> bool:
-        if self._tool_call_count >= self.tool_call_threshold:
+        if self.tool_call_threshold > 0 and self._tool_call_count >= self.tool_call_threshold:
             logger.info("[SessionCompactor] 工具调用触发压缩 | tool_calls=%d", self._tool_call_count)
             return True
 
         if self.llm is None:
             return False
 
-        if token_count >= self.token_threshold:
-            logger.info("[SessionCompactor] Token 阈值触发压缩 | tokens=%d", token_count)
+        threshold = self.compact_threshold()
+        if token_count >= threshold:
+            logger.info(
+                "[SessionCompactor] Token 阈值触发压缩 | tokens=%d | threshold=%d",
+                token_count, threshold,
+            )
             return True
 
         return False
@@ -361,13 +378,27 @@ class SessionCompactor:
             notes_content = f"**摘要**: {summary}\n\n{notes_content}"
         notes_message = {
             "role": "user",
-            "content": f"[系统压缩] 之前的对话已压缩为以下摘要：\n\n{notes_content}",
+            "content": (
+                f"[系统压缩] 之前的对话已压缩为以下摘要：\n\n{notes_content}"
+                "\n\n（摘要里没有的细节，可用 memory.recall(query=\"关键词\") 从归档检索原文）"
+            ),
             "_is_compacted_notes": True,
         }
         if cut is None:
             cut = self._safe_cut_index(memory.messages, keep_n or self.keep_recent_messages)
+
+        current_task = None
+        for i in range(cut - 1, -1, -1):
+            msg = memory.messages[i]
+            if msg.get("role") == "user" and not msg.get("_is_compacted_notes"):
+                current_task = msg
+                break
+
         recent_messages = [self._truncate_giant_message(m) for m in memory.messages[cut:]]
-        memory.messages = [notes_message] + recent_messages
+        head = [notes_message]
+        if current_task is not None:
+            head.append(dict(current_task))
+        memory.messages = head + recent_messages
         memory.tool_call_counter = len([
             m for m in memory.messages if m.get("role") == "assistant" and m.get("tool_calls")
         ])

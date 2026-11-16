@@ -368,19 +368,24 @@ class CommandCodeAddScreen(ModalScreen):
             return
         model_id = event.option.id
         model_name = ""
+        model_meta = None
         for m in self._models:
             if m.get("id") == model_id:
+                model_meta = m
                 model_name = m.get("name", "")
                 break
-        asyncio.create_task(self._save(model_id, model_name))
+        asyncio.create_task(self._save(model_id, model_name, model_meta))
 
-    async def _save(self, model_id: str, model_name: str = ""):
+    async def _save(self, model_id: str, model_name: str = "", model_meta: dict = None):
         if self._saving:
             return
         self._saving = True
         try:
             provider = self._provider()
-            cfg = provider.create_model_config(self._api_key, model_id, model_name) if provider else {}
+            cfg = provider.create_model_config(
+                self._api_key, model_id, model_name,
+                context_length=(model_meta or {}).get("context_length"),
+            ) if provider else {}
             name = cfg.get("name", f"{self._provider_id}-{model_id.split('/')[-1]}")
             editing = bool(self._initial.get("name"))
             if editing:
@@ -438,6 +443,7 @@ class ModelAddScreen(ModalScreen):
         ("base_url", "settings.model.base_url", "https://api.openai.com/v1", False),
         ("model_id", "settings.model.model", "glm-5.2", False),
         ("api_key", "settings.model.api_key", "sk-...", True),
+        ("context_window", "settings.model.context_window", "200000（留空默认）", False),
     ]
 
     CSS = """
@@ -481,6 +487,14 @@ class ModelAddScreen(ModalScreen):
         margin: 0 0 1 0;
     }
 
+    #add-model-list {
+        display: none;
+        height: auto;
+        max-height: 14;
+        border: none;
+        background: transparent;
+    }
+
     #model-add-footer {
         height: 1;
         padding: 0 2;
@@ -493,6 +507,9 @@ class ModelAddScreen(ModalScreen):
         super().__init__(*args, **kwargs)
         self._step = 0
         self._saving = False
+        self._fetching = False
+        self._phase = "steps"
+        self._endpoint_models: list = []
         self._initial = initial or {}
         self._values = {}
         if self._initial:
@@ -501,6 +518,7 @@ class ModelAddScreen(ModalScreen):
                 "base_url": self._initial.get("base_url", ""),
                 "model_id": self._initial.get("model", ""),
                 "api_key": self._initial.get("api_key", ""),
+                "context_window": str(self._initial.get("context_window") or ""),
             }
 
     def _editing_name(self):
@@ -520,6 +538,7 @@ class ModelAddScreen(ModalScreen):
                 yield Static("", id="model-add-step")
                 yield Static("", id="model-add-label", classes="model-add-label")
                 yield Input(value=self._current_step_value(), id="add-input")
+                yield OptionList(id="add-model-list")
             yield Static("", id="model-add-footer")
 
     def on_mount(self):
@@ -529,6 +548,9 @@ class ModelAddScreen(ModalScreen):
         key, label_key, placeholder, password = self.STEPS[self._step]
         step = self.STEPS[self._step]
         total = len(self.STEPS)
+        self._phase = "steps"
+        self.query_one("#add-model-list", OptionList).display = False
+        self.query_one("#add-input", Input).display = True
         self.query_one("#model-add-step", Static).update(
             self.app.tr("model.wizard_step", self._step + 1, total)
         )
@@ -548,6 +570,10 @@ class ModelAddScreen(ModalScreen):
         return self.STEPS[self._step][0]
 
     def key_escape(self):
+        if self._phase == "pick":
+            self._step = next(i for i, s in enumerate(self.STEPS) if s[0] == "model_id")
+            self._render_step()
+            return
         if self._step > 0:
             self._step -= 1
             self._render_step()
@@ -557,18 +583,113 @@ class ModelAddScreen(ModalScreen):
     def on_input_submitted(self, event):
         self._advance()
 
+    def on_option_list_option_selected(self, event):
+        if self._phase == "pick" and event.option_list.id == "add-model-list":
+            self._pick_endpoint_model(event.option.id)
+
     def _advance(self):
         value = (self.query_one("#add-input", Input).value or "").strip()
         key = self._current_key()
-        if key != "api_key" and not value:
+        if key not in ("api_key", "context_window") and not value:
             self.app.notify(self.app.tr("model.add_required"), severity="warning")
             return
+        if key == "context_window" and value and not value.isdigit():
+            self.app.notify(self.app.tr("model.context_window_invalid"), severity="warning")
+            return
         self._values[key] = value
+        if key == "api_key":
+            asyncio.create_task(self._try_fetch_endpoint_models())
+            return
         if self._step < len(self.STEPS) - 1:
             self._step += 1
             self._render_step()
         else:
             asyncio.create_task(self._save())
+
+    async def _try_fetch_endpoint_models(self):
+        if self._fetching:
+            return
+        self._fetching = True
+        status = self.query_one("#model-add-step", Static)
+        try:
+            status.update(self.app.tr("model.fetching_models"))
+            models = await asyncio.to_thread(self._fetch_endpoint_models_sync)
+            if models:
+                self._endpoint_models = models
+                self._show_endpoint_model_list()
+                return
+        except Exception:
+            pass
+        finally:
+            self._fetching = False
+        status.update(self.app.tr("model.endpoint_fetch_failed"))
+        self._step += 1
+        self._render_step()
+
+    def _fetch_endpoint_models_sync(self) -> list:
+        import httpx
+        from app.agent.llm.providers.base import parse_context_length
+
+        base = (self._values.get("base_url") or "").rstrip("/")
+        api_key = self._values.get("api_key") or ""
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        candidates = [f"{base}/models"]
+        if not base.endswith("/v1"):
+            candidates.append(f"{base}/v1/models")
+        for url in candidates:
+            try:
+                resp = httpx.get(url, headers=headers, timeout=8)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+            except Exception:
+                continue
+            items = data.get("data") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                continue
+            parsed = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                mid = str(it.get("id") or it.get("name") or "")
+                if not mid:
+                    continue
+                parsed.append({
+                    "id": mid,
+                    "name": it.get("name") or mid,
+                    "context_length": parse_context_length(it) or None,
+                })
+            if parsed:
+                return sorted(parsed, key=lambda x: x["id"])
+        return []
+
+    def _show_endpoint_model_list(self):
+        self._phase = "pick"
+        self.query_one("#add-input", Input).display = False
+        self.query_one(".model-add-label", Static).update("")
+        self.query_one("#model-add-label", Static).update(self.app.tr("model.pick_endpoint_model"))
+        lst = self.query_one("#add-model-list", OptionList)
+        lst.display = True
+        lst.clear_options()
+        for m in self._endpoint_models:
+            ctx = m.get("context_length")
+            label = f"{m['name']}" + (f"  ({ctx // 1000}k)" if ctx else "")
+            lst.add_options([Option(label, id=m["id"])])
+        lst.highlighted = 0
+        lst.focus()
+
+    def _pick_endpoint_model(self, model_id: str):
+        meta = next((m for m in self._endpoint_models if m["id"] == model_id), None)
+        if meta:
+            self._values["model_id"] = meta["id"]
+            if meta.get("context_length"):
+                self._values["context_window"] = str(meta["context_length"])
+        self._phase = "steps"
+        self.query_one("#add-model-list", OptionList).display = False
+        self.query_one("#add-input", Input).display = True
+        ctx_step = next(i for i, s in enumerate(self.STEPS) if s[0] == "context_window")
+        self._step = ctx_step
+        self._render_step()
 
     async def _save(self):
         if self._saving:
@@ -579,9 +700,12 @@ class ModelAddScreen(ModalScreen):
         base_url = self._values.get("base_url", "")
         model_id = self._values.get("model_id", "")
         api_key = self._values.get("api_key", "")
+        context_window = self._values.get("context_window", "")
 
         try:
-            await asyncio.to_thread(self._persist, name, base_url, model_id, api_key)
+            await asyncio.to_thread(
+                self._persist, name, base_url, model_id, api_key, context_window
+            )
             app = self.app
             app.model_name = app._current_model_name()
             app._refresh_status()
@@ -610,7 +734,7 @@ class ModelAddScreen(ModalScreen):
         finally:
             self._saving = False
 
-    def _persist(self, name, base_url, model_id, api_key):
+    def _persist(self, name, base_url, model_id, api_key, context_window=""):
         from app.server.routes.config import _sync_model_to_llm_config
 
         model_dict = {
@@ -622,4 +746,6 @@ class ModelAddScreen(ModalScreen):
             "temperature": 0.7,
             "timeout": 120,
         }
+        if context_window:
+            model_dict["context_window"] = int(context_window)
         _sync_model_to_llm_config(name, model_dict, add=True)

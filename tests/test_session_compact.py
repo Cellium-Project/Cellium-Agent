@@ -48,14 +48,36 @@ class TestCompactTrigger(unittest.TestCase):
     """触发条件"""
 
     def test_keep_recent_messages_complete(self):
-        """压缩后 = 摘要 + 最近 N 条完整"""
+        """压缩后 = 摘要 + 当前任务 + 最近 N 条完整"""
         mem = make_memory(100, chars_per_msg=50)
         compactor = SessionCompactor(llm_engine=FastEngine(), keep_recent_messages=20)
         notes = SessionNotes(session_id="t1", notes_dir="memory/notes")
         asyncio.run(compactor.compact_now(mem, notes))
         self.assertTrue(any("[系统压缩]" in str(m.get("content", "")) for m in mem.messages), "应含压缩摘要")
         self.assertTrue(any("消息98" in str(m.get("content", "")) for m in mem.messages), "应保留最近原文")
-        self.assertLessEqual(len(mem.messages), 21, "应为 摘要+20 条")
+        self.assertLessEqual(len(mem.messages), 22, "应为 摘要+当前任务+20 条")
+
+    def test_keeps_current_task_input(self):
+        """压缩后保留当前任务的原始输入，避免模型回退去执行上一个任务"""
+        tmp = tempfile.mkdtemp(prefix="cellium_task_")
+        try:
+            mem = MemoryManager()
+            mem.add_user_message("旧任务：整理日志")
+            mem.add_assistant_message("好的，已整理")
+            for i in range(30):
+                mem.add_user_message(f"当前任务：给项目加单元测试 第{i}步")
+                mem.add_assistant_message(f"进度{i}")
+
+            compactor = SessionCompactor(llm_engine=FastEngine(), keep_recent_messages=10)
+            notes = SessionNotes(session_id="t2", notes_dir=os.path.join(tmp, "notes"))
+            asyncio.run(compactor.compact_now(mem, notes))
+
+            self.assertTrue(mem.messages[0].get("_is_compacted_notes"), "首条应为压缩摘要")
+            self.assertEqual(mem.messages[1].get("role"), "user", "第 2 条应是当前任务的用户输入")
+            self.assertIn("当前任务", str(mem.messages[1].get("content", "")))
+            self.assertNotIn("旧任务", str(mem.messages[1].get("content", "")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_no_message_count_threshold(self):
         compactor = SessionCompactor(llm_engine=FastEngine())

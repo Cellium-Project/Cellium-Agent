@@ -453,6 +453,15 @@ const ModelSettings: React.FC = () => {
                         <FieldLabel label={t('settings.model.modelId')} />
                         <input type="text" value={model.model || ''} onChange={e => updateModelField(index, 'model', e.target.value)} placeholder="gpt-4o" />
                       </div>
+                      <div className="form-group">
+                        <FieldLabel label={t('settings.model.contextWindow')} />
+                        <input
+                          type="number" value={Number(model.context_window) || ''} min={1000} step={1000}
+                          placeholder="200000"
+                          onChange={e => updateModelField(index, 'context_window', parseInt(e.target.value) || '')}
+                        />
+                        <span className="field-hint">{t('settings.model.contextWindowHint')}</span>
+                      </div>
                       <div className="form-row">
                         <div className="form-group">
                           <FieldLabel label={t('settings.model.temperature')} />
@@ -1798,13 +1807,20 @@ const MemorySettings: React.FC = () => {
         <div className="settings-card-grid">
           <div className="form-group">
             <FieldLabel label={t('settings.memory.tokenThreshold')} desc={t('settings.memory.tokenThresholdDesc')} />
-            <input type="number" value={Number(sessionCompact.token_threshold) || 200000} min={5000} max={500000} step={5000}
-              onChange={e => updateField('session_compact.token_threshold', parseInt(e.target.value))} />
+            <input type="number" value={Number(sessionCompact.token_threshold) || 0} min={0} max={2000000} step={5000}
+              placeholder="0"
+              onChange={e => updateField('session_compact.token_threshold', parseInt(e.target.value) || 0)} />
+          </div>
+          <div className="form-group">
+            <FieldLabel label={t('settings.memory.compactRatio')} desc={t('settings.memory.compactRatioDesc')} />
+            <input type="number" value={Number(sessionCompact.compact_ratio) || 0.8} min={0.1} max={0.95} step={0.05}
+              onChange={e => updateField('session_compact.compact_ratio', parseFloat(e.target.value) || 0.8)} />
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.memory.toolCallThreshold')} desc={t('settings.memory.toolCallThresholdDesc')} />
-            <input type="number" value={Number(sessionCompact.tool_call_threshold) || 80} min={1} max={200}
-              onChange={e => updateField('session_compact.tool_call_threshold', parseInt(e.target.value))} />
+            <input type="number" value={Number(sessionCompact.tool_call_threshold) || 0} min={0} max={200}
+              placeholder="0"
+              onChange={e => updateField('session_compact.tool_call_threshold', parseInt(e.target.value) || 0)} />
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.memory.keepRecentMessages')} desc={t('settings.memory.keepRecentMessagesDesc')} />

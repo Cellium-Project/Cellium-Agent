@@ -4,6 +4,32 @@ from typing import Dict, List
 from urllib.parse import urljoin
 
 
+_CONTEXT_KEYS = (
+    "context_length", "context_window", "context_size",
+    "max_model_len", "max_input_tokens", "max_context_tokens",
+)
+
+
+def parse_context_length(item: Dict) -> int:
+    if not isinstance(item, dict):
+        return 0
+    for key in _CONTEXT_KEYS:
+        val = item.get(key)
+        if isinstance(val, bool):
+            continue
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+        if isinstance(val, str) and val.strip().isdigit() and int(val) > 0:
+            return int(val)
+    for holder in ("limit", "top_provider"):
+        sub = item.get(holder)
+        if isinstance(sub, dict):
+            val = sub.get("context") or sub.get("context_length")
+            if isinstance(val, (int, float)) and val > 0:
+                return int(val)
+    return 0
+
+
 class BaseProvider(ABC):
     """LLM 厂商适配器基类"""
 
@@ -58,7 +84,8 @@ class BaseProvider(ABC):
     def get_thinking_payload(self, thinking_enabled: bool, budget_tokens: int, effort: str):
         return None
 
-    def create_model_config(self, api_key: str, model_id: str, model_name: str = "") -> Dict:
+    def create_model_config(self, api_key: str, model_id: str, model_name: str = "",
+                            context_length: int = None) -> Dict:
         cfg = {
             "name": f"{self.get_provider_id()}-{model_id.split('/')[-1]}",
             "api_key": api_key,
@@ -67,6 +94,8 @@ class BaseProvider(ABC):
             "temperature": 0.7,
             "timeout": 120,
         }
+        if context_length:
+            cfg["context_window"] = int(context_length)
         thinking = self.get_default_thinking()
         if thinking:
             cfg["thinking"] = thinking

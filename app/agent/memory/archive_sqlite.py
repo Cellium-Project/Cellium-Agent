@@ -577,6 +577,70 @@ class SqliteArchiveStore:
             ).fetchall()
         return self._payloads_to_messages(rows)
 
+    def search_messages(self, query: str, session_id: str = "", limit: int = 10,
+                        context: int = 1) -> List[Dict]:
+        """按关键词在归档消息里检索"""
+        from app.agent.memory.archive_store import (
+            _archive_context,
+            _archive_snippet,
+            _archive_terms,
+        )
+
+        terms = _archive_terms(query)
+        if not terms:
+            return []
+        like = " AND ".join(["LOWER(rm.payload) LIKE ?"] * len(terms))
+        params: List = [f"%{t}%" for t in terms]
+        sql = (
+            "SELECT rm.payload, rm.record_id FROM record_messages rm "
+            "JOIN records r ON r.id = rm.record_id "
+            f"WHERE {like} AND instr(rm.payload, '{_SNAPSHOT_FLAG}') = 0"
+        )
+        if session_id:
+            sql += " AND r.session_id = ?"
+            params.append(session_id)
+        sql += " ORDER BY r.seq DESC, rm.ordinal ASC LIMIT ?"
+        params.append(max(1, limit) * 3)
+
+        try:
+            with self._reading() as conn:
+                rows = conn.execute(sql, params).fetchall()
+        except Exception as e:
+            logger.warning("[ArchiveSqlite] 检索失败: %s", e)
+            return []
+
+        hits: List[Dict] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            text = str(payload.get("content") or "")
+            low = text.lower()
+            if not low:
+                continue
+            record_id = row["record_id"]
+            messages = self._load_messages(record_id) or [payload]
+            idx = next(
+                (i for i, m in enumerate(messages)
+                 if isinstance(m, dict) and m.get("content") == payload.get("content")),
+                0,
+            )
+            meta = self.get_record_meta(record_id) or {}
+            hits.append({
+                "record_id": record_id,
+                "session_id": meta.get("session_id", ""),
+                "time": meta.get("time", ""),
+                "role": payload.get("role", ""),
+                "score": sum(1 for t in terms if t in low),
+                "snippet": _archive_snippet(text, terms),
+                "context": _archive_context(messages, idx, context),
+            })
+        hits.sort(key=lambda h: (h["score"], h["time"]), reverse=True)
+        return hits[:max(1, limit)]
+
     def count_messages(self, session_id: str) -> int:
         legacy = self._legacy_store()
         if legacy is not None:

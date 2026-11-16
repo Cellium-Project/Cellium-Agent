@@ -258,13 +258,16 @@ class AgentLoop:
         self._session_notes_cache: Dict[str, SessionNotes] = {}  # session_id -> SessionNotes
         self._session_compactor = SessionCompactor(
             llm_engine=self.llm,
-            token_threshold=session_config.get("token_threshold", 100000),
-            tool_call_threshold=session_config.get("tool_call_threshold", 10),
+            token_threshold=session_config.get("token_threshold") or None,
+            compact_ratio=session_config.get("compact_ratio", 0.8),
+            tool_call_threshold=session_config.get("tool_call_threshold", 0),
             keep_recent_messages=session_config.get("keep_recent_messages", 10),
             max_notes_length=session_config.get("max_notes_length", 2000),
             repository=three_layer_memory.repository if three_layer_memory else None,
             archive=three_layer_memory.archive if three_layer_memory else None,
         )
+        self._compact_enabled = bool(session_config.get("enabled", True))
+        self._compact_hint_pending = False
 
         # 循环控制器
         self._loop_controller = LoopController(
@@ -333,7 +336,10 @@ class AgentLoop:
                 "max_history": 200,
             },
             "session_compact": {
-                "token_threshold": 100000,
+                "enabled": True,
+                "token_threshold": 0,
+                "compact_ratio": 0.8,
+                "tool_call_threshold": 0,
                 "keep_recent_messages": 10,
                 "max_notes_length": 2000,
                 "notes_dir": f"{memory_dir}/notes",
@@ -1454,11 +1460,12 @@ class AgentLoop:
                 # === 在迭代开始前执行待处理的压缩 ===
                 is_gene_processing = self._loop_state and getattr(self._loop_state, 'gene_processing_done', False)
                 _pending_fallback = self._session_compactor.pending_fallback
-                if _pending_fallback or (not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact()):
+                if _pending_fallback or (self._compact_enabled and not self.flash_mode and not is_gene_processing and self._session_compactor.has_pending_compact()):
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
                     await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_pending_fallback)
+                    self._compact_hint_pending = True
                     self._persist_conversation(
                         user_input="", response_content=None,
                         session_id=effective_session, memory=effective_memory,
@@ -1540,11 +1547,12 @@ class AgentLoop:
                         logger.debug("[AgentLoop] 控制环约束已写入历史 | action=%s | iter=%d", decision.action_type, iteration)
                     _force_stop = constraint.force_stop
 
-                    if decision.force_memory_compact and not self.flash_mode and not is_gene_processing:
+                    if decision.force_memory_compact and self._compact_enabled and not self.flash_mode and not is_gene_processing:
                         logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
                         yield {"type": "status", "content": "正在根据控制决策压缩上下文..."}
                         session_notes = self._get_session_notes(effective_session)
                         await self._session_compactor.compact_now(effective_memory, session_notes)
+                        self._compact_hint_pending = True
 
                     if decision.should_stop or _force_stop:
                         logger.info("[ControlLoop] 终止迭代 | action=%s | trigger=%s", decision.action_type, constraint.trigger_reason)
@@ -1675,6 +1683,12 @@ class AgentLoop:
                     replan_message = "\n".join(replan_info)
 
                 # 构建通用 context（不注入运行时状态和计划摘要，避免干扰 LLM 判断）
+                _compact_hint = self._take_compact_hint()
+                if _compact_hint:
+                    _pending_system_injection = (
+                        f"{_pending_system_injection}\n\n{_compact_hint}"
+                        if _pending_system_injection else _compact_hint
+                    )
                 context = {
                     "_is_first_round": iteration == 1,
                     "_flash_mode": self.flash_mode,
@@ -1722,11 +1736,18 @@ class AgentLoop:
                     effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
                 )
                 _over_window = self._session_compactor.is_over_window_tokens(_tokens)
-                if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
+                if _over_window or (self._compact_enabled and not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
                     logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
                     await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_over_window)
+                    # 压缩会重建 messages，context 里还是压缩前的快照，必须重新取一次
+                    context["session_messages"] = effective_memory.get_messages()
+                    self._compact_hint_pending = True
+                    _hint = self._take_compact_hint()
+                    if _hint:
+                        _prev = context.get("system_injection")
+                        context["system_injection"] = f"{_prev}\n\n{_hint}" if _prev else _hint
                     llm_messages = self._prompt_builder.build(context)
                     self._persist_conversation(
                         user_input="", response_content=None,
@@ -2337,7 +2358,7 @@ class AgentLoop:
                         effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
                     )
                     _over_window = self._session_compactor.is_over_window_tokens(_tokens)
-                    if _over_window or (not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
+                    if _over_window or (self._compact_enabled and not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
                         self._session_compactor.request_compact(fallback=_over_window)
 
                     continue
@@ -2600,6 +2621,19 @@ class AgentLoop:
 
     _MAX_TURN_IMAGES = 4
     _MAX_KEEP_IMAGES = 3
+
+    COMPACT_RECALL_HINT = (
+        "[上下文压缩提示] 更早的对话已被压缩成摘要。"
+        "完成当前任务若还需要摘要里没有的细节（文件内容、报错原文、早先的工具输出等），"
+        '先调用 memory.recall(query="关键词") 检索归档原文，不要凭猜测继续。'
+    )
+
+    def _take_compact_hint(self) -> str:
+        """压缩后只注入一次的召回提示"""
+        if not self._compact_hint_pending:
+            return ""
+        self._compact_hint_pending = False
+        return self.COMPACT_RECALL_HINT
 
     def _vision_mode(self) -> str:
         mode = getattr(self.llm, "vision_mode", None)

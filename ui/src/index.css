@@ -6755,6 +6755,13 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* ══ 组件管理 ══ */
+.field-hint {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+}
+
 .component-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
