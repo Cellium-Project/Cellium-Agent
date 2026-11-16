@@ -693,7 +693,7 @@ const SecuritySettings: React.FC = () => {
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.security.outputTruncate')} />
-            <input type="number" value={Number(config.max_output_bytes) || 8192} min={1024} max={1048576}
+            <input type="number" value={Number(config.max_output_bytes) || 30000} min={2048} max={150000}
               onChange={e => updateField('max_output_bytes', parseInt(e.target.value))} />
           </div>
         </div>

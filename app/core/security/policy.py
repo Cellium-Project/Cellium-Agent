@@ -11,9 +11,97 @@
 agent/security/__init__.py 保留重导出以兼容旧代码。
 """
 
+import fnmatch
+import os
 import re
+import shlex
 from typing import List, Dict, Optional
 from enum import Enum
+
+
+_HOST_RUNTIMES = {
+    "python", "python3", "py", "node", "deno", "java", "powershell", "pwsh",
+    "cellium", "cellium-agent", "cmd", "bash", "sh", "zsh", "fish",
+}
+_SHUTDOWN_PROGRAMS = {
+    "shutdown", "reboot", "poweroff", "halt", "stop-computer", "restart-computer",
+}
+_PIPE_INTERPRETERS = {
+    "bash", "sh", "zsh", "fish", "python", "python3", "py", "perl", "ruby",
+    "node", "deno", "pwsh", "powershell", "iex", "invoke-expression",
+}
+_REVERSIBLE_PROGRAMS = {
+    "rm", "del", "erase", "rmdir", "rd", "remove-item", "chmod", "mv", "move",
+}
+_SCRIPT_RUNNERS = _PIPE_INTERPRETERS | {"cmd"}
+_WRAPPERS = {
+    "sudo", "doas", "env", "nohup", "nice", "time", "command", "exec",
+    "xargs", "start", "runas", "start-process", "invoke-item", "call",
+}
+_HOST_RUNTIME_RE = re.compile(
+    r'^(?:python|py|node|deno|java|powershell|pwsh|cellium|cellium-agent|'
+    r'cmd|bash|sh|zsh|fish)[0-9.]*$'
+)
+_BALANCED_SKIP_PATTERNS = {
+    r'\bshutdown\b',
+    r'\breboot\b',
+    r'stop-computer',
+    r'restart-computer',
+    r'\bkillall\s+',
+    r'\|\s*(?:bash|sh|zsh)\b',
+    r'\|\s*(?:python|python3|perl|ruby|node)\s+-[cex]',
+}
+
+
+def _split_unquoted(text: str, seps) -> List[str]:
+    """按未引号包裹的分隔符切分，避免把引号内文本当命令"""
+    out, buf, quote, i = [], [], None, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        matched = next((s for s in seps if text.startswith(s, i)), None)
+        if matched:
+            out.append("".join(buf))
+            buf = []
+            i += len(matched)
+            continue
+        buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return [s.strip() for s in out if s.strip()]
+
+
+def _tokens(segment: str) -> List[str]:
+    try:
+        parts = shlex.split(segment, posix=(os.name != "nt"))
+    except Exception:
+        parts = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', segment)
+    return [str(p).strip('"\'') for p in parts]
+
+
+def _program(tokens: List[str]) -> str:
+    if not tokens:
+        return ""
+    base = tokens[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def _is_host_runtime(name: str) -> bool:
+    base = os.path.basename(str(name)).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base in _HOST_RUNTIMES or bool(_HOST_RUNTIME_RE.match(base))
+
 
 
 class RiskLevel(Enum):
@@ -30,10 +118,18 @@ class SecurityPolicy:
 
     # 危险模式黑名单）— 全部使用 re.IGNORECASE
     DANGEROUS_PATTERNS = [
+        # ═══ Git 不可回退操作（.git 不在 undo 快照范围） ═══
+        (r'\bgit\s+reset\s+--hard\b', RiskLevel.CRITICAL, "禁止 git reset --hard（工作区改动不可回退）"),
+        (r'\bgit\s+clean\s+(?:-[a-z]*f|-[a-z]*x|--force)', RiskLevel.CRITICAL, "禁止 git clean（未跟踪文件不可回退）"),
+        (r'\bgit\s+checkout\s+(?:--\s+)?\.(?=$|[\s;&|])', RiskLevel.CRITICAL, "禁止 git checkout .（工作区改动不可回退）"),
+        (r'\bgit\s+restore\b(?!\s+--staged)', RiskLevel.CRITICAL, "禁止 git restore（工作区改动不可回退）"),
+
         # ═══ 文件系统破坏 ═══
         (r'remove-item\s+-recurse\s+', RiskLevel.CRITICAL, "禁止递归删除目录"),
         (r'remove-item\s+-force\s+', RiskLevel.CRITICAL, "禁止强制删除"),
-        (r'rm\s+-rf\s+(?:/|\\)', RiskLevel.CRITICAL, "禁止递归删除根/全盘"),
+        (r'rm\s+-rf\s+(?:/|\\)(?=$|[\s;&|"\'`*])', RiskLevel.CRITICAL, "禁止递归删除根/全盘"),
+        (r'rm\s+[^|;&\n]*--no-preserve-root', RiskLevel.CRITICAL, "禁止绕过根目录保护删除"),
+        (r'rm\s+-rf\s+\$(?:\{)?HOME\b', RiskLevel.CRITICAL, "禁止删除用户主目录"),
         (r'del\s+/[fqs]+\s+', RiskLevel.HIGH, "禁止强制批量删除"),
         (r'rmdir\s+/s\s+/q', RiskLevel.HIGH, "禁止强制删除目录"),
 
@@ -81,7 +177,7 @@ class SecurityPolicy:
         (r'restart-computer', RiskLevel.HIGH, "禁止PowerShell重启"),
 
         # ═══ 防火墙 / 网络 ═══
-        (r'netsh\s+ firewall', RiskLevel.HIGH, "禁止修改防火墙"),
+        (r'netsh\s+firewall', RiskLevel.HIGH, "禁止修改防火墙"),
         (r'netsh\s+advfirewall', RiskLevel.HIGH, "禁止修改高级防火墙"),
         (r'iptables\s+-F', RiskLevel.HIGH, "禁止清空防火墙规则"),
         (r'ufw\s+(?:disable|reset)', RiskLevel.HIGH, "禁止关闭/重置防火墙"),
@@ -93,7 +189,7 @@ class SecurityPolicy:
         (r'(?:cat|less|more|head|tail)\s+["\']?/[^\s]*?(?:password|credentials|\.pem|\.key|shadow|passwd|id_rsa|id_dsa)\b', RiskLevel.HIGH, "禁止读取敏感文件"),
         (r'get-content\s+.*\\sam\b', RiskLevel.HIGH, "禁止读取SAM注册表配置"),
         (r'(?:type|cat)\s+.*[/\\]shadow\b', RiskLevel.HIGH, "禁止读取shadow密码文件"),
-        (r'cat\s+/etc/(?:passwd|shadow|group|gshadow|hosts|resolv\.conf)\b', RiskLevel.HIGH, "禁止读取系统配置文件"),
+        (r'cat\s+/etc/(?:passwd|shadow|group|gshadow)\b', RiskLevel.HIGH, "禁止读取系统配置文件"),
 
         # ═══ 进程终止（核心进程保护） ═══
         (r'taskkill\s+/f\s+.*(?:explorer|csrss|lsass|services|svchost|wininit|winlogon)',
@@ -132,7 +228,7 @@ class SecurityPolicy:
 
         # ═══ Windows 权限操作 ═══
         (r'\btakeown\s+', RiskLevel.HIGH, "禁止夺取文件所有权"),
-        (r'\bicacls\s+', RiskLevel.HIGH, "禁止修改ACL权限"),
+        (r'\bicacls\s+.*(?:/grant|/deny|/remove|/reset|/setowner|/inheritance)', RiskLevel.HIGH, "禁止修改ACL权限"),
         (r'\bcipher\s+/w\b', RiskLevel.HIGH, "禁止擦除磁盘数据"),
         (r'\bnew-service\b', RiskLevel.HIGH, "禁止创建新服务"),
 
@@ -177,7 +273,11 @@ class SecurityPolicy:
 
         # ═══ 删除关键系统目录 ═══
         # Linux/macOS
-        (r'rm\s+-rf\s+/(?:bin|usr|lib|boot|home|var|etc|sbin|opt|tmp)\b', RiskLevel.CRITICAL, "禁止删除系统关键目录"),
+        (r'rm\s+-rf\s+/(?:bin|usr|lib|boot|home|var|etc|sbin|opt)(?:/|\b)', RiskLevel.CRITICAL, "禁止删除系统关键目录"),
+        (r'rm\s+-rf\s+/tmp(?:/)?(?=$|[\s;&|"\'`])', RiskLevel.CRITICAL, "禁止删除系统临时目录"),
+        (r'rm\s+-rf\s+~(?:/)?(?=$|[\s;&|"\'`])', RiskLevel.CRITICAL, "禁止删除用户主目录"),
+        (r'rm\s+-rf\s+\.\*(?=$|[\s;&|"\'`])', RiskLevel.HIGH, "禁止通配删除隐藏文件"),
+        (r'rm\s+-rf\s+\.(?=$|[\s;&|"\'`])', RiskLevel.HIGH, "禁止删除当前目录"),
         (r'rm\s+-rf\s+~\/\.', RiskLevel.HIGH, "禁止删除用户配置目录"),
         # Windows
         (r'remove-item\s+-recurse\s+[A-Za-z]:\\(?:Windows|Program Files|ProgramData)', RiskLevel.CRITICAL, "禁止删除Windows系统目录"),
@@ -199,12 +299,14 @@ class SecurityPolicy:
 
     def __init__(self, max_timeout: int = 30, max_iterations: int = 10,
                  forbidden_dirs: list = None, command_blacklist: list = None,
-                 permission_level: str = None):
+                 permission_level: str = None, block_mode: str = None):
         self.max_timeout = max_timeout
         self.max_iterations = max_iterations
         self.forbidden_dirs: List[str] = forbidden_dirs or []
         self._user_blacklist: List[str] = command_blacklist or []
+        self._blacklist_explicit = command_blacklist is not None
         self.permission_level = permission_level
+        self.block_mode = block_mode
         self._load_user_blacklist_from_config()
 
     def _load_user_blacklist_from_config(self):
@@ -213,6 +315,10 @@ class SecurityPolicy:
             config = get_config()
             if self.permission_level is None:
                 self.permission_level = config.get("security.permission_level", "standard")
+            if self.block_mode is None:
+                self.block_mode = config.get("security.block_mode", "balanced")
+            if self._blacklist_explicit:
+                return
             blacklist = config.get("security.command_blacklist", [])
             if isinstance(blacklist, list):
                 self._user_blacklist = [str(item).lower() for item in blacklist if item]
@@ -222,7 +328,8 @@ class SecurityPolicy:
     def reload_blacklist(self):
         self._load_user_blacklist_from_config()
 
-    def check_command(self, cmd: str) -> Dict:
+    def check_command(self, cmd: str, cwd: str = None, undo_ok: bool = False,
+                      undo_root: str = None) -> Dict:
         perm = (self.permission_level or "standard").lower()
 
         if perm == "unrestricted":
@@ -238,27 +345,48 @@ class SecurityPolicy:
             return self_protection_result
 
         if perm == "read_only":
-            if self._is_safe_command(cmd):
+            for pattern, risk_level, _msg in self.DANGEROUS_PATTERNS:
+                if risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL) and re.search(pattern, cmd, re.IGNORECASE):
+                    return {"allowed": False, "risk_level": risk_level.value, "message": "只读模式，禁止执行写入/高风险命令"}
+            if not re.search(r'[;&|`>]|\$\(', cmd) and self._is_safe_command(cmd):
                 return {"allowed": True, "risk_level": RiskLevel.SAFE.value, "message": "安全命令"}
             return {"allowed": False, "risk_level": RiskLevel.HIGH.value, "message": "只读模式，禁止执行写入/高风险命令"}
 
-        if perm == "admin":
-            for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
-                if risk_level == RiskLevel.CRITICAL and re.search(pattern, cmd, re.IGNORECASE):
-                    return {"allowed": False, "risk_level": risk_level.value, "message": message}
-        else:
-            for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
-                if re.search(pattern, cmd, re.IGNORECASE):
-                    return {"allowed": False, "risk_level": risk_level.value, "message": message}
+        balanced = (self.block_mode or "balanced").lower() == "balanced" and perm != "admin"
 
-        cmd_lower = cmd.lower()
-        for pattern in self._user_blacklist:
-            if pattern and pattern in cmd_lower:
-                return {
-                    "allowed": False,
-                    "risk_level": RiskLevel.HIGH.value,
-                    "message": f"用户自定义黑名单拦截: {pattern}"
-                }
+        if balanced:
+            positional = self._positional_deny(cmd)
+            if positional:
+                return positional
+            if undo_ok:
+                if self._workspace_reversible(cmd, cwd, undo_root):
+                    return {
+                        "allowed": True,
+                        "risk_level": RiskLevel.LOW.value,
+                        "message": "工作区内可回退操作，已放行",
+                    }
+                if self._targets_of(cmd) is not None:
+                    return {
+                        "allowed": False,
+                        "risk_level": RiskLevel.HIGH.value,
+                        "message": "删除/移动目标在工作区外或未纳入回退快照，请缩小到工作区内",
+                    }
+
+        for pattern, risk_level, message in self.DANGEROUS_PATTERNS:
+            if balanced and pattern in _BALANCED_SKIP_PATTERNS:
+                continue
+            if perm == "admin" and risk_level != RiskLevel.CRITICAL:
+                continue
+            if re.search(pattern, cmd, re.IGNORECASE):
+                return {"allowed": False, "risk_level": risk_level.value, "message": message}
+
+        hit = self._user_blacklist_hit(cmd)
+        if hit:
+            return {
+                "allowed": False,
+                "risk_level": RiskLevel.HIGH.value,
+                "message": f"用户自定义黑名单拦截: {hit}"
+            }
 
         if self._is_safe_command(cmd):
             return {"allowed": True, "risk_level": RiskLevel.SAFE.value, "message": "安全命令"}
@@ -268,6 +396,141 @@ class SecurityPolicy:
             "risk_level": RiskLevel.MEDIUM.value,
             "message": "命令已放行（中等风险）"
         }
+
+    def _user_blacklist_hit(self, cmd: str) -> Optional[str]:
+        """用户黑名单：带通配符按 glob，纯命令按前缀匹配（不做 substring 误伤）"""
+        text = (cmd or "").strip().lower()
+        for pattern in self._user_blacklist:
+            p = (pattern or "").strip().lower()
+            if not p:
+                continue
+            if any(ch in p for ch in "*?["):
+                if fnmatch.fnmatch(text, p) or fnmatch.fnmatch(text, p + " *"):
+                    return pattern
+            elif any(ch in p for ch in "|;&(){}<>`$"):
+                if p in text:
+                    return pattern
+            elif text == p or text.startswith(p + " "):
+                return pattern
+        return None
+
+    @staticmethod
+    def _positional_deny(cmd: str, _depth: int = 0) -> Optional[Dict]:
+        """按命令位判断：关机/重启、管道执行、killall 宿主运行时"""
+        for segment in _split_unquoted(cmd, ("\n", ";", "&&", "||")):
+            parts = _split_unquoted(segment, ("|",))
+            for idx, part in enumerate(parts):
+                toks = _tokens(part)
+                prog = _program(toks)
+                # 剥离 sudo/env/nohup 等包装器与 PowerShell 调用运算符
+                while prog in _WRAPPERS and len(toks) > 1:
+                    toks = toks[1:]
+                    while toks and (toks[0].startswith("-") or (prog == "env" and "=" in toks[0])):
+                        toks = toks[1:]
+                    prog = _program(toks)
+                if prog in ("&", ".") and len(toks) > 1:
+                    toks = toks[1:]
+                    prog = _program(toks)
+                if not prog:
+                    continue
+                if prog in _SHUTDOWN_PROGRAMS:
+                    if prog == "init" and not (len(toks) > 1 and toks[1] in ("0", "6")):
+                        continue
+                    return {"allowed": False, "risk_level": RiskLevel.HIGH.value, "message": "禁止关机/重启命令"}
+                if prog == "systemctl" and len(toks) > 1 and toks[1].lower() in ("poweroff", "reboot", "halt"):
+                    return {"allowed": False, "risk_level": RiskLevel.HIGH.value, "message": "禁止 systemctl 关机/重启"}
+                if idx > 0 and prog in _PIPE_INTERPRETERS:
+                    return {"allowed": False, "risk_level": RiskLevel.HIGH.value, "message": "禁止管道执行脚本/Shell"}
+                if prog == "killall":
+                    names = [t for t in toks[1:] if not t.startswith("-")]
+                    if any(_is_host_runtime(n) for n in names):
+                        return {
+                            "allowed": False,
+                            "risk_level": RiskLevel.HIGH.value,
+                            "message": "killall 目标包含宿主运行时，请先查 PID 再 kill <pid>",
+                        }
+                if _depth < 2 and prog in _SCRIPT_RUNNERS:
+                    script = SecurityPolicy._script_of(toks)
+                    if script:
+                        inner = SecurityPolicy._positional_deny(script, _depth + 1)
+                        if inner:
+                            return inner
+        return None
+
+    @staticmethod
+    def _script_of(toks: List[str]) -> Optional[str]:
+        """取出解释器 -c / -Command 后紧跟的内联脚本"""
+        for i, tok in enumerate(toks[1:], 1):
+            if tok.lower() in ("-c", "/c", "-command", "--command", "-e") and i + 1 < len(toks):
+                return toks[i + 1]
+        return None
+
+    def _targets_of(self, cmd: str) -> Optional[List[str]]:
+        """命令全部由可回退程序组成时返回目标路径，否则 None"""
+        segments = _split_unquoted(cmd, ("\n", ";", "&&", "||"))
+        if not segments:
+            return None
+        targets: List[str] = []
+        for segment in segments:
+            for part in _split_unquoted(segment, ("|",)):
+                toks = _tokens(part)
+                prog = _program(toks)
+                if prog not in _REVERSIBLE_PROGRAMS:
+                    return None
+                found = self._target_paths(prog, toks[1:])
+                if found is None:
+                    return None
+                targets.extend(found)
+        return targets
+
+    def _workspace_reversible(self, cmd: str, cwd: str, root: str = None) -> bool:
+        """工作区内、且 undo 已快照的写操作 → 视为可回退"""
+        base = os.path.abspath(cwd or os.getcwd())
+        boundary = os.path.realpath(os.path.abspath(root or base))
+        if not os.path.isdir(boundary):
+            return False
+        if boundary in ("/", os.path.expanduser("~")):
+            return False
+        if os.name == "nt" and re.fullmatch(r"[A-Za-z]:\\?", boundary):
+            return False
+
+        targets = self._targets_of(cmd)
+        if targets is None:
+            return False
+        boundary_key = os.path.normcase(boundary)
+        for target in targets:
+            full = os.path.abspath(
+                target if os.path.isabs(target) else os.path.join(base, target)
+            )
+            real = os.path.realpath(full)
+            key = os.path.normcase(real)
+            try:
+                if os.path.commonpath([boundary_key, key]) != boundary_key:
+                    return False
+            except ValueError:
+                return False
+            if key == boundary_key:
+                return False
+            if ".git" in real.split(os.sep):
+                return False
+        return True
+
+    @staticmethod
+    def _target_paths(prog: str, args: List[str]) -> Optional[List[str]]:
+        targets: List[str] = []
+        skip_mode = prog == "chmod"
+        for arg in args:
+            if not arg or arg.startswith("-"):
+                continue
+            if prog in ("del", "erase", "rmdir", "rd") and re.fullmatch(r"/[A-Za-z]+", arg):
+                continue
+            if skip_mode:
+                skip_mode = False
+                continue
+            if any(ch in arg for ch in "*?[]$%`"):
+                return None
+            targets.append(arg)
+        return targets
 
     def _check_self_termination(self, cmd: str) -> Optional[Dict]:
         """检查是否尝试终止当前进程"""
@@ -353,8 +616,8 @@ class SecurityPolicy:
             f_upper = forbidden.upper().replace("*", "")
 
             # Windows 路径检测 (C:\path\to\dir)
-            if re.search(r'[A-Z]:\\\\', cmd, re.IGNORECASE):
-                paths_in_cmd = re.findall(r'[A-Z]:\\\\[^"\']*', cmd)
+            if re.search(r'[A-Za-z]:\\', cmd):
+                paths_in_cmd = re.findall(r'[A-Za-z]:\\[^"\']*', cmd)
                 for p in paths_in_cmd:
                     if f_upper in p.upper():
                         return {"allowed": False, "risk_level": RiskLevel.CRITICAL.value, "message": f"禁止访问目录: {forbidden}"}

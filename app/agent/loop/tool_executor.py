@@ -929,6 +929,8 @@ class ToolExecutor:
 
     def _undo_checkpoint(self, tool_name: str, arguments: dict) -> None:
         if not self._turn_session_id or not self._turn_id:
+            if tool_name in ("shell", "shell_session"):
+                self._set_shell_undo(tool_name, False, None)
             return
         try:
             from app.core.util.undo_store import get_undo_store
@@ -958,19 +960,32 @@ class ToolExecutor:
                 elif base:
                     paths.append(base)
             elif tool_name in ("shell", "shell_session"):
-                shell_tool = self._builtin_tools.get(tool_name) or self._builtin_tools.get("shell")
+                shell_obj = self._shell_object(tool_name)
                 cwd = (
-                    getattr(shell_tool, "_cwd", None)
-                    or getattr(getattr(shell_tool, "shell", None), "_cwd", None)
+                    getattr(shell_obj, "_cwd", None)
                     or os.getcwd()
                 )
-                store.checkpoint_shell(self._turn_session_id, self._turn_id, cwd)
+                snap = store.checkpoint_shell(self._turn_session_id, self._turn_id, cwd)
+                ok = bool(snap.get("ok")) if isinstance(snap, dict) else False
+                self._set_shell_undo(tool_name, ok, snap.get("root") if ok else None)
                 return
             else:
                 return
             store.checkpoint_paths(self._turn_session_id, self._turn_id, [p for p in paths if p])
         except Exception as e:
             logger.warning("[ToolExecutor] undo checkpoint 失败: %s", e)
+
+    def _shell_object(self, tool_name: str):
+        shell_tool = self._builtin_tools.get(tool_name) or self._builtin_tools.get("shell")
+        return getattr(shell_tool, "shell", None) or shell_tool
+
+    def _set_shell_undo(self, tool_name: str, ok: bool, root) -> None:
+        shell_obj = self._shell_object(tool_name)
+        try:
+            shell_obj._undo_ok = ok
+            shell_obj._undo_root = root
+        except Exception:
+            pass
 
     async def execute(self, tool_call, session_id: str = None, platform_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """执行工具调用（异步包装，避免阻塞事件循环）

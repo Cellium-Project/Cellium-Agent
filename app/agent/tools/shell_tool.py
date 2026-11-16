@@ -10,13 +10,14 @@ import threading
 from typing import Dict, Any, List
 
 from .base_tool import BaseTool
+from app.agent.shell import cellium_shell
+from app.agent.shell.cellium_shell import decode_output, _tail_text
 
 logger = logging.getLogger(__name__)
 
 _LEGACY_SHELL_SUBCOMMANDS = ("run", "list", "output", "kill", "session")
 
-# 后台任务输出单次返回上限（超出返回末尾预览 + output_file，供 read 分页读取）
-OUTPUT_PREVIEW_BYTES = 32 * 1024
+# 后台任务输出单次返回上限由 cellium_shell.MAX_CONTEXT_OUTPUT_CHARS 控制
 
 
 def _detect_embedded_python() -> Dict[str, str]:
@@ -262,14 +263,11 @@ class ShellTool(BaseTool):
                 }
 
             total_bytes = os.path.getsize(output_file)
-            truncated = total_bytes > OUTPUT_PREVIEW_BYTES
-            with open(output_file, "rb") as f:
-                if truncated:
-                    f.seek(total_bytes - OUTPUT_PREVIEW_BYTES)
-                content = f.read().decode("utf-8", errors="ignore")
+            limit = cellium_shell.MAX_CONTEXT_OUTPUT_CHARS
+            content, truncated, _ = _tail_text(output_file, limit)
             if truncated:
                 content = (
-                    f"... (输出过大：仅显示末尾 {OUTPUT_PREVIEW_BYTES // 1024}KB / 共 "
+                    f"... (输出过大：仅显示末尾 {limit} 字符 / 共 "
                     f"{max(total_bytes // 1024, 1)}KB；完整内容用 read 按 offset/limit 读取 output_file)\n"
                     + content
                 )

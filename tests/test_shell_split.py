@@ -260,7 +260,7 @@ def test_session_kind_detection():
 
 
 def test_shell_task_output_truncates_large_file(tmp_path):
-    from app.agent.tools.shell_tool import OUTPUT_PREVIEW_BYTES
+    from app.agent.shell.cellium_shell import MAX_CONTEXT_OUTPUT_CHARS
 
     class _Proc:
         returncode = 0
@@ -275,11 +275,11 @@ def test_shell_task_output_truncates_large_file(tmp_path):
             }
 
     out = tmp_path / "out.log"
-    out.write_text("A" * (OUTPUT_PREVIEW_BYTES + 1024) + "TAIL", encoding="utf-8")
+    out.write_text("A" * (MAX_CONTEXT_OUTPUT_CHARS + 1024) + "TAIL", encoding="utf-8")
 
     res = ShellTaskTool(shell=_Shell(out)).execute({"action": "output", "task_id": "t1"})
     assert res["truncated"] is True
-    assert res["total_bytes"] > OUTPUT_PREVIEW_BYTES
+    assert res["total_bytes"] > MAX_CONTEXT_OUTPUT_CHARS
     assert res["output_file"] == str(out)
     assert res["output"].endswith("TAIL")
 

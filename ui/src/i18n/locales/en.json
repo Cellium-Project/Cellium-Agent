@@ -304,7 +304,7 @@
       "unrestricted": "Unrestricted",
       "commandTimeout": "Command Timeout (seconds)",
       "shellHardTimeout": "Shell Hard Timeout (seconds)",
-      "outputTruncate": "Output Truncate (bytes)",
+      "outputTruncate": "Output Limit (chars)",
       "commandBlacklist": "Command Blacklist",
       "blacklistPlaceholder": "Enter dangerous command and press Enter to add...",
       "add": "Add",

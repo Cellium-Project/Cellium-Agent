@@ -23,8 +23,145 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-
 SIGKILL_TIMEOUT_MS = 200
+BG_OUTPUT_MAX_AGE_SECONDS = 3 * 24 * 3600
+MAX_CONTEXT_OUTPUT_CHARS = 30000
+MAX_CONTEXT_STDERR_CHARS = 10000
+
+
+def _cleanup_stale_background_outputs(max_age: int = BG_OUTPUT_MAX_AGE_SECONDS) -> int:
+    """清理临时目录里过期的后台/前台输出文件"""
+    import glob
+
+    removed = 0
+    now = time.time()
+    patterns = ("bg_*.output", "fg_*.stdout", "fg_*.stderr")
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(tempfile.gettempdir(), pattern)):
+            try:
+                if now - os.path.getmtime(path) > max_age:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                continue
+    if removed:
+        logger.info("[Shell] 清理过期 shell 输出 | removed=%d", removed)
+    return removed
+
+
+def _wait_process(process, timeout: int) -> bool:
+    """等待进程结束；超时则杀进程树。返回是否超时"""
+    timed_out = threading.Event()
+
+    def _on_timeout():
+        timed_out.set()
+        _kill_tree(process)
+
+    timer = threading.Timer(timeout, _on_timeout) if timeout else None
+    if timer:
+        timer.daemon = True
+        timer.start()
+    try:
+        process.wait()
+    finally:
+        if timer:
+            timer.cancel()
+    return timed_out.is_set()
+
+
+def _tail_text(path: str, max_chars: int) -> Tuple[str, bool, int]:
+    """读取文件末尾 max_chars 字符，返回 (文本, 是否截断, 总字节)"""
+    try:
+        total = os.path.getsize(path)
+    except OSError:
+        return "", False, 0
+    if total <= 0:
+        return "", False, 0
+
+    read_bytes = min(total, max(4096, max_chars * 4))
+    with open(path, "rb") as f:
+        f.seek(total - read_bytes)
+        raw = f.read()
+    while raw and (raw[0] & 0xC0) == 0x80:
+        raw = raw[1:]
+    text = decode_output(raw)
+    truncated = total > read_bytes or len(text) > max_chars
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+    return text, truncated, total
+
+
+def _capture_process(argv, popen_kwargs: Dict, timeout: int, stdin_data: bytes = None,
+                     on_spawn=None, on_done=None) -> Dict:
+    """前台执行：stdout/stderr 落临时文件，只回尾部文本，避免管道死锁和大输出进内存"""
+    import uuid
+
+    base = os.path.join(tempfile.gettempdir(), f"fg_{uuid.uuid4().hex[:8]}")
+    out_path = base + ".stdout"
+    err_path = base + ".stderr"
+
+    kwargs = dict(popen_kwargs)
+    with open(out_path, "wb") as fo, open(err_path, "wb") as fe:
+        kwargs["stdout"], kwargs["stderr"] = fo, fe
+        try:
+            process = subprocess.Popen(argv, **kwargs)
+        except Exception:
+            for p in (out_path, err_path):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            raise
+
+        if on_spawn:
+            on_spawn(process)
+        try:
+            if stdin_data:
+                process.stdin.write(stdin_data)
+                process.stdin.close()
+            timed_out = _wait_process(process, timeout)
+        except KeyboardInterrupt:
+            if process.poll() is None:
+                _kill_tree(process)
+            raise
+        finally:
+            if on_done:
+                on_done(process)
+
+    stdout_text, stdout_trunc, _ = _tail_text(out_path, MAX_CONTEXT_OUTPUT_CHARS)
+    stderr_text, _, _ = _tail_text(err_path, MAX_CONTEXT_STDERR_CHARS)
+    if not stdout_trunc:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+    try:
+        os.remove(err_path)
+    except OSError:
+        pass
+
+    return {
+        "process": process,
+        "exit_code": process.returncode,
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+        "truncated": stdout_trunc,
+        "output_file": out_path if stdout_trunc else None,
+        "timed_out": timed_out,
+    }
+
+
+def _wait_background(process, f, timeout: int) -> str:
+    if _wait_process(process, timeout):
+        try:
+            f.flush()
+            f.seek(0, os.SEEK_END)
+            f.write(f"\n--- TIMEOUT ({timeout}s) ---\n".encode("utf-8"))
+            f.flush()
+        except (OSError, ValueError):
+            pass
+        return "timeout"
+    return "done"
 
 
 def _kill_tree(proc) -> None:
@@ -68,7 +205,6 @@ def _kill_tree(proc) -> None:
 # =============================================================================
 
 DEFAULT_TIMEOUT_SECONDS = 120
-MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 HARD_TIMEOUT_SECONDS = 300
 PREVIEW_SIZE_BYTES = 500
 SESSION_MAX = 4
@@ -169,7 +305,6 @@ class ShellSession:
             self._reader.start()
             return
         if sys.platform == "win32" and window:
-            # 独立控制台窗口：进程拥有真实 TTY（ssh 密码/全屏编辑器可用）
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = getattr(subprocess, "SW_SHOWNORMAL", 1)
@@ -192,8 +327,6 @@ class ShellSession:
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
             start_info = si
-            # CREATE_NEW_PROCESS_GROUP：保留有效 stdin/stdout 管道并驻留，不弹可见窗口
-            # 避免 DETACHED_PROCESS 导致进程立即退出、stdin 写入报 OSError 22
             creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creation_flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._proc = subprocess.Popen(
@@ -367,10 +500,10 @@ class ShellSession:
 # =============================================================================
 
 def check_dangerous_command(command: str) -> Optional[str]:
+    """便捷判定：返回拦截原因，None 表示放行（执行入口走 _check_security）"""
     try:
         from app.core.security.policy import SecurityPolicy
-        policy = SecurityPolicy()
-        result = policy.check_command(command)
+        result = SecurityPolicy().check_command(command)
         if not result.get("allowed", True):
             return result.get("message", "危险命令被拦截")
     except Exception:
@@ -547,18 +680,6 @@ def _resolve_interactive_argv(cmd: str) -> Optional[List[str]]:
         return None
     return parts
 
-def truncate_output(output: str, max_bytes: int = MAX_OUTPUT_BYTES) -> tuple:
-    data = output.encode('utf-8')
-    if len(data) <= max_bytes:
-        return output, False
-
-    tail = data[-max_bytes:]
-    cut = len(tail)
-    while cut > 0 and (tail[cut - 1] & 0xC0) == 0x80:
-        cut -= 1
-    truncated = tail[:cut].decode('utf-8', errors='ignore')
-    return f"... (truncated, exceeded {max_bytes} bytes)\n" + truncated, True
-
 def decode_output(data: bytes) -> str:
     if not data:
         return ""
@@ -732,35 +853,15 @@ class CelliumShell:
         result = await tool.execute_async({"command": "ls -la"})
     """
 
-    # 降级兜底黑名单（SecurityPolicy 不可用时使用）
+    # 降级兜底黑名单（SecurityPolicy 不可用时使用，只保留灾难级）
     _FALLBACK_BLOCKLIST = [
-        # ═══ 文件系统破坏 ═══
-        "remove-item -recurse", "rm -rf /", "rmdir /s /q", "del /f /s /q",
-        # ═══ 磁盘操作 ═══
-        "diskpart", "mkfs", "dd if=", "cipher /w",
-        # ═══ 系统控制 ═══
-        "shutdown", "stop-computer", "reboot", "restart-computer", "init 0", "init 6",
-        # ═══ 启动/引导 ═══
+        "remove-item -recurse -force",
+        "diskpart", "mkfs", "dd if=", "format ",
+        "rm -rf /", "rmdir /s c:\\",
         "bcdedit", "bootcfg",
-        # ═══ 注册表 ═══
-        "reg delete", "reg import",
-        # ═══ 服务 ═══
-        "sc config", "sc delete", "sc create", "new-service",
-        # ═══ 防火墙/网络 ═══
-        "netsh firewall", "netsh advfirewall", "iptables -f", "ufw disable",
-        # ═══ 用户/权限 ═══
-        "net user", "net localgroup", "takeown", "icacls", "chmod 777", "chown -r",
-        # ═══ PowerShell 危险操作 ═══
-        "powershell -enc", "powershell -e ", "invoke-expression", "iex ",
-        # ═══ Windows 危险工具 ═══
-        "certutil -urlcache", "bitsadmin /transfer", "mshta ", "rundll32 ", "regsvr32 ",
-        # ═══ Fork 炸弹 ═══
+        "shutdown ", "reboot", "stop-computer", "restart-computer",
+        "powershell -enc", "invoke-expression",
         ":(){ :|:& };:", ":(){ :|:&};:",
-        # ═══ 进程杀戮 ═══
-        "kill -9 -1", "killall ", "taskkill /f",
-        # ═══ 定时任务 ═══
-        "crontab -e", "crontab -r", "schtasks /create", "schtasks /delete",
-        # ═══ 环境注入 ═══
         "ld_preload=", "dyld_insert_libraries=",
     ]
 
@@ -773,6 +874,9 @@ class CelliumShell:
         self._executor = None
         self._max_workers = max(8, (os.cpu_count() or 4))
         self._background_tasks: Dict[str, Any] = {}
+        self._undo_ok = False
+        self._undo_root = None
+        _cleanup_stale_background_outputs()
         self._sessions: Dict[str, ShellSession] = {}
         self._cwd = initial_cwd if initial_cwd and os.path.isdir(initial_cwd) else os.getcwd()
         self._session_cwd: Dict[str, str] = {}
@@ -782,9 +886,11 @@ class CelliumShell:
         try:
             from app.core.util.agent_config import get_config
             cfg = get_config()
-            global DEFAULT_TIMEOUT_SECONDS, MAX_OUTPUT_BYTES, HARD_TIMEOUT_SECONDS
+            global DEFAULT_TIMEOUT_SECONDS, MAX_CONTEXT_OUTPUT_CHARS, HARD_TIMEOUT_SECONDS
             DEFAULT_TIMEOUT_SECONDS = int(cfg.get("security.command_timeout", DEFAULT_TIMEOUT_SECONDS))
-            MAX_OUTPUT_BYTES = int(cfg.get("security.max_output_bytes", MAX_OUTPUT_BYTES))
+            MAX_CONTEXT_OUTPUT_CHARS = max(
+                2048, min(int(cfg.get("security.max_output_bytes", MAX_CONTEXT_OUTPUT_CHARS)), 150000)
+            )
             HARD_TIMEOUT_SECONDS = int(cfg.get("security.shell_hard_timeout", HARD_TIMEOUT_SECONDS))
             self._session_send_check = bool(cfg.get("security.session_send_check", True))
         except Exception:
@@ -874,14 +980,15 @@ class CelliumShell:
 
     def _check_security(self, cmd: str) -> Dict[str, Any]:
         """安全策略检查"""
-        danger_warning = check_dangerous_command(cmd)
-        if danger_warning:
-            return {"success": False, "allowed": False, "reason": danger_warning}
-
         if self.security:
             try:
                 from app.core.security.policy import RiskLevel
-                result = self.security.check_command(cmd)
+                result = self.security.check_command(
+                    cmd,
+                    cwd=self._cwd,
+                    undo_ok=getattr(self, "_undo_ok", False),
+                    undo_root=getattr(self, "_undo_root", None),
+                )
                 if not result.get("allowed", False):
                     return {"success": False, "allowed": False, "reason": result.get("message", "被拦截")}
                 
@@ -1297,8 +1404,6 @@ class CelliumShell:
 
         popen_kwargs = dict(
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             cwd=work_dir,
             env=env,
             shell=False,
@@ -1307,53 +1412,40 @@ class CelliumShell:
             popen_kwargs["start_new_session"] = True
 
         try:
-            process = subprocess.Popen(argv, **popen_kwargs)
-            self._register_process(process)
-
-            try:
-                stdout, stderr = process.communicate(timeout=timeout)
-                elapsed = time.time() - start_time
-
-                stdout_str = decode_output(stdout).strip()
-                stderr_str = decode_output(stderr).strip()
-                output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
-
-                result = {
-                    "success": True,
-                    "output": output,
-                    "exit_code": process.returncode,
-                    "elapsed_ms": int(elapsed * 1000),
-                }
-
-                if stderr_str:
-                    result["stderr"] = stderr_str
-                if truncated:
-                    result["truncated"] = True
-                if process.returncode != 0:
-                    result["error"] = stderr_str or f"Exit code: {process.returncode}"
-
-                self._update_cwd(" ".join(argv), process.returncode, stdout_str)
-                return result
-
-            except subprocess.TimeoutExpired:
-                _kill_tree(process)
-                process.wait()
+            cap = _capture_process(
+                argv, popen_kwargs, timeout,
+                on_spawn=self._register_process,
+                on_done=self._unregister_process,
+            )
+            if cap["timed_out"]:
                 return {
                     "error": f"命令超时（{timeout}秒）",
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
-            except KeyboardInterrupt:
-                # 用户停止：kill 子进程并向上传播中断（交由上层标记停止）
-                try:
-                    if process.poll() is None:
-                        _kill_tree(process)
-                        process.wait(timeout=3)
-                except Exception:
-                    pass
-                raise
-            finally:
-                self._unregister_process(process)
+
+            elapsed = time.time() - start_time
+            stdout_str = cap["stdout"].strip()
+            stderr_str = cap["stderr"].strip()
+            exit_code = cap["exit_code"]
+
+            result = {
+                "success": True,
+                "output": stdout_str,
+                "exit_code": exit_code,
+                "elapsed_ms": int(elapsed * 1000),
+            }
+
+            if stderr_str:
+                result["stderr"] = stderr_str
+            if cap["truncated"]:
+                result["truncated"] = True
+                result["output_file"] = cap["output_file"]
+            if exit_code != 0:
+                result["error"] = stderr_str or f"Exit code: {exit_code}"
+
+            self._update_cwd(" ".join(argv), exit_code, stdout_str)
+            return result
 
         except FileNotFoundError:
             return {"success": False, "error": f"命令未找到: {argv[0]}"}
@@ -1381,8 +1473,7 @@ class CelliumShell:
 
             popen_kwargs = dict(
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 cwd=work_dir,
                 env=env,
                 shell=False,
@@ -1397,34 +1488,18 @@ class CelliumShell:
                 popen_kwargs["start_new_session"] = True
 
             try:
-                process = subprocess.Popen(argv, **popen_kwargs)
-                process_ref['p'] = process
+                with open(output_file, "wb") as f:
+                    popen_kwargs["stdout"] = f
+                    process = subprocess.Popen(argv, **popen_kwargs)
+                    process_ref['p'] = process
 
-                with open(output_file, "w", encoding="utf-8") as f:
-                    start_time = time.time()
-                    while True:
-                        if timeout and (time.time() - start_time) > timeout:
-                            _kill_tree(process)
-                            process.wait()
-                            f.write(f"\n--- TIMEOUT ({timeout}s) ---\n")
-                            return {
-                                "task_id": task_id,
-                                "output_file": output_file,
-                                "error": "timeout",
-                            }
-
-                        stdout_line = process.stdout.readline()
-                        if stdout_line:
-                            f.write(decode_output(stdout_line))
-                            f.flush()
-
-                        stderr_line = process.stderr.readline()
-                        if stderr_line:
-                            f.write(decode_output(stderr_line))
-                            f.flush()
-
-                        if not stdout_line and not stderr_line and process.poll() is not None:
-                            break
+                    status = _wait_background(process, f, timeout)
+                    if status == "timeout":
+                        return {
+                            "task_id": task_id,
+                            "output_file": output_file,
+                            "error": "timeout",
+                        }
 
                     return {
                         "task_id": task_id,
@@ -1531,8 +1606,6 @@ class CelliumShell:
 
         popen_kwargs = dict(
             stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             cwd=work_dir,
             env=env,
             shell=False,
@@ -1547,69 +1620,52 @@ class CelliumShell:
             popen_kwargs["start_new_session"] = True
 
         try:
-            process = subprocess.Popen(full_cmd, **popen_kwargs)
-            self._register_process(process)
-
-            try:
-                if stdin_data:
-                    stdout, stderr = process.communicate(input=stdin_data, timeout=timeout)
-                else:
-                    stdout, stderr = process.communicate(timeout=timeout)
-                elapsed = time.time() - start_time
-
-                stdout_str = decode_output(stdout).strip()
-                stderr_str = decode_output(stderr).strip()
-                if shell_cmd and shell_cmd.lower().endswith("cmd.exe"):
-                    stdout_str = re.sub(
-                        r"(?i)^\s*Microsoft Windows\s*\[版本[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
-                        "",
-                        stdout_str,
-                    ).strip()
-                    stdout_str = re.sub(
-                        r"(?i)^Microsoft Windows\s*\[Version[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
-                        "",
-                        stdout_str,
-                    ).strip()
-
-                output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
-
-                result = {
-                    "success": True,
-                    "output": output,
-                    "exit_code": process.returncode,
-                    "elapsed_ms": int(elapsed * 1000),
-                    "command_type": cmd_type.value,
-                }
-
-                if stderr_str:
-                    result["stderr"] = stderr_str
-                if truncated:
-                    result["truncated"] = True
-                if process.returncode != 0:
-                    result["error"] = stderr_str or f"Exit code: {process.returncode}"
-
-                self._update_cwd(cmd, process.returncode, stdout_str, session_id)
-                return result
-
-            except subprocess.TimeoutExpired:
-                _kill_tree(process)
-                process.wait()
+            cap = _capture_process(
+                full_cmd, popen_kwargs, timeout, stdin_data,
+                on_spawn=self._register_process,
+                on_done=self._unregister_process,
+            )
+            if cap["timed_out"]:
                 return {
                     "error": f"命令超时（{timeout}秒）",
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
-            except (KeyboardInterrupt):
-                # 用户停止：kill 子进程并向上传播中断
-                try:
-                    if process.poll() is None:
-                        _kill_tree(process)
-                        process.wait(timeout=3)
-                except Exception:
-                    pass
-                raise
-            finally:
-                self._unregister_process(process)
+
+            elapsed = time.time() - start_time
+            stdout_str = cap["stdout"].strip()
+            stderr_str = cap["stderr"].strip()
+            exit_code = cap["exit_code"]
+            if shell_cmd and shell_cmd.lower().endswith("cmd.exe"):
+                stdout_str = re.sub(
+                    r"(?i)^\s*Microsoft Windows\s*\[版本[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                    "",
+                    stdout_str,
+                ).strip()
+                stdout_str = re.sub(
+                    r"(?i)^Microsoft Windows\s*\[Version[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                    "",
+                    stdout_str,
+                ).strip()
+
+            result = {
+                "success": True,
+                "output": stdout_str,
+                "exit_code": exit_code,
+                "elapsed_ms": int(elapsed * 1000),
+                "command_type": cmd_type.value,
+            }
+
+            if stderr_str:
+                result["stderr"] = stderr_str
+            if cap["truncated"]:
+                result["truncated"] = True
+                result["output_file"] = cap["output_file"]
+            if exit_code != 0:
+                result["error"] = stderr_str or f"Exit code: {exit_code}"
+
+            self._update_cwd(cmd, exit_code, stdout_str, session_id)
+            return result
 
         except FileNotFoundError:
             return {"success": False, "error": f"命令未找到: {shell_cmd}"}
@@ -1671,8 +1727,9 @@ class CelliumShell:
         env.update(env_extra)
 
         start_time = time.time()
-        stdout_lines = []
-        stderr_lines = []
+        base = os.path.join(tempfile.gettempdir(), f"fg_{uuid4().hex[:8]}")
+        out_path = base + ".stdout"
+        err_path = base + ".stderr"
 
         popen_kwargs = dict(
             stdin=asyncio.subprocess.PIPE if stdin_data else asyncio.subprocess.DEVNULL,
@@ -1693,57 +1750,14 @@ class CelliumShell:
         try:
             process = await asyncio.create_subprocess_exec(*full_cmd, **popen_kwargs)
 
-            if stdin_data:
-                try:
-                    if timeout > 0:
-                        stdout, stderr = await asyncio.wait_for(
-                            process.communicate(input=stdin_data),
-                            timeout=timeout,
-                        )
-                    else:
-                        stdout, stderr = await process.communicate(input=stdin_data)
-
-                    elapsed = time.time() - start_time
-                    stdout_str = decode_output(stdout).strip()
-                    stderr_str = decode_output(stderr).strip()
-                    output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
-
-                    result = {
-                        "success": True,
-                        "output": output,
-                        "exit_code": process.returncode,
-                        "elapsed_ms": int(elapsed * 1000),
-                        "command_type": cmd_type.value,
-                    }
-                    if stderr_str:
-                        result["stderr"] = stderr_str
-                    if truncated:
-                        result["truncated"] = True
-                    if process.returncode != 0:
-                        result["error"] = stderr_str or f"Exit code: {process.returncode}"
-                    self._update_cwd(cmd, process.returncode, stdout_str, session_id)
-                    return result
-
-                except asyncio.TimeoutError:
-                    _kill_tree(process)
-                    await process.wait()
-                    return {
-                        "error": f"命令超时（{timeout}秒）",
-                        "timed_out": True,
-                        "timeout_seconds": timeout,
-                    }
-
-            async def read_stream(stream: asyncio.StreamReader, is_stdout: bool):
+            async def read_stream(stream: asyncio.StreamReader, f, is_stdout: bool):
                 try:
                     while True:
                         line = await stream.readline()
                         if not line:
                             break
                         line_str = decode_output(line)
-                        if is_stdout:
-                            stdout_lines.append(line_str)
-                        else:
-                            stderr_lines.append(line_str)
+                        f.write(line_str)
                         if on_progress:
                             try:
                                 on_progress(line_str if is_stdout else None, line_str if not is_stdout else None)
@@ -1752,79 +1766,86 @@ class CelliumShell:
                 except Exception as e:
                     logger.debug("[Shell] 读取流失败: %s", e)
 
-            try:
-                if timeout > 0:
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            read_stream(process.stdout, True),
-                            read_stream(process.stderr, False),
-                        ),
-                        timeout=timeout,
-                    )
-                else:
-                    await asyncio.gather(
-                        read_stream(process.stdout, True),
-                        read_stream(process.stderr, False),
-                    )
-
-                await process.wait()
-                elapsed = time.time() - start_time
-
-                stdout_str = "".join(stdout_lines).strip()
-                stderr_str = "".join(stderr_lines).strip()
-                if shell_cmd and shell_cmd.lower().endswith("cmd.exe"):
-                    stdout_str = re.sub(
-                        r"(?i)^\s*Microsoft Windows\s*\[版本[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
-                        "",
-                        stdout_str,
-                    ).strip()
-                    stdout_str = re.sub(
-                        r"(?i)^Microsoft Windows\s*\[Version[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
-                        "",
-                        stdout_str,
-                    ).strip()
-
-                output, truncated = truncate_output(stdout_str, MAX_OUTPUT_BYTES)
-
-                result = {
-                    "success": True,
-                    "output": output,
-                    "exit_code": process.returncode,
-                    "elapsed_ms": int(elapsed * 1000),
-                    "command_type": cmd_type.value,
-                }
-
-                if stderr_str:
-                    result["stderr"] = stderr_str
-                if truncated:
-                    result["truncated"] = True
-                if process.returncode != 0:
-                    result["error"] = stderr_str or f"Exit code: {process.returncode}"
-
-                self._update_cwd(cmd, process.returncode, stdout_str, session_id)
-                return result
-
-            except asyncio.TimeoutError:
-                if self._platform != "win32":
+            timed_out = False
+            with open(out_path, "w", encoding="utf-8") as fo, open(err_path, "w", encoding="utf-8") as fe:
+                if stdin_data:
                     try:
-                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                    except Exception as kill_e:
-                        logger.debug("[Shell] 终止进程组失败: %s", kill_e)
-                else:
-                    process.terminate()
+                        process.stdin.write(stdin_data)
+                        await process.stdin.drain()
+                    finally:
+                        process.stdin.close()
+
+                readers = asyncio.gather(
+                    read_stream(process.stdout, fo, True),
+                    read_stream(process.stderr, fe, False),
+                )
+                try:
+                    if timeout > 0:
+                        await asyncio.wait_for(readers, timeout=timeout)
+                    else:
+                        await readers
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    _kill_tree(process)
 
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5)
-                except Exception:
-                    logger.debug("[Shell] 等待进程退出超时，强制终止")
+                except asyncio.TimeoutError:
                     _kill_tree(process)
                     await process.wait()
 
+            if timed_out:
                 return {
                     "error": f"命令超时（{timeout}秒）",
                     "timed_out": True,
                     "timeout_seconds": timeout,
                 }
+
+            elapsed = time.time() - start_time
+            stdout_str, truncated, _ = _tail_text(out_path, MAX_CONTEXT_OUTPUT_CHARS)
+            stderr_str, _, _ = _tail_text(err_path, MAX_CONTEXT_STDERR_CHARS)
+            if not truncated:
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+            try:
+                os.remove(err_path)
+            except OSError:
+                pass
+
+            stdout_str = stdout_str.strip()
+            stderr_str = stderr_str.strip()
+            if shell_cmd and shell_cmd.lower().endswith("cmd.exe"):
+                stdout_str = re.sub(
+                    r"(?i)^\s*Microsoft Windows\s*\[版本[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                    "",
+                    stdout_str,
+                ).strip()
+                stdout_str = re.sub(
+                    r"(?i)^Microsoft Windows\s*\[Version[^\]]*\][^\n]*\n\s*\(c\)\s*Microsoft.*?\n",
+                    "",
+                    stdout_str,
+                ).strip()
+
+            result = {
+                "success": True,
+                "output": stdout_str,
+                "exit_code": process.returncode,
+                "elapsed_ms": int(elapsed * 1000),
+                "command_type": cmd_type.value,
+            }
+
+            if stderr_str:
+                result["stderr"] = stderr_str
+            if truncated:
+                result["truncated"] = True
+                result["output_file"] = out_path
+            if process.returncode != 0:
+                result["error"] = stderr_str or f"Exit code: {process.returncode}"
+
+            self._update_cwd(cmd, process.returncode, stdout_str, session_id)
+            return result
 
         except FileNotFoundError:
             return {"success": False, "error": f"命令未找到: {shell_cmd}"}
@@ -1877,47 +1898,30 @@ class CelliumShell:
             env.update(env_extra)
 
             try:
-                process = subprocess.Popen(
-                    full_cmd,
-                    stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=work_dir,
-                    env=env,
-                    shell=False,
-                    start_new_session=True if self._platform != "win32" else False,
-                )
-                process_ref['p'] = process
+                with open(output_file, "wb") as f:
+                    process = subprocess.Popen(
+                        full_cmd,
+                        stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                        stdout=f,
+                        stderr=subprocess.STDOUT,
+                        cwd=work_dir,
+                        env=env,
+                        shell=False,
+                        start_new_session=True if self._platform != "win32" else False,
+                    )
+                    process_ref['p'] = process
 
-                if stdin_data:
-                    process.stdin.write(stdin_data)
-                    process.stdin.close()
+                    if stdin_data:
+                        process.stdin.write(stdin_data)
+                        process.stdin.close()
 
-                with open(output_file, "w", encoding="utf-8") as f:
-                    start_time = time.time()
-                    while True:
-                        if timeout and (time.time() - start_time) > timeout:
-                            _kill_tree(process)
-                            process.wait()
-                            f.write(f"\n--- TIMEOUT ({timeout}s) ---\n")
-                            return {
-                                "task_id": task_id,
-                                "output_file": output_file,
-                                "error": "timeout",
-                            }
-
-                        stdout_line = process.stdout.readline()
-                        if stdout_line:
-                            f.write(decode_output(stdout_line))
-                            f.flush()
-
-                        stderr_line = process.stderr.readline()
-                        if stderr_line:
-                            f.write(decode_output(stderr_line))
-                            f.flush()
-
-                        if not stdout_line and not stderr_line and process.poll() is not None:
-                            break
+                    status = _wait_background(process, f, timeout)
+                    if status == "timeout":
+                        return {
+                            "task_id": task_id,
+                            "output_file": output_file,
+                            "error": "timeout",
+                        }
 
                     return {
                         "task_id": task_id,

@@ -259,15 +259,19 @@ class UndoStore:
             pass
         return None
 
-    def checkpoint_shell(self, session_id, turn_id, cwd: str) -> None:
+    def checkpoint_shell(self, session_id, turn_id, cwd: str) -> dict:
         try:
             with self._lock:
                 turn_dir, manifest = self._ensure(session_id, turn_id)
-                if manifest.get("git") or manifest.get("copy_root") or manifest.get("skipped_reason"):
-                    return
+                if manifest.get("git"):
+                    return {"ok": True, "root": manifest["git"].get("repo")}
+                if manifest.get("copy_root"):
+                    return {"ok": True, "root": manifest.get("copy_cwd")}
+                if manifest.get("skipped_reason"):
+                    return {"ok": False, "reason": manifest["skipped_reason"]}
                 base = self._norm(cwd or os.getcwd())
                 if not base or not os.path.isdir(base):
-                    return
+                    return {"ok": False, "reason": "invalid_cwd"}
                 repo = self._git_toplevel(base)
                 if repo:
                     sha = ""
@@ -293,18 +297,24 @@ class UndoStore:
                     except Exception as e:
                         logger.warning("[UndoStore] git status 失败: %s", e)
                     manifest["git"] = {"repo": repo, "sha": sha, "baseline": baseline}
+                    self._save(turn_dir, manifest)
+                    return {"ok": True, "root": repo}
                 else:
                     count, total = self._measure(base)
                     if count > COPY_MAX_FILES or total > COPY_MAX_BYTES:
                         manifest["skipped_reason"] = "too_large"
+                        self._save(turn_dir, manifest)
+                        return {"ok": False, "reason": "too_large"}
                     else:
                         root = os.path.join(turn_dir, "root")
                         shutil.copytree(base, root, ignore=self._ignore, dirs_exist_ok=True)
                         manifest["copy_root"] = "root"
                         manifest["copy_cwd"] = base
                 self._save(turn_dir, manifest)
+                return {"ok": True, "root": base}
         except Exception as e:
             logger.warning("[UndoStore] checkpoint_shell 失败: %s", e)
+            return {"ok": False, "reason": "error"}
 
     @staticmethod
     def _unquote(text: str) -> str:

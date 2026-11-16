@@ -297,7 +297,7 @@
       "unrestricted": "無限制",
       "commandTimeout": "指令逾時 (秒)",
       "shellHardTimeout": "Shell 硬逾時 (秒)",
-      "outputTruncate": "輸出截斷 (位元組)",
+      "outputTruncate": "輸出截斷上限 (字元)",
       "commandBlacklist": "指令黑名單",
       "blacklistPlaceholder": "輸入危險指令後按 Enter 新增...",
       "add": "新增",

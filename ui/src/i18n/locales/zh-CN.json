@@ -298,7 +298,7 @@
       "unrestricted": "无限制",
       "commandTimeout": "命令超时 (秒)",
       "shellHardTimeout": "Shell 硬超时 (秒)",
-      "outputTruncate": "输出截断 (字节)",
+      "outputTruncate": "输出截断上限 (字符)",
       "commandBlacklist": "命令黑名单",
       "blacklistPlaceholder": "输入危险命令后回车添加...",
       "add": "添加",
