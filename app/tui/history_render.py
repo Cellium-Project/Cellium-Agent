@@ -379,6 +379,151 @@ def load_session_messages(session_id: str, limit: int = 500, record_cap: int = 0
     return raw_msgs
 
 
+def history_total(session_id: str) -> int:
+    _, archive = _resolve_archive()
+    if archive is None:
+        return 0
+    counter = getattr(archive, "count_messages", None)
+    if callable(counter):
+        try:
+            return max(0, int(counter(session_id)))
+        except Exception:
+            return 0
+    return len(load_session_messages(session_id, limit=10000))
+
+
+def load_history_window(session_id: str, limit: int = 100, offset: int = 0) -> tuple:
+    mgr, archive = _resolve_archive()
+    limit = max(1, int(limit))
+    offset = max(0, int(offset))
+    total = 0
+    if archive is not None:
+        counter = getattr(archive, "count_messages", None)
+        if callable(counter):
+            try:
+                total = int(counter(session_id))
+            except Exception:
+                total = 0
+        reader = getattr(archive, "get_recent_messages", None)
+        if callable(reader):
+            try:
+                messages = reader(session_id, limit, offset)
+                if total <= 0:
+                    total = len(messages) + offset
+                return messages, total
+            except Exception:
+                pass
+    messages = load_session_messages(session_id, limit=10000)
+    end = len(messages) - offset
+    return messages[max(0, end - limit):end], len(messages)
+
+
+def build_history_plan_window(session_id: str, limit: int = 100) -> tuple:
+    return build_history_plan_page(session_id, None, limit)
+
+
+_MAX_PAGE_EXTEND = 100
+
+
+def _page_reader(archive):
+    reader = getattr(archive, "get_message_range", None)
+    return reader if callable(reader) else None
+
+
+def _extend_over_tool_results(reader, session_id: str, messages: list, end: int, total: int) -> tuple:
+    extended = 0
+    while end < total and extended < _MAX_PAGE_EXTEND:
+        nxt = reader(session_id, end, min(total, end + 1))
+        if not nxt or nxt[0].get("role") != "tool":
+            break
+        messages = messages + nxt
+        end += len(nxt)
+        extended += len(nxt)
+    return messages, end
+
+
+def _align_start_to_user(reader, session_id: str, start: int, total: int) -> tuple:
+    if start <= 0:
+        return 0, []
+    current = reader(session_id, start, min(total, start + 1))
+    if current and current[0].get("role") == "user":
+        return start, []
+    prefix = []
+    pos = start
+    while pos > 0:
+        chunk_start = max(0, pos - 200)
+        chunk = reader(session_id, chunk_start, pos)
+        if chunk:
+            for i in range(len(chunk) - 1, -1, -1):
+                if chunk[i].get("role") == "user":
+                    return chunk_start + i, chunk[i:] + prefix
+            prefix = chunk + prefix
+        if start - chunk_start <= 0 or len(prefix) >= _MAX_PAGE_EXTEND * 5:
+            break
+        pos = chunk_start
+    return pos, prefix
+
+
+def load_history_page(session_id: str, end_index: int = None, limit: int = 100) -> tuple:
+    _, archive = _resolve_archive()
+    total = history_total(session_id)
+    if total <= 0:
+        return [], 0, 0, 0
+    reader = _page_reader(archive)
+    if reader is None:
+        end = total if end_index is None else max(0, min(int(end_index), total))
+        start = max(0, end - max(1, int(limit)))
+        messages, _ = load_history_window(session_id, end - start, max(0, total - end))
+        return messages, start, end, total
+
+    end = total if end_index is None else max(0, min(int(end_index), total))
+    start = max(0, end - max(1, int(limit)))
+    aligned_start, prefix = _align_start_to_user(reader, session_id, start, total)
+    messages = prefix + reader(session_id, start, end)
+    return messages, aligned_start, end, total
+
+
+def load_history_range(session_id: str, start_index: int = 0, end_index: int = None) -> tuple:
+    _, archive = _resolve_archive()
+    total = history_total(session_id)
+    if total <= 0:
+        return [], 0, 0, 0
+    reader = _page_reader(archive)
+    start = max(0, min(int(start_index), total))
+    end = total if end_index is None else max(0, min(int(end_index), total))
+    if end <= start:
+        return [], start, end, total
+    if reader is None:
+        messages, _ = load_history_window(session_id, end - start, max(0, total - end))
+        return messages, start, end, total
+    messages = reader(session_id, start, end)
+    messages, end = _extend_over_tool_results(reader, session_id, messages, end, total)
+    return messages, start, end, total
+
+
+def build_history_plan_page(session_id: str, end_index: int = None, limit: int = 100) -> tuple:
+    from app.tui.history_range import message_identity, plan_slice
+
+    messages, start, end, total = load_history_page(session_id, end_index, limit)
+    if not messages:
+        return [], {"start": start, "end": end, "total": total, "anchor": None, "has_more": start > 0}
+
+    plan = plan_slice(messages, 0, len(messages))
+    if start:
+        for spec in plan:
+            span = spec.get("span")
+            if span:
+                spec["span"] = (span[0] + start, span[1] + start)
+    meta = {
+        "start": start,
+        "end": end,
+        "total": total,
+        "anchor": message_identity(messages[0]),
+        "has_more": start > 0,
+    }
+    return plan, meta
+
+
 def build_assistant_timeline(msg: dict, raw_messages: list, index: int) -> dict:
     content = msg.get("content")
     tool_calls = msg.get("tool_calls")

@@ -641,6 +641,51 @@ class SqliteArchiveStore:
         hits.sort(key=lambda h: (h["score"], h["time"]), reverse=True)
         return hits[:max(1, limit)]
 
+    def get_message_range(self, session_id: str, start: int = 0, end: int = None) -> List:
+        start = max(0, int(start))
+        if end is not None and int(end) <= start:
+            return []
+        legacy = self._legacy_store()
+        if legacy is not None:
+            return self._legacy_message_range(legacy, session_id, start, end)
+        sql = (
+            "SELECT rm.payload FROM record_messages rm JOIN records r ON r.id = rm.record_id "
+            f"WHERE r.session_id = ? AND instr(rm.payload, '{_SNAPSHOT_FLAG}') = 0 "
+            "ORDER BY r.seq ASC, rm.ordinal ASC LIMIT ? OFFSET ?"
+        )
+        if end is None:
+            limit = -1
+        else:
+            limit = max(0, int(end) - start)
+        with self._reading() as conn:
+            rows = conn.execute(sql, (session_id, limit, start)).fetchall()
+        messages = []
+        for row in rows:
+            try:
+                messages.append(json.loads(row["payload"]))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return messages
+
+    @staticmethod
+    def _legacy_message_range(legacy, session_id: str, start: int, end: int = None) -> List:
+        records = legacy.get_by_session(session_id, limit=1000000)
+        messages = []
+        seen = set()
+        for record in reversed(records):
+            for msg in reversed(record.get("messages") or []):
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "user" and msg.get("_is_compacted_notes"):
+                    continue
+                key = json.dumps(msg, ensure_ascii=False, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                messages.append(msg)
+        messages.reverse()
+        return messages[start:end]
+
     def count_messages(self, session_id: str) -> int:
         legacy = self._legacy_store()
         if legacy is not None:

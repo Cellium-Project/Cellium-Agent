@@ -253,6 +253,9 @@ class SessionNotes:
         """用新列表替换已完成操作"""
         self._content["completed"] = [f"- {a}" for a in actions]
 
+    def set_pending(self, tasks: List[str]):
+        self._content["pending"] = [f"- {t}" for t in tasks]
+
     def add_finding(self, finding: str):
         """添加关键发现"""
         self.append("findings", f"- {finding}")
@@ -267,6 +270,9 @@ class SessionNotes:
         if resolution:
             item += f" → {resolution}"
         self.append("errors", item)
+
+    PROMPT_SECTION_ORDER = ("goal", "goal_history", "pending", "errors", "completed", "findings")
+    PROMPT_ITEM_LIMITS = {"completed": 10, "findings": 20}
 
     def render(self) -> str:
         """渲染为完整的 Markdown 文本"""
@@ -284,6 +290,28 @@ class SessionNotes:
 
         return "\n".join(lines)
 
+    def _render_for_prompt_body(self) -> str:
+        lines = [
+            f"# 会话笔记 (Session: {self.session_id})",
+            f"*最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M')}*",
+            "",
+        ]
+
+        for section in self.PROMPT_SECTION_ORDER:
+            items = self._content.get(section)
+            if not items:
+                continue
+            limit = self.PROMPT_ITEM_LIMITS.get(section)
+            lines.append(self.SECTIONS[section])
+            if limit and len(items) > limit:
+                omitted = len(items) - limit
+                lines.append(f"- ...（更早 {omitted} 条已省略）")
+                items = items[-limit:]
+            lines.extend(items)
+            lines.append("")
+
+        return "\n".join(lines)
+
     def render_for_prompt(self, max_length: int = 2000) -> str:
         """
         渲染为提示词格式
@@ -294,7 +322,7 @@ class SessionNotes:
         Returns:
             格式化的笔记摘要
         """
-        content = self.render()
+        content = self._render_for_prompt_body()
 
         if len(content) > max_length:
             content = content[:max_length] + "\n...[笔记已截断]"

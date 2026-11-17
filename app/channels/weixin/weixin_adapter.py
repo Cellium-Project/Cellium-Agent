@@ -635,10 +635,17 @@ class WeixinClient:
         self._state_dir = Path(state_dir) if state_dir else None
         self._account_store = AccountStore(self._state_dir) if self._state_dir else None
         self._ctx_token_store = ContextTokenStore(self._state_dir / "accounts" if self._state_dir else None)
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
+        self._client: Optional[httpx.AsyncClient] = None
         self._get_updates_buf = ""
         self._running = False
         self._account_id: Optional[str] = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        client = self._client
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
+            self._client = client
+        return client
 
     async def login_qr_start(self, bot_type: str = "3") -> dict:
         resp = await self._post(
@@ -993,7 +1000,7 @@ class WeixinClient:
         last_err = None
         for attempt in range(1, max_retries + 1):
             try:
-                resp = await self._client.post(
+                resp = await self._get_http_client().post(
                     url,
                     content=ciphertext,
                     headers={"Content-Type": "application/octet-stream"},
@@ -1024,7 +1031,7 @@ class WeixinClient:
     ) -> bytes:
         key = _parse_aes_key(aes_key_b64)
         url = full_url or _cdn_download_url(encrypt_query_param, self.cdn_base_url)
-        resp = await self._client.get(url, timeout=60.0)
+        resp = await self._get_http_client().get(url, timeout=60.0)
         resp.raise_for_status()
         encrypted = resp.content
         decrypted = _aes_ecb_decrypt(encrypted, key)
@@ -1077,7 +1084,7 @@ class WeixinClient:
         headers = _build_common_headers() if no_auth else _build_headers(self.token)
         headers["Content-Type"] = "application/json"
 
-        resp = await self._client.post(
+        resp = await self._get_http_client().post(
             url,
             json=body,
             headers=headers,
@@ -1097,7 +1104,7 @@ class WeixinClient:
         url = f"{self.base_url}/{endpoint}"
         headers = _build_common_headers() if no_auth else _build_headers(self.token)
 
-        resp = await self._client.get(
+        resp = await self._get_http_client().get(
             url,
             params=params,
             headers=headers,
@@ -1107,7 +1114,9 @@ class WeixinClient:
         return resp.json()
 
     async def close(self):
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
 
 class WeixinAdapter(ChannelAdapter):

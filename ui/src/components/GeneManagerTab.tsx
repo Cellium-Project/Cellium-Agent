@@ -239,28 +239,20 @@ export const GeneManagerTab: React.FC = () => {
         ) : filteredGenes.length === 0 ? (
           <div className="memory-empty">{filterQuery ? t('gene.noMatch') : t('gene.empty')}</div>
         ) : (
-          filteredGenes.map((gene) => (
-            <div key={gene.id} className="model-card">
-              <div className="model-card-header">
-                <div className="skill-info">
-                  <span className="skill-name">{gene.task_type}</span>
+          <div className="component-grid">
+            {filteredGenes.map((gene) => (
+              <div key={gene.id} className="component-card">
+                <div className="component-card-head">
+                  <span className="component-card-title" title={gene.task_type}>{gene.task_type}</span>
                   <span className="memory-status-pill category">v{gene.version}</span>
+                </div>
+                <div className="component-card-meta">
                   {gene.evolution_history.length > 1 && (
                     <span className="memory-status-pill schema">
                       <Icons.Zap size={10} />
                       {t('gene.evolved')}
                     </span>
                   )}
-                </div>
-                <div className="skill-actions">
-                  <button className="btn-link" onClick={() => handleSelectGene(gene)}>
-                    {t('gene.viewDetail')}
-                  </button>
-                </div>
-              </div>
-              <div className="model-card-body">
-                <div className="skill-desc">{gene.title}</div>
-                <div className="memory-item-meta">
                   <span className="memory-status-pill">
                     <Icons.Activity size={10} />
                     {gene.usage_count}
@@ -275,9 +267,15 @@ export const GeneManagerTab: React.FC = () => {
                     </span>
                   )}
                 </div>
+                <div className="component-card-desc" title={gene.title}>{gene.title}</div>
+                <div className="component-card-actions">
+                  <button className="btn-link" onClick={() => handleSelectGene(gene)}>
+                    {t('gene.viewDetail')}
+                  </button>
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
 

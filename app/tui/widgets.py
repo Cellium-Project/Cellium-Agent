@@ -165,6 +165,7 @@ class ChatScroll(VerticalScroll):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._following = True
+        self._repaint_timer = None
 
     @property
     def following(self) -> bool:
@@ -178,6 +179,26 @@ class ChatScroll(VerticalScroll):
                 app = self.app
                 if hasattr(app, "_on_chat_scrolled_top"):
                     app._on_chat_scrolled_top()
+            self._schedule_repaint()
+        except Exception:
+            pass
+
+    def _schedule_repaint(self) -> None:
+        timer = getattr(self, "_repaint_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        try:
+            self._repaint_timer = self.set_timer(0.06, self._repaint_viewport)
+        except Exception:
+            self._repaint_timer = None
+
+    def _repaint_viewport(self) -> None:
+        self._repaint_timer = None
+        try:
+            self.refresh()
         except Exception:
             pass
 

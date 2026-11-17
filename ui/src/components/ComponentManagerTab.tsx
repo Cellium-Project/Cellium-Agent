@@ -40,6 +40,29 @@ interface MarketItem {
 
 const CATEGORIES = ['', 'web', 'ai', 'security', 'interaction', 'automation', 'data', 'media', 'other'];
 
+const README_CACHE = new Map<string, string>();
+const README_CACHE_MAX = 20;
+
+async function renderReadme(src: string): Promise<string> {
+  const cached = README_CACHE.get(src);
+  if (cached !== undefined) return cached;
+
+  const [{ marked }, { default: DOMPurify }] = await Promise.all([
+    import('marked'),
+    import('dompurify'),
+  ]);
+  marked.setOptions({ gfm: true });
+  const raw = marked.parse(src, { async: false }) as string;
+  const html = DOMPurify.sanitize(raw);
+
+  if (README_CACHE.size >= README_CACHE_MAX) {
+    const oldest = README_CACHE.keys().next().value;
+    if (oldest) README_CACHE.delete(oldest);
+  }
+  README_CACHE.set(src, html);
+  return html;
+}
+
 export const ComponentManagerTab: React.FC = () => {
   const { t } = useTranslation();
   const [components, setComponents] = useState<ComponentInfo[]>([]);
@@ -59,7 +82,21 @@ export const ComponentManagerTab: React.FC = () => {
   const [installing, setInstalling] = useState('');
   const [detail, setDetail] = useState<any>(null);
   const [detailClosing, setDetailClosing] = useState(false);
+  const readmeSrc: string = detail?.readme || '';
+  const [readmeHtml, setReadmeHtml] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!readmeSrc) {
+      setReadmeHtml('');
+      return;
+    }
+    let cancelled = false;
+    renderReadme(readmeSrc)
+      .then((html) => { if (!cancelled) setReadmeHtml(html); })
+      .catch(() => { if (!cancelled) setReadmeHtml(''); });
+    return () => { cancelled = true; };
+  }, [readmeSrc]);
 
   const [unloadTarget, setUnloadTarget] = useState('');
   const [depsDialog, setDepsDialog] = useState<{
@@ -521,8 +558,15 @@ export const ComponentManagerTab: React.FC = () => {
                 <label>sha256</label>
                 <span className="file-path">{detail.checks?.sha256 || '-'}</span>
               </div>
-              {detail.readme && (
-                <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{detail.readme}</pre>
+              {readmeSrc && (
+                readmeHtml ? (
+                  <div
+                    className="markdown-body component-readme"
+                    dangerouslySetInnerHTML={{ __html: readmeHtml }}
+                  />
+                ) : (
+                  <pre className="component-readme-fallback">{readmeSrc}</pre>
+                )
               )}
             </div>
           </div>

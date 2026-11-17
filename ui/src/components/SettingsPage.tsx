@@ -178,11 +178,195 @@ function useSavingState() {
 // ═════════════════════════════════════════════════════════════
 // 模型配置 Tab
 // ═════════════════════════════════════════════════════════════
+type ModelEditorProps = {
+  title: string;
+  initial?: Record<string, any>;
+  onClose: () => void;
+  onSave: (entry: Record<string, any>) => Promise<void>;
+};
+
+const ModelEditorModal: React.FC<ModelEditorProps> = ({ title, initial, onClose, onSave }) => {
+  const { t } = useTranslation();
+  const [name, setName] = useState(initial?.name || '');
+  const [baseUrl, setBaseUrl] = useState(initial?.base_url || '');
+  const [apiKey, setApiKey] = useState(initial?.api_key || '');
+  const [modelId, setModelId] = useState(initial?.model || '');
+  const [contextWindow, setContextWindow] = useState(initial?.context_window ? String(initial.context_window) : '');
+  const [temperature, setTemperature] = useState(String(initial?.temperature ?? 0.7));
+  const [timeout, setTimeoutValue] = useState(String(initial?.timeout ?? 120));
+  const [models, setModels] = useState<any[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [closing, setClosing] = useState(false);
+
+  const detectedBase = apiKey.trim().startsWith('oc_sk_') ? 'https://opencode.ai/zen/go/v1' : '';
+  const effectiveBase = baseUrl.trim() || detectedBase || 'https://api.openai.com/v1';
+
+  const close = () => {
+    setClosing(true);
+    setTimeout(onClose, 150);
+  };
+
+  const fetchModels = async () => {
+    setFetching(true);
+    setError('');
+    setModels([]);
+    try {
+      const res = await postJSON<{ models: any[] }>(API.customModels, {
+        base_url: effectiveBase,
+        api_key: apiKey.trim(),
+      });
+      const list = res?.models || [];
+      if (!list.length) setError(t('settings.model.fetchFailed'));
+      setModels(list);
+    } catch (e: any) {
+      setError(e?.message || t('settings.model.fetchFailed'));
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const useModel = async (m: any) => {
+    const mid = m.id || m.name || '';
+    if (!mid) return;
+    setSaving(true);
+    setError('');
+    try {
+      const entry: Record<string, any> = {
+        ...(initial || {}),
+        name: mid.split('/').pop() || mid,
+        base_url: effectiveBase,
+        api_key: apiKey.trim(),
+        model: mid,
+        temperature: Number(temperature) || 0.7,
+        timeout: Number(timeout) || 120,
+      };
+      const ctx = Number(m.context_length) || 0;
+      if (ctx > 0) entry.context_window = ctx;
+      else delete entry.context_window;
+      await onSave(entry);
+      close();
+    } catch (e: any) {
+      setError(e?.message || t('settings.model.saveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const save = async () => {
+    if (!modelId.trim()) { setError(t('settings.model.modelRequired')); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const entry: Record<string, any> = {
+        ...(initial || {}),
+        name: name.trim() || (modelId.split('/').pop() || modelId),
+        base_url: effectiveBase,
+        api_key: apiKey.trim(),
+        model: modelId.trim(),
+        temperature: Number(temperature) || 0.7,
+        timeout: Number(timeout) || 120,
+      };
+      const ctx = parseInt(contextWindow, 10);
+      if (ctx > 0) entry.context_window = ctx;
+      else delete entry.context_window;
+      await onSave(entry);
+      close();
+    } catch (e: any) {
+      setError(e?.message || t('settings.model.saveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return createPortal(
+    <div className={`skill-detail-modal ${closing ? 'closing' : ''}`}>
+      <div className="modal-overlay" onClick={close} />
+      <div className="modal-content" style={{ maxWidth: 620 }}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="btn-close" onClick={close}><Icons.X size={18} /></button>
+        </div>
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="settings-desc">{t('settings.model.customDesc')}</div>
+          <div className="form-group">
+            <FieldLabel label={t('settings.model.baseUrl')} />
+            <input type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
+            <span className="field-hint">
+              {detectedBase
+                ? `${t('settings.model.detectedBase', 'Detected')}: ${detectedBase}`
+                : t('settings.model.baseUrlHint', 'Leave empty to use https://api.openai.com/v1')}
+            </span>
+          </div>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 1 }}>
+              <FieldLabel label={t('settings.model.apiKey')} />
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-..." />
+            </div>
+            <div className="form-group" style={{ alignSelf: 'end' }}>
+              <button className="btn-primary" onClick={fetchModels} disabled={fetching} style={{ whiteSpace: 'nowrap' }}>
+                {fetching ? t('common.loading') : t('settings.model.ccFetch')}
+              </button>
+            </div>
+          </div>
+          {error && <div className="settings-desc" style={{ color: 'var(--text-error)' }}>{error}</div>}
+          {models.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+              {models.map((m: any) => {
+                const mid = m.id || m.name || '';
+                const ctx = Number(m.context_length) || 0;
+                return (
+                  <div key={mid} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', border: '1px solid var(--border-primary)', borderRadius: 8, background: 'var(--bg-tertiary)' }}>
+                    <span style={{ fontSize: 13 }}>{(m.name || mid) + (ctx > 0 ? `  (${Math.round(ctx / 1000)}k)` : '')}</span>
+                    <button className="btn-small" onClick={() => useModel(m)} disabled={saving}>{t('settings.model.useModel')}</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 1 }}>
+              <FieldLabel label={t('settings.model.modelId')} />
+              <input type="text" value={modelId} onChange={e => setModelId(e.target.value)} placeholder="gpt-4o" />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <FieldLabel label={t('settings.model.contextWindow')} />
+              <input type="number" value={contextWindow} min={1000} step={1000} placeholder="200000" onChange={e => setContextWindow(e.target.value)} />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 1 }}>
+              <FieldLabel label={t('settings.model.name')} />
+              <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder={t('settings.model.namePlaceholder')} />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <FieldLabel label={t('settings.model.temperature')} />
+              <input type="number" value={temperature} min={0} max={2} step={0.1} onChange={e => setTemperature(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <FieldLabel label={t('settings.model.timeout')} />
+              <input type="number" value={timeout} min={10} max={600} onChange={e => setTimeoutValue(e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+            <button className="btn-secondary" onClick={close}>{t('common.cancel')}</button>
+            <button className="btn-primary" onClick={save} disabled={saving}>{saving ? t('common.saving') : t('settings.model.save')}</button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
 const ModelSettings: React.FC = () => {
   const { t } = useTranslation();
   const [config, setConfig] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
-  const { saving, saved, doSave } = useSavingState();
+  const [editor, setEditor] = useState<{ initial?: Record<string, any>; index?: number } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ index: number; name: string } | null>(null);
+  const [pageError, setPageError] = useState('');
 
   useEffect(() => {
     fetchJSON<Record<string, any>>(API.configSection('llm')).then(data => {
@@ -217,55 +401,45 @@ const ModelSettings: React.FC = () => {
     });
   };
 
-  const updateModelField = (index: number, field: string, value: any) => {
-    setConfig(prev => {
-      const models = [...(prev.models || [])];
-      models[index] = { ...models[index], [field]: value };
-      return { ...prev, models };
-    });
-  };
-
-  const addModel = () => {
-    setConfig(prev => ({
-      ...prev,
-      models: [...(prev.models || []), {
-        name: `model-${(prev.models?.length || 0) + 1}`,
-        api_key: '',
-        base_url: 'https://api.openai.com/v1',
-        model: '',
-        temperature: 0.7,
-        timeout: 120,
-      }],
-    }));
-  };
-
-  const removeModel = (index: number) => {
-    setConfig(prev => {
-      const newModels = (prev.models || []).filter((_: any, i: number) => i !== index);
-      let newCurrentModel = prev.current_model;
-      if (newModels.length === 0) {
-        newCurrentModel = '';
-      }
-      return {
-        ...prev,
-        models: newModels,
-        current_model: newCurrentModel,
-      };
-    });
-  };
-
-  const handleSave = () => doSave(async () => {
-    const saveConfig = { ...config };
-    const models: any[] = saveConfig.models || [];
+  const applyModels = async (nextModels: any[], currentModel?: string) => {
     const ready = (m: any) => Boolean(m?.api_key && m?.base_url && m?.model);
-    const currentReady = models.some(m => m?.name === saveConfig.current_model && ready(m));
-    if (!currentReady) {
-      const pick = models.find(ready) || models[0];
-      saveConfig.current_model = pick?.name || '';
-    }
-    await putJSON(API.configUpdate('llm'), { value: saveConfig, persist: true });
+    const next: Record<string, any> = { ...config, models: nextModels };
+    const wanted = currentModel ?? next.current_model;
+    next.current_model = nextModels.some(m => m.name === wanted && ready(m))
+      ? wanted
+      : (nextModels.find(ready)?.name || nextModels[0]?.name || '');
+    await putJSON(API.configUpdate('llm'), { value: next, persist: true });
     await postJSON(API.modelReloadEngine, {});
-  });
+    setConfig(next);
+  };
+
+  const removeModel = async (index: number) => {
+    const prevModels = config.models || [];
+    const target = prevModels[index];
+    const active = config.current_model || prevModels[0]?.name || '';
+    if (target && target.name === active) {
+      throw new Error(t('settings.model.cannotDeleteActive'));
+    }
+    const newModels = prevModels.filter((_: any, i: number) => i !== index);
+    setConfig(prev => ({ ...prev, models: newModels }));
+    try {
+      await applyModels(newModels);
+    } catch (e) {
+      setConfig(prev => ({ ...prev, models: prevModels }));
+      throw e;
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setPageError('');
+    try {
+      await removeModel(deleteTarget.index);
+      setDeleteTarget(null);
+    } catch (e: any) {
+      setPageError(e?.message || t('settings.model.saveFailed'));
+    }
+  };
 
   const [ccApiKey, setCcApiKey] = useState('');
   const [ccFetching, setCcFetching] = useState(false);
@@ -295,24 +469,44 @@ const ModelSettings: React.FC = () => {
       setCcModels(list);
     } catch (e: any) { setCcError(e?.message || 'Fetch failed'); } finally { setCcFetching(false); }
   };
-  const addCcModel = (m: any) => {
+  const addCcModel = async (m: any) => {
     const mid = m.id || m.model || '';
     const short = mid.split('/').pop() || mid;
     const name = `${activeProvider}-${short}`;
     if ((config.models || []).some((x: any) => x.name === name)) { setCcError(t('settings.model.ccAlreadyAdded', `Model ${name} already exists`)); return; }
     const meta = providers.find((p: any) => p.id === activeProvider) || {};
     const baseUrl = meta.chat_base_url || meta.base_url || '';
-    setConfig((prev: any) => ({ ...prev, models: [...(prev.models || []), { name, api_key: ccApiKey.trim(), base_url: baseUrl, model: mid, temperature: 0.7, timeout: 120 }], current_model: prev.current_model || name }));
-    closeCcPicker();
+    const entry: any = { name, api_key: ccApiKey.trim(), base_url: baseUrl, model: mid, temperature: 0.7, timeout: 120 };
+    const ctx = Number(m.context_length) || 0;
+    if (ctx > 0) entry.context_window = ctx;
+    try {
+      await applyModels([...(config.models || []), entry], config.current_model || name);
+      closeCcPicker();
+    } catch (e: any) {
+      setCcError(e?.message || t('settings.model.saveFailed'));
+    }
   };
   const openProviderPicker = () => setShowProviderPicker(true);
   const closeProviderPicker = () => { setProviderPickerClosing(true); setTimeout(() => { setShowProviderPicker(false); setProviderPickerClosing(false); }, 150); };
   const pickProvider = (id: string) => {
     closeProviderPicker();
     setTimeout(() => {
-      if (id === 'custom') { addModel(); }
+      if (id === 'custom') { setEditor({}); }
       else { setActiveProvider(id); setCcError(''); setCcModels([]); setShowCcPicker(true); }
     }, 160);
+  };
+
+  const saveEditor = async (entry: Record<string, any>) => {
+    const list = [...(config.models || [])];
+    if (typeof editor?.index === 'number') {
+      list[editor.index] = entry;
+    } else {
+      if (list.some(m => m.name === entry.name)) {
+        throw new Error(t('settings.model.ccAlreadyAdded', { name: entry.name }));
+      }
+      list.push(entry);
+    }
+    await applyModels(list, typeof editor?.index === 'number' ? config.current_model : (config.current_model || entry.name));
   };
 
   const models = config.models || [];
@@ -341,7 +535,7 @@ const ModelSettings: React.FC = () => {
                   <CustomDropdown
                     value={displayModelName}
                     items={models.map((m: any) => ({ value: m.name, label: `${m.name} (${m.model || t('settings.model.notSet')})` }))}
-                    onChange={val => updateField('current_model', val)}
+                    onChange={val => { updateField('current_model', val); applyModels(config.models || [], val).catch(() => {}); }}
                   />
                 </div>
               </div>
@@ -397,7 +591,8 @@ const ModelSettings: React.FC = () => {
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
                               {ccModels.map((m: any) => {
                                 const mid2 = m.id || m.model || '';
-                                const label = m.name || mid2;
+                                const ctx2 = Number(m.context_length) || 0;
+                                const label = (m.name || mid2) + (ctx2 > 0 ? `  (${Math.round(ctx2 / 1000)}k)` : '');
                                 return (
                                   <div key={mid2} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', border: '1px solid var(--border-primary)', borderRadius: 8, background: 'var(--bg-tertiary)' }}>
                                     <span style={{ fontSize: 13 }}>{label}</span>
@@ -422,58 +617,50 @@ const ModelSettings: React.FC = () => {
                 </div>
               )}
 
+              {pageError && (
+                <div className="settings-desc" style={{ color: 'var(--text-error)', marginBottom: 8 }}>{pageError}</div>
+              )}
+
               <div className="models-grid">
                 {models.map((model: any, index: number) => (
                   <div key={index} className={`model-card ${displayModelName === model.name ? 'active' : ''}`}>
                     <div className="model-card-header">
-                      <div className="model-name-wrapper">
+                      <div className="model-card-title">
+                        <Icons.Database size={15} />
+                        <span>{model.name}</span>
                         {displayModelName === model.name && <span className="active-badge">Active</span>}
-                        <input
-                          type="text"
-                          value={model.name}
-                          onChange={e => updateModelField(index, 'name', e.target.value)}
-                          placeholder={t('settings.model.namePlaceholder')}
-                          className="model-name-input"
-                        />
                       </div>
-                      <button className="btn-icon danger" onClick={() => removeModel(index)} title={t('common.delete')}>
-                        <Icons.X size={16} />
-                      </button>
+                      <div className="model-card-actions">
+                        <button className="btn-icon" onClick={() => setEditor({ initial: model, index })} title={t('settings.model.editModel')}>
+                          <Icons.Edit size={15} />
+                        </button>
+                        <button
+                          className="btn-icon danger"
+                          onClick={() => setDeleteTarget({ index, name: model.name })}
+                          disabled={displayModelName === model.name}
+                          title={displayModelName === model.name ? t('settings.model.cannotDeleteActive') : t('common.delete')}
+                        >
+                          <Icons.X size={15} />
+                        </button>
+                      </div>
                     </div>
                     <div className="model-card-body">
-                      <div className="form-group">
-                        <FieldLabel label={t('settings.model.baseUrl')} />
-                        <input type="text" value={model.base_url || ''} onChange={e => updateModelField(index, 'base_url', e.target.value)} placeholder="https://api.openai.com/v1" />
-                      </div>
-                      <div className="form-group">
-                        <FieldLabel label={t('settings.model.apiKey')} />
-                        <input type="password" value={model.api_key || ''} onChange={e => updateModelField(index, 'api_key', e.target.value)} placeholder="sk-..." />
-                      </div>
-                      <div className="form-group">
-                        <FieldLabel label={t('settings.model.modelId')} />
-                        <input type="text" value={model.model || ''} onChange={e => updateModelField(index, 'model', e.target.value)} placeholder="gpt-4o" />
-                      </div>
-                      <div className="form-group">
-                        <FieldLabel label={t('settings.model.contextWindow')} />
-                        <input
-                          type="number" value={Number(model.context_window) || ''} min={1000} step={1000}
-                          placeholder="200000"
-                          onChange={e => updateModelField(index, 'context_window', parseInt(e.target.value) || '')}
-                        />
-                        <span className="field-hint">{t('settings.model.contextWindowHint')}</span>
-                      </div>
-                      <div className="form-row">
-                        <div className="form-group">
-                          <FieldLabel label={t('settings.model.temperature')} />
-                          <input type="number" value={Number(model.temperature) || 0.7} min={0} max={2} step={0.1}
-                            onChange={e => updateModelField(index, 'temperature', parseFloat(e.target.value))} />
+                      <div className="model-card-id" title={model.model || ''}>{model.model || t('settings.model.notSet')}</div>
+                      <div className="model-card-meta">
+                        <div className="model-meta-item">
+                          <span className="model-meta-label">CTX</span>
+                          <span className="model-meta-value">{model.context_window ? `${Math.round(Number(model.context_window) / 1000)}k` : '200k'}</span>
                         </div>
-                        <div className="form-group">
-                          <FieldLabel label={t('settings.model.timeout')} />
-                          <input type="number" value={Number(model.timeout) || 120} min={10} max={600}
-                            onChange={e => updateModelField(index, 'timeout', parseInt(e.target.value))} />
+                        <div className="model-meta-item">
+                          <span className="model-meta-label">TEMP</span>
+                          <span className="model-meta-value">{model.temperature ?? 0.7}</span>
+                        </div>
+                        <div className="model-meta-item">
+                          <span className="model-meta-label">TIMEOUT</span>
+                          <span className="model-meta-value">{model.timeout ?? 120}s</span>
                         </div>
                       </div>
+                      <div className="model-card-url" title={model.base_url || ''}>{model.base_url || '-'}</div>
                     </div>
                   </div>
                 ))}
@@ -481,11 +668,34 @@ const ModelSettings: React.FC = () => {
             </div>
           </div>
 
-          <div className="form-actions">
-            <button className={`btn-primary ${saving ? 'saving' : ''} ${saved ? 'saved' : ''}`} onClick={handleSave} disabled={saving}>
-              {saving ? t('common.saving') : saved ? `✓ ${t('settings.model.saved')}` : t('settings.model.saveAndReload')}
-            </button>
-          </div>
+          {editor && (
+            <ModelEditorModal
+              title={typeof editor.index === 'number' ? t('settings.model.editModel') : t('settings.model.addModel')}
+              initial={editor.initial}
+              onClose={() => setEditor(null)}
+              onSave={saveEditor}
+            />
+          )}
+
+          {deleteTarget && createPortal(
+            <div className="skill-detail-modal">
+              <div className="modal-overlay" onClick={() => setDeleteTarget(null)} />
+              <div className="modal-content" style={{ maxWidth: 420 }}>
+                <div className="modal-header">
+                  <h3>{t('settings.model.deleteModel')}</h3>
+                  <button className="btn-close" onClick={() => setDeleteTarget(null)}><Icons.X size={18} /></button>
+                </div>
+                <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div className="settings-desc">{t('settings.model.confirmDeleteModel', { name: deleteTarget.name })}</div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button className="btn-secondary" onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</button>
+                    <button className="btn-primary" onClick={confirmDelete}>{t('common.delete')}</button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
         </>
       )}
     </div>
@@ -1821,11 +2031,6 @@ const MemorySettings: React.FC = () => {
             <input type="number" value={Number(sessionCompact.tool_call_threshold) || 0} min={0} max={200}
               placeholder="0"
               onChange={e => updateField('session_compact.tool_call_threshold', parseInt(e.target.value) || 0)} />
-          </div>
-          <div className="form-group">
-            <FieldLabel label={t('settings.memory.keepRecentMessages')} desc={t('settings.memory.keepRecentMessagesDesc')} />
-            <input type="number" value={Number(sessionCompact.keep_recent_messages) || 20} min={3} max={100}
-              onChange={e => updateField('session_compact.keep_recent_messages', parseInt(e.target.value))} />
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.memory.notesMaxLength')} desc={t('settings.memory.notesMaxLengthDesc')} />

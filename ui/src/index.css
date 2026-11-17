@@ -3696,18 +3696,97 @@ input:focus, select:focus, textarea:focus {
 .model-card {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-primary);
-    border-radius: 8px;
-    margin-bottom: 16px;
+    border-radius: 12px;
+    margin-bottom: 0;
     overflow: hidden;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.model-card:hover {
+    border-color: var(--border-secondary);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+    transform: translateY(-1px);
 }
 
 .model-card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
-    background: var(--bg-hover);
+    padding: 12px 14px;
+    background: transparent;
     border-bottom: 1px solid var(--border-primary);
+}
+
+.model-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.model-card-title > span:not(.active-badge) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.model-card-actions {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.model-card-id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    border-radius: 8px;
+    padding: 7px 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.model-card-meta {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.model-meta-item {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+}
+
+.model-meta-label {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.model-meta-value {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.model-card-url {
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .model-name-input {
@@ -3751,6 +3830,14 @@ input:focus, select:focus, textarea:focus {
 
 .btn-icon:disabled {
     background: var(--gray-300);
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: auto;
+}
+
+.btn-icon:disabled:hover {
+    background: var(--gray-300);
+    color: inherit;
 }
 
 .model-card-body {
@@ -6844,6 +6931,49 @@ input:focus, select:focus, textarea:focus {
     justify-content: flex-end;
     gap: 8px;
     margin-top: auto;
+}
+
+.component-readme {
+    max-height: 44vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    margin-top: 4px;
+    padding: 12px 14px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    overscroll-behavior: contain;
+    word-break: break-word;
+}
+
+.component-readme img {
+    max-width: 100%;
+    height: auto;
+}
+
+.component-readme pre {
+    overflow-x: auto;
+}
+
+.component-readme table {
+    display: block;
+    overflow-x: auto;
+}
+
+.component-readme-fallback {
+    max-height: 44vh;
+    overflow: auto;
+    margin: 0;
+    padding: 12px 14px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .component-toolbar {

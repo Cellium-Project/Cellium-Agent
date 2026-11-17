@@ -137,6 +137,72 @@ async def fetch_provider_models(body: ProviderModelsRequest):
         raise HTTPException(status_code=502, detail=f"拉取模型失败: {msg}")
 
 
+class CustomModelsRequest(BaseModel):
+    base_url: str
+    api_key: str = ""
+
+
+@router.post("/custom/models")
+async def fetch_custom_models(body: CustomModelsRequest):
+    import httpx
+    from app.agent.llm.providers.base import parse_context_length
+
+    base = (body.base_url or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(status_code=400, detail="请提供 API 地址")
+    headers = {"Content-Type": "application/json"}
+    api_key = (body.api_key or "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    candidates = [f"{base}/models"]
+    if not base.endswith("/v1"):
+        candidates.append(f"{base}/v1/models")
+    if "opencode.ai" in base and "/zen/go/v1" not in base:
+        candidates.append("https://opencode.ai/zen/go/v1/models")
+    if "commandcode.ai" in base and "/provider/v1" not in base:
+        candidates.append("https://api.commandcode.ai/provider/v1/models")
+    if api_key.startswith("oc_sk_") and "opencode.ai" not in base:
+        candidates.append("https://opencode.ai/zen/go/v1/models")
+    candidates = list(dict.fromkeys(candidates))
+
+    attempts = []
+    async with httpx.AsyncClient(timeout=10) as client:
+        for url in candidates:
+            try:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code != 200:
+                    attempts.append(f"{url} -> HTTP {resp.status_code}")
+                    continue
+                data = resp.json()
+            except Exception as e:
+                attempts.append(f"{url} -> {e}")
+                continue
+            items = data.get("data") if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                attempts.append(f"{url} -> 无模型列表")
+                continue
+            models = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                model_id = item.get("id") or item.get("name")
+                if not model_id:
+                    continue
+                models.append({
+                    "id": str(model_id),
+                    "name": item.get("name") or str(model_id),
+                    "context_length": parse_context_length(item) or None,
+                })
+            if models:
+                return {"models": sorted(models, key=lambda x: x["id"])}
+            attempts.append(f"{url} -> 模型列表为空")
+
+    detail = "无法从该端点获取模型列表"
+    if attempts:
+        detail += "：" + "；".join(attempts[:3])
+    raise HTTPException(status_code=502, detail=detail)
+
+
 @router.get("/{section}")
 async def get_section(section: str):
     """获取指定配置段"""
@@ -220,6 +286,17 @@ async def update_section(
     old_value = config.get(section)
 
     protected_value = _protect_sensitive_fields(body.value, old_value)
+
+    if section == "llm" and isinstance(old_value, dict) and isinstance(protected_value, dict):
+        old_models = [m for m in (old_value.get("models") or []) if isinstance(m, dict)]
+        new_models = [m for m in (protected_value.get("models") or []) if isinstance(m, dict)]
+        old_current = old_value.get("current_model") or ""
+        new_names = {m.get("name") for m in new_models}
+        if old_current and len(new_models) < len(old_models) and old_current not in new_names:
+            raise HTTPException(
+                status_code=409,
+                detail="当前使用中的模型不可删除，请先切换到其他模型",
+            )
 
     config.set(section, protected_value, persist=True)
 

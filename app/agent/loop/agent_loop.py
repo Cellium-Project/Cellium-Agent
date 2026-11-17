@@ -261,7 +261,8 @@ class AgentLoop:
             token_threshold=session_config.get("token_threshold") or None,
             compact_ratio=session_config.get("compact_ratio", 0.8),
             tool_call_threshold=session_config.get("tool_call_threshold", 0),
-            keep_recent_messages=session_config.get("keep_recent_messages", 10),
+            keep_recent_messages=session_config.get("keep_recent_messages", 20),
+            keep_recent_tokens=session_config.get("keep_recent_tokens", 15000),
             max_notes_length=session_config.get("max_notes_length", 2000),
             repository=three_layer_memory.repository if three_layer_memory else None,
             archive=three_layer_memory.archive if three_layer_memory else None,
@@ -340,7 +341,8 @@ class AgentLoop:
                 "token_threshold": 0,
                 "compact_ratio": 0.8,
                 "tool_call_threshold": 0,
-                "keep_recent_messages": 10,
+                "keep_recent_messages": 20,
+                "keep_recent_tokens": 15000,
                 "max_notes_length": 2000,
                 "notes_dir": f"{memory_dir}/notes",
             },
@@ -1464,8 +1466,8 @@ class AgentLoop:
                     logger.info("[AgentLoop] 执行待处理的会话压缩...")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
-                    await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_pending_fallback)
-                    self._compact_hint_pending = True
+                    if await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_pending_fallback):
+                        self._compact_hint_pending = True
                     self._persist_conversation(
                         user_input="", response_content=None,
                         session_id=effective_session, memory=effective_memory,
@@ -1551,8 +1553,8 @@ class AgentLoop:
                         logger.info("[AgentLoop] 执行控制环触发的强制压缩 | iter=%d | action=%s", iteration, decision.action_type)
                         yield {"type": "status", "content": "正在根据控制决策压缩上下文..."}
                         session_notes = self._get_session_notes(effective_session)
-                        await self._session_compactor.compact_now(effective_memory, session_notes)
-                        self._compact_hint_pending = True
+                        if await self._session_compactor.compact_now(effective_memory, session_notes):
+                            self._compact_hint_pending = True
 
                     if decision.should_stop or _force_stop:
                         logger.info("[ControlLoop] 终止迭代 | action=%s | trigger=%s", decision.action_type, constraint.trigger_reason)
@@ -1740,14 +1742,14 @@ class AgentLoop:
                     logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
-                    await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_over_window)
-                    # 压缩会重建 messages，context 里还是压缩前的快照，必须重新取一次
-                    context["session_messages"] = effective_memory.get_messages()
-                    self._compact_hint_pending = True
-                    _hint = self._take_compact_hint()
-                    if _hint:
-                        _prev = context.get("system_injection")
-                        context["system_injection"] = f"{_prev}\n\n{_hint}" if _prev else _hint
+                    _compacted = await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_over_window)
+                    if _compacted:
+                        context["session_messages"] = effective_memory.get_messages()
+                        self._compact_hint_pending = True
+                        _hint = self._take_compact_hint()
+                        if _hint:
+                            _prev = context.get("system_injection")
+                            context["system_injection"] = f"{_prev}\n\n{_hint}" if _prev else _hint
                     llm_messages = self._prompt_builder.build(context)
                     self._persist_conversation(
                         user_input="", response_content=None,

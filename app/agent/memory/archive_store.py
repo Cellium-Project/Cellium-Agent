@@ -156,6 +156,62 @@ class ArchiveStore:
                     continue
         return records
 
+    def get_recent_messages(self, session_id: str, limit: int = 100, offset: int = 0) -> List[Dict]:
+        if limit <= 0:
+            return []
+        records = self.get_by_session(session_id, limit=1000)
+        messages = []
+        seen = set()
+        for record in reversed(records):
+            for msg in reversed(record.get("messages") or []):
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "user" and msg.get("_is_compacted_notes"):
+                    continue
+                key = json.dumps(msg, ensure_ascii=False, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                messages.append(msg)
+        messages.reverse()
+        end = len(messages) - max(0, offset)
+        return messages[max(0, end - limit):end]
+
+    def get_message_range(self, session_id: str, start: int = 0, end: int = None) -> List[Dict]:
+        records = self.get_by_session(session_id, limit=1000000)
+        messages = []
+        seen = set()
+        for record in reversed(records):
+            for msg in reversed(record.get("messages") or []):
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "user" and msg.get("_is_compacted_notes"):
+                    continue
+                key = json.dumps(msg, ensure_ascii=False, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                messages.append(msg)
+        messages.reverse()
+        return messages[max(0, int(start)):end]
+
+    def count_messages(self, session_id: str) -> int:
+        records = self.get_by_session(session_id, limit=1000000)
+        seen = set()
+        count = 0
+        for record in records:
+            for msg in record.get("messages") or []:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "user" and msg.get("_is_compacted_notes"):
+                    continue
+                key = json.dumps(msg, ensure_ascii=False, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                count += 1
+        return count
+
     def search_messages(self, query: str, session_id: str = "", limit: int = 10,
                         context: int = 1, max_records: int = 2000) -> List[Dict]:
         """按关键词在归档原始消息里检索，返回命中消息及上下文（供压缩后召回细节）"""

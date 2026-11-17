@@ -43,6 +43,7 @@ export const API = {
   modelListLocal: `${API_BASE}/config/model/list-local`,
   llmProviders: `${API_BASE}/config/providers`,
   providerModels: `${API_BASE}/config/provider/models`,
+  customModels: `${API_BASE}/config/custom/models`,
 
   // Memory
   memories: `${API_BASE}/memories`,

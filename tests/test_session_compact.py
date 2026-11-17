@@ -122,6 +122,182 @@ class TestSingleShotCompact(unittest.TestCase):
         self.assertTrue(result["goal"])
 
 
+class RichEngine:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def chat(self, messages, tools=None, **kwargs):
+        return type("R", (), {"content": json.dumps(self.payload, ensure_ascii=False)})()
+
+
+class TestSummarySchema(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="cellium_schema_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_pending_and_long_summary(self):
+        summary = "目标：重构压缩链路。当前状态：已完成 prompt 调整。" * 30
+        payload = {
+            "goal": "重构压缩链路",
+            "actions": ["修改摘要 prompt", "新增 pending 字段"],
+            "findings": ["app/agent/memory/session_compact.py"],
+            "errors": [{"error": "旧摘要缺少待办", "resolution": "写入 pending"}],
+            "pending": ["跑全量回归", "检查前缀缓存"],
+            "summary": summary,
+        }
+        mem = make_memory(60, chars_per_msg=50)
+        compactor = SessionCompactor(llm_engine=RichEngine(payload), keep_recent_messages=10)
+        notes = SessionNotes(session_id="rich", notes_dir=os.path.join(self._tmp, "notes"))
+        asyncio.run(compactor.compact_now(mem, notes))
+        self.assertIn(summary[:40], str(mem.messages[0].get("content", "")))
+        self.assertEqual(notes.get_pending(), ["- 跑全量回归", "- 检查前缀缓存"])
+        self.assertEqual(notes.get_goal(), "重构压缩链路")
+        self.assertIn("## 待处理", notes.render())
+
+    def test_malformed_summary_fields(self):
+        payload = {
+            "goal": ["目标A", "目标B"],
+            "actions": "单个动作",
+            "findings": {"path": "a.py"},
+            "errors": "单个错误",
+            "pending": None,
+            "summary": ["第一段", "第二段"],
+        }
+        mem = make_memory(40, chars_per_msg=40)
+        compactor = SessionCompactor(llm_engine=RichEngine(payload), keep_recent_messages=5)
+        notes = SessionNotes(session_id="bad", notes_dir=os.path.join(self._tmp, "notes"))
+        ok = asyncio.run(compactor.compact_now(mem, notes))
+        self.assertTrue(ok)
+        self.assertIsNone(notes.get_goal())
+        self.assertEqual(notes.get_completed(), [])
+        self.assertEqual(notes.get_errors(), [])
+        self.assertIn("第一段", str(mem.messages[0].get("content", "")))
+
+
+class TestNotesRender(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="cellium_render_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_truncation_keeps_pending_and_errors(self):
+        notes = SessionNotes(session_id="render", notes_dir=self._tmp)
+        notes.set_goal("目标G")
+        notes.set_pending(["待办P1"])
+        notes.add_error("错误E1")
+        for i in range(50):
+            notes.add_finding(f"发现{i} " + "x" * 80)
+        text = notes.render_for_prompt(max_length=2000)
+        self.assertIn("待办P1", text)
+        self.assertIn("错误E1", text)
+        self.assertIn("发现49", text)
+        self.assertIn("更早 30 条已省略", text)
+        self.assertLessEqual(len(text), 2100)
+
+
+class BadEngine:
+    async def chat(self, messages, tools=None, **kwargs):
+        return type("R", (), {"content": "not json at all"})()
+
+
+class BadArchive:
+    def append_messages(self, **kwargs):
+        raise RuntimeError("disk full")
+
+
+class TestSummaryGuard(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="cellium_guard_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_invalid_output_aborts(self):
+        mem = make_memory(40, chars_per_msg=40)
+        before = len(mem.messages)
+        notes = SessionNotes(session_id="guard", notes_dir=self._tmp)
+        compactor = SessionCompactor(llm_engine=BadEngine(), keep_recent_messages=5)
+        ok = asyncio.run(compactor.compact_now(mem, notes))
+        self.assertFalse(ok)
+        self.assertEqual(len(mem.messages), before)
+        self.assertFalse(os.path.exists(notes.notes_path))
+
+    def test_summary_only_keeps_notes(self):
+        notes = SessionNotes(session_id="guard2", notes_dir=self._tmp)
+        notes.set_goal("旧目标")
+        notes.set_completed(["旧完成"])
+        notes.set_pending(["旧待办"])
+        notes.save()
+        mem = make_memory(40, chars_per_msg=40)
+        compactor = SessionCompactor(llm_engine=RichEngine({"summary": "只有摘要"}), keep_recent_messages=5)
+        ok = asyncio.run(compactor.compact_now(mem, notes))
+        self.assertTrue(ok)
+        self.assertIn("只有摘要", str(mem.messages[0].get("content", "")))
+        self.assertEqual(notes.get_goal(), "旧目标")
+        self.assertEqual(notes.get_completed(), ["- 旧完成"])
+        self.assertEqual(notes.get_pending(), ["- 旧待办"])
+
+    def test_archive_failure_aborts(self):
+        mem = make_memory(40, chars_per_msg=40)
+        before = len(mem.messages)
+        notes = SessionNotes(session_id="guard3", notes_dir=self._tmp)
+        compactor = SessionCompactor(
+            llm_engine=RichEngine({"summary": "x"}),
+            keep_recent_messages=5,
+            archive=BadArchive(),
+        )
+        ok = asyncio.run(compactor.compact_now(mem, notes))
+        self.assertFalse(ok)
+        self.assertEqual(len(mem.messages), before)
+
+    def test_current_task_skips_system_injection(self):
+        mem = MemoryManager()
+        mem.add_user_message("请实现真实需求")
+        mem.add_assistant_message("收到")
+        for i in range(30):
+            mem.add_user_message(f"进度{i}")
+            mem.add_assistant_message(f"回答{i}")
+        mem.add_user_message("[系统] 以下是可用工具定义")
+        notes = SessionNotes(session_id="guard5", notes_dir=self._tmp)
+        compactor = SessionCompactor(llm_engine=RichEngine({"summary": "x"}), keep_recent_messages=5)
+        ok = asyncio.run(compactor.compact_now(mem, notes))
+        self.assertTrue(ok)
+        self.assertEqual(mem.messages[1].get("role"), "user")
+        self.assertIn("进度", str(mem.messages[1].get("content", "")))
+        self.assertNotIn("[系统]", str(mem.messages[1].get("content", "")))
+
+    def test_recent_files_injected(self):
+        mem = make_memory(40, chars_per_msg=40)
+        mem.messages.append({
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "edit", "arguments": json.dumps({"file_path": "src/app.py"})}}],
+        })
+        mem.messages.append({"role": "tool", "tool_call_id": "c1", "content": "ok"})
+        mem.messages.append({
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c2", "type": "function",
+                            "function": {"name": "read", "arguments": json.dumps({"file_path": "src/util.py"})}}],
+        })
+        mem.messages.append({"role": "tool", "tool_call_id": "c2", "content": "ok"})
+        notes = SessionNotes(session_id="guard4", notes_dir=self._tmp)
+        compactor = SessionCompactor(llm_engine=RichEngine({"summary": "x"}), keep_recent_messages=5)
+        ok = asyncio.run(compactor.compact_now(mem, notes))
+        self.assertTrue(ok)
+        text = str(mem.messages[0].get("content", ""))
+        self.assertIn("## 最近涉及的文件", text)
+        self.assertIn("src/app.py", text)
+        self.assertIn("(edit)", text)
+        self.assertIn("src/util.py", text)
+        self.assertIn("(read)", text)
+
+
 class TestJsonParsing(unittest.TestCase):
     """JSON 容错解析"""
 

@@ -833,6 +833,10 @@ class CelliumTUI(App):
                     self.input.focus()
             except Exception:
                 pass
+        now = time.monotonic()
+        if now - getattr(self, "_last_focus_sync", 0.0) < 1.0:
+            return
+        self._last_focus_sync = now
         self._post(self._reload_history_if_stale())
 
     def _history_revision(self):
@@ -2195,8 +2199,8 @@ class CelliumTUI(App):
 
     def _refresh_tracked_ids(self):
         try:
-            from app.agent.loop.rewind import rewindable_user_ids
-            self._tracked_ids = rewindable_user_ids(self.session_id)
+            from app.agent.loop.rewind import tracked_user_ids
+            self._tracked_ids = tracked_user_ids(self.session_id)
         except Exception:
             self._tracked_ids = set()
         return self._tracked_ids
@@ -3155,18 +3159,28 @@ class CelliumTUI(App):
         self._history_live_start = 0
         was_following = self.chat.following
         prev_scroll_y = self.chat.scroll_y
+        same_session = getattr(self, "_history_specs_sid", None) == self.session_id
+        if not same_session:
+            try:
+                with self.batch_update():
+                    await self.chat.remove_children()
+                self._history_loading = Static(self.tr("history.loading"), id="history-loading")
+                await self.chat.mount(self._history_loading)
+            except Exception:
+                self._history_loading = None
         try:
             hist_limit = self._history_limit
 
             def _build_plan():
-                from app.tui.history_range import build_history_plan_range
-                return build_history_plan_range(self.session_id, None, hist_limit)
+                from app.tui.history_render import build_history_plan_window
+                return build_history_plan_window(self.session_id, hist_limit)
 
             plan, meta = await asyncio.get_running_loop().run_in_executor(
                 None, _build_plan
             )
             if self._history_stale(epoch):
                 return
+            await self._remove_history_loading()
             if plan and await self._append_history_tail(plan, meta, was_following, prev_scroll_y, epoch):
                 self.set_timer(0.15, self._scroll_history_done)
                 self._restoring_history = False
@@ -3176,11 +3190,10 @@ class CelliumTUI(App):
                 if not self._busy:
                     self.input.focus()
                 return
-            with self.batch_update():
-                await self.chat.remove_children()
             self._history_meta = meta
             self._history_has_more = meta.get("has_more", False)
             self._history_live_start = int(meta.get("end") or 0)
+            widgets = []
             if plan:
                 mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, plan)
                 if self._history_stale(epoch):
@@ -3188,17 +3201,19 @@ class CelliumTUI(App):
                 widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
                 if self._history_stale(epoch):
                     return
+            with self.batch_update():
+                await self.chat.remove_children()
                 _batch = 20
                 for _i in range(0, len(widgets), _batch):
                     _wc = widgets[_i:_i + _batch]
                     _sc = plan[_i:_i + _batch]
-                    with self.batch_update():
-                        await self.chat.mount(*_wc)
-                        for w, s in zip(_wc, _sc):
-                            self._post_mount(w, s)
+                    await self.chat.mount(*_wc)
+                    for w, s in zip(_wc, _sc):
+                        self._post_mount(w, s)
                     await asyncio.sleep(0)
-                    if self._history_stale(epoch):
-                        return
+            if plan:
+                if self._history_stale(epoch):
+                    return
                 self._history_specs = list(plan)
                 self._history_specs_sid = self.session_id
                 try:
@@ -3209,6 +3224,11 @@ class CelliumTUI(App):
                     await asyncio.sleep(0)
                 if was_following:
                     self.chat.force_scroll_bottom()
+                else:
+                    try:
+                        self.chat.scroll_to(y=prev_scroll_y, animate=False, immediate=True)
+                    except Exception:
+                        pass
                 self.set_timer(0.15, self._scroll_history_done)
                 self._restoring_history = False
                 self._history_ready.set()
@@ -3226,6 +3246,7 @@ class CelliumTUI(App):
             if not self._busy:
                 self.input.focus()
         except Exception:
+            await self._remove_history_loading()
             if self._history_stale(epoch):
                 return
             self._restoring_history = False
@@ -3234,11 +3255,11 @@ class CelliumTUI(App):
             except Exception:
                 pass
 
-    def _remove_history_loading(self):
+    async def _remove_history_loading(self):
         """移除历史加载提示组件"""
         if self._history_loading is not None:
             try:
-                self._history_loading.remove()
+                await self._history_loading.remove()
             except Exception:
                 pass
             self._history_loading = None
@@ -3272,35 +3293,33 @@ class CelliumTUI(App):
             return
         epoch = self._session_epoch
         try:
-            from app.tui.history_range import plan_slice, resolve_anchor_index
-            from app.tui.history_render import load_session_messages
-            messages = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: load_session_messages(self.session_id, limit=10000)
-            )
-            if self._history_stale(epoch):
-                return
-            if not messages:
-                self._backfill_pending = False
-                return
-            total = len(messages)
+            from app.tui.history_range import message_identity, plan_slice
+            from app.tui.history_render import load_history_range
             meta = self._history_meta or {}
-            live_start = int(getattr(self, "_history_live_start", 0) or 0)
-            end_target = live_start if live_start > 0 else total
             max_end = 0
             for child in self.chat.children:
                 span = getattr(child, "hist_span", None)
                 if span:
                     max_end = max(max_end, int(span[1]))
             start_index = max(max_end, int(meta.get("end") or 0))
-            if start_index >= end_target:
+
+            messages, real_start, real_end, total = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: load_history_range(self.session_id, start_index, None)
+            )
+            if self._history_stale(epoch):
+                return
+            if not messages or real_end <= real_start:
                 self._backfill_pending = False
                 return
-            plan = plan_slice(messages, start_index, end_target)
+            plan = plan_slice(messages, 0, len(messages))
+            if real_start:
+                for spec in plan:
+                    span = spec.get("span")
+                    if span:
+                        spec["span"] = (span[0] + real_start, span[1] + real_start)
             if not plan:
                 self._backfill_pending = False
                 return
-            scroll_y = self.chat.scroll_y
-            old_max = self.chat.max_scroll_y
             mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, plan)
             if self._history_stale(epoch):
                 return
@@ -3309,23 +3328,18 @@ class CelliumTUI(App):
                 await self.chat.mount(*widgets)
                 for w, s in zip(widgets, plan):
                     self._post_mount(w, s)
-            try:
-                for _ in range(5):
-                    await asyncio.sleep(0)
-                added_height = self.chat.max_scroll_y - old_max
-                self.chat.scroll_to(y=scroll_y + added_height, animate=False, immediate=True)
-            except Exception:
-                pass
-            from app.tui.history_range import message_identity
+            if self.chat.following:
+                self.chat.force_scroll_bottom()
             self._history_meta = {
-                "start": int(meta.get("start") or start_index),
-                "end": end_target,
+                "start": int(meta.get("start") or real_start),
+                "end": real_end,
                 "total": total,
-                "anchor": message_identity(messages[start_index]) if start_index < total else None,
-                "has_more": (int(meta.get("start") or start_index)) > 0,
+                "anchor": message_identity(messages[0]),
+                "has_more": int(meta.get("start") or real_start) > 0,
             }
+            self._history_live_start = real_end
             self._backfill_pending = False
-            await self._trim_history_widgets(total)
+            await self._trim_history_widgets(real_end, trim_top=True)
         except Exception:
             pass
 
@@ -3337,38 +3351,30 @@ class CelliumTUI(App):
         self._history_loading_more = True
         epoch = self._session_epoch
         try:
-            from app.tui.history_range import build_history_plan_range, resolve_anchor_index
-            from app.tui.history_render import load_session_messages
+            from app.tui.history_render import build_history_plan_page
             limit = self._history_limit
             meta = self._history_meta or {}
-            anchor = meta.get("anchor")
-            prev_end = int(meta.get("end") or 0)
+            start = int(meta.get("start") or 0)
+            if start <= 0:
+                self._history_has_more = False
+                return
 
-            def _build_more():
-                messages = load_session_messages(self.session_id, limit=10000)
-                if not messages:
-                    return [], {}, messages, []
-                end_index = resolve_anchor_index(messages, anchor, prev_end)
-                if end_index <= 0:
-                    return [], {}, messages, []
-                p, new_meta = build_history_plan_range(
-                    self.session_id, end_index, limit, messages=messages
-                )
-                return p, new_meta, messages, self._build_mds(p)
-
-            plan, new_meta, messages, mds = await asyncio.get_running_loop().run_in_executor(
-                None, _build_more
+            plan, new_meta = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: build_history_plan_page(self.session_id, start, limit)
             )
             if self._history_stale(epoch):
                 return
             if not plan:
                 self._history_has_more = False
                 return
+            live_total = int(new_meta.get("total") or 0)
 
-            live_total = len(messages)
             scroll_y = self.chat.scroll_y
             old_max = self.chat.max_scroll_y
             first_widget = next(iter(self.chat.children), None)
+            mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, plan)
+            if self._history_stale(epoch):
+                return
             widgets = [self._widget_from_spec(s, md) for s, md in zip(plan, mds)]
             with self.batch_update():
                 await self.chat.mount(*widgets, before=first_widget)
@@ -3387,22 +3393,25 @@ class CelliumTUI(App):
             except Exception:
                 pass
             self._history_meta = new_meta
-            self._history_offset = await self._trim_history_widgets(new_meta.get("end", 0))
-            self._history_has_more = new_meta.get("has_more", False)
-            self._backfill_pending = new_meta.get("end", 0) < live_total
+            end_offset = await self._trim_history_widgets(new_meta.get("end", 0), trim_top=False)
+            new_meta["end"] = end_offset
+            self._history_meta = new_meta
+            self._history_has_more = bool(new_meta.get("has_more"))
+            self._backfill_pending = end_offset < live_total
         except Exception:
             pass
         finally:
             self._history_loading_more = False
 
-    async def _trim_history_widgets(self, new_offset: int) -> int:
+    async def _trim_history_widgets(self, new_offset: int, trim_top: bool = True) -> int:
         try:
             max_widgets = max(200, self._history_limit * 5)
             children = list(self.chat.children)
             if len(children) <= max_widgets:
                 return new_offset
             excess = len(children) - max_widgets
-            old_widgets = children[:excess]
+            old_widgets = children[:excess] if trim_top else children[-excess:]
+            kept = children[excess:] if trim_top else children[:-excess]
             try:
                 await self.chat.remove_children(old_widgets)
             except Exception:
@@ -3412,7 +3421,14 @@ class CelliumTUI(App):
                     except Exception:
                         pass
             self._history_specs = None
-            return new_offset
+            if trim_top:
+                return new_offset
+            end = 0
+            for w in kept:
+                span = getattr(w, "hist_span", None)
+                if span:
+                    end = max(end, int(span[1]))
+            return end
         except Exception:
             return new_offset
 
