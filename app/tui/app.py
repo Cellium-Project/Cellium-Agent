@@ -833,11 +833,6 @@ class CelliumTUI(App):
                     self.input.focus()
             except Exception:
                 pass
-        now = time.monotonic()
-        if now - getattr(self, "_last_focus_sync", 0.0) < 1.0:
-            return
-        self._last_focus_sync = now
-        self._post(self._reload_history_if_stale())
 
     def _history_revision(self):
         try:
@@ -3193,6 +3188,30 @@ class CelliumTUI(App):
             self._history_meta = meta
             self._history_has_more = meta.get("has_more", False)
             self._history_live_start = int(meta.get("end") or 0)
+
+            plan_sig = None
+            if plan:
+                try:
+                    plan_sig = (len(plan), repr(plan[0])[:200], repr(plan[-1])[:400])
+                except Exception:
+                    plan_sig = None
+            if (
+                plan_sig is not None
+                and same_session
+                and getattr(self, "_history_plan_sig", None) == plan_sig
+                and self.chat.children
+            ):
+                if self._history_stale(epoch):
+                    return
+                self._history_specs = list(plan)
+                self._history_specs_sid = self.session_id
+                self._history_rev = await asyncio.to_thread(self._history_revision)
+                self._restoring_history = False
+                self._history_ready.set()
+                self._bootstrap_ready.set()
+                return
+            self._history_plan_sig = plan_sig
+
             widgets = []
             if plan:
                 mds = await asyncio.get_running_loop().run_in_executor(None, self._build_mds, plan)

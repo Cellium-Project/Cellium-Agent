@@ -1742,7 +1742,10 @@ class AgentLoop:
                     logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
                     yield {"type": "status", "content": "正在压缩会话记忆..."}
                     session_notes = self._get_session_notes(effective_session)
-                    _compacted = await self._session_compactor.compact_now(effective_memory, session_notes, fallback=_over_window)
+                    _compacted = await self._session_compactor.compact_now(
+                        effective_memory, session_notes, fallback=_over_window,
+                        cache_prefix=llm_messages, tools=tool_defs,
+                    )
                     if _compacted:
                         context["session_messages"] = effective_memory.get_messages()
                         self._compact_hint_pending = True

@@ -31,13 +31,13 @@ class WebSearch(BaseCell):
 
     功能说明:
       - search: 用指定搜索引擎搜索关键词，返回链接列表供 Agent 选择
-      - 支持搜索引擎: bing, baidu, google, duckduckgo
+      - 支持搜索引擎: bing, 360, baidu, google, duckduckgo
     """
 
     SEARCH_ENGINES = {
         'bing': {
             'name': 'Bing',
-            'url_template': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez2%22',
+            'url_template': 'https://www.bing.com/search?q={query}',
             'url_template_no_filter': 'https://www.bing.com/search?q={query}',
             'url_template_recent': {
                 'hour': 'https://www.bing.com/search?q={query}&filters=ex1%3a%22ez5%22',  # 1小时内
@@ -75,6 +75,15 @@ class WebSearch(BaseCell):
             'desc_selector': '.VwiC3b, .IsZvec, .s3v94d',
             'shortlink_pattern': 'google.com/url?',
         },
+        '360': {
+            'name': '360搜索',
+            'url_template': 'https://www.so.com/s?q={query}',
+            'result_selector': 'li.res-list',
+            'title_selector': 'css:h3',
+            'link_selector': 'css:a',
+            'desc_selector': '.res-desc, .res-list-summary',
+            'shortlink_pattern': 'so.com/link?',
+        },
         'duckduckgo': {
             'name': 'DuckDuckGo',
             'url_template': 'https://html.duckduckgo.com/html/?q={query}',
@@ -107,6 +116,32 @@ class WebSearch(BaseCell):
         # 中国科技
         '36kr.com': 7, 'jiqizhixin.com': 7, 'leiphone.com': 6,
     }
+
+    NOISE_DOMAINS = (
+        'beian.miit.gov.cn', 'beian.gov.cn', 'www.miit.gov.cn',
+        'support.microsoft.com', 'go.microsoft.com',
+        'privacy.microsoft.com', 'account.microsoft.com',
+        'about.bing.com', 'bing.com/search', 'cn.bing.com',
+        'www.baidu.com/s?', 'baidu.com/s?wd=',
+        'accounts.google.com', 'policies.google.com', 'google.com/search',
+        'duckduckgo.com/settings', 'duckduckgo.com/y.js',
+        'zhihu.com/search', 'baike.baidu.com/search',
+        'ai.so.com/search', 'wenku.so.com/s?',
+    )
+
+    NOISE_TITLES = (
+        'icp备', 'icp证', '公网安备', '网安备',
+        '隐私', 'privacy', '条款', 'terms', 'cookie', '免责声明',
+        '此处', '词典', '航班', '翻译', '图片', '视频',
+        '关于我们', '联系我们', '广告服务', '帮助中心', '意见反馈',
+        '使用条款', '服务条款', '法律声明',
+    )
+
+    EMPTY_PAGE_HINTS = (
+        '没有找到相关结果', '未找到相关结果', '没有找到与', '找不到和您查询',
+        '抱歉，没有找到', '暂无搜索结果',
+        'no results found', 'did not match any documents', 'there are no results',
+    )
 
     def __init__(self):
         super().__init__()
@@ -223,7 +258,7 @@ class WebSearch(BaseCell):
 
     def _select_best_engine(self) -> str:
         """自动选择最佳的可用搜索引擎"""
-        priority_order = ['bing', 'google', 'duckduckgo', 'baidu']
+        priority_order = ['bing', '360', 'baidu', 'google', 'duckduckgo']
         with self._health_lock:
             health_snapshot = dict(self._engine_health)
 
@@ -247,8 +282,8 @@ class WebSearch(BaseCell):
                 logger.info(f"[WebSearch:auto] 选择 {engine} (状态: {health}, 尝试搜索)")
                 return engine
 
-        logger.info(f"[WebSearch:auto] 默认选择 baidu")
-        return 'baidu'
+        logger.info(f"[WebSearch:auto] 默认选择 bing")
+        return 'bing'
 
     def _get_options(self):
         """获取浏览器配置选项"""
@@ -643,10 +678,58 @@ class WebSearch(BaseCell):
             self._browser_port = None
             self._last_used_time = 0
 
+    def _is_noise_link(self, url: str, title: str) -> bool:
+        """判断链接是否为导航/备案/词典等噪声项"""
+        u = (url or '').strip().lower()
+        t = (title or '').strip().lower()
+
+        if not u or not u.startswith('http'):
+            return True
+        if any(d in u for d in self.NOISE_DOMAINS):
+            return True
+        if len(t) < 4:
+            return True
+        if any(n in t for n in self.NOISE_TITLES):
+            return True
+        if re.search(r'(京|沪|粤|苏|浙|鲁|闽|川|鄂|湘|豫|冀|晋|辽|吉|黑|皖|赣|桂|琼|黔|滇|渝|陕|甘|青|宁|新|蒙|藏|津)icp', t):
+            return True
+        return False
+
+    def _looks_like_block_page(self, html: str) -> bool:
+        """识别搜索引擎的反爬验证/拦截页"""
+        if not html:
+            return False
+        head = html[:8000]
+        if 'wappass.baidu.com' in head or '百度安全验证' in head:
+            return True
+        if len(html) < 6000 and (
+            'anticaptcha' in head or 'anti-captcha' in head
+            or '请输入验证码' in head or 'security verification' in head.lower()
+        ):
+            return True
+        return False
+
+    def _is_empty_result_page(self, page, engine: str) -> bool:
+        """识别搜索引擎的“无结果”页面"""
+        try:
+            html = (page.html or '')
+        except Exception:
+            return False
+
+        sample = html[:80000].lower()
+        return any(h in sample for h in self.EMPTY_PAGE_HINTS)
+
     def _extract_links_generic(self, page, engine: str):
         """通用链接提取方法，适用于所有搜索引擎"""
         links = []
         config = self.SEARCH_ENGINES.get(engine, {})
+
+        try:
+            if self._is_empty_result_page(page, engine):
+                logger.info(f"[WebSearch:{engine}] 页面显示无结果，跳过解析")
+                return []
+        except Exception:
+            pass
 
         try:
             if engine == 'baidu':
@@ -664,16 +747,15 @@ class WebSearch(BaseCell):
             logger.info(f"[WebSearch:{engine}] DOM 解析找到 {len(result_items)} 个搜索结果项")
             for item in result_items:
                 try:
+                    item_mu = (item.attr('mu') or '').strip() if engine == 'baidu' else ''
                     if engine == 'bing':
                         h2 = item.ele('css:h2', timeout=0.5)
                         link_elem = h2.ele('css:a', timeout=0.5) if h2 else item.ele('css:a', timeout=0.5)
                     elif engine == 'baidu':
                         h3 = item.ele('css:h3', timeout=0.5)
-                        if h3:
-                            link_elem = h3.ele('css:a', timeout=0.5)
-                        else:
+                        link_elem = h3.ele('css:a', timeout=0.5) if h3 else None
+                        if not link_elem:
                             all_links = item.eles('css:a', timeout=0.5)
-                            link_elem = None
                             for a in all_links:
                                 href = a.attr('href') or ''
                                 text = a.text.strip() if a.text else ""
@@ -685,12 +767,21 @@ class WebSearch(BaseCell):
                     elif engine == 'duckduckgo':
                         title_elem = item.ele('.result__title', timeout=0.5)
                         link_elem = title_elem.ele('css:a', timeout=0.5) if title_elem else item.ele('css:a', timeout=0.5)
+                    elif engine == '360':
+                        h3 = item.ele('css:h3', timeout=0.5)
+                        link_elem = h3.ele('css:a', timeout=0.5) if h3 else item.ele('css:a', timeout=0.5)
                     else:
                         link_elem = item.ele('css:a', timeout=0.5)
 
                     if link_elem:
                         href = link_elem.attr('href')
                         title = link_elem.text.strip() if link_elem.text else ""
+                        if engine == 'baidu' and item_mu.startswith('http'):
+                            href = item_mu
+                        if engine == '360':
+                            md = link_elem.attr('data-mdurl')
+                            if md and md.startswith('http'):
+                                href = md
 
                         if href and title and len(title) > 5:
                             if href.startswith('javascript:') or 'baidu.com/baidu.php' in href:
@@ -706,10 +797,15 @@ class WebSearch(BaseCell):
                                 desc_elem = item.ele('.VwiC3b', timeout=0.5) or item.ele('.IsZvec', timeout=0.5)
                             elif engine == 'duckduckgo':
                                 desc_elem = item.ele('.result__snippet', timeout=0.5)
+                            elif engine == '360':
+                                desc_elem = item.ele('.res-desc', timeout=0.5) or item.ele('.res-list-summary', timeout=0.5)
                             else:
                                 desc_elem = None
 
                             snippet = desc_elem.text.strip() if desc_elem and desc_elem.text else ""
+
+                            if self._is_noise_link(href, title):
+                                continue
 
                             links.append({
                                 'url': href,
@@ -722,8 +818,14 @@ class WebSearch(BaseCell):
             logger.debug(f"[WebSearch:{engine}] DOM 解析失败: {e}")
 
         if len(links) == 0:
-            logger.info(f"[WebSearch:{engine}] DOM 解析无结果，尝试正则 fallback")
-            links = self._extract_links_regex(page.html, engine)
+            logger.info(f"[WebSearch:{engine}] DOM 解析无结果，尝试严格正则 fallback")
+            links = self._extract_links_regex(page.html, engine, strict=True)
+            if len(links) == 0:
+                logger.info(f"[WebSearch:{engine}] 严格正则仍无结果，尝试宽松正则并过滤噪声")
+                links = [
+                    item for item in self._extract_links_regex(page.html, engine, strict=False)
+                    if not self._is_noise_link(item.get('url', ''), item.get('title', ''))
+                ]
 
         return links
 
@@ -761,6 +863,96 @@ class WebSearch(BaseCell):
 
         return links
 
+    SNIPPET_PATTERNS = {
+        'bing': [
+            r'<p[^>]*class="[^"]*(?:b_lineclamp|b_algoSlug|b_paractl|b_snippet)[^"]*"[^>]*>(.*?)</p>',
+            r'<div[^>]*class="[^"]*b_caption[^"]*"[^>]*>\s*<p[^>]*>(.*?)</p>',
+        ],
+        'baidu': [
+            r'<div[^>]*class="[^"]*c-abstract[^"]*"[^>]*>(.*?)</div>',
+            r'<span[^>]*class="[^"]*content-right[^"]*"[^>]*>(.*?)</span>',
+        ],
+        '360': [
+            r'<p[^>]*class="[^"]*res-desc[^"]*"[^>]*>(.*?)</p>',
+            r'<div[^>]*class="[^"]*res-desc[^"]*"[^>]*>(.*?)</div>',
+        ],
+        'google': [
+            r'<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>(.*?)</div>',
+            r'<span[^>]*class="[^"]*aCOpRe[^"]*"[^>]*>(.*?)</span>',
+        ],
+        'duckduckgo': [
+            r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+            r'<div[^>]*class="result__snippet"[^>]*>(.*?)</div>',
+        ],
+    }
+
+    BLOCK_PATTERNS = {
+        'bing': re.compile(r'<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)</li>', re.DOTALL),
+        'baidu': re.compile(r'<div[^>]*class="[^"]*c-container[^"]*"[^>]*>(.*?)</div>', re.DOTALL),
+        '360': re.compile(r'<li[^>]*class="[^"]*res-list[^"]*"[^>]*>(.*?)</li>', re.DOTALL),
+        'google': re.compile(r'<div[^>]*class="[^"]*\bg\b[^"]*"[^>]*>(.*?)</div>', re.DOTALL),
+        'duckduckgo': re.compile(r'<div[^>]*class="[^"]*result[^"]*"[^>]*>(.*?)</div>', re.DOTALL),
+    }
+
+    def _extract_link_from_block(self, block: str, engine: str):
+        """从结果块中抽取 url 与 title"""
+        url = ''
+        if engine == 'baidu':
+            m = re.search(r'\smu="(https?://[^"]+)"', block) or re.search(r'<a[^>]+href="(https?://[^"]+)"', block)
+        elif engine == '360':
+            m = re.search(r'data-mdurl="([^"]+)"', block) or re.search(r'<a[^>]+href="(https?://[^"]+)"', block)
+        else:
+            m = re.search(r'<a[^>]+href="(https?://[^"]+)"', block)
+        if m:
+            url = m.group(1)
+
+        title = ''
+        tm = re.search(r'<h[23][^>]*>(.*?)</h[23]>', block, re.DOTALL)
+        if tm:
+            title = self._clean_text(tm.group(1))
+        if not title:
+            am = re.search(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
+            if am:
+                title = self._clean_text(am.group(1))
+        return url, title
+
+    @staticmethod
+    def _clean_text(raw: str) -> str:
+        import html as _html
+        text = re.sub(r'<[^>]+>', ' ', raw)
+        text = _html.unescape(text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    def _extract_snippet_from_block(self, block: str, engine: str, title: str = '') -> str:
+        """从单条结果的 HTML 块中提取摘要文本"""
+        for pat in self.SNIPPET_PATTERNS.get(engine, []):
+            m = re.search(pat, block, re.DOTALL)
+            if not m:
+                continue
+            text = self._clean_text(m.group(1))
+            if len(text) > 8 and text != title:
+                return text[:200]
+
+        best = ''
+        for pm in re.finditer(r'<p[^>]*>(.*?)</p>', block, re.DOTALL):
+            t = self._clean_text(pm.group(1))
+            if '://' in t or t == title:
+                continue
+            if len(t) > len(best):
+                best = t
+        if len(best) > 8:
+            return best[:200]
+
+        stripped = re.sub(r'<(cite|script|style)[^>]*>.*?</\1>', ' ', block, flags=re.DOTALL | re.IGNORECASE)
+        stripped = re.sub(r'<a[^>]*>.*?</a>', ' ', stripped, flags=re.DOTALL | re.IGNORECASE)
+        text = self._clean_text(stripped)
+        if title:
+            if text.startswith(title):
+                text = text[len(title):].strip()
+            elif title in text:
+                text = text.replace(title, ' ', 1).strip()
+        return text[:200] if len(text) > 8 else ''
+
     def _extract_links_regex(self, html: str, engine: str = 'bing', strict: bool = False):
         """正则 fallback 解析器
 
@@ -769,15 +961,37 @@ class WebSearch(BaseCell):
         """
         links = []
         try:
+            block_re = self.BLOCK_PATTERNS.get(engine)
+            if block_re:
+                for m in list(block_re.finditer(html))[:20]:
+                    block = m.group(1)
+                    url, title = self._extract_link_from_block(block, engine)
+                    if not url.startswith('http') or len(title) <= 5:
+                        continue
+                    if self._is_noise_link(url, title):
+                        continue
+                    links.append({
+                        'url': url,
+                        'title': title[:100],
+                        'snippet': self._extract_snippet_from_block(block, engine, title),
+                    })
+                if links:
+                    return links
+
             generic = re.compile(r'<a[^>]+href="(https?://[^"]+)"[^>]*>([^<]+)</a>', re.DOTALL)
             patterns = []
             if engine == 'bing':
                 patterns = [
-                    re.compile(r'<li[^>]*>.*?h="ID=SERP[^>]+>.*?<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
+                    re.compile(r'<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>.*?<h2[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL),
                 ]
             elif engine == 'baidu':
                 patterns = [
+                    re.compile(r'<div[^>]*class="[^"]*c-container[^"]*"[^>]*\smu="(https?://[^"]+)"[^>]*>.*?<h3[^>]*>(.*?)</h3>', re.DOTALL),
                     re.compile(r'<h3[^>]*class="[^"]*t[^"]*"[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', re.DOTALL),
+                ]
+            elif engine == '360':
+                patterns = [
+                    re.compile(r'<li[^>]*class="[^"]*res-list[^"]*"[^>]*>.*?<h3[^>]*>\s*<a([^>]*)>(.*?)</a>', re.DOTALL),
                 ]
             elif engine == 'google':
                 patterns = [
@@ -791,15 +1005,22 @@ class WebSearch(BaseCell):
                 patterns = patterns + [generic]
 
             for pattern in patterns:
-                matches = pattern.findall(html)
+                matches = list(pattern.finditer(html))
                 if matches:
-                    for url, text in matches[:20]:
+                    for m in matches[:20]:
+                        if engine == '360':
+                            attrs, text = m.group(1), m.group(2)
+                            md = re.search(r'data-mdurl="([^"]+)"', attrs)
+                            hr = re.search(r'href="([^"]+)"', attrs)
+                            url = md.group(1) if md else (hr.group(1) if hr else '')
+                        else:
+                            url, text = m.group(1), m.group(2)
                         clean_text = re.sub(r'<[^>]+>', '', text).strip()
-                        if len(clean_text) > 5 and url.startswith('http'):
+                        if len(clean_text) > 5 and url.startswith('http') and not self._is_noise_link(url, clean_text):
                             links.append({
                                 'url': url,
                                 'title': clean_text[:100],
-                                'snippet': ''
+                                'snippet': self._extract_snippet_from_block(m.group(0), engine, clean_text),
                             })
                     if links:
                         break
@@ -818,6 +1039,14 @@ class WebSearch(BaseCell):
                     return self._extract_real_url_from_bing_short_link(url, page)
                 except Exception:
                     pass
+        if 'so.com/link?' in url:
+            try:
+                import requests
+                r = requests.head(url, allow_redirects=True, timeout=2, headers={'User-Agent': self._user_agent or 'Mozilla/5.0'})
+                if r.url and r.url != url:
+                    return r.url
+            except Exception as e:
+                logger.debug(f"[WebSearch] 360 短链接解析失败: {e}")
         if 'baidu.com/link?' in url:
             try:
                 import requests
@@ -954,7 +1183,7 @@ class WebSearch(BaseCell):
             logger.info("[WebSearch:%s] 令牌桶限流，等待 %.2f 秒", key, wait_needed)
             time.sleep(max(0.01, min(wait_needed, 0.5)))
 
-    def _build_engine_url(self, keywords: str, engine: str, time_range: str = "week",
+    def _build_engine_url(self, keywords: str, engine: str, time_range: str = "",
                           page_index: int = 0) -> str:
         """构建搜索引擎 URL（含时间筛选与翻页参数）"""
         cfg = self.SEARCH_ENGINES.get(engine) or self.SEARCH_ENGINES['bing']
@@ -977,9 +1206,11 @@ class WebSearch(BaseCell):
                 url += f"{sep}start={page_index * 10}"
             elif engine == 'duckduckgo':
                 url += f"{sep}s={page_index * 30}"
+            elif engine == '360':
+                url += f"{sep}pn={page_index + 1}"
         return url
 
-    def _http_search(self, keywords: str, engine: str, time_range: str = "week",
+    def _http_search(self, keywords: str, engine: str, time_range: str = "",
                      max_results: int = 10) -> dict:
         """HTTP 快速搜索：直接拉引擎 HTML 正则解析，浏览器路径的加速前置"""
         try:
@@ -996,11 +1227,15 @@ class WebSearch(BaseCell):
         }
         pages = 1 if max_results <= 10 else min(2, (max_results + 9) // 10)
         collected, seen = [], set()
+        http_timeout = 5 if engine == 'duckduckgo' else 8
         try:
-            with httpx.Client(follow_redirects=True, timeout=8, headers=headers) as client:
+            with httpx.Client(follow_redirects=True, timeout=http_timeout, headers=headers) as client:
                 for page_idx in range(pages):
                     resp = client.get(self._build_engine_url(keywords, engine, time_range, page_idx))
                     if resp.status_code >= 400:
+                        break
+                    if self._looks_like_block_page(resp.text):
+                        logger.info(f"[WebSearch:{engine}] 命中反爬验证页，跳过该引擎")
                         break
                     for link in self._extract_links_regex(resp.text, engine, strict=True):
                         url = (link.get('url') or '').strip()
@@ -1031,7 +1266,7 @@ class WebSearch(BaseCell):
         scored.sort(key=lambda x: x['score'], reverse=True)
         return {"success": True, "results": scored[:max_results], "from_http": True}
 
-    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "week", engine: str = "auto", site: str = None, filetype: str = None, **kwargs) -> dict:
+    def _cmd_search(self, keywords: str, max_results: int = 10, wait_time: int = 1, time_range: str = "", engine: str = "auto", site: str = None, filetype: str = None, **kwargs) -> dict:
         """
         用搜索引擎搜索关键词，返回链接列表
 
@@ -1046,7 +1281,7 @@ class WebSearch(BaseCell):
                         - month: 1个月内
             engine: 搜索引擎（默认 auto 自动选择）
                         - auto: 自动选择最优引擎
-                        - bing, baidu, google, duckduckgo
+                        - bing, 360, baidu, google, duckduckgo
             site: 限定站点（可选），如 github.com
             filetype: 限定文件类型（可选），如 pdf
 
@@ -1068,7 +1303,7 @@ class WebSearch(BaseCell):
             cache_engine = user_engine
         else:
             cache_engine = 'auto'
-            priority_order = ['baidu', 'bing', 'duckduckgo', 'google']
+            priority_order = ['bing', '360', 'baidu', 'google', 'duckduckgo']
             engines_to_try = []
 
             best_engine = self._select_best_engine()
@@ -1192,7 +1427,7 @@ class WebSearch(BaseCell):
                     url = f"https://www.bing.com/search?q={encoded_query}"
                 else:
                     url = engine_config['url_template'].format(query=encoded_query)
-            elif engine in ('baidu', 'google', 'duckduckgo'):
+            elif engine in ('baidu', 'google', 'duckduckgo', '360'):
                 url = engine_config['url_template'].format(query=encoded_query)
             else:
                 url = f"https://www.bing.com/search?q={encoded_query}"
@@ -1412,7 +1647,7 @@ class WebSearch(BaseCell):
             "available_commands": list(commands.keys()),
             "usage": {
                 "search": {
-                    "args": {"keywords": "搜索关键词", "max_results": "最大结果数", "wait_time": "等待秒数", "time_range": "hour/day/week/month", "engine": "auto/bing/baidu/google/duckduckgo"},
+                    "args": {"keywords": "搜索关键词", "max_results": "最大结果数", "wait_time": "等待秒数", "time_range": "hour/day/week/month", "engine": "auto/bing/360/baidu/google/duckduckgo"},
                     "example": '{"keywords": "Python教程"}'
                 },
                 "resolve": {

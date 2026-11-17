@@ -11,6 +11,7 @@ SessionCompactor — 会话记忆压缩器
 
 import json
 import logging
+import time
 from typing import Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -130,6 +131,27 @@ LLM_SUMMARIZE_PROMPT = """你是一个会话记忆压缩助手。请根据以下
 """
 
 
+SUMMARY_CACHE_TAIL = """以上是完整的会话历史，请基于上面全部内容生成供后续继续任务使用的结构化摘要。
+
+## 要求
+- 若上面已有历史摘要或会话笔记，请在其基础上更新，不要丢失仍然有效的目标、约束、错误和待办。
+- 保留精确的文件路径、命令、函数名、配置项和报错原文。
+- 已完成与待处理分开写，不确定的信息不要编造。
+- 不要调用任何工具，直接输出 JSON。
+
+## 输出格式
+只输出 JSON：
+{{
+    "goal": "用户当前的主要目标（一句话）",
+    "actions": ["已完成的关键操作"],
+    "findings": ["关键信息、文件路径、配置、决策"],
+    "errors": ["尚未解决的错误；已解决的写成 错误 → 解决方案"],
+    "pending": ["待处理事项或下一步"],
+    "summary": "不超过 800 字的整体摘要，按 目标 / 当前状态 / 关键决策 / 下一步 组织"
+}}
+"""
+
+
 class SessionCompactor:
     """
     会话记忆压缩器
@@ -164,6 +186,8 @@ class SessionCompactor:
         self._pending_compact = False
         self._tool_call_count = 0
         self._pending_fallback = False
+        self._compact_fail_count = 0
+        self._compact_cooldown_until = 0.0
         self._repository = repository
         self._archive = archive
 
@@ -204,15 +228,16 @@ class SessionCompactor:
         )
 
     def compact_threshold(self) -> int:
-        """触发压缩的 token 阈值：显式配置优先，否则按模型窗口 × compact_ratio"""
-        if self._explicit_threshold:
-            return self._explicit_threshold
+        """触发压缩的 token 阈值：窗口已知时按窗口 × compact_ratio 自适应，显式配置仅作兜底"""
         cw = getattr(self.llm, "context_window", 0) or 0
         if cw > 0:
             return max(1, int(cw * self.compact_ratio))
-        return self.token_threshold
+        return self._explicit_threshold or self.token_threshold
 
     def should_compact_tokens(self, token_count: int) -> bool:
+        if self._compact_cooldown_until and time.time() < self._compact_cooldown_until:
+            return False
+
         if self.tool_call_threshold > 0 and self._tool_call_count >= self.tool_call_threshold:
             logger.info("[SessionCompactor] 工具调用触发压缩 | tool_calls=%d", self._tool_call_count)
             return True
@@ -270,7 +295,14 @@ class SessionCompactor:
     def has_pending_compact(self) -> bool:
         return self._pending_compact
 
-    async def compact_now(self, memory: "MemoryManager", notes: "SessionNotes", fallback: bool = False):
+    async def compact_now(
+        self,
+        memory: "MemoryManager",
+        notes: "SessionNotes",
+        fallback: bool = False,
+        cache_prefix: List[Dict] = None,
+        tools: List[Dict] = None,
+    ):
         """执行压缩"""
         self._pending_compact = False
         self._pending_fallback = False
@@ -321,21 +353,39 @@ class SessionCompactor:
             logger.debug("[SessionCompactor] 无新消息需要压缩")
             return False
 
-        # 归档补写（只写新消息）
+        # 归档补写（只写新消息；已归档过原文的修剪消息跳过，避免修剪版覆盖原文）
         if self._archive:
             try:
-                self._archive.append_messages(session_id=notes.session_id, messages=old_messages)
-                logger.info("[SessionCompactor] 归档补写 | %d 条消息", len(old_messages))
+                to_archive = [
+                    m for m in old_messages
+                    if not m.get("_origin_archived")
+                ]
+                if to_archive:
+                    self._archive.append_messages(session_id=notes.session_id, messages=to_archive)
+                logger.info(
+                    "[SessionCompactor] 归档补写 | %d 条（跳过已归档原文 %d 条）",
+                    len(to_archive), len(old_messages) - len(to_archive),
+                )
             except Exception as e:
                 logger.warning("[SessionCompactor] 归档补写失败，跳过本次压缩: %s", e)
                 return False
 
         # 传给 LLM 的上下文包含历史压缩笔记 + 新消息
-        formatted = self._format_messages(context_messages)
-        summary_data = await self._generate_summary_with_llm(formatted)
+        summary_data = await self._generate_summary_with_llm(
+            lambda: self._format_messages(context_messages),
+            cache_prefix=cache_prefix,
+            tools=tools,
+        )
 
         summary_text = _summary_text(summary_data.get("summary"))
         if not summary_text:
+            self._compact_fail_count += 1
+            if self._compact_fail_count >= 2:
+                self._compact_cooldown_until = time.time() + 300
+                logger.warning(
+                    "[SessionCompactor] 连续 %d 次压缩失败，冷却 300 秒 | 保持原消息不变",
+                    self._compact_fail_count,
+                )
             logger.warning("[SessionCompactor] 摘要缺失或格式不符，跳过本次压缩")
             return False
 
@@ -393,6 +443,8 @@ class SessionCompactor:
 
         self._replace_old_messages(memory, notes, summary_text, keep_n=keep_n, cut=cut, keep_tokens=keep_tokens)
 
+        self._compact_fail_count = 0
+        self._compact_cooldown_until = 0.0
         if self.llm and hasattr(self.llm, "reset_last_prompt_tokens"):
             self.llm.reset_last_prompt_tokens()
 
@@ -402,21 +454,47 @@ class SessionCompactor:
         )
         return True
 
-    SUMMARY_MAX_MESSAGES = 200
+    SUMMARY_BUDGET_RATIO = 0.45
+    SUMMARY_BUDGET_FLOOR = 30000
+    SUMMARY_BUDGET_CEIL = 800000
+    SUMMARY_MIN_MSG_TOKENS = 60
+    SUMMARY_OUTPUT_RESERVE = 8000
 
-    def _format_messages(self, messages: List[Dict]) -> str:
-        """格式化消息"""
-        omitted_line = ""
-        if len(messages) > self.SUMMARY_MAX_MESSAGES:
-            head = []
-            if messages[0].get("_is_compacted_notes"):
-                head = [messages[0]]
-            keep = self.SUMMARY_MAX_MESSAGES - len(head)
-            omitted = len(messages) - len(head) - keep
-            omitted_line = f"[已省略较早的 {omitted} 条消息，可用 memory.recall 从归档检索]"
-            messages = head + messages[-keep:]
+    def _summary_budget(self) -> int:
+        cw = getattr(self.llm, "context_window", 0) or 0
+        if cw > 0:
+            cap = int(cw * self.SUMMARY_BUDGET_RATIO)
+            cap = min(cap, max(2000, cw - self.SUMMARY_OUTPUT_RESERVE - 1000))
+            return max(2000, min(cap, self.SUMMARY_BUDGET_CEIL))
+        return self.SUMMARY_BUDGET_FLOOR
 
-        lines = [omitted_line] if omitted_line else []
+    @staticmethod
+    def _shrink_to_tokens(text: str, max_tokens: int) -> str:
+        from app.agent.llm.engine import _estimate_tokens
+        text = str(text or "")
+        if not text:
+            return ""
+        est = _estimate_tokens(text)
+        if est <= max_tokens:
+            return text
+        if max_tokens <= 0:
+            return ""
+        if max_tokens < 120:
+            keep = max(1, int(len(text) * max_tokens / est))
+            return text[:keep] + "…"
+        head_budget = int(max_tokens * 0.4)
+        tail_budget = max_tokens - head_budget
+        head_len = max(1, int(len(text) * head_budget / est))
+        tail_len = max(1, int(len(text) * tail_budget / est))
+        return f"{text[:head_len]}...[中间省略]...{text[-tail_len:]}"
+
+    def _format_messages(self, messages: List[Dict], budget_tokens: int = None) -> str:
+        """按 token 预算格式化消息，预算随模型窗口自适应"""
+        from app.agent.llm.engine import _estimate_tokens
+
+        total_budget = self._summary_budget() if budget_tokens is None else max(1000, int(budget_tokens))
+        budget = int(total_budget * 0.95)
+
         call_id_to_name = {}
         for msg in messages:
             for tc in msg.get("tool_calls") or []:
@@ -424,25 +502,58 @@ class SessionCompactor:
                     fn = tc.get("function", {})
                     call_id_to_name[tc["id"]] = (fn.get("name", "") if isinstance(fn, dict) else "") or tc["id"]
 
+        notes_blocks = []
         for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            if not msg.get("_is_compacted_notes"):
+                continue
+            content = str(msg.get("content") or "")
+            if not content.strip():
+                continue
+            allowed = max(2000, budget // 3)
+            allowed = min(allowed, max(budget, 0))
+            if allowed <= 0:
+                continue
+            block = f"[历史压缩摘要]: {self._shrink_to_tokens(content, allowed)}"
+            notes_blocks.append(block)
+            budget -= _estimate_tokens(block)
+
+        selected = []
+        omitted = 0
+        for msg in reversed(messages):
             if msg.get("_is_compacted_notes"):
-                lines.append(f"[历史压缩摘要]: {content}")
-            elif role == "user" and content:
-                lines.append(f"[用户]: {content[:500]}")
-            elif role == "assistant" and content:
-                lines.append(f"[助手]: {content[:500]}")
-            elif role == "tool":
+                continue
+            role = msg.get("role", "unknown")
+            content = msg.get("content") or ""
+            if role == "tool":
                 call_id = msg.get("tool_call_id", "")
                 tool_name = call_id_to_name.get(call_id, call_id) or "unknown"
-                text = content or "(空)"
-                if len(text) > 600:
-                    text = f"{text[:200]}...[中间省略]...{text[-300:]}"
-                else:
-                    text = text[:500]
-                lines.append(f"[工具-{tool_name}]: {text}")
+                prefix = f"[工具-{tool_name}]: "
+                raw = content or "(空)"
+            elif role == "user":
+                prefix = "[用户]: "
+                raw = content
+            elif role == "assistant":
+                prefix = "[助手]: "
+                raw = content
+            else:
+                continue
+            if not str(raw).strip():
+                continue
+            prefix_tokens = _estimate_tokens(prefix)
+            remaining = budget - prefix_tokens
+            if remaining < self.SUMMARY_MIN_MSG_TOKENS:
+                omitted += 1
+                continue
+            line = prefix + self._shrink_to_tokens(raw, remaining)
+            selected.append(line)
+            budget -= _estimate_tokens(line)
 
+        selected.reverse()
+        lines = []
+        if omitted:
+            lines.append(f"[已省略较早的 {omitted} 条消息，可用 memory.recall 从归档检索]")
+        lines.extend(notes_blocks)
+        lines.extend(selected)
         return "\n".join(lines)
 
     def _parse_summary_json(self, content: str) -> Dict:
@@ -464,18 +575,84 @@ class SessionCompactor:
                 pass
         return {}
 
-    async def _generate_summary_with_llm(self, messages_text: str) -> Dict:
+    SUMMARY_PREFIX_MAX_RATIO = 0.85
+    _SUMMARY_MSG_KEYS = ("role", "content", "name", "tool_calls", "tool_call_id", "reasoning_content")
+
+    @classmethod
+    def _clean_prefix_messages(cls, prefix: List[Dict]) -> List[Dict]:
+        out = []
+        for msg in prefix or []:
+            if not isinstance(msg, dict):
+                continue
+            item = {k: msg[k] for k in cls._SUMMARY_MSG_KEYS if k in msg and msg[k] is not None}
+            if not item.get("role"):
+                continue
+            out.append(item)
+        return out
+
+    def _build_summary_payload(self, messages_text, cache_prefix: List[Dict] = None):
+        """构造摘要请求：优先复用正常调用的完整前缀以命中上下文缓存，超窗则退回格式化文本"""
+        if cache_prefix:
+            from app.agent.llm.engine import _estimate_messages_tokens
+            prefix = self._clean_prefix_messages(cache_prefix)
+            tail = {"role": "user", "content": SUMMARY_CACHE_TAIL}
+            est = _estimate_messages_tokens(prefix + [tail])
+            cw = getattr(self.llm, "context_window", 0) or 0
+            if cw > 0:
+                limit = min(
+                    int(cw * self.SUMMARY_PREFIX_MAX_RATIO),
+                    max(2000, cw - self.SUMMARY_OUTPUT_RESERVE - 1000),
+                )
+            else:
+                limit = 400000
+            if prefix and est <= limit:
+                return prefix + [tail], True
+            if prefix:
+                logger.info(
+                    "[SessionCompactor] 前缀过大，退回格式化摘要路径 | 前缀≈%d tokens | 上限=%d",
+                    est, limit,
+                )
+        text = messages_text() if callable(messages_text) else messages_text
+        return [
+            {"role": "user", "content": LLM_SUMMARIZE_PROMPT.format(messages=text)}
+        ], False
+
+    async def _generate_summary_with_llm(
+        self, messages_text: str, cache_prefix: List[Dict] = None, tools: List[Dict] = None
+    ) -> Dict:
+        payload, reused = self._build_summary_payload(messages_text, cache_prefix)
+        extra = {"tools": tools} if (reused and tools) else {}
+        thinking_backup = getattr(self.llm, "_thinking", None)
         try:
-            prompt = LLM_SUMMARIZE_PROMPT.format(messages=messages_text)
-            response = await self.llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=4000,
+            if thinking_backup is not None:
+                self.llm._thinking = None
+            logger.info(
+                "[SessionCompactor] 生成摘要 | 复用对话前缀=%s | messages=%d | tools=%d",
+                reused, len(payload), len(extra.get("tools") or []),
             )
-            return self._parse_summary_json(response.content or "{}")
+            response = await self.llm.chat(
+                messages=payload,
+                temperature=0.3,
+                max_tokens=8000,
+                **extra,
+            )
+            parsed = self._parse_summary_json(response.content or "")
+            if not _summary_text(parsed.get("summary")):
+                logger.warning("[SessionCompactor] 摘要格式不符，重试一次")
+                response = await self.llm.chat(
+                    messages=payload,
+                    temperature=0.2,
+                    max_tokens=8000,
+                    **extra,
+                )
+                parsed = self._parse_summary_json(response.content or "")
+            return parsed
         except Exception as e:
             logger.error("[SessionCompactor] LLM 摘要失败 | error=%s", e)
             return {}
+        finally:
+            if thinking_backup is not None:
+                self.llm._thinking = thinking_backup
 
     @staticmethod
     def _message_tokens(msg: Dict) -> int:
@@ -615,9 +792,23 @@ class SessionCompactor:
                 current_task = msg
                 break
 
-        recent_messages = [self._truncate_giant_message(m) for m in memory.messages[cut:]]
+        recent_raw = memory.messages[cut:]
+        recent_messages = [self._truncate_giant_message(m) for m in recent_raw]
         budget = self.keep_recent_tokens if keep_tokens is None else int(keep_tokens or 0)
         recent_messages = self._trim_tool_results(recent_messages, budget, memory.messages)
+        if self._archive:
+            trimmed = [(raw, new) for raw, new in zip(recent_raw, recent_messages) if new is not raw]
+            if trimmed:
+                try:
+                    self._archive.append_messages(
+                        session_id=notes.session_id,
+                        messages=[raw for raw, _ in trimmed],
+                    )
+                    for _, new in trimmed:
+                        new["_origin_archived"] = True
+                    logger.info("[SessionCompactor] 修剪前原文归档 | %d 条", len(trimmed))
+                except Exception as e:
+                    logger.warning("[SessionCompactor] 修剪原文归档失败: %s", e)
         head = [notes_message]
         if current_task is not None and current_task not in recent_messages:
             head.append(dict(current_task))

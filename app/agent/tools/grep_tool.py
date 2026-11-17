@@ -65,6 +65,7 @@ def _detect_platform_triple() -> Optional[str]:
         'cygwin': 'pc-windows-msvc',
         'darwin': 'apple-darwin',
         'linux': 'unknown-linux-musl',
+        'android': 'unknown-linux-gnu',
     }
     plat = os_map.get(sys.platform)
     if not plat:
@@ -73,12 +74,31 @@ def _detect_platform_triple() -> Optional[str]:
     return f"{arch}-{plat}"
 
 
+def _ensure_executable_copy(src: str) -> Optional[str]:
+    """vendor rg 缺执行位且无法原地 chmod 时，复制到可写目录再赋权"""
+    import hashlib
+    import tempfile
+
+    try:
+        digest = hashlib.sha1(src.encode('utf-8')).hexdigest()[:12]
+        base = os.path.join(tempfile.gettempdir(), 'cellium-rg')
+        os.makedirs(base, exist_ok=True)
+        dst = os.path.join(base, 'rg-' + digest)
+        if not os.path.isfile(dst):
+            shutil.copyfile(src, dst)
+        os.chmod(dst, 0o755)
+        logger.info("vendor rg 缺执行位，已复制到 %s", dst)
+        return dst
+    except Exception as exc:
+        logger.warning("vendor rg 执行位修复失败: %s", exc)
+        return None
+
+
 def _vendor_rg_path() -> Optional[str]:
     """Return path to vendored ripgrep binary, or None."""
     triple = _detect_platform_triple()
     if not triple:
         return None
-    # 与 _download_rg 保持一致：aarch64 linux 用 gnu 变体
     if triple == 'aarch64-unknown-linux-musl':
         triple = 'aarch64-unknown-linux-gnu'
     binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
@@ -87,20 +107,35 @@ def _vendor_rg_path() -> Optional[str]:
         os.path.join(vendor_dir, triple, binary),
         os.path.join(vendor_dir, binary),
     ]
-    for root, dirs, files in os.walk(vendor_dir):
-        if binary in files and 'VERSION' not in files:
-            candidates.append(os.path.join(root, binary))
-            break
+    if os.path.isdir(vendor_dir):
+        for root, dirs, files in os.walk(vendor_dir):
+            if binary in files:
+                candidates.append(os.path.join(root, binary))
+                break
+
+    seen = set()
     for candidate in candidates:
-        if not os.path.isfile(candidate):
+        if candidate in seen or not os.path.isfile(candidate):
             continue
-        if sys.platform != 'win32' and not os.access(candidate, os.X_OK):
-            try:
-                os.chmod(candidate, 0o755)
-            except OSError:
-                logger.warning("vendor rg 缺执行位且无法修复: %s", candidate)
-                continue
-        return candidate
+        seen.add(candidate)
+
+        if sys.platform == 'win32':
+            return candidate
+
+        if os.access(candidate, os.X_OK):
+            return candidate
+
+        try:
+            os.chmod(candidate, 0o755)
+            if os.access(candidate, os.X_OK):
+                return candidate
+        except OSError:
+            pass
+
+        fixed = _ensure_executable_copy(candidate)
+        if fixed:
+            return fixed
+
     return None
 
 
@@ -117,13 +152,11 @@ def _download_rg() -> Optional[str]:
 
     url = _rg_download_url(corrected)
     binary = 'rg.exe' if sys.platform == 'win32' else 'rg'
-    # 下载目标：写 CWD（打包的 sys.prefix/cellium 只读，不可写入）
     from app.core.util.runtime_paths import resolve_dir_writable
     vendor_dir = resolve_dir_writable("vendor", "ripgrep")
     target_dir = os.path.join(vendor_dir, corrected)
 
     with _RG_DOWNLOAD_LOCK:
-        # double-check after acquiring lock
         existing = _vendor_rg_path()
         if existing:
             return existing
@@ -241,13 +274,32 @@ def _run_rg(args: List[str], search_path: str, rg_path: str = "rg") -> List[str]
     return [l.rstrip('\r') for l in lines if l.strip()]
 
 
-def _make_rel(filepath: str) -> str:
-    from app.core.util.workdir import get_workdir
-    cwd = get_workdir()
+def _make_rel(filepath: str, base: Optional[str] = None) -> str:
     try:
-        return os.path.relpath(filepath, cwd)
-    except ValueError:
+        abspath = os.path.abspath(filepath)
+    except (OSError, ValueError):
         return filepath
+
+    candidates = []
+    if base:
+        b = os.path.abspath(base)
+        if os.path.isfile(b):
+            b = os.path.dirname(b)
+        candidates.append(b)
+    try:
+        from app.core.util.workdir import get_workdir
+        candidates.append(get_workdir())
+    except Exception:
+        pass
+
+    for b in candidates:
+        try:
+            rel = os.path.relpath(abspath, b)
+        except ValueError:
+            continue
+        if rel != '..' and not rel.startswith('..' + os.sep) and not rel.startswith('../'):
+            return rel
+    return abspath
 
 
 def _get_mtime_sort_key(filepath: str) -> float:
@@ -267,6 +319,28 @@ def _apply_limit(items: list, head_limit: Optional[int], offset: int = 0):
     return sliced, limit if truncated else None
 
 
+def _iter_files(path: str, ext: Optional[str], pattern: Optional[str]):
+    import fnmatch
+
+    def _accept(fname: str) -> bool:
+        if ext and not fname.endswith(ext):
+            return False
+        if pattern and not fnmatch.fnmatch(fname, pattern):
+            return False
+        return True
+
+    if os.path.isfile(path):
+        if _accept(os.path.basename(path)):
+            yield path
+        return
+
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '__pycache__']
+        for fname in filenames:
+            if _accept(fname):
+                yield os.path.join(dirpath, fname)
+
+
 def _fallback_search(
     query: str,
     path: str,
@@ -280,42 +354,31 @@ def _fallback_search(
 
     if output_mode == "files_with_matches":
         matched_files = []
-        for dirpath, dirnames, filenames in os.walk(path):
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-            for fname in filenames:
-                if ext and not fname.endswith(ext):
-                    continue
-                if pattern:
-                    import fnmatch
-                    if not fnmatch.fnmatch(fname, pattern):
-                        continue
-                filepath = os.path.join(dirpath, fname)
-                try:
-                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                        for line in f:
-                            if use_regex:
-                                if re.search(query, line, re.IGNORECASE):
-                                    matched_files.append(filepath)
-                                    break
-                            else:
-                                if query.lower() in line.lower():
-                                    matched_files.append(filepath)
-                                    break
-                except Exception:
-                    continue
-                if len(matched_files) >= 5000:
-                    break
+        for filepath in _iter_files(path, ext, pattern):
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                    for line in f:
+                        if use_regex:
+                            if re.search(query, line, re.IGNORECASE):
+                                matched_files.append(filepath)
+                                break
+                        else:
+                            if query.lower() in line.lower():
+                                matched_files.append(filepath)
+                                break
+            except Exception:
+                continue
             if len(matched_files) >= 5000:
                 break
-        rel_files = [_make_rel(p) for p in matched_files]
-        sorted_files = sorted(rel_files, key=_get_mtime_sort_key)
-        page, applied_limit = _apply_limit(sorted_files, head_limit, offset)
+        abs_files = sorted(matched_files, key=_get_mtime_sort_key)
+        page, applied_limit = _apply_limit(abs_files, head_limit, offset)
+        rel_files = [_make_rel(p, base=path) for p in page]
         return {
             "success": True,
             "mode": "files_with_matches",
             "query": query,
-            "filenames": page,
-            "num_files": len(page),
+            "filenames": rel_files,
+            "num_files": len(rel_files),
             "offset": offset,
             "applied_limit": applied_limit,
             "engine": "fallback",
@@ -323,44 +386,31 @@ def _fallback_search(
 
     if output_mode == "count":
         file_counts = []
-        for dirpath, dirnames, filenames in os.walk(path):
-            dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-            for fname in filenames:
-                if ext and not fname.endswith(ext):
-                    continue
-                if pattern:
-                    import fnmatch
-                    if not fnmatch.fnmatch(fname, pattern):
-                        continue
-                filepath = os.path.join(dirpath, fname)
-                try:
-                    count = 0
-                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                        for line in f:
-                            if use_regex:
-                                if re.search(query, line, re.IGNORECASE):
-                                    count += 1
-                            else:
-                                if query.lower() in line.lower():
-                                    count += 1
-                    if count > 0:
-                        file_counts.append(f"{_make_rel(filepath)}:{count}")
-                except Exception:
-                    continue
-        page, applied_limit = _apply_limit(file_counts, head_limit, offset)
-        total_matches = 0
-        for entry in page:
+        for filepath in _iter_files(path, ext, pattern):
             try:
-                _, count_str = entry.rsplit(':', 1)
-                total_matches += int(count_str)
-            except ValueError:
-                pass
+                count = 0
+                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                    for line in f:
+                        if use_regex:
+                            if re.search(query, line, re.IGNORECASE):
+                                count += 1
+                        else:
+                            if query.lower() in line.lower():
+                                count += 1
+                if count > 0:
+                    file_counts.append((filepath, count))
+            except Exception:
+                continue
+        file_counts.sort(key=lambda t: _get_mtime_sort_key(t[0]))
+        page, applied_limit = _apply_limit(file_counts, head_limit, offset)
+        entries = [f"{_make_rel(p, base=path)}:{c}" for p, c in page]
+        total_matches = sum(c for _, c in page)
         return {
             "success": True,
             "mode": "count",
             "query": query,
-            "content": '\n'.join(page),
-            "num_files": len(page),
+            "content": '\n'.join(entries),
+            "num_files": len(entries),
             "num_matches": total_matches,
             "offset": offset,
             "applied_limit": applied_limit,
@@ -368,39 +418,28 @@ def _fallback_search(
         }
 
     hits = []
-    for dirpath, dirnames, filenames in os.walk(path):
-        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
-        for fname in filenames:
-            if ext and not fname.endswith(ext):
-                continue
-            if pattern:
-                import fnmatch
-                if not fnmatch.fnmatch(fname, pattern):
-                    continue
-            filepath = os.path.join(dirpath, fname)
-            try:
-                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                    for i, line in enumerate(f):
-                        if use_regex:
-                            m = re.search(query, line, re.IGNORECASE)
-                            if m:
-                                hits.append({
-                                    "file": _make_rel(filepath),
-                                    "line": i + 1,
-                                    "content": line.strip()[:100],
-                                    "match": m.group(),
-                                })
-                        else:
-                            if query.lower() in line.lower():
-                                hits.append({
-                                    "file": _make_rel(filepath),
-                                    "line": i + 1,
-                                    "content": line.strip()[:100],
-                                })
-            except Exception:
-                continue
-            if len(hits) >= 5000:
-                break
+    for filepath in _iter_files(path, ext, pattern):
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                for i, line in enumerate(f):
+                    if use_regex:
+                        m = re.search(query, line, re.IGNORECASE)
+                        if m:
+                            hits.append({
+                                "file": _make_rel(filepath, base=path),
+                                "line": i + 1,
+                                "content": line.strip()[:100],
+                                "match": m.group(),
+                            })
+                    else:
+                        if query.lower() in line.lower():
+                            hits.append({
+                                "file": _make_rel(filepath, base=path),
+                                "line": i + 1,
+                                "content": line.strip()[:100],
+                            })
+        except Exception:
+            continue
         if len(hits) >= 5000:
             break
 
@@ -551,16 +590,16 @@ class GrepTool(BaseTool):
         lines = _run_rg(args, search_path, rg_path=rg_path)
 
         if output_mode == 'content':
-            return self._format_content(lines, head_limit, offset)
+            return self._format_content(lines, head_limit, offset, base=search_path)
 
         if output_mode == 'count':
-            return self._format_count(lines, head_limit, offset)
+            return self._format_count(lines, head_limit, offset, base=search_path)
 
-        return self._format_files(lines, head_limit, offset)
+        return self._format_files(lines, head_limit, offset, base=search_path)
 
-    def _format_content(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:
+    def _format_content(self, lines: List[str], head_limit: Optional[int], offset: int, base: Optional[str] = None) -> Dict[str, Any]:
         page, applied_limit = _apply_limit(lines, head_limit, offset)
-        final = [_make_rel_line(l) for l in page]
+        final = [_make_rel_line(l, base=base) for l in page]
         return {
             "success": True,
             "mode": "content",
@@ -572,9 +611,9 @@ class GrepTool(BaseTool):
             "has_more": applied_limit is not None,
         }
 
-    def _format_count(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:
+    def _format_count(self, lines: List[str], head_limit: Optional[int], offset: int, base: Optional[str] = None) -> Dict[str, Any]:
         page, applied_limit = _apply_limit(lines, head_limit, offset)
-        final = [_make_rel_line(l) for l in page]
+        final = [_make_rel_line(l, base=base) for l in page]
         total = 0
         files = 0
         for l in page:
@@ -594,15 +633,15 @@ class GrepTool(BaseTool):
             "applied_limit": applied_limit,
         }
 
-    def _format_files(self, lines: List[str], head_limit: Optional[int], offset: int) -> Dict[str, Any]:
-        rel_files = [_make_rel(p) for p in lines]
-        sorted_files = sorted(rel_files, key=_get_mtime_sort_key)
-        page, applied_limit = _apply_limit(sorted_files, head_limit, offset)
+    def _format_files(self, lines: List[str], head_limit: Optional[int], offset: int, base: Optional[str] = None) -> Dict[str, Any]:
+        abs_files = sorted(lines, key=_get_mtime_sort_key)
+        page, applied_limit = _apply_limit(abs_files, head_limit, offset)
+        rel_files = [_make_rel(p, base=base) for p in page]
         return {
             "success": True,
             "mode": "files_with_matches",
-            "filenames": page,
-            "num_files": len(page),
+            "filenames": rel_files,
+            "num_files": len(rel_files),
             "offset": offset,
             "applied_limit": applied_limit,
         }
@@ -612,10 +651,9 @@ class GrepTool(BaseTool):
         return resolve_path(path)
 
 
-def _make_rel_line(line: str) -> str:
-    idx = line.find(':')
-    if idx <= 0:
+def _make_rel_line(line: str, base: Optional[str] = None) -> str:
+    m = re.match(r'^(.*?):(\d+)(?::|$)', line)
+    if not m:
         return line
-    abs_path = line[:idx]
-    rest = line[idx:]
-    return _make_rel(abs_path) + rest
+    abs_path = m.group(1)
+    return _make_rel(abs_path, base=base) + line[len(abs_path):]
