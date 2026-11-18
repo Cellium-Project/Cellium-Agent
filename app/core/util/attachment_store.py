@@ -242,3 +242,49 @@ def image_to_part(path: str) -> Optional[dict]:
             _part_cache.clear()
         _part_cache[key] = part
     return part
+
+
+def cleanup_uploads(days: int = 7, dry_run: bool = False) -> dict:
+    """清理超过 N 天的上传目录（按 YYYYMMDD 目录名判断）"""
+    from datetime import timedelta
+
+    cutoff = datetime.now() - timedelta(days=max(1, int(days)))
+    removed_dirs = []
+    file_count = 0
+    freed = 0
+    try:
+        names = os.listdir(UPLOAD_DIR)
+    except OSError:
+        return {"removed_dirs": [], "files": 0, "bytes": 0}
+
+    for name in names:
+        dir_path = os.path.join(UPLOAD_DIR, name)
+        if not os.path.isdir(dir_path):
+            continue
+        try:
+            day = datetime.strptime(name, "%Y%m%d")
+        except ValueError:
+            continue
+        if day >= cutoff:
+            continue
+        size = 0
+        count = 0
+        for root, _dirs, files in os.walk(dir_path):
+            for f in files:
+                try:
+                    size += os.path.getsize(os.path.join(root, f))
+                    count += 1
+                except OSError:
+                    pass
+        if not dry_run:
+            shutil.rmtree(dir_path, ignore_errors=True)
+        removed_dirs.append(name)
+        file_count += count
+        freed += size
+
+    if removed_dirs:
+        logger.info(
+            "[Attachment] 清理上传目录 | dirs=%s | files=%d | freed=%.1fMB | dry_run=%s",
+            removed_dirs, file_count, freed / (1024 * 1024), dry_run,
+        )
+    return {"removed_dirs": removed_dirs, "files": file_count, "bytes": freed}

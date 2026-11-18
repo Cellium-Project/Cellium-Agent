@@ -109,6 +109,18 @@ def rewind_session(session_id: str, message_id: str) -> dict:
     index = _locate_target(messages, message_id)
 
     removed_count = len(messages) - index
+    try:
+        logger.info(
+            "[Rewind] 定位 | session=%s | msg=%s | index=%d | total=%d | removed=%d | around=%s",
+            session_id, message_id, index, len(messages), removed_count,
+            [
+                {"id": m.get("id"), "role": m.get("role"),
+                 "text": str(m.get("content") or "")[:30]}
+                for m in messages[max(0, index - 2):index + 2]
+            ],
+        )
+    except Exception:
+        pass
     memory.messages = messages[:index]
     memory.clear_ephemeral_messages()
 

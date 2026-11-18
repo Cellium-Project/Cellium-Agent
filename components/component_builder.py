@@ -833,8 +833,24 @@ def example_function():
             from app.core.util.component_tool_registry import get_component_tool_registry
             reg = get_component_tool_registry()
             adapter = reg.get(name)
-            if adapter and hasattr(adapter, '_audit_issues') and adapter._audit_issues:
+            rejection = reg.rejection(name) if hasattr(reg, "rejection") else None
+
+            if adapter is None and rejection:
                 result["has_issues"] = True
+                result["registered"] = False
+                result["blocked"] = True
+                result["audit_score"] = rejection.get("score", 0)
+                result["audit_issues"] = rejection.get("issues", [])
+                result["full_audit_hint"] = rejection.get("hint", "")
+                result["fix_guide"] = (
+                    "[系统提示] 该组件存在严重问题，已被拒绝注册，工具当前不可用：\n"
+                    "1. 查看 audit_issues 了解具体 critical 问题；\n"
+                    "2. 读取并修改组件文件；\n"
+                    f"3. 调用 component.reload(name='{name}') 重新加载。"
+                )
+            elif adapter and hasattr(adapter, '_audit_issues') and adapter._audit_issues:
+                result["has_issues"] = True
+                result["registered"] = True
                 result["audit_score"] = getattr(adapter, '_audit_score', 0)
                 result["audit_issues"] = adapter._audit_issues
                 result["audit_warnings"] = getattr(adapter, '_audit_warnings', [])
@@ -847,7 +863,8 @@ def example_function():
                 )
             else:
                 result["has_issues"] = False
-                result["audit_status"] = "通过"
+                result["registered"] = adapter is not None
+                result["audit_status"] = "通过" if adapter is not None else "未注册"
         except Exception:
             pass
 

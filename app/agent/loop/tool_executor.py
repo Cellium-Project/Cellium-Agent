@@ -338,6 +338,7 @@ class ToolDescriptionGenerator:
                     ctx["fs_desc"] = f"正在检查：{ctx['target']}"
                 elif action == "create":
                     files_arg = arguments.get("files")
+                    count = "?"
                     if isinstance(files_arg, (dict, list)):
                         count = len(files_arg)
                     elif isinstance(files_arg, str):
@@ -346,10 +347,38 @@ class ToolDescriptionGenerator:
                             count = len(parsed) if isinstance(parsed, (dict, list)) else "?"
                         except Exception:
                             count = "?"
-                    else:
-                        count = "?"
                     base = arguments.get("path") or ""
-                    ctx["fs_desc"] = f"正在创建项目：{os.path.basename(base)}（{count} 个文件）"
+                    if not base and isinstance(files_arg, dict) and files_arg:
+                        first_key = next(iter(files_arg), "")
+                        if os.path.isabs(str(first_key)):
+                            base = os.path.dirname(str(first_key))
+                    label = os.path.basename(base.rstrip("/\\")) if base else ""
+                    if label:
+                        ctx["fs_desc"] = f"正在创建项目：{label}（{count} 个文件）"
+                    else:
+                        ctx["fs_desc"] = f"正在创建 {count} 个文件"
+                elif action == "write":
+                    ctx["fs_desc"] = f"正在写入文件：{ctx['basename'] or ctx['target']}"
+                elif action == "append":
+                    ctx["fs_desc"] = f"正在追加内容：{ctx['basename'] or ctx['target']}"
+                elif action == "read":
+                    ctx["fs_desc"] = f"正在读取文件：{ctx['basename'] or ctx['target']}"
+                elif action == "list":
+                    ctx["fs_desc"] = f"正在列出目录：{ctx['basename'] or ctx['target'] or '当前目录'}"
+                elif action == "move":
+                    src = arguments.get("src") or arguments.get("source") or ""
+                    dst = arguments.get("dst") or arguments.get("target") or ""
+                    ctx["fs_desc"] = (
+                        f"正在移动：{os.path.basename(str(src))} → {os.path.basename(str(dst))}"
+                        if src and dst else "正在移动文件"
+                    )
+                elif action == "copy":
+                    src = arguments.get("src") or arguments.get("source") or ""
+                    dst = arguments.get("dst") or arguments.get("target") or ""
+                    ctx["fs_desc"] = (
+                        f"正在复制：{os.path.basename(str(src))} → {os.path.basename(str(dst))}"
+                        if src and dst else "正在复制文件"
+                    )
                 else:
                     ctx["fs_desc"] = "正在操作文件系统"
 

@@ -101,8 +101,40 @@ class ComponentToolRegistry:
         self._lock: threading.RLock = threading.RLock()
         # {tool_name: CellToolAdapter} — 仅存放组件衍生的工具
         self._registry: Dict[str, CellToolAdapter] = {}
+        # {tool_name: {"issues","score","hint","type"}} — 因 critical 被拒的组件
+        self._rejected: Dict[str, Dict[str, Any]] = {}
         # 变更计数器（用于快速判断是否有更新）
         self._version: int = 0
+
+    def rejection(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """查询某个组件是否因审计被拒注册"""
+        with self._lock:
+            return self._rejected.get(tool_name)
+
+    def get_rejections(self) -> Dict[str, Dict[str, Any]]:
+        """取出全部被拒组件（副本）"""
+        with self._lock:
+            return {k: dict(v) for k, v in self._rejected.items()}
+
+    def _purge_stale_rejections(self, cell) -> None:
+        """注册成功后清理同一组件类残留的旧拒绝记录
+
+        只按 (类名, 模块名) 精确匹配，避免同名类互相误删。
+        """
+        cls = type(cell)
+        cls_name = cls.__name__
+        module = getattr(cls, "__module__", "")
+        stale = [
+            key for key, rec in self._rejected.items()
+            if (rec or {}).get("type") == cls_name and (rec or {}).get("module") == module
+        ]
+        for key in stale:
+            self._rejected.pop(key, None)
+        if stale:
+            logger.info(
+                "[ComponentToolRegistry] 清理旧拒绝记录: %s (class=%s)",
+                ", ".join(stale), cls_name,
+            )
 
     @property
     def version(self) -> int:
@@ -164,6 +196,29 @@ class ComponentToolRegistry:
             adapter._audit_warnings = audit_result.warnings
             adapter._audit_score = audit_result.score
             adapter._audit_hint_text = audit_result.hint_text if audit_result.issues else ""
+            adapter._audit_blocked = audit_result.blocked
+
+            if audit_result.blocked:
+                critical_n = sum(
+                    1 for i in audit_result.issues
+                    if (i.get("severity") or "").lower() == "critical"
+                )
+                self._rejected[tool_name] = {
+                    "type": adapter.component_type,
+                    "module": getattr(type(cell), "__module__", ""),
+                    "issues": list(audit_result.issues),
+                    "score": audit_result.score,
+                    "hint": audit_result.hint_text,
+                    "critical_count": critical_n,
+                }
+                logger.error(
+                    "[ComponentToolRegistry] [拒绝注册] %s (type=%s) | critical=%d | score=%d",
+                    tool_name, adapter.component_type, critical_n, audit_result.score,
+                )
+                return None
+
+            self._rejected.pop(tool_name, None)
+            self._purge_stale_rejections(cell)
 
             if audit_result.issues:
                 logger.warning(
@@ -296,12 +351,15 @@ class ComponentToolRegistry:
         """
         cells = get_all_cells()
         synced_count = 0
-        
+        rejected: List[str] = []
+
         for cell_name, cell_instance in cells.items():
             try:
                 result = self.register(cell_instance)
                 if result:
                     synced_count += 1
+                elif self.rejection(cell_name):
+                    rejected.append(cell_name)
             except Exception as e:
                 logger.error(
                     "[ComponentToolRegistry] 同步组件 %s 失败: %s",
@@ -311,7 +369,7 @@ class ComponentToolRegistry:
         current_names = set(cells.keys())
         registered_names = set(self.get_all_names())
         orphaned = registered_names - current_names
-        
+
         for orphan in orphaned:
             self.unregister(orphan)
 
@@ -319,6 +377,11 @@ class ComponentToolRegistry:
             "[ComponentToolRegistry] 同步完成 | 同步=%d | 清理孤儿=%d | 总计=%d",
             synced_count, len(orphaned), self.size,
         )
+        if rejected:
+            logger.error(
+                "[ComponentToolRegistry] 因 critical 问题被拒绝注册 %d 个组件: %s",
+                len(rejected), ", ".join(rejected),
+            )
 
     def clear(self):
         """清空全部组件工具"""

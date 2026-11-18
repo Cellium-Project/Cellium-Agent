@@ -3,7 +3,7 @@
 ComponentAuditor — 组件合规性审查器
 
 在组件注册到 ComponentToolRegistry 之前，自动检查是否满足所有规范要求。
-不合规的组件将被拒绝注册，并返回具体的修复建议（可注入给 LLM）。
+不合规的组件返回具体的修复建议（可注入给 LLM）。
 
 审查项目：
   1. cell_name 合规性：小写、非空、不含特殊字符
@@ -46,6 +46,13 @@ class AuditResult:
     issues: List[Dict[str, Any]] = field(default_factory=list)   # 问题列表
     warnings: List[str] = field(default_factory=list)           # 警告列表（不影响通过）
     score: int = 0                        # 评分 (0-100)
+    blocked: bool = False                 # 是否应拦截注册（由 critical 决定）
+
+    def __post_init__(self):
+        if not self.blocked:
+            self.blocked = any(
+                (i.get("severity") or "").lower() == "critical" for i in self.issues
+            )
 
     @property
     def issue_count(self) -> int:
@@ -242,6 +249,9 @@ class ComponentAuditor:
         issues.extend(cmd_issues)
         warnings.extend(cmd_warnings)
 
+        # ── 3.5 返回值类型审查（return_dict 规则）──
+        issues.extend(self._check_return_types(cell))
+
         # ── 4. _cmd_help 存在性（白名单跳过此项）──
         if not is_exempted:
             has_help = hasattr(cell, "_cmd_help") and callable(getattr(cell, "_cmd_help"))
@@ -396,6 +406,77 @@ def cell_name(self) -> str:
             })
 
         return issues, warnings
+
+    def _check_return_types(self, cell: BaseCell) -> List[Dict]:
+        """静态检查命令方法的返回值类型（return_dict 规则）
+
+        通过 AST 分析源码，检查 _cmd_ 方法的 return 语句是否返回 dict 类型。"""
+        import ast
+        import inspect
+        import textwrap
+
+        issues: List[Dict] = []
+        try:
+            src = inspect.getsource(type(cell))
+            tree = ast.parse(textwrap.dedent(src))
+        except Exception:
+            return issues
+
+        SAFE_NODES = (
+            ast.Dict, ast.Name, ast.Call, ast.Attribute, ast.Subscript,
+            ast.Await, ast.IfExp, ast.BoolOp, ast.Compare,
+        )
+        severity = self.RULES["return_dict"]["severity"]
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.name.startswith("_cmd_"):
+                continue
+
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Return):
+                    continue
+                value = sub.value
+                if value is None:
+                    issues.append({
+                        "rule": "return_dict",
+                        "severity": severity,
+                        "message": f"`{node.name}` 第 {sub.lineno} 行没有返回值，命令必须返回 dict。",
+                        "fix": '改为 return {"result": ...} 形式',
+                    })
+                    continue
+                if isinstance(value, SAFE_NODES):
+                    continue
+                if isinstance(value, ast.Constant):
+                    if isinstance(value.value, dict):
+                        continue
+                    if isinstance(value.value, (str, int, float, bool)):
+                        kind = type(value.value).__name__
+                        issues.append({
+                            "rule": "return_dict",
+                            "severity": severity,
+                            "message": f"`{node.name}` 第 {sub.lineno} 行返回了 {kind} 字面量，命令必须返回 dict。",
+                            "fix": '改为 return {"result": ...}，不要直接返回裸值',
+                        })
+                    continue
+                if isinstance(value, (ast.List, ast.Set, ast.Tuple)):
+                    issues.append({
+                        "rule": "return_dict",
+                        "severity": severity,
+                        "message": f"`{node.name}` 第 {sub.lineno} 行返回了 list/set/tuple，命令必须返回 dict。",
+                        "fix": '改为 return {"items": [...]} 包一层 dict',
+                    })
+
+            returns = [s for s in ast.walk(node) if isinstance(s, ast.Return)]
+            if not returns:
+                issues.append({
+                    "rule": "return_dict",
+                    "severity": severity,
+                    "message": f"`{node.name}` 没有任何 return 语句，隐式返回 None，命令必须返回 dict。",
+                    "fix": '改为 return {"result": ...} 形式',
+                })
+        return issues
 
     def _check_commands(self, cell: BaseCell, skip_docstring: bool = False) -> Tuple[List[Dict], List[str]]:
         """检查所有命令方法的规范性"""

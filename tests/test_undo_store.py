@@ -326,5 +326,139 @@ class TestGitRollback(_Base):
         self.assertGreater(row["added"] + row["removed"], 0)
 
 
+@unittest.skipUnless(shutil.which("git"), "git 不可用")
+class TestGitDirCheckpointPaths(_Base):
+    """git 仓库内的文件级 checkpoint（edit / file 工具走的 checkpoint_paths）"""
+
+    def _git(self, *args):
+        subprocess.run(["git", "-C", self.work, *args], check=True,
+                       capture_output=True, text=True)
+
+    def _init_repo(self):
+        self._git("init")
+        self._git("config", "user.email", "t@example.com")
+        self._git("config", "user.name", "tester")
+
+    def test_edit_single_file_restore(self):
+        """git 目录里 edit 单文件：回滚恢复原内容"""
+        self._init_repo()
+        path = self._write("code.py", "v1\n")
+        self._git("add", "code.py")
+        self._git("commit", "-m", "init")
+
+        self.store.begin_turn("s_g1", "t1")
+        self.assertFalse(self.store.has_tracking("s_g1", "t1"))
+        self.store.checkpoint_paths("s_g1", "t1", [path])
+        self.assertTrue(self.store.has_tracking("s_g1", "t1"))
+
+        self._write("code.py", "v2\n")
+        result = self.store.rollback("s_g1", [])
+        self.assertEqual(self._read(path), "v1\n")
+        self.assertEqual(result["restored"], 1)
+        self.assertFalse(self.store.has_tracking("s_g1", "t1"))
+
+    def test_new_file_deleted_after_rollback(self):
+        """git 目录里新增文件：checkpoint 时不存在，回滚后删除"""
+        self._init_repo()
+        self._write("base.txt", "x")
+        self._git("add", "base.txt")
+        self._git("commit", "-m", "init")
+
+        created = os.path.join(self.work, "new.txt")
+        self.store.begin_turn("s_g2", "t1")
+        self.store.checkpoint_paths("s_g2", "t1", [created])
+        self._write("new.txt", "created")
+
+        self.store.rollback("s_g2", [])
+        self.assertFalse(os.path.exists(created))
+
+    def test_multi_file_checkpoint_restores_all(self):
+        """file fs create 多文件：全部恢复"""
+        self._init_repo()
+        a = self._write("a.py", "a1")
+        b = self._write("b.py", "b1")
+        self._git("add", ".")
+        self._git("commit", "-m", "init")
+
+        self.store.begin_turn("s_g3", "t1")
+        self.store.checkpoint_paths("s_g3", "t1", [a, b])
+
+        self._write("a.py", "a2")
+        self._write("b.py", "b2")
+
+        result = self.store.rollback("s_g3", [])
+        self.assertEqual(self._read(a), "a1")
+        self.assertEqual(self._read(b), "b1")
+        self.assertEqual(result["restored"], 2)
+
+    def test_duplicate_checkpoint_dedup(self):
+        """同一 turn 对同一文件重复 checkpoint 只记一次"""
+        self._init_repo()
+        path = self._write("d.txt", "d1")
+        self._git("add", "d.txt")
+        self._git("commit", "-m", "init")
+
+        self.store.begin_turn("s_g4", "t1")
+        self.store.checkpoint_paths("s_g4", "t1", [path])
+        self.store.checkpoint_paths("s_g4", "t1", [path])
+
+        manifest = self.store._load(os.path.join(self.store._root, "s_g4", "t1"))
+        self.assertEqual(len(manifest["entries"]), 1)
+
+    def test_keep_turn_not_rolled_back(self):
+        """多轮：keep 的 turn 不回滚，其余回滚"""
+        self._init_repo()
+        f1 = self._write("f1.txt", "1")
+        f2 = self._write("f2.txt", "2")
+        self._git("add", ".")
+        self._git("commit", "-m", "init")
+
+        self.store.begin_turn("s_g5", "t1")
+        self.store.checkpoint_paths("s_g5", "t1", [f1])
+        self.store.begin_turn("s_g5", "t2")
+        self.store.checkpoint_paths("s_g5", "t2", [f2])
+
+        self._write("f1.txt", "1x")
+        self._write("f2.txt", "2x")
+
+        self.store.rollback("s_g5", ["t1"])
+        self.assertEqual(self._read(f1), "1x")
+        self.assertEqual(self._read(f2), "2")
+        self.assertTrue(self.store.has_tracking("s_g5", "t1"))
+        self.assertFalse(self.store.has_tracking("s_g5", "t2"))
+
+    def test_git_shell_and_paths_combined(self):
+        """git 基线 + 文件级快照并存：一并回滚"""
+        self._init_repo()
+        tracked = self._write("tracked.txt", "base\n")
+        self._git("add", "tracked.txt")
+        self._git("commit", "-m", "init")
+
+        self.store.checkpoint_shell("s_g6", "t1", self.work)
+        self.store.checkpoint_paths("s_g6", "t1", [tracked])
+
+        self._write("tracked.txt", "changed\n")
+        self._write("extra.txt", "extra")
+
+        result = self.store.rollback("s_g6", [])
+        self.assertEqual(self._read(tracked), "base\n")
+        self.assertFalse(os.path.exists(os.path.join(self.work, "extra.txt")))
+        self.assertGreaterEqual(result["restored"], 1)
+
+
+@unittest.skipUnless(shutil.which("git"), "git 不可用")
+class TestNonGitCheckpointPaths(_Base):
+    """非 git 目录的文件级 checkpoint（对比组）"""
+
+    def test_edit_file_restore_without_git(self):
+        path = self._write("n.txt", "orig")
+        with patch.object(us.UndoStore, "_git_toplevel", staticmethod(lambda cwd: None)):
+            self.store.begin_turn("s_n1", "t1")
+            self.store.checkpoint_paths("s_n1", "t1", [path])
+        self._write("n.txt", "mod")
+        self.store.rollback("s_n1", [])
+        self.assertEqual(self._read(path), "orig")
+
+
 if __name__ == "__main__":
     unittest.main()

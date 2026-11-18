@@ -707,6 +707,14 @@ class CelliumTUI(App):
         self._delegation_timer = self.set_interval(0.12, self._tick_delegation_bar)
         # 常驻订阅 broker：空闲时也能实时收到对端（WebUI/外部平台）发起的消息
         self._post(self._start_broker_listener())
+        self._post(self._cleanup_uploads_bg())
+
+    async def _cleanup_uploads_bg(self):
+        try:
+            from app.core.util.attachment_store import cleanup_uploads
+            await asyncio.to_thread(cleanup_uploads, 7)
+        except Exception:
+            pass
 
     def _setup_select_scope(self):
         try:
@@ -2178,10 +2186,24 @@ class CelliumTUI(App):
             result = await asyncio.to_thread(rewind_session, self.session_id, msg_id)
             await self._refresh_after_rewind()
             removed = int((result or {}).get("removed_count") or 0)
-            partial = bool((result or {}).get("warning") or (result or {}).get("files_skipped"))
-            await self._append_system(
-                self.tr("rewind.partial" if partial else "rewind.done", removed)
+            files = list((result or {}).get("files") or [])
+            restored = sum(
+                1 for f in files
+                if isinstance(f, dict) and f.get("kind") in ("modified", "restored")
             )
+            deleted = sum(
+                1 for f in files
+                if isinstance(f, dict) and f.get("kind") == "deleted"
+            )
+            partial = bool((result or {}).get("warning") or (result or {}).get("files_skipped"))
+            if restored or deleted:
+                await self._append_system(
+                    self.tr("rewind.done_files", removed, restored, deleted)
+                )
+            else:
+                await self._append_system(
+                    self.tr("rewind.partial" if partial else "rewind.done", removed)
+                )
             self.set_timer(2.0, self._clear_local_rewind)
         except Exception as e:
             self._local_rewind = False
@@ -2189,8 +2211,15 @@ class CelliumTUI(App):
 
     async def _refresh_after_rewind(self):
         self._last_local_task_end = time.monotonic()
-        self._clear_chat()
-        await self._load_history()
+        try:
+            from app.agent.loop.session_manager import get_session_manager
+            info = get_session_manager().get_or_create(self.session_id)
+            total = len(info.memory.messages)
+            if total > self._history_limit:
+                self._history_limit = total
+        except Exception:
+            pass
+        await self._load_history(force_follow=True)
 
     def _refresh_tracked_ids(self):
         try:
@@ -3141,7 +3170,7 @@ class CelliumTUI(App):
             self.chat.force_scroll_bottom()
         return True
 
-    async def _load_history(self):
+    async def _load_history(self, force_follow: bool = False):
         epoch = self._session_epoch
         await asyncio.to_thread(self._refresh_tracked_ids)
         self._history_rev = await asyncio.to_thread(self._history_revision)
@@ -3152,7 +3181,7 @@ class CelliumTUI(App):
         self._history_meta = None
         self._backfill_pending = False
         self._history_live_start = 0
-        was_following = self.chat.following
+        was_following = True if force_follow else self.chat.following
         prev_scroll_y = self.chat.scroll_y
         same_session = getattr(self, "_history_specs_sid", None) == self.session_id
         if not same_session:
@@ -3230,25 +3259,28 @@ class CelliumTUI(App):
                     for w, s in zip(_wc, _sc):
                         self._post_mount(w, s)
                     await asyncio.sleep(0)
+                if plan:
+                    self._history_specs = list(plan)
+                    self._history_specs_sid = self.session_id
+                    try:
+                        self.chat.refresh(layout=True)
+                    except Exception:
+                        pass
+                    if was_following:
+                        self.chat.force_scroll_bottom(animate=False)
+                    else:
+                        try:
+                            self.chat.scroll_to(y=prev_scroll_y, animate=False, immediate=True)
+                        except Exception:
+                            pass
             if plan:
                 if self._history_stale(epoch):
                     return
-                self._history_specs = list(plan)
-                self._history_specs_sid = self.session_id
-                try:
-                    self.chat.refresh(layout=True)
-                except Exception:
-                    pass
                 for _ in range(4):
                     await asyncio.sleep(0)
                 if was_following:
-                    self.chat.force_scroll_bottom()
-                else:
-                    try:
-                        self.chat.scroll_to(y=prev_scroll_y, animate=False, immediate=True)
-                    except Exception:
-                        pass
-                self.set_timer(0.15, self._scroll_history_done)
+                    self.chat.force_scroll_bottom(animate=False)
+                    self.set_timer(0.05, self._scroll_history_done)
                 self._restoring_history = False
                 self._history_ready.set()
                 self._bootstrap_ready.set()

@@ -194,10 +194,15 @@ class UndoStore:
     def _norm(path: str):
         if not path:
             return None
+        raw = str(path)
         try:
-            return os.path.abspath(os.path.expanduser(str(path)))
+            from app.core.util.workdir import resolve_path
+            return os.path.abspath(resolve_path(raw))
         except Exception:
-            return None
+            try:
+                return os.path.abspath(os.path.expanduser(raw))
+            except Exception:
+                return None
 
     def checkpoint_paths(self, session_id, turn_id, paths) -> None:
         try:
@@ -383,10 +388,14 @@ class UndoStore:
 
     @staticmethod
     def _record_file(result, path, added=0, removed=0, kind="modified", binary=False) -> None:
+        added = int(added or 0)
+        removed = int(removed or 0)
+        if kind == "modified" and not binary and not added and not removed:
+            return
         result.setdefault("files", []).append({
             "path": path,
-            "added": int(added or 0),
-            "removed": int(removed or 0),
+            "added": added,
+            "removed": removed,
             "kind": kind,
             "binary": bool(binary),
         })
@@ -535,19 +544,20 @@ class UndoStore:
         full = os.path.join(repo, rel)
         key = os.path.normpath(rel)
         if tree is not None and key not in tree:
-            # 快照里没有：本轮回合新增，回滚即删除
             if key in baseline:
                 result["skipped"].append(full)
                 return
             self._remove_path(full, result, apply=apply)
             return
         existed = os.path.isfile(full)
+        stats = numstat.get(key) or (0, 0, False)
+        if not stats[2] and not stats[0] and not stats[1]:
+            return
         if apply and not self._git_restore_worktree(repo, rev, rel):
             logger.warning("[UndoStore] git 恢复失败 path=%s", rel)
             result["skipped"].append(full)
             return
         result["restored"] += 1
-        stats = numstat.get(key) or (0, 0, False)
         kind = "modified" if existed else "restored"
         self._record_file(result, full, stats[0], stats[1], kind=kind, binary=stats[2])
 

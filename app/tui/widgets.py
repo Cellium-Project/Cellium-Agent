@@ -959,6 +959,76 @@ _FENCE_MISJOIN = re.compile(
 )
 
 
+_ZWJ_SEQ = re.compile(
+    "(?:[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]"
+    "(?:\uFE0F)?"
+    "\u200D)+"
+    "[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF]"
+    "(?:\uFE0F)?"
+)
+
+_CIRCLED_MAP = {}
+for _i in range(20):
+    _CIRCLED_MAP[chr(0x2460 + _i)] = "(%d)" % (_i + 1)      # ①-⑳
+    _CIRCLED_MAP[chr(0x2474 + _i)] = "(%d)" % (_i + 1)      # ⑴-⒇
+_CIRCLED_MAP["\u24ea"] = "(0)"                               # ⓪
+for _i in range(10):
+    _CIRCLED_MAP[chr(0x24EB + _i)] = "(%d)" % (_i + 11)     # ⓫-⓴
+    _CIRCLED_MAP[chr(0x2776 + _i)] = "(%d)" % (_i + 1)      # ❶-❿
+    _CIRCLED_MAP[chr(0x2780 + _i)] = "(%d)" % (_i + 1)      # ➀-➉
+    _CIRCLED_MAP[chr(0x278A + _i)] = "(%d)" % (_i + 1)      # ➊-➓
+for _i in range(15):
+    _CIRCLED_MAP[chr(0x3251 + _i)] = "(%d)" % (_i + 21)     # ㉑-㉟
+    _CIRCLED_MAP[chr(0x32B1 + _i)] = "(%d)" % (_i + 36)     # ㊱-㊿
+for _i in range(26):
+    _CIRCLED_MAP[chr(0x24B6 + _i)] = "(%s)" % chr(ord("A") + _i)   # Ⓐ-Ⓩ
+    _CIRCLED_MAP[chr(0x24D0 + _i)] = "(%s)" % chr(ord("a") + _i)   # ⓐ-ⓩ
+for _i in range(20):
+    _CIRCLED_MAP[chr(0x2488 + _i)] = "%d." % (_i + 1)       # ⒈-⒛
+for _i in range(26):
+    _CIRCLED_MAP[chr(0x249C + _i)] = "(%s)" % chr(ord("a") + _i)   # ⒜-⒵
+for _i in range(10):
+    _CIRCLED_MAP[chr(0x24F5 + _i)] = "(%d)" % (_i + 1)      # ⓵-⓾
+_CIRCLED_MAP["\u24ff"] = "(0)"                               # ⓿
+_CIRCLED_TABLE = str.maketrans(_CIRCLED_MAP)
+
+
+def _sanitize_display_width(text: str) -> str:
+    """把宽度不可靠的 emoji / 符号降级成宽度确定的字符。
+
+    - base + U+FE0F：去掉 FE0F，宽度统一为 1 格
+    - ZWJ 序列（如家庭 emoji）：只保留首个 emoji
+    - keycap 组合（1⃣ = U+0031+U+20E3）：去掉 U+20E3
+    - 肤色修饰符 U+1F3FB-1F3FF：移除，保留基础 emoji
+    - 带圈序号 ①⒈⒜⓵ 等（EAW=Ambiguous，字体渲染 2 格但 xterm 只给 1 格）：
+      替换成 (1) / 1. / (a) 形式，宽度绝对确定
+    """
+    if not text:
+        return text
+    if "\ufe0f" in text:
+        text = text.replace("\ufe0f", "")
+    if "\u200d" in text:
+        text = _ZWJ_SEQ.sub(lambda m: m.group(0).split("\u200d")[0], text)
+    if "\u20e3" in text:
+        text = text.replace("\u20e3", "")
+    if any(0x1F3FB <= ord(ch) <= 0x1F3FF for ch in text):
+        text = "".join(ch for ch in text if not (0x1F3FB <= ord(ch) <= 0x1F3FF))
+    if any(ch in _CIRCLED_MAP for ch in text):
+        text = text.translate(_CIRCLED_TABLE)
+    return text
+
+
+def _sanitize_obj(value):
+    """递归清洗 agent 输出的文本字段"""
+    if isinstance(value, str):
+        return _sanitize_display_width(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_obj(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_obj(v) for v in value]
+    return value
+
+
 def _normalize_md(markdown: str) -> str:
     out = []
     in_fence = False
@@ -972,6 +1042,7 @@ def _normalize_md(markdown: str) -> str:
         if in_fence:
             out.append(line)
             continue
+        line = _sanitize_display_width(line)
         if not line.strip():
             blank_run += 1
             if blank_run > 1:
@@ -1934,8 +2005,8 @@ class ToolCallCard(Static):
             return
         self._calls[call_id] = {
             "tool": tool,
-            "description": description or "",
-            "arguments": arguments or {},
+            "description": _sanitize_display_width(description or ""),
+            "arguments": _sanitize_obj(arguments or {}),
             "status": "pending",   # pending / success / error
             "result": None,
             "duration": None,
@@ -1949,7 +2020,7 @@ class ToolCallCard(Static):
             return
         ok = not (isinstance(result, dict) and (result.get("error") or result.get("success") is False))
         call["status"] = "success" if ok else "error"
-        call["result"] = result
+        call["result"] = _sanitize_obj(result)
         call["duration"] = duration_ms or 0
         self._tick()
 
@@ -1957,7 +2028,7 @@ class ToolCallCard(Static):
         call = self._calls.get(call_id)
         if not call:
             return
-        call["description"] = description or ""
+        call["description"] = _sanitize_display_width(description or "")
         self._tick()
 
     def finish(self):
