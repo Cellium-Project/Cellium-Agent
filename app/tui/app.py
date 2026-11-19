@@ -609,6 +609,15 @@ class CelliumTUI(App):
         except Exception:
             return ""
 
+    def _model_badge(self) -> str:
+        try:
+            from app.server import session_llm
+            if session_llm.get_model(self.session_id):
+                return self.tr("header.model_badge_session")
+        except Exception:
+            pass
+        return self.tr("header.model_badge_default")
+
     def _load_history_limit(self):
         try:
             from app.core.util.agent_config import get_config
@@ -964,8 +973,13 @@ class CelliumTUI(App):
             self._refresh_status_right(web)
             return
 
-        left = f"[dim]{self.tr('header.session')} {self.session_id} · "
-        left += f"{self.tr('header.model')} {self.model_name}"
+        def _safe(text) -> str:
+            return str(text or "").replace("[", "\\[")
+
+        label = _safe(self._session_label())
+        mname = _safe(self.model_name)
+        left = f"[dim]{self.tr('header.session')} {label} · "
+        left += f"{self.tr('header.model')} {mname}{self._model_badge()}"
         if self._busy:
             from app.tui.spinner import cell_spinner_text
             state = self._busy_status or self.tr("busy")
@@ -976,8 +990,8 @@ class CelliumTUI(App):
                     Text.assemble(
                         anim,
                         Text.from_markup(
-                            f"  [dim]{self.tr('header.session')} {self.session_id} · "
-                            f"{self.tr('header.model')} {self.model_name}"
+                            f"  [dim]{self.tr('header.session')} {_safe(self._session_label())} · "
+                            f"{self.tr('header.model')} {_safe(self.model_name)}{self._model_badge()}"
                         ),
                     )
                 )
@@ -1002,6 +1016,24 @@ class CelliumTUI(App):
 
     def _sidebar_visible(self) -> bool:
         return self.size.width >= 120
+
+    def _session_label(self) -> str:
+        cached = getattr(self, "_session_label_cache", None)
+        if cached and cached[0] == self.session_id and time.monotonic() - cached[2] < 3.0:
+            return cached[1]
+        label = self.session_id
+        try:
+            from app.agent.loop.session_store import get_session_store
+            for meta in get_session_store().list_sessions(limit=200):
+                if meta.session_id == self.session_id:
+                    title = (getattr(meta, "title", None) or "").strip()
+                    if title:
+                        label = title
+                    break
+        except Exception:
+            pass
+        self._session_label_cache = (self.session_id, label, time.monotonic())
+        return label
 
     def _prompt_cache_status(self) -> str:
         try:
@@ -1909,7 +1941,9 @@ class CelliumTUI(App):
         try:
             from app.server import session_llm
             models = session_llm.list_models()
+            override = bool(session_llm.get_model(self.session_id))
             current = self._current_model_name()
+            global_model = session_llm.global_model()
             if not models:
                 self._post(self._append_system(self.tr("model.info_failed", "no models configured")))
                 return
@@ -1918,9 +1952,12 @@ class CelliumTUI(App):
             return
 
         def on_result(name):
-            if name:
+            if name is not None:
                 self._post(self._switch_model(name))
-        self.push_screen(ModelPickerScreen(models, current), callback=on_result)
+        self.push_screen(
+            ModelPickerScreen(models, current, global_model=global_model, override=override),
+            callback=on_result,
+        )
 
     async def _open_session_picker(self):
         """/session 无参数时弹出会话选择框"""
@@ -1963,39 +2000,41 @@ class CelliumTUI(App):
     async def _switch_model(self, name):
         try:
             from app.server import session_llm
-            if name not in {m["name"] for m in session_llm.list_models()}:
+            if name and name not in {m["name"] for m in session_llm.list_models()}:
                 await self._append_system(self.tr("model.not_found", name))
                 return
-            # 只切当前会话，不动全局配置（其他会话继续用各自的模型）
-            result = session_llm.set_model(self.session_id, name)
+            # 空 name = 清除会话覆盖，跟随全局默认
+            result = session_llm.set_model(self.session_id, name or "")
             if not result.get("success"):
                 await self._append_system(self.tr("model.switch_failed", result.get("error")))
                 return
             session_llm.apply_to_loop(self.session_id)
-            self.model_name = name
+            self.model_name = result.get("model") or self._current_model_name()
             self._refresh_status()
-            await self._append_system(self.tr("model.switched", name))
+            if name:
+                await self._append_system(self.tr("model.switched", name))
+            else:
+                await self._append_system(self.tr("model.followed_global", self.model_name))
         except Exception as e:
             await self._append_system(self.tr("model.switch_failed", e))
 
     def delete_model_by_name(self, name: str):
-        """删除已配置的模型"""
+        """删除已配置的模型（统一入口：全局默认拒绝，会话覆盖自动释放）"""
         try:
-            from app.core.util.agent_config import get_config
-            cfg = get_config()
-            llm = cfg.get_section("llm")
-            models = llm.get("models", [])
-            if not any(m.get("name") == name for m in models):
-                self.notify(self.tr("model.not_found", name), severity="warning")
+            from app.server import session_llm
+            result = session_llm.delete_model(name)
+            if not result.get("success"):
+                reason = result.get("reason")
+                if reason == "global_default":
+                    self.notify(self.tr("model.delete_global", name), severity="warning")
+                elif reason == "not_found":
+                    self.notify(self.tr("model.not_found", name), severity="warning")
+                else:
+                    self.notify(self.tr("model.delete_failed", result.get("error")), severity="error")
                 return
-            if name == llm.get("current_model", ""):
-                self.notify(self.tr("model.delete_protected"), severity="warning")
-                return
-            new_models = [m for m in models if m.get("name") != name]
-            cfg.set("llm.models", new_models, persist=True)
-            self._post(self._append_system(self.tr("model.deleted", name)))
-            from app.server.routes.config import reload_llm_engine
-            asyncio.create_task(reload_llm_engine())
+            self._post(self._append_system(result.get("message") or self.tr("model.deleted", name)))
+            self.model_name = self._current_model_name()
+            self._refresh_status()
         except Exception as e:
             self.notify(self.tr("model.delete_failed", e), severity="error")
 
@@ -2446,6 +2485,12 @@ class CelliumTUI(App):
             if evt.get("session_id") in (None, self.session_id):
                 self.model_name = evt.get("model") or self.model_name
                 self._refresh_status()
+        elif t in ("global_model_changed", "models_changed"):
+            try:
+                self.model_name = self._current_model_name()
+            except Exception:
+                pass
+            self._refresh_status()
         elif t == "status":
             self._refresh_status()
         elif t == "message_received":

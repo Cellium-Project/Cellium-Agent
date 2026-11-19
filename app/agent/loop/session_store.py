@@ -477,6 +477,17 @@ class SessionStore:
             self._write_store(store)
             self._publish_event("session_deleted", {"session_id": session_id})
 
+        try:
+            from app.server import session_llm
+            session_llm.clear_session(session_id)
+        except Exception:
+            pass
+        try:
+            from app.agent.llm.providers.opencode import gateway_session
+            gateway_session.clear_session(session_id)
+        except Exception:
+            pass
+
         self._notify_listeners("session_updated", store)
         return True
 

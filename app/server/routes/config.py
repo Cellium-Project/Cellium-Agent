@@ -515,50 +515,38 @@ async def list_local_models(body: LocalModelListRequest):
 @router.post("/model/switch")
 async def switch_model(body: ModelSwitchRequest):
     """
-    切换当前使用的模型
+    切换全局默认模型（TUI / WebUI / config 工具统一入口）
 
-    只需更新 llm.current_model，模型配置已存储在 llm.models 列表中
-    切换后自动重新加载引擎，立即生效
+    只更新 llm.current_model，会话级覆盖仍由 session_llm 独立管理。
+    切换后自动重新加载引擎并广播 global_model_changed。
     """
     import logging
     logger = logging.getLogger(__name__)
 
-    config = _get_agent_config()
+    from app.server import session_llm
 
-    llm_section = config.get_section("llm")
-    models = llm_section.get("models", [])
+    result = session_llm.set_global(body.name)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "切换失败")
 
-    model_exists = any(m.get("name") == body.name for m in models)
-    if not model_exists:
-        raise HTTPException(status_code=400, detail=f"模型不存在: {body.name}")
+    logger.info("[ConfigAPI] 全局默认模型已切换 | name=%s", result["model"])
 
-    config.set("llm.current_model", body.name, persist=True)
-
-    logger.info("[ConfigAPI] 模型已切换 | name=%s", body.name)
-
-    try:
-        reload_result = await reload_llm_engine()
-        return {
-            "status": "ok",
-            "message": f"已切换到模型: {body.name}，引擎已重新加载",
-            "config": {
-                "current_model": body.name,
-            },
-            "engine": {
-                "model": reload_result.get("model"),
-                "updated_sessions": reload_result.get("updated_sessions", 0),
-            }
+    reloaded = bool(result.get("engine_reloaded"))
+    return {
+        "status": "ok" if reloaded else "partial",
+        "message": (
+            f"已将 {body.name} 设为全局默认模型，引擎已重新加载"
+            if reloaded
+            else f"已将 {body.name} 设为全局默认模型，但引擎重载失败，新建对话生效"
+        ),
+        "config": {
+            "current_model": body.name,
+        },
+        "engine": {
+            "model": result.get("model"),
+            "reloaded": reloaded,
         }
-    except Exception as e:
-        logger.warning("[ConfigAPI] 模型切换成功但引擎重载失败: %s", e)
-        return {
-            "status": "partial",
-            "message": f"已切换到模型: {body.name}，但引擎重载失败，新建对话生效",
-            "config": {
-                "current_model": body.name,
-            },
-            "error": str(e)
-        }
+    }
 
 
 @router.post("/model/reload-engine")

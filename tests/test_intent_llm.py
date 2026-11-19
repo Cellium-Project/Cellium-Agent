@@ -39,11 +39,6 @@ class MockAgentLoop:
             return {"task_type": "test", "gene_template": ""}
         return None
 
-    async def _create_gene_in_background(self, user_input, state):
-        if not self._intent_enabled or not self._intent_llm:
-            return False
-        return True
-
 
 class TestIntentLLM(unittest.TestCase):
     """意图感知 LLM 启用/禁用测试"""
@@ -87,13 +82,6 @@ class TestIntentLLM(unittest.TestCase):
         # 主模型不应被调用
         self.assertEqual(self.main_llm._call_count, 0)
 
-    def test_disabled_intent_skip_background_gene(self):
-        """intent_enabled=False → _create_gene_in_background 返回 False"""
-        loop = MockAgentLoop(llm_engine=self.main_llm, intent_enabled=False)
-
-        result = asyncio.run(loop._create_gene_in_background("测试", MagicMock()))
-        self.assertFalse(result)
-
     def test_disabled_with_separate_llm_available(self):
         """intent_enabled=False 即使有独立模型也不调用"""
         loop = MockAgentLoop(llm_engine=self.main_llm, intent_llm_engine=self.separate_llm, intent_enabled=False)
@@ -118,12 +106,6 @@ class TestIntentLLM(unittest.TestCase):
         result = asyncio.run(loop._llm_match_gene("测试"))
         self.assertIsNone(result)
         self.assertEqual(self.main_llm._call_count, 1)
-
-    def test_create_gene_in_background_when_enabled(self):
-        """启用 → _create_gene_in_background 返回 True"""
-        loop = MockAgentLoop(llm_engine=self.main_llm)
-        result = asyncio.run(loop._create_gene_in_background("测试", MagicMock()))
-        self.assertTrue(result)
 
     # ─── 热重载：启用/关闭切换 ───
 

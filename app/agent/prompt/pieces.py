@@ -288,6 +288,37 @@ def get_auto_hints_piece() -> PromptPiece:
     )
 
 
+def get_gene_candidates_piece() -> PromptPiece:
+
+    def _render(ctx: dict) -> str:
+        candidates = ctx.get("gene_candidates") or []
+        if not candidates:
+            return ""
+        lines = []
+        for item in candidates[:20]:
+            task_type = item.get("task_type") or ""
+            if not task_type:
+                continue
+            signals = ", ".join((item.get("signals") or [])[:5])
+            lines.append(f"- {task_type}: 触发词={signals}")
+        if not lines:
+            return ""
+        return (
+            "<gene-selection>\n"
+            "如果本次任务明确匹配以下已有策略，请在回复最开始单独写一行 "
+            "`[GENE: 策略名]`，之后再正常作答；不匹配则不要输出这一行。\n"
+            + chr(10).join(lines)
+            + "\n</gene-selection>"
+        )
+
+    return PromptPiece(
+        name="gene_candidates",
+        renderer=_render,
+        stability="dynamic",
+        priority=300,
+    )
+
+
 # ============================================================
 # 工厂函数
 # ============================================================
@@ -319,5 +350,6 @@ def create_default_builder(
     builder.register(get_plan_summary_piece())
     builder.register(get_guidance_message_piece())
     builder.register(get_auto_hints_piece())
+    builder.register(get_gene_candidates_piece())
 
     return builder

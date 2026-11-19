@@ -31,6 +31,9 @@ class FakeStore:
         return session_id in self.existing
 
     def get_or_create_session(self, session_id=None):
+        if session_id is None:
+            import uuid
+            session_id = f"sess_{uuid.uuid4().hex[:12]}"
         self.existing.add(session_id)
         self.created.append(session_id)
         return SimpleNamespace(session_id=session_id, title=None)
@@ -181,7 +184,10 @@ class TestValidation(SessionAgentTestBase):
             with patch.object(sa_mod, "_get_main_loop", return_value=None):
                 r = self.sa._cmd_send(target="B", message="x", create=True, session_id="A")
             self.assertEqual(r["reason"], "no_event_loop")
-            self.assertIn("B", store.created)
+            self.assertTrue(store.created)
+            new_id = store.created[-1]
+            self.assertTrue(str(new_id).startswith("sess_"))
+            self.assertEqual(store.titles.get(new_id), "B")
 
     def test_nested_delegation_rejected(self):
         with sa_mod._ACTIVE_LOCK:
@@ -474,8 +480,10 @@ class TestSessionsAndRename(SessionAgentTestBase):
                     target="sess_new", message="x", create=True, title="新会话名", session_id="A"
                 )
         self.assertEqual(r["reason"], "no_event_loop")
-        self.assertEqual(store.title_calls, [("sess_new", "新会话名")])
-        self.assertIn("sess_new", store.created)
+        self.assertTrue(store.created)
+        new_id = store.created[-1]
+        self.assertTrue(str(new_id).startswith("sess_"))
+        self.assertEqual(store.title_calls, [(new_id, "新会话名")])
 
 
 class TestPermissions(SessionAgentTestBase):

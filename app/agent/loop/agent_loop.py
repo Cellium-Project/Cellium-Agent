@@ -56,6 +56,49 @@ _TRACE_UNTOUCHED_KEYS = {"error", "message", "success", "status", "tool", "name"
 _CHECKPOINT_MIN_NEW = 6      # 两次检查点之间至少新增的消息数
 _CHECKPOINT_INTERVAL = 5.0   # 两次检查点之间的最小间隔（秒）
 
+_GENE_TAG_RE = re.compile(r"^\s*\[GENE:[^\]]{0,60}\]\s*\n?", re.I)
+
+
+def strip_gene_tag(text: str) -> str:
+    if not text:
+        return text
+    return _GENE_TAG_RE.sub("", text, count=1)
+
+
+class _GeneTagFilter:
+    _PREFIX = "[GENE:"
+
+    def __init__(self, hold: int = 120):
+        self._buf = ""
+        self._hold = hold
+        self._done = False
+
+    def feed(self, text: str) -> str:
+        if self._done:
+            return text
+        self._buf += text
+        match = _GENE_TAG_RE.match(self._buf)
+        if match:
+            rest = self._buf[match.end():]
+            self._buf = ""
+            self._done = True
+            return rest
+        head = self._buf.lstrip().upper()
+        maybe = head.startswith(self._PREFIX[:len(head)]) if len(head) <= len(self._PREFIX) \
+            else head.startswith(self._PREFIX)
+        if maybe and len(self._buf) <= self._hold:
+            return ""
+        out = self._buf
+        self._buf = ""
+        self._done = True
+        return out
+
+    def flush(self) -> str:
+        out = self._buf
+        self._buf = ""
+        self._done = True
+        return out
+
 
 def _slim_trace_value(v, limit, flag, depth=0, key=None):
     if isinstance(v, str):
@@ -266,6 +309,7 @@ class AgentLoop:
             max_notes_length=session_config.get("max_notes_length", 2000),
             repository=three_layer_memory.repository if three_layer_memory else None,
             archive=three_layer_memory.archive if three_layer_memory else None,
+            session_id=self.session_id,
         )
         self._compact_enabled = bool(session_config.get("enabled", True))
         self._compact_hint_pending = False
@@ -622,29 +666,6 @@ class AgentLoop:
             return success
         return False
 
-    async def _create_gene_in_background(self, user_input: str, state: "LoopState"):
-        """后台创建 Gene，不阻塞主流程"""
-        try:
-            from app.agent.control.hard_constraints import GeneEvolution
-            success = await GeneEvolution.create_gene_with_llm(
-                user_input=user_input,
-                state=state,
-                llm_engine=self._intent_llm
-            )
-            if success:
-                logger.info("[AgentLoop] 后台创建 Gene 成功")
-            else:
-                logger.warning("[AgentLoop] 后台创建 Gene 失败")
-        except Exception as e:
-            logger.error("[AgentLoop] 后台创建 Gene 出错: %s", e)
-
-    def _on_gene_task_done(self, task):
-        """Gene 后台任务完成回调，处理未捕获的异常"""
-        try:
-            task.result()
-        except Exception as e:
-            logger.error("[AgentLoop] Gene 后台任务异常: %s", e)
-
     async def _llm_match_gene(self, user_input: str) -> Optional[Dict[str, Any]]:
         """用 LLM 判断用户输入是否匹配已有 Gene"""
         if not self._intent_enabled:
@@ -698,6 +719,40 @@ class AgentLoop:
 
         logger.debug("[AgentLoop] LLM Gene 未匹配 | input=%s", user_input[:50])
         return None
+
+    def _intent_is_dedicated(self) -> bool:
+        """意图识别是否配置了独立模型"""
+        return bool(
+            self._intent_enabled
+            and self._intent_llm is not None
+            and self._intent_llm is not self.llm
+        )
+
+    def _apply_gene_declaration(self, content: str) -> None:
+        if not content or not self._loop_state or self._loop_state.matched_gene_type:
+            return
+        import re
+        match = re.search(r"\[GENE:\s*([^\]]{1,60})\]", content, re.I)
+        if not match:
+            return
+        name = match.group(1).strip()
+        try:
+            from app.agent.control.constraint_gene import TaskSignalMatcher
+            merged = {**TaskSignalMatcher.TASK_PATTERNS, **TaskSignalMatcher._cache}
+        except Exception:
+            return
+        for task_type, config in merged.items():
+            if task_type.lower() != name.lower():
+                continue
+            self._loop_state.matched_gene_type = task_type
+            self._loop_state.matched_gene_content = (config or {}).get("gene_template", "")
+            try:
+                if TaskSignalMatcher._repository:
+                    TaskSignalMatcher._repository.increment_usage(f"gene:{task_type}")
+            except Exception:
+                pass
+            logger.info("[AgentLoop] Gene 由主模型声明 | task_type=%s", task_type)
+            return
 
     def _get_last_assistant_message(self, memory: MemoryManager, skip_thinking: bool = True) -> str:
         for msg in reversed(memory.get_messages()):
@@ -1401,13 +1456,36 @@ class AgentLoop:
 
             yield {"type": "status", "content": "正在思考..."}
 
-            # LLM 意图匹配 Gene
-            if self.control_loop and self._loop_state and not self._loop_state.matched_gene_type:
-                gene_match = await self._llm_match_gene(user_input)
-                if gene_match:
-                    self._loop_state.matched_gene_type = gene_match["task_type"]
-                    self._loop_state.matched_gene_content = gene_match["gene_template"]
-                    logger.info("[AgentLoop] Gene 已通过 LLM 匹配 | task_type=%s", gene_match["task_type"])
+            _gene_candidates = []
+            # Gene 匹配统一由意图识别驱动（关键词匹配不准确，已移除）
+            if (
+                self._intent_enabled
+                and self.control_loop
+                and self._loop_state
+                and not self._loop_state.matched_gene_type
+            ):
+                if self._intent_is_dedicated():
+                    # 配了独立意图模型：单独调用成本低（max_tokens=10），且不污染主模型缓存
+                    gene_match = await self._llm_match_gene(user_input)
+                    if gene_match:
+                        self._loop_state.matched_gene_type = gene_match["task_type"]
+                        self._loop_state.matched_gene_content = gene_match["gene_template"]
+                        logger.info(
+                            "[AgentLoop] Gene 已通过独立意图模型匹配 | task_type=%s",
+                            gene_match["task_type"],
+                        )
+
+                if not self._loop_state.matched_gene_type:
+                    # 复用主模型：候选注入动态提示词层，由主模型顺带声明，保住前缀缓存
+                    try:
+                        from app.agent.control.constraint_gene import TaskSignalMatcher
+                        _merged = {**TaskSignalMatcher.TASK_PATTERNS, **TaskSignalMatcher._cache}
+                        _gene_candidates = [
+                            {"task_type": k, "signals": (v or {}).get("signals", [])}
+                            for k, v in _merged.items()
+                        ]
+                    except Exception:
+                        _gene_candidates = []
 
             self._tool_call_count_in_round = 0
             self._tool_help_given = False
@@ -1702,6 +1780,12 @@ class AgentLoop:
                     "session_id": effective_session,
                     "tools": self.tools,
                     "tool_traces": tool_traces,
+                    "gene_candidates": (
+                        _gene_candidates
+                        if iteration == 1
+                        and not (self._loop_state and self._loop_state.matched_gene_type)
+                        else []
+                    ),
                 }
 
                 if iteration == 1:
@@ -1764,6 +1848,7 @@ class AgentLoop:
                 _stream_reasoning_start = None
                 _stream_reasoning_end = None
                 _stream_content = []
+                _gene_filter = _GeneTagFilter()
                 self._stream_partial_text = ""
                 _stream_tool_calls = []
                 _stream_checked = 0
@@ -1776,6 +1861,11 @@ class AgentLoop:
 
                 async def _collect_stream():
                     nonlocal response, _stream_error
+                    try:
+                        from app.agent.llm.providers.opencode import gateway_session
+                        gateway_session.bind(self.session_id)
+                    except Exception:
+                        pass
                     try:
                         async for chunk in self._prompt_diff_tracker.chat_stream(
                             llm_engine=self.llm,
@@ -1848,6 +1938,9 @@ class AgentLoop:
                         except asyncio.TimeoutError:
                             # 流已结束且队列空：退出（无 chunk 残留的异常/完成场景）
                             if _stream_finished.is_set() and _stream_queue.empty():
+                                _tail = _gene_filter.flush()
+                                if _tail:
+                                    yield {"type": "content_chunk", "content": _tail}
                                 break
                             continue
                         ctype = chunk.get("type")
@@ -1855,7 +1948,9 @@ class AgentLoop:
                             _text = chunk.get("text", "")
                             _stream_content.append(_text)
                             self._stream_partial_text = "".join(_stream_content)
-                            yield {"type": "content_chunk", "content": _text}
+                            _visible = _gene_filter.feed(_text)
+                            if _visible:
+                                yield {"type": "content_chunk", "content": _visible}
                             _stream_checked += len(_text)
                             _stream_tail = (_stream_tail + _text)[-4000:]
                             if _stream_checked >= 300:
@@ -1939,6 +2034,9 @@ class AgentLoop:
                                     yield event
                             return
                         if _stream_finished.is_set() and _stream_queue.empty():
+                            _tail = _gene_filter.flush()
+                            if _tail:
+                                yield {"type": "content_chunk", "content": _tail}
                             break
                     # 流式结束后清空队列残留（避免一次性 fallback 的 done 未被消费）
                     try:
@@ -1946,9 +2044,12 @@ class AgentLoop:
                             chunk = _stream_queue.get_nowait()
                             ctype = chunk.get("type")
                             if ctype == "content":
-                                _stream_content.append(chunk.get("text", ""))
+                                _raw = chunk.get("text", "")
+                                _stream_content.append(_raw)
                                 self._stream_partial_text = "".join(_stream_content)
-                                yield {"type": "content_chunk", "content": chunk.get("text", "")}
+                                _visible = _gene_filter.feed(_raw)
+                                if _visible:
+                                    yield {"type": "content_chunk", "content": _visible}
                             elif ctype == "reasoning":
                                 if _stream_reasoning_start is None:
                                     _stream_reasoning_start = chunk.get("start_time") or time.time()
@@ -1986,6 +2087,12 @@ class AgentLoop:
 
                 logger.info("[AgentLoop] 迭代 %d: LLM 返回 (tool_calls=%d, content长度=%d)",
                            iteration, len(response.tool_calls) if response.tool_calls else 0, len(response.content or ""))
+
+                if response.content:
+                    self._apply_gene_declaration(response.content)
+                    _cleaned = strip_gene_tag(response.content)
+                    if _cleaned != response.content:
+                        response.content = _cleaned
 
                 # === Hybrid: 解析思考 ===
                 parsed_thought: Optional[ParsedThought] = None
@@ -2323,22 +2430,12 @@ class AgentLoop:
                         gene_prompt = getattr(self._loop_state, 'gene_creation_prompt', None)
                         gene_source = getattr(self._loop_state, 'gene_creation_source', '')
 
-                        if gene_source == "failure":
-                            # Mechanism A: 累计失败 -> 纯后台创建，不干扰主 Agent
-                            logger.info("[AgentLoop] Mechanism A: 累计失败触发，后台创建 Gene")
-                            if user_input_for_gene and self._intent_enabled and self._intent_llm:
-                                try:
-                                    from app.agent.control.hard_constraints import GeneEvolution
-                                    task = asyncio.create_task(self._create_gene_in_background(
-                                        user_input_for_gene, self._loop_state
-                                    ))
-                                    task.add_done_callback(self._on_gene_task_done)
-                                except Exception as e:
-                                    logger.error("[AgentLoop] 后台 Gene 创建失败: %s", e)
-                        elif gene_source == "complexity":
-                            # Mechanism B: 复杂任务 -> 主 Agent 处理（在最终回复后）
-                            # 这里只记录，不立即处理，等待最终回复后触发
-                            logger.info("[AgentLoop] Mechanism B: 复杂任务触发，将在最终回复后由主 Agent 处理")
+                        if gene_source == "complexity":
+                            # 复杂任务 -> 主 Agent 在最终回复中评估是否创建 Gene（不额外发请求）
+                            logger.info("[AgentLoop] Gene 创建：复杂任务触发，由主 Agent 在最终回复中处理")
+                        elif gene_source == "failure":
+                            # 失败累积不再后台创建 Gene（额外 LLM 请求会破坏前缀缓存）
+                            logger.debug("[AgentLoop] Gene 创建：失败累积来源已禁用")
 
                         # 重置标记
                         self._loop_state.needs_agent_gene_creation = False

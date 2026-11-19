@@ -1426,22 +1426,6 @@ async def update_session_model(session_id: str, req: SessionModelRequest):
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error") or "设置失败")
     session_llm.apply_to_loop(session_id)
-    payload = {
-        "type": "session_model_changed",
-        "session_id": session_id,
-        "model": result["model"],
-        "override": result["override"],
-    }
-    try:
-        from app.messaging.message_broker import get_message_broker
-        get_message_broker().publish(session_id, dict(payload))
-    except Exception:
-        pass
-    try:
-        from app.server.routes.ws_event_manager import ws_publish_event
-        ws_publish_event("chat_event", dict(payload), session_id=session_id)
-    except Exception:
-        pass
     logger.info(
         "[chat] 会话模型切换 | session=%s | model=%s | override=%s",
         session_id, result["model"], result["override"],

@@ -408,7 +408,6 @@ class TestPlanModeLoop(unittest.TestCase):
 
     def test_tools_filtered_in_plan(self):
         loop, llm = self._build_loop([
-            _MockResponse(content="none"),
             _MockResponse(content="done"),
         ])
         asyncio.run(self._run(loop, "plan"))
@@ -420,7 +419,6 @@ class TestPlanModeLoop(unittest.TestCase):
 
     def test_edit_call_blocked(self):
         loop, llm = self._build_loop([
-            _MockResponse(content="none"),
             _MockResponse(tool_calls=[_MockToolCall("edit", {"path": self.marker})]),
             _MockResponse(content="plan only"),
         ])
@@ -432,7 +430,6 @@ class TestPlanModeLoop(unittest.TestCase):
 
     def test_mode_reset_after_run(self):
         loop, _ = self._build_loop([
-            _MockResponse(content="none"),
             _MockResponse(tool_calls=[_MockToolCall("read", {"path": "a.txt"})]),
             _MockResponse(content="done"),
         ])
@@ -441,7 +438,6 @@ class TestPlanModeLoop(unittest.TestCase):
 
     def test_run_mode_injects_override_notice(self):
         loop, llm = self._build_loop([
-            _MockResponse(content="none"),
             _MockResponse(content="done"),
         ])
         asyncio.run(self._run(loop, "run"))
@@ -453,7 +449,6 @@ class TestPlanModeLoop(unittest.TestCase):
 
     def test_run_mode_allows_edit(self):
         loop, _ = self._build_loop([
-            _MockResponse(content="none"),
             _MockResponse(tool_calls=[_MockToolCall("edit", {"path": self.marker})]),
             _MockResponse(content="done"),
         ])

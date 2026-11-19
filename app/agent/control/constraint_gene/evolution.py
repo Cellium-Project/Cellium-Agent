@@ -327,21 +327,6 @@ class GeneEvolution:
             pass
 
     @classmethod
-    def should_prompt_agent_for_gene(cls, state: "LoopState", task_type: str, avoid_cue: Optional[str]) -> bool:
-        """判断是否满足 Gene 创建/进化条件
-
-        条件：只要有 task_type 和 avoid_cue 就触发（放宽条件）
-        """
-        if not task_type:
-            return False
-
-        if not avoid_cue:
-            return False
-
-        # 放宽条件：只要有失败历史就触发，不强制要求 features.consecutive_failures
-        return True
-
-    @classmethod
     def _get_existing_gene(cls, user_input: str) -> Optional[Dict[str, Any]]:
         if not TaskSignalMatcher._repository or not user_input:
             return None

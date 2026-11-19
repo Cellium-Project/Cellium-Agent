@@ -187,58 +187,10 @@ class FeedbackEvaluator:
 
                     logger.info(f"[GeneEvolution] 记录失败 #{state.gene_failure_count}: tool={task_type}, cue={avoid_cue[:50]}")
 
-                    if state.gene_failure_count >= 2:
-                        failed_tools = set(h.get("task_type", "") for h in state.gene_failure_history if h.get("task_type"))
-
-                        if GeneEvolution.should_prompt_agent_for_gene(state, task_type, avoid_cue):
-                            state.needs_agent_gene_creation = True
-                            state.gene_creation_source = "failure" 
-                            state.gene_creation_prompt = self._build_gene_view_prompt(state, user_input, state.gene_failure_history)
-                            logger.info(f"[GeneEvolution] 累积{state.gene_failure_count}次失败，涉及工具: {failed_tools}，将后台创建 Gene")
-
-                            for tool in failed_tools:
-                                tool_cues = [h.get("avoid_cue", "") for h in state.gene_failure_history if h.get("task_type") == tool]
-                                combined_cue = "; ".join(filter(None, tool_cues)) if tool_cues else avoid_cue
-                                GeneEvolution.update_gene_from_failure(tool, combined_cue, state, reward)
-                                logger.info(f"[GeneEvolution] 更新 Gene: {tool}")
-                        
-                        state.gene_failure_count = 0
-                        state.gene_failure_history = []
-                        logger.info("[GeneEvolution] Gene 触发完成，重置失败计数")
         except Exception as e:
             logger.warning("[GeneEvolution] Gene evolution failed: %s", e)
 
         return reward
-
-    def _build_gene_view_prompt(self, state: LoopState, user_input: str, failure_history: List[Dict]) -> str:
-        """构建提示 Agent 查看 Gene 的提示（包含失败历史）"""
-        from .constraint_gene import GeneEvolution
-
-        failure_summary = "\n".join([
-            f"  {i+1}. 第{h['iteration']}轮: {h['avoid_cue']}"
-            for i, h in enumerate(failure_history[-2:])  
-        ])
-
-        existing_gene = GeneEvolution._get_existing_gene(user_input)
-
-        if existing_gene:
-            return f"""[系统提示 - Gene 创建评估]
-检测到任务连续 2 次执行失败：
-{failure_summary}
-
-已有相关 Gene 记录，请先查看：
-
-使用命令：memory get_gene task_type={existing_gene['task_type']}
-
-查看后根据 Gene 中的指导继续执行任务。"""
-        else:
-            return f"""[系统提示 - Gene 创建评估]
-检测到任务连续 2 次执行失败：
-{failure_summary}
-
-系统将自动分析失败原因并创建指导规则。
-
-请继续尝试完成任务，系统会根据执行情况优化策略。"""
 
     def explain(self, state: LoopState) -> Dict[str, Any]:
         success = self._is_round_success(state)

@@ -173,8 +173,10 @@ class SessionCompactor:
         repository: "MemoryRepository" = None,
         archive=None,
         compact_ratio: float = 0.8,
+        session_id: str = "",
     ):
         self.llm = llm_engine
+        self.session_id = str(session_id or "")
         # token_threshold 显式给出时按绝对值，否则按模型窗口 × compact_ratio
         self._explicit_threshold = int(token_threshold) if token_threshold else 0
         self.compact_ratio = float(compact_ratio or 0.8)
@@ -623,6 +625,12 @@ class SessionCompactor:
         payload, reused = self._build_summary_payload(messages_text, cache_prefix)
         extra = {"tools": tools} if (reused and tools) else {}
         thinking_backup = getattr(self.llm, "_thinking", None)
+        if self.session_id:
+            try:
+                from app.agent.llm.providers.opencode import gateway_session
+                gateway_session.bind(self.session_id)
+            except Exception:
+                pass
         try:
             if thinking_backup is not None:
                 self.llm._thinking = None

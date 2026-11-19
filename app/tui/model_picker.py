@@ -51,10 +51,12 @@ class ModelPickerScreen(ModalScreen):
     }
     """
 
-    def __init__(self, models, current, *args, **kwargs):
+    def __init__(self, models, current, global_model="", override=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._models = models
         self._current = current
+        self._global = global_model
+        self._override = bool(override)
 
     def compose(self):
         with Vertical(id="model-picker-panel"):
@@ -64,19 +66,38 @@ class ModelPickerScreen(ModalScreen):
 
     def on_mount(self):
         lst = self.query_one("#model-picker-list", OptionList)
-        options = []
+        lst.add_options(self._build_options())
+        lst.highlighted = self._highlight_index()
+        lst.focus()
+
+    def _build_options(self):
+        tr = self.app.tr
+        options = [Option(
+            f"{'○' if self._override else '●'} "
+            f"{tr('model.follow_global', self._global or '-')}",
+            id="__follow__",
+        )]
         for m in self._models:
             name = m.get("name", "")
-            mark = "●" if name == self._current else "○"
+            tags = []
+            if name == self._global:
+                tags.append(tr("model.tag_default"))
+            if self._override and name == self._current:
+                tags.append(tr("model.tag_session"))
+            mark = "●" if (self._override and name == self._current) else "○"
+            tag_text = f" [{'/'.join(tags)}]" if tags else ""
             desc = f"{m.get('model', '') or '-'} @ {m.get('base_url', '') or '-'}"
-            options.append(Option(f"{mark} {name}  [{desc}]", id=name))
-        options.append(Option(self.app.tr("settings.add_model"), id="__add__"))
-        lst.add_options(options)
-        for i, m in enumerate(self._models):
+            options.append(Option(f"{mark} {name}{tag_text}  [{desc}]", id=name))
+        options.append(Option(tr("settings.add_model"), id="__add__"))
+        return options
+
+    def _highlight_index(self):
+        if not self._override:
+            return 0
+        for i, m in enumerate(self._models, start=1):
             if m.get("name") == self._current:
-                lst.highlighted = i
-                break
-        lst.focus()
+                return i
+        return 0
 
     def _selected_model(self):
         lst = self.query_one("#model-picker-list", OptionList)
@@ -86,14 +107,20 @@ class ModelPickerScreen(ModalScreen):
         return opt.id
 
     def on_option_list_option_selected(self, event):
-        if event.option.id == "__add__":
+        opt_id = event.option.id
+        if opt_id == "__add__":
             self.app.push_screen(ProviderPickerScreen())
             return
-        name = event.option.id
-        if name == self._current:
+        if opt_id == "__follow__":
+            if not self._override:
+                self.app.pop_screen()
+                return
+            self.dismiss("")
+            return
+        if self._override and opt_id == self._current:
             self.app.pop_screen()
             return
-        self.dismiss(name)
+        self.dismiss(opt_id)
 
     def key_e(self):
         name = self._selected_model()
@@ -107,7 +134,7 @@ class ModelPickerScreen(ModalScreen):
 
     def key_d(self):
         name = self._selected_model()
-        if not name or name == "__add__":
+        if not name or name in ("__add__", "__follow__"):
             return
         if name == self._current:
             self.app.notify(self.app.tr("model.delete_protected"), severity="warning")
@@ -115,27 +142,42 @@ class ModelPickerScreen(ModalScreen):
         self.app.delete_model_by_name(name)
         self._reload_models()
 
+    def key_g(self):
+        """把选中的模型设为全局默认"""
+        name = self._selected_model()
+        if not name or name in ("__add__", "__follow__"):
+            return
+        try:
+            from app.server import session_llm
+            result = session_llm.set_global(name)
+        except Exception as e:
+            self.app.notify(self.app.tr("model.switch_failed", e), severity="error")
+            return
+        if not result.get("success"):
+            self.app.notify(
+                self.app.tr("model.switch_failed", result.get("error") or ""),
+                severity="error",
+            )
+            return
+        try:
+            self.app.model_name = self.app._current_model_name()
+            self.app._refresh_status()
+        except Exception:
+            pass
+        self.app.notify(self.app.tr("model.global_set", name), severity="information")
+        self._reload_models()
+
     def _reload_models(self):
         try:
             from app.server import session_llm
-            models = session_llm.list_models()
-            current = self.app._current_model_name()
-            self._models = models
-            self._current = current
+            self._models = session_llm.list_models()
+            self._global = session_llm.global_model()
+            self._override = bool(session_llm.get_model(self.app.session_id))
+            self._current = self.app._current_model_name()
             lst = self.query_one("#model-picker-list", OptionList)
             lst.clear_options()
-            options = []
-            for m in self._models:
-                name = m.get("name", "")
-                mark = "●" if name == current else "○"
-                desc = f"{m.get('model', '') or '-'} @ {m.get('base_url', '') or '-'}"
-                options.append(Option(f"{mark} {name}  [{desc}]", id=name))
-            options.append(Option(self.app.tr("settings.add_model"), id="__add__"))
-            lst.add_options(options)
-            for i, m in enumerate(self._models):
-                if m.get("name") == current:
-                    lst.highlighted = i
-                    break
+            lst.add_options(self._build_options())
+            lst.highlighted = self._highlight_index()
         except Exception:
             pass
 

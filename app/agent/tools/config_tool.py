@@ -63,7 +63,8 @@ class ConfigTool(BaseTool):
                 "• version() — 查看 Cellium Agent 版本\n"
                 "• list_models() — 查看可用模型列表\n"
                 "• add_model(name, model, api_key, base_url, temperature=0.7) — 添加模型\n"
-                "• switch_model(model_name) — 切换当前 LLM 模型\n"
+                "• switch_model(model_name, session_id=\"\") — 切换模型（不传 session_id 改全局默认，传了改该会话）\n"
+                "• delete_model(model_name) — 删除模型（全局默认不可删，使用它的会话自动重置）\n"
                 "• enable_intent(enabled) — 开启/关闭意图感知\n"
                 "• set_intent_model(api_key, model, base_url, temperature=0.3) — 配置意图感知模型\n"
                 "—\n"
@@ -87,30 +88,27 @@ class ConfigTool(BaseTool):
         }
 
     def _cmd_list_models(self) -> dict:
-        """查看当前可用模型列表与当前模型"""
-        from app.core.util.agent_config import get_config
-
+        """查看当前可用模型列表、全局默认与占用情况"""
         try:
-            cfg = get_config()
-            llm_cfg = cfg.get("llm") or {}
-            models = llm_cfg.get("models") or []
-            current = llm_cfg.get("current_model") or (models[0].get("name") if models else "")
+            from app.server import session_llm
 
+            global_name = session_llm.global_model()
             items = []
-            for m in models:
-                name = m.get("name", "?")
-                model = m.get("model", "?")
+            for m in session_llm.list_models():
+                name = m.get("name") or "?"
+                usage = session_llm.model_usage(name)
                 items.append({
                     "name": name,
-                    "model": model,
+                    "model": m.get("model") or "?",
                     "base_url": _mask(m.get("base_url", "")),
-                    "temperature": m.get("temperature"),
-                    "is_current": name == current,
+                    "is_global_default": name == global_name,
+                    "session_overrides": len(usage.get("sessions") or []),
                 })
 
             return {
                 "success": True,
-                "current_model": current,
+                "global_model": global_name,
+                "current_model": global_name,
                 "models": items,
                 "count": len(items),
             }
@@ -168,62 +166,73 @@ class ConfigTool(BaseTool):
             logger.error("[ConfigTool] add_model 失败 | name=%s | error=%s", name, e)
             return {"success": False, "error": str(e)}
 
-    def _cmd_switch_model(self, model_name: str = "") -> dict:
-        """切换当前 LLM 模型，改完立即生效"""
+    def _cmd_switch_model(self, model_name: str = "", session_id: str = "") -> dict:
+        """切换模型：不传 session_id 改全局默认，传了则改该会话的独立模型"""
         if not model_name:
             return {"success": False, "error": "model_name is required"}
 
-        from app.core.util.agent_config import get_config
+        from app.server import session_llm
 
         try:
-            cfg = get_config()
-            llm_cfg = cfg.get("llm") or {}
-            models = llm_cfg.get("models") or []
-            if not models:
-                return {"success": False, "error": "llm.models 配置为空"}
-
-            current_name = llm_cfg.get("current_model") or models[0].get("name")
-
-            target_model = None
-            for m in models:
-                if m.get("name") == model_name:
-                    target_model = m
-                    break
-
-            if target_model is None:
-                available = [{"name": m.get("name"), "model": m.get("model")} for m in models]
+            ready = {m["name"] for m in session_llm.list_models()}
+            if model_name not in ready:
+                available = [
+                    {"name": m.get("name"), "model": m.get("model")}
+                    for m in (session_llm._raw_models() or [])
+                ]
                 return {
                     "success": False,
-                    "error": f"模型不存在: {model_name}（model_name 必须是已配置的 name，不是实际模型名）",
+                    "error": f"模型不存在或配置不完整: {model_name}",
                     "available": available,
                     "hint": "model_name 是 llm.yaml 中 - name: 后的标识，不是 model: 后的实际模型名",
                 }
 
-            actual_model = target_model.get("model", "")
+            actual = next(
+                (m.get("model", "") for m in (session_llm._raw_models() or [])
+                 if m.get("name") == model_name),
+                "",
+            )
 
-            if current_name == model_name:
-                return {
-                    "success": True,
-                    "current_model": model_name,
-                    "actual_model": actual_model,
-                    "message": f"当前已经是 {model_name}（model={actual_model}），无需切换",
-                }
+            if session_id:
+                result = session_llm.set_model(session_id, model_name)
+                if result.get("success"):
+                    session_llm.apply_to_loop(session_id)
+                    result["scope"] = "session"
+                    result["actual_model"] = actual
+                return result
 
-            cfg.set("llm.current_model", model_name, persist=True, notify=False)
-            cfg.reload_section("llm")
-
-            logger.info("[ConfigTool] switch_model | from=%s | to=%s | actual=%s",
-                        current_name, model_name, actual_model)
-
+            result = session_llm.set_global(model_name)
+            if not result.get("success"):
+                return result
             return {
                 "success": True,
-                "previous_model": current_name,
-                "current_model": model_name,
-                "actual_model": actual_model,
-                "message": f"已切换到 {model_name}（model={actual_model}），下次迭代起生效",
+                "scope": "global",
+                "previous_model": result.get("previous"),
+                "current_model": result["model"],
+                "actual_model": actual,
+                "changed": result.get("changed"),
+                "message": (
+                    f"全局默认模型已切换到 {model_name}（model={actual}）"
+                    if result.get("changed")
+                    else f"当前已经是 {model_name}（model={actual}），无需切换"
+                ),
             }
         except Exception as e:
             logger.error("[ConfigTool] switch_model 失败 | model=%s | error=%s", model_name, e)
+            return {"success": False, "error": str(e)}
+
+    def _cmd_delete_model(self, model_name: str = "") -> dict:
+        """删除模型配置（全局默认不可删；使用它的会话会自动重置为跟随全局）"""
+        if not model_name:
+            return {"success": False, "error": "model_name is required"}
+
+        from app.server import session_llm
+
+        try:
+            result = session_llm.delete_model(model_name)
+            return result
+        except Exception as e:
+            logger.error("[ConfigTool] delete_model 失败 | model=%s | error=%s", model_name, e)
             return {"success": False, "error": str(e)}
 
     def _cmd_enable_intent(self, enabled: bool = None) -> dict:

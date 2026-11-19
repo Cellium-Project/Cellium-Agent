@@ -409,12 +409,14 @@ class SessionAgent(BaseCell):
                 return self._fail(
                     f"目标会话不存在: {target}（可传 create=true 新建）", "target_not_found"
                 )
+            wanted = target
             try:
-                store.get_or_create_session(target)
+                created = store.get_or_create_session(None)
+                target = created.session_id
             except Exception as e:
                 return self._fail(f"创建目标会话失败: {e}", "target_create_failed")
             try:
-                name = self._clean_title(title or purpose or f"委托-{message[:10]}")[:60]
+                name = self._clean_title(title or wanted or purpose or f"委托-{message[:10]}")[:60]
                 if name:
                     store.set_session_title(target, name)
             except Exception:

@@ -329,7 +329,6 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
 
     def test_compress_constraint_passes_real_max_tokens(self):
         llm = MockLLMEngine(responses=[
-            MockResponse(content="none"),
             MockResponse(content="final answer"),
         ])
         loop = AgentLoop(
@@ -352,11 +351,10 @@ class TestAgentLoopRuntimeGuards(unittest.TestCase):
         result = asyncio.run(loop.run("compress this", memory=self.memory))
 
         self.assertEqual(result["type"], "done")
-        self.assertEqual(llm.chat_calls[1]["max_tokens"], 42)
+        self.assertEqual(llm.chat_calls[0]["max_tokens"], 42)
 
     def test_forbidden_tool_is_blocked_before_execution(self):
         llm = MockLLMEngine(responses=[
-            MockResponse(content="none"),
             MockResponse(tool_calls=[MockToolCall("forbidden_tool", {"a": 1})]),
             MockResponse(content="fallback answer"),
         ])
@@ -686,7 +684,6 @@ class TestToolExecution(unittest.TestCase):
         self.loop._tool_executor.refresh_tools(self.loop.tools)
 
         self.llm.responses = [
-            MockResponse(content="none"),
             MockResponse(tool_calls=[MockToolCall("forbidden_tool", {"a": 1})]),
             MockResponse(content="最终回复"),
         ]

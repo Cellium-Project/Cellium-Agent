@@ -16,7 +16,13 @@ class _SessionTransport(OpenAICompatTransport):
     @property
     def _headers(self) -> Dict[str, str]:
         h = super()._headers
-        h["X-Opencode-Session"] = self._session_id
+        sid = ""
+        try:
+            from . import gateway_session
+            sid = gateway_session.header_value()
+        except Exception:
+            sid = ""
+        h["X-Opencode-Session"] = sid or self._session_id
         return h
 
 

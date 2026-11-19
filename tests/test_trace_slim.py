@@ -183,7 +183,6 @@ class TestBehaviorEquivalence(unittest.TestCase):
         from app.agent.loop.memory import MemoryManager
 
         llm = _MockLLM(responses=[
-            _MockResponse(content="none"),
             _MockResponse(tool_calls=[_MockToolCall("big_tool", {"q": "x"})]),
             _MockResponse(content="done"),
         ])

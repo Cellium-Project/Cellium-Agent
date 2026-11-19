@@ -393,6 +393,14 @@ export const ChatView: React.FC = () => {
             override: Boolean(msg.data.override),
           }));
         }
+        if (
+          msg.type === 'chat_event' &&
+          (msg.data?.type === 'global_model_changed' || msg.data?.type === 'models_changed')
+        ) {
+          fetchJSON<typeof modelInfo>(API.sessionModel(currentSessionId))
+            .then(setModelInfo)
+            .catch(() => {});
+        }
       } catch {
         // 非 JSON 消息忽略
       }
