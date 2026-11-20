@@ -361,7 +361,7 @@ class ReadTool(BaseTool):
                 "width": part["width"],
                 "height": part["height"],
             },
-            "data": f"[图片] {part['filename']} ({part['width']}x{part['height']})",
+            "data": "已加载图片",
             "_image_refs": [abs_path],
         }
 

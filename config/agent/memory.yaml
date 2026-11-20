@@ -9,7 +9,6 @@ memory:
     enabled: true
     token_threshold: 0          # 触发压缩的 token 阈值；0 = 按模型上下文窗口自动算（见 compact_ratio）
     compact_ratio: 0.8          # 自动模式的触发比例：窗口 80% 时压缩（200k→160k，1M→800k）
-    tool_call_threshold: 0      # 达到此次数触发压缩；0 = 关闭，只按 Token/窗口触发
     max_notes_length: 2000
     notes_dir: memory/notes
   long_term:

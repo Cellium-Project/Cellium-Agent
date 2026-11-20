@@ -282,8 +282,6 @@
       "tokenThresholdDesc": "超過此 Token 數觸發壓縮；0 = 自動（模型上下文視窗 × 壓縮比例）",
       "compactRatio": "壓縮觸發比例",
       "compactRatioDesc": "Token 閾值為 0 時生效，按模型視窗的該比例觸發壓縮（預設 0.8）",
-      "toolCallThreshold": "工具呼叫閾值",
-      "toolCallThresholdDesc": "達到此次數觸發壓縮；0 = 關閉，只按 Token / 上下文視窗觸發",
       "notesMaxLength": "筆記最大長度",
       "notesMaxLengthDesc": "生成筆記的最大字元長度",
       "longTermMemory": "長期記憶（混合召回）",

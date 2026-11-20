@@ -283,8 +283,6 @@
       "tokenThresholdDesc": "超过此 Token 数触发压缩；0 = 自动（模型上下文窗口 × 压缩比例）",
       "compactRatio": "压缩触发比例",
       "compactRatioDesc": "Token 阈值为 0 时生效，按模型窗口的该比例触发压缩（默认 0.8）",
-      "toolCallThreshold": "工具调用阈值",
-      "toolCallThresholdDesc": "达到此次数触发压缩；0 = 关闭，只按 Token / 上下文窗口触发",
       "notesMaxLength": "笔记最大长度",
       "notesMaxLengthDesc": "生成笔记的最大字符长度",
       "longTermMemory": "长期记忆（混合召回）",

@@ -289,8 +289,6 @@
       "tokenThresholdDesc": "Trigger compression when exceeding this token count; 0 = auto (context window × ratio)",
       "compactRatio": "Compact Ratio",
       "compactRatioDesc": "Used when threshold is 0: trigger at this fraction of the model context window (default 0.8)",
-      "toolCallThreshold": "Tool Call Threshold",
-      "toolCallThresholdDesc": "Trigger compression when reaching this count; 0 = off, rely on tokens / context window",
       "notesMaxLength": "Notes Max Length",
       "notesMaxLengthDesc": "Maximum character length for generated notes",
       "longTermMemory": "Long-term Memory (Hybrid Recall)",

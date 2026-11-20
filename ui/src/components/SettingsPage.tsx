@@ -2027,12 +2027,6 @@ const MemorySettings: React.FC = () => {
               onChange={e => updateField('session_compact.compact_ratio', parseFloat(e.target.value) || 0.8)} />
           </div>
           <div className="form-group">
-            <FieldLabel label={t('settings.memory.toolCallThreshold')} desc={t('settings.memory.toolCallThresholdDesc')} />
-            <input type="number" value={Number(sessionCompact.tool_call_threshold) || 0} min={0} max={200}
-              placeholder="0"
-              onChange={e => updateField('session_compact.tool_call_threshold', parseInt(e.target.value) || 0)} />
-          </div>
-          <div className="form-group">
             <FieldLabel label={t('settings.memory.notesMaxLength')} desc={t('settings.memory.notesMaxLengthDesc')} />
             <input type="number" value={Number(sessionCompact.max_notes_length) || 2000} min={500} max={10000}
               onChange={e => updateField('session_compact.max_notes_length', parseInt(e.target.value))} />

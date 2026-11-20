@@ -88,11 +88,6 @@ class TestCompactTrigger(unittest.TestCase):
         mem = make_memory(30, chars_per_msg=20)
         self.assertFalse(compactor.should_compact(mem), "token 未到阈值不应触发")
 
-    def test_tool_call_triggers(self):
-        compactor = SessionCompactor(llm_engine=FastEngine(), tool_call_threshold=5)
-        compactor._tool_call_count = 5
-        self.assertTrue(compactor.should_compact(make_memory(5)), "tool_call 到阈值应触发")
-
     def test_token_threshold_triggers(self):
         compactor = SessionCompactor(llm_engine=FastEngine(), token_threshold=500)
         mem = make_memory(50, chars_per_msg=100)

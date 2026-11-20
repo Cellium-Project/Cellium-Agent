@@ -303,7 +303,6 @@ class AgentLoop:
             llm_engine=self.llm,
             token_threshold=session_config.get("token_threshold") or None,
             compact_ratio=session_config.get("compact_ratio", 0.8),
-            tool_call_threshold=session_config.get("tool_call_threshold", 0),
             keep_recent_messages=session_config.get("keep_recent_messages", 20),
             keep_recent_tokens=session_config.get("keep_recent_tokens", 15000),
             max_notes_length=session_config.get("max_notes_length", 2000),
@@ -384,7 +383,6 @@ class AgentLoop:
                 "enabled": True,
                 "token_threshold": 0,
                 "compact_ratio": 0.8,
-                "tool_call_threshold": 0,
                 "keep_recent_messages": 20,
                 "keep_recent_tokens": 15000,
                 "max_notes_length": 2000,
@@ -2194,7 +2192,6 @@ class AgentLoop:
                 # === 5.5 处理工具调用 ===
                 if response.tool_calls:
                     self._tool_call_count_in_round += len(response.tool_calls)
-                    self._session_compactor.track_tool_call()
 
                     # Gene 处理轮次：计数工具调用，限制最多 5 次
                     if self._loop_state and getattr(self._loop_state, 'gene_processing_done', False):
@@ -2807,9 +2804,7 @@ class AgentLoop:
 
         pending_parts = self._image_content_parts(pending)
         if pending_parts:
-            names = ", ".join(p["_filename"] for p in pending_parts)
             content = [{k: v for k, v in p.items() if k != "_filename"} for p in pending_parts]
-            content.append({"type": "text", "text": f"[图片] {names}"})
             messages.append({"role": "user", "content": content})
 
         if keep:

@@ -156,17 +156,13 @@ class SessionCompactor:
     """
     会话记忆压缩器
 
-    触发条件：
-      - Token 数量超过阈值
-      - 工具调用次数超过阈值
-      """
-
+    触发条件：Token 数量超过阈值（显式配置，或按模型上下文窗口 × compact_ratio 自适应）
+    """
 
     def __init__(
         self,
         llm_engine: "BaseLLMEngine" = None,
         token_threshold: int = None,
-        tool_call_threshold: int = 21,
         keep_recent_messages: int = 20,
         keep_recent_tokens: int = 0,
         max_notes_length: int = 2000,
@@ -181,20 +177,16 @@ class SessionCompactor:
         self._explicit_threshold = int(token_threshold) if token_threshold else 0
         self.compact_ratio = float(compact_ratio or 0.8)
         self.token_threshold = self._explicit_threshold or 100000
-        self.tool_call_threshold = tool_call_threshold
         self.keep_recent_messages = keep_recent_messages
         self.keep_recent_tokens = max(0, int(keep_recent_tokens or 0))
         self.max_notes_length = max_notes_length
         self._pending_compact = False
-        self._tool_call_count = 0
         self._pending_fallback = False
         self._compact_fail_count = 0
         self._compact_cooldown_until = 0.0
         self._repository = repository
         self._archive = archive
 
-    def track_tool_call(self):
-        self._tool_call_count += 1
 
     def token_usage(
         self,
@@ -239,10 +231,6 @@ class SessionCompactor:
     def should_compact_tokens(self, token_count: int) -> bool:
         if self._compact_cooldown_until and time.time() < self._compact_cooldown_until:
             return False
-
-        if self.tool_call_threshold > 0 and self._tool_call_count >= self.tool_call_threshold:
-            logger.info("[SessionCompactor] 工具调用触发压缩 | tool_calls=%d", self._tool_call_count)
-            return True
 
         if self.llm is None:
             return False
@@ -308,7 +296,6 @@ class SessionCompactor:
         """执行压缩"""
         self._pending_compact = False
         self._pending_fallback = False
-        self._tool_call_count = 0
 
         if self.llm is None:
             logger.warning("[SessionCompactor] 无 LLM 引擎，跳过压缩")
