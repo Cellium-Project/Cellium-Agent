@@ -16,7 +16,30 @@ try:
 except ImportError:
     yaml = None
 
-load_dotenv()
+def _load_env_files() -> None:
+    candidates: List[str] = []
+    try:
+        from app.core.util.runtime_paths import _find_user_data_dir, _detect_install_mode
+        user_dir = _find_user_data_dir()
+        if user_dir:
+            candidates.append(os.path.join(user_dir, ".env"))
+            candidates.append(os.path.join(user_dir, "config", ".env"))
+        mode, root = _detect_install_mode()
+        if mode == "source" and root:
+            candidates.append(os.path.join(root, ".env"))
+    except Exception:
+        pass
+    candidates.append(os.path.join(os.getcwd(), ".env"))
+
+    for path in dict.fromkeys(candidates):
+        try:
+            if os.path.isfile(path):
+                load_dotenv(path, override=False)
+        except Exception:
+            continue
+
+
+_load_env_files()
 
 
 # ============================================================

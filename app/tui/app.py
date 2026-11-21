@@ -1944,18 +1944,22 @@ class CelliumTUI(App):
             override = bool(session_llm.get_model(self.session_id))
             current = self._current_model_name()
             global_model = session_llm.global_model()
-            if not models:
-                self._post(self._append_system(self.tr("model.info_failed", "no models configured")))
-                return
         except Exception as e:
             self._post(self._append_system(self.tr("model.info_failed", e)))
             return
+
+        if not models:
+            self._post(self._append_system(self.tr("model.no_models_prompt")))
 
         def on_result(name):
             if name is not None:
                 self._post(self._switch_model(name))
         self.push_screen(
-            ModelPickerScreen(models, current, global_model=global_model, override=override),
+            ModelPickerScreen(
+                models, current,
+                global_model=global_model,
+                override=override,
+            ),
             callback=on_result,
         )
 

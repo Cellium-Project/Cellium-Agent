@@ -72,11 +72,13 @@ class ModelPickerScreen(ModalScreen):
 
     def _build_options(self):
         tr = self.app.tr
-        options = [Option(
-            f"{'○' if self._override else '●'} "
-            f"{tr('model.follow_global', self._global or '-')}",
-            id="__follow__",
-        )]
+        options = []
+        if self._models:
+            options.append(Option(
+                f"{'○' if self._override else '●'} "
+                f"{tr('model.follow_global', self._global or '-')}",
+                id="__follow__",
+            ))
         for m in self._models:
             name = m.get("name", "")
             tags = []
@@ -92,7 +94,7 @@ class ModelPickerScreen(ModalScreen):
         return options
 
     def _highlight_index(self):
-        if not self._override:
+        if not self._models or not self._override:
             return 0
         for i, m in enumerate(self._models, start=1):
             if m.get("name") == self._current:

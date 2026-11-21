@@ -2222,7 +2222,7 @@ class ToolCallCard(Static):
             folded = len(lines) > 10 and cid not in self._expanded_diffs
             if folded:
                 idx = len(self._folded_rows)
-                self._folded_rows.append((len(t.split()), cid))
+                self._folded_rows.append((t.plain.count("\n"), cid))
                 for line in lines[:5]:
                     t.append("\n")
                     t.append(f"      {line}", style=f"dim on {code_bg}")
@@ -2288,7 +2288,7 @@ class ToolCallCard(Static):
                 t.append(f"    {content}", style=f"dim on {code_bg}")
             t.append("\n")
             idx = len(self._folded_rows)
-            self._folded_rows.append((len(t.split()), cid))
+            self._folded_rows.append((t.plain.count("\n"), cid))
             tr = self.app.tr if self.app else (lambda k, *a: k.format(*a) if a else k)
             t.append(f"    {tr('tool.expand', len(rows))}", style=f"dim on {code_bg}")
             return
@@ -2358,17 +2358,16 @@ class ToolCallCard(Static):
                     pass
                 event.stop()
                 return
-            # 折叠状态：点击折叠行展开
             best = None
-            best_d = 10
+            best_d = None
             for i, (y, cid) in enumerate(self._folded_rows):
                 try:
                     d = abs(y - event.y)
                 except Exception:
                     d = 999
-                if d < best_d:
+                if best_d is None or d < best_d:
                     best_d, best = d, (i, cid)
-            if best is not None and best_d <= 1:
+            if best is not None:
                 self._folded_index = best[0]
                 try:
                     self._expand_diff(best[1])
