@@ -119,15 +119,19 @@ LLM_SUMMARIZE_PROMPT = """你是一个会话记忆压缩助手。请根据以下
 - 已完成与待处理分开写，不确定的信息不要编造。
 
 ## 输出格式
-只输出 JSON：
-{{
-    "goal": "用户当前的主要目标（一句话）",
-    "actions": ["已完成的关键操作"],
-    "findings": ["关键信息、文件路径、配置、决策"],
-    "errors": ["尚未解决的错误；已解决的写成 错误 → 解决方案"],
-    "pending": ["待处理事项或下一步"],
-    "summary": "不超过 800 字的整体摘要，按 目标 / 当前状态 / 关键决策 / 下一步 组织"
-}}
+严格按下面两段输出，不要输出其他任何内容：
+
+<summary>
+（综合摘要，纯文本：按 目标 / 当前状态 / 关键决策 / 待办 组织，完整保留关键结论、路径与命令，不要为了简短而省略）
+</summary>
+
+<notes>
+{{"goal": "用户当前的主要目标（一句话）", "actions": ["已完成的关键操作"], "findings": ["关键信息、文件路径、配置、决策"], "errors": ["尚未解决的错误；已解决的写成 错误 → 解决方案"], "pending": ["待处理事项或下一步"]}}
+</notes>
+
+## 长度限制
+- notes 里 actions / findings / errors / pending 每个数组最多 5 条，每条不超过 80 字。
+- summary 是纯文本，不要为了简短而省略关键结论。
 """
 
 
@@ -140,15 +144,19 @@ SUMMARY_CACHE_TAIL = """以上是完整的会话历史，请基于上面全部�
 - 不要调用任何工具，直接输出 JSON。
 
 ## 输出格式
-只输出 JSON：
-{{
-    "goal": "用户当前的主要目标（一句话）",
-    "actions": ["已完成的关键操作"],
-    "findings": ["关键信息、文件路径、配置、决策"],
-    "errors": ["尚未解决的错误；已解决的写成 错误 → 解决方案"],
-    "pending": ["待处理事项或下一步"],
-    "summary": "不超过 800 字的整体摘要，按 目标 / 当前状态 / 关键决策 / 下一步 组织"
-}}
+严格按下面两段输出，不要输出其他任何内容：
+
+<summary>
+（综合摘要，纯文本：按 目标 / 当前状态 / 关键决策 / 待办 组织，完整保留关键结论、路径与命令，不要为了简短而省略）
+</summary>
+
+<notes>
+{{"goal": "用户当前的主要目标（一句话）", "actions": ["已完成的关键操作"], "findings": ["关键信息、文件路径、配置、决策"], "errors": ["尚未解决的错误；已解决的写成 错误 → 解决方案"], "pending": ["待处理事项或下一步"]}}
+</notes>
+
+## 长度限制
+- notes 里 actions / findings / errors / pending 每个数组最多 5 条，每条不超过 80 字。
+- summary 是纯文本，不要为了简短而省略关键结论。
 """
 
 
@@ -223,7 +231,11 @@ class SessionCompactor:
 
     def compact_threshold(self) -> int:
         """触发压缩的 token 阈值：窗口已知时按窗口 × compact_ratio 自适应，显式配置仅作兜底"""
-        cw = getattr(self.llm, "context_window", 0) or 0
+        cw = (
+            getattr(self.llm, "effective_context_window", 0)
+            or getattr(self.llm, "context_window", 0)
+            or 0
+        )
         if cw > 0:
             return max(1, int(cw * self.compact_ratio))
         return self._explicit_threshold or self.token_threshold
@@ -267,7 +279,10 @@ class SessionCompactor:
     def is_over_window_tokens(self, token_count: int) -> bool:
         if self.llm is None:
             return False
-        cw = getattr(self.llm, "context_window", None)
+        cw = (
+            getattr(self.llm, "effective_context_window", None)
+            or getattr(self.llm, "context_window", None)
+        )
         if not cw or cw <= 0:
             return False
         return token_count > cw
@@ -301,23 +316,21 @@ class SessionCompactor:
             logger.warning("[SessionCompactor] 无 LLM 引擎，跳过压缩")
             return False
 
-        keep_n = max(1, self.keep_recent_messages)
         keep_tokens = self.keep_recent_tokens
         if fallback:
-            keep_n = max(2, keep_n // 5)
             keep_tokens = max(2000, keep_tokens // 5) if keep_tokens else 0
             logger.warning(
-                "[SessionCompactor] 输入已达上下文窗口，执行保护性压缩 | keep_recent=%d", keep_n
+                "[SessionCompactor] 输入已达上下文窗口，执行压缩 | keep_tokens=%d", keep_tokens
             )
 
         notes.load()
 
-        cut = self._tail_cut_index(memory.messages, keep_tokens, keep_n)
+        cut = self._tail_cut_index(memory.messages, keep_tokens)
         if cut <= 0:
             if not fallback:
                 logger.debug("[SessionCompactor] 消息数不足，无需压缩")
                 return False
-            cut = self._tail_cut_index(memory.messages, 0, max(1, len(memory.messages) - 1))
+            cut = self._tail_cut_index(memory.messages, 0)
 
         # 增量压缩：只压上次快照后的新消息
         has_prior_notes = notes.exists() and (
@@ -430,7 +443,7 @@ class SessionCompactor:
             if self._repository:
                 self._persist_notes_to_long_term(notes, summary_data)
 
-        self._replace_old_messages(memory, notes, summary_text, keep_n=keep_n, cut=cut, keep_tokens=keep_tokens)
+        self._replace_old_messages(memory, notes, summary_text, cut=cut, keep_tokens=keep_tokens)
 
         self._compact_fail_count = 0
         self._compact_cooldown_until = 0.0
@@ -564,6 +577,47 @@ class SessionCompactor:
                 pass
         return {}
 
+    @staticmethod
+    def _parse_summary_block(content: str) -> Dict:
+        """解析 <summary>纯文本</summary> + <notes>JSON</notes>；notes 被截断时按字段容错"""
+        import re
+        text = content or ""
+        result: Dict = {}
+
+        sm = re.search(r"<summary>\s*(.*?)\s*</summary>", text, re.S | re.I)
+        if sm:
+            result["summary"] = sm.group(1).strip()
+
+        nm = re.search(r"<notes>\s*(\{.*)", text, re.S | re.I)
+        if nm:
+            raw_json = nm.group(1)
+            end = raw_json.rfind("}")
+            if end >= 0:
+                raw_json = raw_json[:end + 1]
+            try:
+                parsed = json.loads(raw_json)
+                if isinstance(parsed, dict):
+                    result.update(parsed)
+            except Exception:
+                pass
+            if not result.get("goal"):
+                gm = re.search(r'"goal"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_json)
+                if gm:
+                    try:
+                        result["goal"] = json.loads('"' + gm.group(1) + '"')
+                    except Exception:
+                        result["goal"] = gm.group(1)
+            for key in ("actions", "findings", "errors", "pending"):
+                if result.get(key):
+                    continue
+                am = re.search(r'"%s"\s*:\s*(\[[^\]]*\])' % key, raw_json)
+                if am:
+                    try:
+                        result[key] = json.loads(am.group(1))
+                    except Exception:
+                        pass
+        return result
+
     SUMMARY_PREFIX_MAX_RATIO = 0.85
     _SUMMARY_MSG_KEYS = ("role", "content", "name", "tool_calls", "tool_call_id", "reasoning_content")
 
@@ -612,6 +666,7 @@ class SessionCompactor:
         payload, reused = self._build_summary_payload(messages_text, cache_prefix)
         extra = {"tools": tools} if (reused and tools) else {}
         thinking_backup = getattr(self.llm, "_thinking", None)
+        omit_backup = getattr(self.llm, "_omit_max_tokens", None)
         if self.session_id:
             try:
                 from app.agent.llm.providers.opencode import gateway_session
@@ -621,26 +676,56 @@ class SessionCompactor:
         try:
             if thinking_backup is not None:
                 self.llm._thinking = None
+            if omit_backup is not None:
+                # 摘要必须显式带输出上限，否则服务端默认值可能过小导致 JSON 被截断
+                self.llm._omit_max_tokens = False
             logger.info(
                 "[SessionCompactor] 生成摘要 | 复用对话前缀=%s | messages=%d | tools=%d",
                 reused, len(payload), len(extra.get("tools") or []),
             )
+            # 摘要输出额度用模型最大输出上限，避免被服务端默认值截断
+            summary_budget = max(8000, int(getattr(self.llm, "effective_max_tokens", 0) or 16000))
             response = await self.llm.chat(
                 messages=payload,
                 temperature=0.3,
-                max_tokens=8000,
+                max_tokens=summary_budget,
                 **extra,
             )
-            parsed = self._parse_summary_json(response.content or "")
+            raw = response.content or ""
+            parsed = self._parse_summary_block(raw) or self._parse_summary_json(raw)
             if not _summary_text(parsed.get("summary")):
                 logger.warning("[SessionCompactor] 摘要格式不符，重试一次")
                 response = await self.llm.chat(
                     messages=payload,
                     temperature=0.2,
-                    max_tokens=8000,
+                    max_tokens=summary_budget,
                     **extra,
                 )
-                parsed = self._parse_summary_json(response.content or "")
+                raw = response.content or ""
+                parsed = self._parse_summary_block(raw) or self._parse_summary_json(raw)
+            if not _summary_text(parsed.get("summary")) and raw.strip():
+                # 兜底：优先取结构化标记里的内容；无标记时要求正文足够长，避免把错误提示当摘要
+                import re as _re
+                text = ""
+                m = _re.search(r"<summary>\s*(.*?)\s*</summary>", raw, _re.S | _re.I)
+                if m:
+                    text = m.group(1).strip()
+                if not text:
+                    m2 = _re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)', raw)
+                    if m2:
+                        text = m2.group(1)
+                        try:
+                            text = json.loads('"' + text + '"')
+                        except Exception:
+                            pass
+                if not text.strip() and len(raw.strip()) >= 100:
+                    text = raw.strip()
+                if text.strip():
+                    parsed = dict(parsed)
+                    parsed["summary"] = text.strip()
+                    logger.warning(
+                        "[SessionCompactor] JSON 解析失败，使用兜底摘要 | 长度=%d", len(raw)
+                    )
             return parsed
         except Exception as e:
             logger.error("[SessionCompactor] LLM 摘要失败 | error=%s", e)
@@ -648,6 +733,8 @@ class SessionCompactor:
         finally:
             if thinking_backup is not None:
                 self.llm._thinking = thinking_backup
+            if omit_backup is not None:
+                self.llm._omit_max_tokens = omit_backup
 
     @staticmethod
     def _message_tokens(msg: Dict) -> int:
@@ -655,11 +742,11 @@ class SessionCompactor:
         return _estimate_messages_tokens([msg])
 
     def _tail_cut_index(self, messages: List[Dict], keep_tokens: int = None, max_messages: int = None) -> int:
+        """按 token 预算从尾部确定切点（完全按 token，不再使用消息条数）"""
         total = len(messages)
         if total == 0:
             return 0
         budget = self.keep_recent_tokens if keep_tokens is None else max(0, int(keep_tokens))
-        keep_n = max(1, int(max_messages if max_messages is not None else self.keep_recent_messages))
         if budget > 0:
             idx = total
             used = 0
@@ -671,20 +758,17 @@ class SessionCompactor:
                 used += tokens
                 idx = i
                 i -= 1
-            idx = min(idx, total - keep_n)
         else:
-            idx = total - keep_n
-        idx = max(0, idx)
-        while idx < total and messages[idx].get("role") == "tool":
-            idx += 1
-        return idx
-
-    @staticmethod
-    def _safe_cut_index(messages: List[Dict], keep_n: int) -> int:
-        total = len(messages)
-        idx = max(0, total - keep_n)
-        while idx < total and messages[idx].get("role") == "tool":
-            idx += 1
+            idx = total
+        # 至少保留最后 1 条，避免切空
+        idx = min(idx, max(0, total - 1))
+        # 切点若落在 tool 消息上，回退到它所属的 assistant tool_calls，
+        # 保证保留段以完整工具调用组开头，而不是把 tool 消息单独切出来
+        if 0 < idx < total and messages[idx].get("role") == "tool":
+            j = idx
+            while j > 0 and messages[j].get("role") == "tool":
+                j -= 1
+            idx = j
         return idx
 
     GIANT_MSG_CHARS = 4000
@@ -692,38 +776,49 @@ class SessionCompactor:
     @classmethod
     def _truncate_giant_message(cls, msg: Dict) -> Dict:
         role = msg.get("role")
-        if role not in ("user", "tool") or msg.get("_is_compacted_notes"):
+        if role not in ("user", "tool", "assistant") or msg.get("_is_compacted_notes"):
             return msg
+        changed = False
+        new = dict(msg)
+
+        reasoning = msg.get("reasoning_content")
+        if isinstance(reasoning, str) and len(reasoning) > cls.GIANT_MSG_CHARS:
+            new["reasoning_content"] = cls._clip_giant(reasoning, "reasoning")
+            changed = True
+
         content = msg.get("content")
         if isinstance(content, str):
-            if len(content) <= cls.GIANT_MSG_CHARS:
-                return msg
-            new = dict(msg)
-            new["content"] = cls._clip_giant(content, role)
-            return new
-        if isinstance(content, list):
-            changed = False
+            if len(content) > cls.GIANT_MSG_CHARS:
+                new["content"] = cls._clip_giant(content, role)
+                changed = True
+        elif isinstance(content, list):
             parts = []
+            parts_changed = False
             for part in content:
-                if isinstance(part, dict) and isinstance(part.get("text"), str) and len(part["text"]) > cls.GIANT_MSG_CHARS:
+                if (
+                    isinstance(part, dict)
+                    and isinstance(part.get("text"), str)
+                    and len(part["text"]) > cls.GIANT_MSG_CHARS
+                ):
                     part = dict(part)
                     part["text"] = cls._clip_giant(part["text"], role)
-                    changed = True
+                    parts_changed = True
                 parts.append(part)
-            if not changed:
-                return msg
-            new = dict(msg)
-            new["content"] = parts
-            return new
-        return msg
+            if parts_changed:
+                new["content"] = parts
+                changed = True
+
+        return new if changed else msg
 
     @classmethod
     def _clip_giant(cls, content: str, role: str) -> str:
         if role == "tool":
             head, tail = 1000, 2600
+        elif role == "reasoning":
+            head, tail = 1200, 300
         else:
             head, tail = 3200, 500
-        omitted = len(content) - head - tail
+        omitted = max(0, len(content) - head - tail)
         return f"{content[:head]}\n\n...[中间省略约 {omitted} 字符]...\n\n{content[-tail:]}"
 
     PRUNED_TOOL_MIN_CHARS = 400
@@ -761,7 +856,7 @@ class SessionCompactor:
             total += _estimate_messages_tokens([new]) - old_tokens
         return result
 
-    def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = "", keep_n: int = None, cut: int = None, keep_tokens: int = None):
+    def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = "", cut: int = None, keep_tokens: int = None):
         notes_content = notes.render_for_prompt(max_length=self.max_notes_length)
         if summary:
             notes_content = f"**摘要**: {summary}\n\n{notes_content}"
@@ -778,7 +873,7 @@ class SessionCompactor:
             "_is_compacted_notes": True,
         }
         if cut is None:
-            cut = self._safe_cut_index(memory.messages, keep_n or self.keep_recent_messages)
+            cut = self._tail_cut_index(memory.messages, keep_tokens)
 
         current_task = None
         for i in range(cut - 1, -1, -1):

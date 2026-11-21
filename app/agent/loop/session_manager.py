@@ -205,21 +205,144 @@ class SessionManager:
             logger.warning("[SessionManager] 会话持久化失败 | session=%s | error=%s", session_id, e)
 
 
+    def _restore_token_budget(self) -> int:
+        try:
+            from app.core.util.agent_config import get_config
+            llm_cfg = get_config().get_section("llm") or {}
+            current = llm_cfg.get("current_model") or ""
+            models = llm_cfg.get("models") or []
+            cw = 0
+            for m in models:
+                if m.get("name") == current:
+                    cw = int(m.get("context_window") or 0)
+                    break
+            if not cw:
+                for m in models:
+                    cw = int(m.get("context_window") or 0)
+                    if cw:
+                        break
+            if cw > 0:
+                return int(cw * 0.8)
+        except Exception:
+            pass
+        return 800_000
+
+    def _trim_records_to_budget(self, records: List[Dict]) -> List[Dict]:
+        from app.agent.llm.engine import _estimate_messages_tokens
+        budget = self._restore_token_budget()
+        kept = []
+        used = 0
+        for rec in reversed(records):
+            msgs = rec.get("messages")
+            est = _estimate_messages_tokens(msgs) if isinstance(msgs, list) and msgs else 2000
+            if kept and used + est > budget:
+                break
+            used += est
+            kept.append(rec)
+        kept.reverse()
+        if len(kept) < len(records):
+            logger.info(
+                "[SessionManager] 归档恢复按 token 预算裁剪 | %d → %d 条记录 | 约 %d tokens | 预算 %d",
+                len(records), len(kept), used, budget,
+            )
+        return kept
+
+    def _load_records_by_budget(self, session_id: str, budget: int):
+        """从尾部惰性加载归档记录，累加到 token 预算或遇到压缩快照即停"""
+        archive = getattr(self.three_layer_memory, "archive", None)
+        if archive is None or not hasattr(archive, "get_tail_records"):
+            return None
+        from app.agent.llm.engine import _estimate_messages_tokens
+
+        kept = []
+        used = 0
+        before_seq = None
+        while True:
+            try:
+                page = archive.get_tail_records(session_id, limit=100, before_seq=before_seq)
+            except Exception as e:
+                logger.warning("[SessionManager] 分批加载归档失败: %s", e)
+                break
+            if not page:
+                break
+            for rec in reversed(page):
+                msgs = rec.get("messages")
+                est = _estimate_messages_tokens(msgs) if isinstance(msgs, list) and msgs else 2000
+                if used + est > budget and kept:
+                    kept.reverse()
+                    logger.info(
+                        "[SessionManager] 归档惰性加载到预算 | session=%s | 记录=%d | 约 %d tokens | 预算 %d",
+                        session_id, len(kept), used, budget,
+                    )
+                    return kept
+                used += est
+                kept.append(rec)
+                has_snap = any(
+                    isinstance(m, dict) and m.get("_is_compacted_notes")
+                    for m in (msgs or [])
+                )
+                if has_snap:
+                    kept.reverse()
+                    logger.info(
+                        "[SessionManager] 归档惰性加载到压缩快照 | session=%s | 记录=%d",
+                        session_id, len(kept),
+                    )
+                    return kept
+            before_seq = page[0].get("seq")
+        kept.reverse()
+        if kept:
+            logger.info(
+                "[SessionManager] 归档惰性加载完成 | session=%s | 记录=%d | 约 %d tokens",
+                session_id, len(kept), used,
+            )
+        return kept
+
     def _restore_from_archive(self, session_id: str,
                                memory: 'MemoryManager') -> int:
         if self.three_layer_memory is None:
             return 0
 
         try:
-            records = self.three_layer_memory.archive.get_by_session(
-                session_id, limit=200
-            )
+            archive = self.three_layer_memory.archive
+            snap_seq = None
+            if hasattr(archive, "find_last_snapshot_seq"):
+                try:
+                    snap_seq = archive.find_last_snapshot_seq(session_id)
+                except Exception:
+                    snap_seq = None
+
+            if snap_seq is not None:
+                records = archive.get_by_session(session_id, limit=100000, min_seq=snap_seq)
+            else:
+                records = self._load_records_by_budget(session_id, self._restore_token_budget())
+                if records is None:
+                    records = archive.get_by_session(session_id, limit=100000)
+                    records = self._trim_records_to_budget(records)
         except Exception as e:
             logger.warning("[SessionManager] 获取归档记录失败: %s", e)
             return 0
 
         if not records:
             return 0
+
+        # 闭环恢复：找到最后一个压缩快照，从它开始恢复全部，
+        # 与重启前的消息序列完全一致，从而命中前缀缓存。
+        # 从未压缩过时才按 token 预算裁剪，避免首次恢复撑爆上下文。
+        snapshot_idx = None
+        for i, rec in enumerate(records):
+            msgs = rec.get("messages")
+            if isinstance(msgs, list) and any(
+                isinstance(m, dict) and m.get("_is_compacted_notes") for m in msgs
+            ):
+                snapshot_idx = i
+        if snapshot_idx is not None:
+            records = records[snapshot_idx:]
+            logger.info(
+                "[SessionManager] 归档恢复从压缩快照开始 | session=%s | 快照后记录=%d",
+                session_id, len(records),
+            )
+        else:
+            records = self._trim_records_to_budget(records)
 
         restored_count = 0
         seen_keys = set()
@@ -258,6 +381,7 @@ class SessionManager:
                 session_id, restored_count,
             )
             self._cleanup_incomplete_tool_calls(memory)
+        return restored_count
 
     @staticmethod
     def _archive_msg_key(msg: Dict) -> tuple:

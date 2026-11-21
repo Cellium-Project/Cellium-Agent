@@ -62,7 +62,7 @@ class ConfigTool(BaseTool):
                 "• help() — 查看本帮助\n"
                 "• version() — 查看 Cellium Agent 版本\n"
                 "• list_models() — 查看可用模型列表\n"
-                "• add_model(name, model, api_key, base_url, temperature=0.7) — 添加模型\n"
+                "• add_model(name, model, api_key, base_url, temperature=0.7, context_window=0, max_tokens=0) — 添加模型\n"
                 "• switch_model(model_name, session_id=\"\") — 切换模型（不传 session_id 改全局默认，传了改该会话）\n"
                 "• delete_model(model_name) — 删除模型（全局默认不可删，使用它的会话自动重置）\n"
                 "• enable_intent(enabled) — 开启/关闭意图感知\n"
@@ -123,6 +123,8 @@ class ConfigTool(BaseTool):
         api_key: str = "",
         base_url: str = "",
         temperature: float = 0.7,
+        context_window: int = 0,
+        max_tokens: int = 0,
     ) -> dict:
         """添加新模型到 llm.models"""
         if not name or not model or not api_key or not base_url:
@@ -149,6 +151,10 @@ class ConfigTool(BaseTool):
                 "temperature": float(temperature),
                 "timeout": 120,
             }
+            if context_window:
+                new_model["context_window"] = int(context_window)
+            if max_tokens:
+                new_model["max_tokens"] = int(max_tokens)
             models.append(new_model)
 
             cfg.set("llm.models", models, persist=True, notify=False)

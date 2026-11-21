@@ -303,7 +303,6 @@ class AgentLoop:
             llm_engine=self.llm,
             token_threshold=session_config.get("token_threshold") or None,
             compact_ratio=session_config.get("compact_ratio", 0.8),
-            keep_recent_messages=session_config.get("keep_recent_messages", 20),
             keep_recent_tokens=session_config.get("keep_recent_tokens", 15000),
             max_notes_length=session_config.get("max_notes_length", 2000),
             repository=three_layer_memory.repository if three_layer_memory else None,
@@ -312,6 +311,7 @@ class AgentLoop:
         )
         self._compact_enabled = bool(session_config.get("enabled", True))
         self._compact_hint_pending = False
+        self._compact_tool_misses = 0
 
         # 循环控制器
         self._loop_controller = LoopController(
@@ -383,7 +383,6 @@ class AgentLoop:
                 "enabled": True,
                 "token_threshold": 0,
                 "compact_ratio": 0.8,
-                "keep_recent_messages": 20,
                 "keep_recent_tokens": 15000,
                 "max_notes_length": 2000,
                 "notes_dir": f"{memory_dir}/notes",
@@ -1305,6 +1304,11 @@ class AgentLoop:
         """流式执行 Agent 循环"""
         effective_memory = memory or self.memory
         effective_session = session_id or self.session_id
+        _mem_tool = (self.tools or {}).get("memory")
+        if _mem_tool is not None and hasattr(_mem_tool, "set_session_id"):
+            _mem_tool.set_session_id(effective_session)
+            if hasattr(_mem_tool, "set_runtime_memory"):
+                _mem_tool.set_runtime_memory(effective_memory)
         start_time = time.time()
 
         self._turn_images = self._build_turn_images(attachments)
@@ -1820,26 +1824,54 @@ class AgentLoop:
                     effective_memory, current_messages=llm_messages, tools_count=len(tool_defs)
                 )
                 _over_window = self._session_compactor.is_over_window_tokens(_tokens)
-                if _over_window or (self._compact_enabled and not self.flash_mode and not is_gene_processing and self._session_compactor.should_compact_tokens(_tokens)):
-                    logger.info("[AgentLoop] LLM 调用前检测到需要压缩")
-                    yield {"type": "status", "content": "正在压缩会话记忆..."}
-                    session_notes = self._get_session_notes(effective_session)
-                    _compacted = await self._session_compactor.compact_now(
-                        effective_memory, session_notes, fallback=_over_window,
-                        cache_prefix=llm_messages, tools=tool_defs,
-                    )
-                    if _compacted:
-                        context["session_messages"] = effective_memory.get_messages()
-                        self._compact_hint_pending = True
-                        _hint = self._take_compact_hint()
-                        if _hint:
-                            _prev = context.get("system_injection")
-                            context["system_injection"] = f"{_prev}\n\n{_hint}" if _prev else _hint
-                    llm_messages = self._prompt_builder.build(context)
-                    self._persist_conversation(
-                        user_input="", response_content=None,
-                        session_id=effective_session, memory=effective_memory,
-                    )
+                _need_compact = _over_window or (
+                    self._compact_enabled
+                    and not self.flash_mode
+                    and not is_gene_processing
+                    and self._session_compactor.should_compact_tokens(_tokens)
+                )
+                if _need_compact:
+                    if _over_window or self._compact_tool_misses >= 2:
+                        # 兜底：超窗口，或模型连续两轮未调用 memory.compact
+                        logger.info("[AgentLoop] 上下文压缩兜底")
+                        yield {"type": "status", "content": "正在压缩会话记忆..."}
+                        session_notes = self._get_session_notes(effective_session)
+                        _compacted = await self._session_compactor.compact_now(
+                            effective_memory, session_notes, fallback=_over_window,
+                            cache_prefix=llm_messages, tools=tool_defs,
+                        )
+                        if _compacted:
+                            context["session_messages"] = effective_memory.get_messages()
+                            self._compact_hint_pending = True
+                            _hint = self._take_compact_hint()
+                            if _hint:
+                                _prev = context.get("system_injection")
+                                context["system_injection"] = f"{_prev}\n\n{_hint}" if _prev else _hint
+                        self._compact_tool_misses = 0
+                        llm_messages = self._prompt_builder.build(context)
+                        self._persist_conversation(
+                            user_input="", response_content=None,
+                            session_id=effective_session, memory=effective_memory,
+                        )
+                    else:
+                        # 优先让主模型自己调 memory.compact，用自己写的摘要替换历史
+                        self._compact_tool_misses += 1
+                        _compact_hint = (
+                            "[上下文压缩] 上下文约 %d / %d tokens，请先调用 memory.compact "
+                            "压缩历史（summary + goal/actions/findings/errors/pending），"
+                            "压缩后再继续任务。"
+                        ) % (
+                            _tokens,
+                            self._session_compactor.compact_threshold(),
+                        )
+                        _prev = context.get("system_injection") or ""
+                        if _prev:
+                            _prev = "\n\n".join(
+                                p for p in _prev.split("\n\n")
+                                if "[上下文压缩]" not in p
+                            )
+                        context["system_injection"] = f"{_prev}\n\n{_compact_hint}" if _prev else _compact_hint
+                        llm_messages = self._prompt_builder.build(context)
                 llm_messages = self._apply_vision_parts(llm_messages)
                 # 经 PromptDiffTracker 流式调用 LLM（自动追踪前缀缓存 + 逐 chunk 输出）
                 _stream_reasoning = []
@@ -2192,6 +2224,14 @@ class AgentLoop:
                 # === 5.5 处理工具调用 ===
                 if response.tool_calls:
                     self._tool_call_count_in_round += len(response.tool_calls)
+                    for _tc in response.tool_calls:
+                        try:
+                            if _tc.name == "memory":
+                                _args = _tc.arguments or {}
+                                if str(_args.get("command") or "").strip() == "compact":
+                                    self._compact_tool_misses = 0
+                        except Exception:
+                            pass
 
                     # Gene 处理轮次：计数工具调用，限制最多 5 次
                     if self._loop_state and getattr(self._loop_state, 'gene_processing_done', False):

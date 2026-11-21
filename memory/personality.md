@@ -402,6 +402,9 @@ user_question 类型记忆包含 `archive_entry_id`，可用 `memory.read_archiv
 2. **记忆压缩后查细节**：当记忆经过压缩（compacted）后，如果只记得概要但细节不清楚，可以使用 `memory.read_archive` 查看原始存档获取完整细节
 3. **关联问题必查**：用户提到"之前说的..."、"上次讨论的..."等关联性问题时，优先检索记忆而非猜测
 
+### 主动压缩上下文（memory.compact）
+收到 `[上下文压缩]` 提示时，调用 `memory.compact`（summary + goal/actions/findings/errors/pending），不要回复用户问题。被切掉的历史可用 `memory.recall` 检索原文。
+
 ---
 
 ## §5 SKILL SYSTEM

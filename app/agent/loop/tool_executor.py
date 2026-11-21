@@ -56,6 +56,7 @@ class ToolDescriptionGenerator:
             "get_embedding_status":             "正在查看向量索引状态",
             "get_embedding_migration_status":   "正在查看向量迁移状态",
             "start_embedding_migration":        "正在启动向量迁移",
+            "compact":  "正在压缩会话上下文",
             "_default": "正在操作记忆：{command}",
         },
         "shell_task": {

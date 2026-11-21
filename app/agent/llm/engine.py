@@ -111,29 +111,70 @@ def _estimate_tokens(text: str) -> int:
     return int(chinese_chars / 1.75 + other_chars / 4.0) + 1
 
 
+_MSG_TOKEN_MEMO: Dict[tuple, int] = {}
+_MSG_TOKEN_MEMO_MAX = 8192
+
+
+def _message_token_key(msg: Dict) -> tuple:
+    """消息 token 缓存的键：内容字符串哈希在 Python 侧有缓存，重复计算近似 O(1)"""
+    content = msg.get("content")
+    if isinstance(content, list):
+        parts = tuple(
+            (str(p.get("type", "")), hash(str(p.get("text", ""))), len(str(p.get("text", ""))))
+            for p in content if isinstance(p, dict)
+        )
+        ck = ("list", parts)
+    else:
+        s = str(content or "")
+        ck = ("str", hash(s), len(s))
+    tcs = msg.get("tool_calls") or ()
+    tc_key = tuple(
+        (
+            str(tc.get("id", "")),
+            str((tc.get("function") or {}).get("name", "")),
+            hash(str((tc.get("function") or {}).get("arguments", ""))),
+        )
+        for tc in tcs if isinstance(tc, dict)
+    )
+    return (msg.get("role", ""), ck, tc_key)
+
+
+def _estimate_one_message_tokens(msg: Dict) -> int:
+    key = _message_token_key(msg)
+    hit = _MSG_TOKEN_MEMO.get(key)
+    if hit is not None:
+        return hit
+
+    content = msg.get("content", "")
+    total = 0
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                total += _estimate_tokens(part.get("text", ""))
+            elif part.get("type") in ("image_url", "image"):
+                total += 1200
+        total += 4
+    else:
+        total += _estimate_tokens(content) + 4
+
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            fn = tc.get("function", {})
+            total += _estimate_tokens(fn.get("name", "")) + _estimate_tokens(fn.get("arguments", "")) + 4
+
+    if len(_MSG_TOKEN_MEMO) >= _MSG_TOKEN_MEMO_MAX:
+        _MSG_TOKEN_MEMO.clear()
+    _MSG_TOKEN_MEMO[key] = total
+    return total
+
+
 def _estimate_messages_tokens(messages: List[Dict]) -> int:
-    """估算消息列表总 token 数"""
+    """估算消息列表总 token 数（单条结果带缓存，重复估算只算新增消息）"""
     total = 0
     for msg in messages:
-        content = msg.get("content", "")
-        role = msg.get("role", "")
-        if isinstance(content, list):
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text":
-                    total += _estimate_tokens(part.get("text", ""))
-                elif part.get("type") in ("image_url", "image"):
-                    total += 1200
-            total += 4
-        else:
-            total += _estimate_tokens(content) + 4
-
-        for tc in msg.get("tool_calls") or []:
-            if isinstance(tc, dict):
-                fn = tc.get("function", {})
-                total += _estimate_tokens(fn.get("name", "")) + _estimate_tokens(fn.get("arguments", "")) + 4
-    
+        total += _estimate_one_message_tokens(msg)
     total = int(total * 1.1)
     return max(total, 10)
 
@@ -228,6 +269,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         self._calibrated = False
         self._actual_token_ratio = None
         self._last_prompt_tokens = 0  # 上一次 API 返回的实际 prompt tokens
+        self._max_prompt_tokens = 0   # 历史最大实测 prompt tokens
 
         self._explicit_max_tokens = max_tokens
 
@@ -249,12 +291,28 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     def get_last_prompt_tokens(self) -> int:
         return self._last_prompt_tokens
 
+    def _record_prompt_tokens(self, n: int) -> None:
+        n = int(n or 0)
+        if n <= 0:
+            return
+        self._last_prompt_tokens = n
+        if n > self._max_prompt_tokens:
+            self._max_prompt_tokens = n
+
     def reset_last_prompt_tokens(self):
         self._last_prompt_tokens = 0
 
     @property
     def context_window(self) -> int:
         return self._model_info.context_window
+
+    @property
+    def effective_context_window(self) -> int:
+        cw = self._model_info.context_window or 0
+        peak = max(self._last_prompt_tokens or 0, self._max_prompt_tokens or 0)
+        if cw > 0 and peak > cw:
+            return int(peak * 1.25)
+        return cw
 
     @property
     def effective_max_tokens(self) -> int:
@@ -540,7 +598,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         if parsed.usage:
             self._calibrate_from_usage(parsed.usage, req_tokens)
         elif req_tokens > 0:
-            self._last_prompt_tokens = req_tokens
+            self._record_prompt_tokens(req_tokens)
 
         return parsed
 
@@ -779,9 +837,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
             else:
                 # API 未返回 usage 时，用校准后的估算值兜底
                 if self._actual_token_ratio and self._actual_token_ratio > 0:
-                    self._last_prompt_tokens = int(req_tokens * self._actual_token_ratio)
+                    self._record_prompt_tokens(int(req_tokens * self._actual_token_ratio))
                 elif req_tokens > 0:
-                    self._last_prompt_tokens = req_tokens
+                    self._record_prompt_tokens(req_tokens)
             logger.info(
                 "[LLM] <<< 流式完成 | model=%s | content长度=%d | tool_calls=%d | finish_reason=%s",
                 self.model, len(response.content or ""), len(calls), response.finish_reason,
@@ -885,9 +943,9 @@ class OpenAICompatibleEngine(BaseLLMEngine):
                 self._calibrate_from_usage(usage, req_tokens)
             else:
                 if self._actual_token_ratio and self._actual_token_ratio > 0:
-                    self._last_prompt_tokens = int(req_tokens * self._actual_token_ratio)
+                    self._record_prompt_tokens(int(req_tokens * self._actual_token_ratio))
                 elif req_tokens > 0:
-                    self._last_prompt_tokens = req_tokens
+                    self._record_prompt_tokens(req_tokens)
             logger.info(
                 "[LLM] <<< 流式完成 | model=%s | content长度=%d | tool_calls=%d | finish_reason=%s",
                 self.model, len(response.content or ""), len(calls), response.finish_reason,
@@ -962,7 +1020,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         input_estimate = self.estimate_tokens_calibrated(messages, tools)
 
         safety_margin = 512
-        available = self.context_window - input_estimate - safety_margin
+        available = self.effective_context_window - input_estimate - safety_margin
 
         model_default = self.effective_max_tokens
         cap = model_default if explicit_max is None else min(explicit_max, model_default)
@@ -991,17 +1049,17 @@ class OpenAICompatibleEngine(BaseLLMEngine):
         """
         input_est = self.estimate_tokens_calibrated(messages, tools)
 
-        if not force and input_est <= self.context_window:
+        if not force and input_est <= self.effective_context_window:
             return messages, False
 
         logger.warning(
             "[LLM] 输入约 %d tokens 超出 %d 上下文窗口，开始截断",
-            input_est, self.context_window,
+            input_est, self.effective_context_window,
         )
 
         system_msgs = [m for m in messages if m.get("role") == "system"]
         normal_msgs = [m for m in messages if m.get("role") != "system"]
-        target = self.context_window * target_ratio
+        target = self.effective_context_window * target_ratio
 
         while normal_msgs:
             test_msgs = system_msgs + normal_msgs
@@ -1105,7 +1163,7 @@ class OpenAICompatibleEngine(BaseLLMEngine):
     def _calibrate_from_usage(self, actual_usage: Dict, estimated_input: int):
         prompt_tokens = actual_usage.get("prompt_tokens", 0)
         if prompt_tokens > 0:
-            self._last_prompt_tokens = prompt_tokens
+            self._record_prompt_tokens(prompt_tokens)
 
         if self._calibrated:
             return

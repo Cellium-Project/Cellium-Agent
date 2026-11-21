@@ -277,13 +277,21 @@ class SqliteArchiveStore:
         legacy = self._legacy_store()
         return legacy.get_by_id(record_id) if legacy else None
 
-    def get_by_session(self, session_id: str, limit: int = 20) -> List[Dict]:
+    def get_by_session(self, session_id: str, limit: int = 20,
+                       min_seq: Optional[int] = None) -> List[Dict]:
         with self._reading() as conn:
-            rows = conn.execute(
-                f"SELECT {_RECORD_COLUMNS} FROM records WHERE session_id = ? "
-                "ORDER BY seq DESC LIMIT ?",
-                (session_id, limit),
-            ).fetchall()
+            if min_seq is None:
+                rows = conn.execute(
+                    f"SELECT {_RECORD_COLUMNS} FROM records WHERE session_id = ? "
+                    "ORDER BY seq DESC LIMIT ?",
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {_RECORD_COLUMNS} FROM records WHERE session_id = ? AND seq >= ? "
+                    "ORDER BY seq DESC LIMIT ?",
+                    (session_id, int(min_seq), limit),
+                ).fetchall()
             records = self._records_from_rows(list(reversed(rows)))
         legacy = self._legacy_store()
         if legacy is not None:
@@ -297,6 +305,41 @@ class SqliteArchiveStore:
                 merged.sort(key=lambda r: str(r.get("time") or ""))
                 return merged[-limit:]
         return records
+
+    def find_last_snapshot_seq(self, session_id: str) -> Optional[int]:
+        """返回最后一个压缩快照所在记录的 seq（无快照返回 None）"""
+        try:
+            with self._reading() as conn:
+                row = conn.execute(
+                    "SELECT r.seq FROM records r "
+                    "JOIN record_messages rm ON rm.record_id = r.id "
+                    f"WHERE r.session_id = ? AND instr(rm.payload, '{_SNAPSHOT_FLAG}') > 0 "
+                    "ORDER BY r.seq DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                if row and row["seq"] is not None:
+                    return int(row["seq"])
+        except Exception as e:
+            logger.debug("[SqliteArchiveStore] 查找压缩快照失败: %s", e)
+        return None
+
+    def get_tail_records(self, session_id: str, limit: int = 100,
+                         before_seq: Optional[int] = None) -> List[Dict]:
+        """按 seq 倒序取一页记录（含 messages），用于惰性恢复"""
+        with self._reading() as conn:
+            if before_seq is None:
+                rows = conn.execute(
+                    f"SELECT {_RECORD_COLUMNS} FROM records WHERE session_id = ? "
+                    "ORDER BY seq DESC LIMIT ?",
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {_RECORD_COLUMNS} FROM records WHERE session_id = ? AND seq < ? "
+                    "ORDER BY seq DESC LIMIT ?",
+                    (session_id, int(before_seq), limit),
+                ).fetchall()
+        return self._records_from_rows(list(reversed(rows)))
 
     def _legacy_store(self):
         if not self.base_dir:

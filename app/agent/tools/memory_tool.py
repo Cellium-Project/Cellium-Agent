@@ -13,14 +13,26 @@ class MemoryTool(BaseTool):
 
     name = "memory"
     description = (
-        "长期记忆管理工具。支持搜索、写入、更新、删除、遗忘、冲突合并、概览和 Gene 查看。"
+        "长期记忆管理工具。支持搜索、写入、更新、删除、遗忘、冲突合并、概览、Gene 查看，"
+        "以及主动压缩当前会话上下文（compact）。"
         "当用户告诉你重要偏好、项目约定、已解决问题等，应使用 store/update 维护长期记忆。"
         "当任务失败时，使用 list_genes 查看已有 Gene，get_gene 查看具体 Gene 内容。"
+        "当系统提示上下文接近上限时，调用 compact 用你自己写的摘要替换历史消息。"
     )
 
     def __init__(self, three_layer_memory=None):
         super().__init__()
         self.memory = three_layer_memory
+        self._active_session_id = ""
+        self._runtime_memory = None
+
+    def set_session_id(self, session_id: str) -> None:
+        """由 AgentLoop 注入当前会话 ID，供 compact 定位会话（模型不知道 session_id）"""
+        self._active_session_id = str(session_id or "").strip()
+
+    def set_runtime_memory(self, memory) -> None:
+        """由 AgentLoop 注入正在使用的 MemoryManager，保证 compact 修改的是同一份实例"""
+        self._runtime_memory = memory
 
     @property
     def tool_name(self) -> str:
@@ -39,7 +51,7 @@ class MemoryTool(BaseTool):
                         "command": {
                             "type": "string",
                             "description": "要执行的命令",
-                            "enum": ["search", "recall", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration", "profile"],
+                            "enum": ["search", "recall", "store", "list", "update", "delete", "forget", "merge", "list_genes", "get_gene", "read_archive", "set_embedding", "get_embedding_status", "get_embedding_migration_status", "start_embedding_migration", "profile", "compact"],
                         },
                         "session_id": {"type": "string", "description": "[recall] 限定会话 ID，留空则全库检索"},
                         "context": {"type": "integer", "description": "[recall] 命中消息前后各带几条上下文，默认 1"},
@@ -77,6 +89,13 @@ class MemoryTool(BaseTool):
                         "embedding_model": {"type": "string", "description": "[set_embedding] 向量模型名称（如 text-embedding-3-small）"},
                         "embedding_api_key": {"type": "string", "description": "[set_embedding] API 密钥"},
                         "embedding_base_url": {"type": "string", "description": "[set_embedding] API 地址（如 https://api.openai.com/v1）"},
+                        "summary": {"type": "string", "description": "[compact] 纯文本整体摘要（必填），按 目标/当前状态/关键决策/待办 组织"},
+                        "goal": {"type": "string", "description": "[compact] 用户当前主要目标（一句话）"},
+                        "actions": {"type": "array", "items": {"type": "string"}, "description": "[compact] 已完成的关键操作"},
+                        "findings": {"type": "array", "items": {"type": "string"}, "description": "[compact] 关键信息、文件路径、配置、决策"},
+                        "errors": {"type": "array", "items": {"type": "string"}, "description": "[compact] 尚未解决的错误；已解决的写成 错误 → 解决方案"},
+                        "pending": {"type": "array", "items": {"type": "string"}, "description": "[compact] 待处理事项或下一步"},
+                        "keep_recent_tokens": {"type": "integer", "description": "[compact] 保留最近多少 token 的原文，默认 15000"},
                     },
                     "required": ["command"],
                 },
@@ -596,6 +615,91 @@ class MemoryTool(BaseTool):
                 "message": "归档里没有匹配的原始消息，可以换关键词再试",
             }
         return {"success": True, "count": len(hits), "results": hits}
+
+    def _cmd_compact(
+        self,
+        session_id: str = "",
+        summary: str = "",
+        goal: str = "",
+        actions: list = None,
+        findings: list = None,
+        errors: list = None,
+        pending: list = None,
+        keep_recent_tokens: int = 0,
+    ) -> dict:
+        """用主模型自己写的摘要替换当前会话历史，保留最近 token 的原文"""
+        if not summary or not str(summary).strip():
+            return {"success": False, "error": "需要提供 summary（纯文本整体摘要）"}
+        try:
+            from app.agent.loop.session_manager import get_session_manager
+            from app.agent.memory.session_notes import SessionNotes
+            from app.agent.memory.session_compact import SessionCompactor
+            from app.core.util.agent_config import get_config
+
+            sid = self._active_session_id or session_id or "default"
+            memory = self._runtime_memory
+            if memory is None:
+                from app.agent.loop.session_manager import get_session_manager
+                memory = get_session_manager().get_or_create(sid).memory
+            if not memory or not memory.messages:
+                return {"success": False, "error": "当前会话没有可压缩的消息"}
+
+            session_cfg = (get_config().get_section("memory") or {}).get("session_compact", {})
+            keep_tokens = int(keep_recent_tokens or session_cfg.get("keep_recent_tokens", 15000) or 15000)
+            notes = SessionNotes(sid, notes_dir=session_cfg.get("notes_dir"))
+            notes.load()
+
+            if str(goal or "").strip():
+                notes.update_goal_from_summary(str(goal).strip())
+            if actions:
+                notes.set_completed([str(x) for x in actions if str(x).strip()])
+            if findings:
+                for f in findings:
+                    if str(f).strip():
+                        notes.add_finding(str(f))
+            if errors:
+                for e in errors:
+                    if isinstance(e, dict):
+                        msg = str(e.get("error", "")).strip()
+                        if msg:
+                            notes.add_error(msg, resolution=str(e.get("resolution") or "").strip() or None)
+                    elif str(e).strip():
+                        notes.add_error(str(e))
+            if pending:
+                notes.set_pending([str(x) for x in pending if str(x).strip()])
+            if goal or actions or findings or errors or pending:
+                notes.save()
+
+            compactor = SessionCompactor(
+                llm_engine=None,
+                keep_recent_tokens=keep_tokens,
+                max_notes_length=session_cfg.get("max_notes_length", 2000),
+            )
+            cut = compactor._tail_cut_index(memory.messages, keep_tokens)
+            if cut <= 0:
+                return {"success": False, "error": "消息过少，无需压缩"}
+
+            archive = getattr(self.memory, "archive", None)
+            if archive is not None and hasattr(archive, "append_messages"):
+                try:
+                    archive.append_messages(session_id=sid, messages=memory.messages[:cut])
+                except Exception as e:
+                    logger.warning("[MemoryTool] compact 归档失败: %s", e)
+
+            before = len(memory.messages)
+            compactor._replace_old_messages(
+                memory, notes, str(summary).strip(), cut=cut, keep_tokens=keep_tokens
+            )
+            return {
+                "success": True,
+                "compressed": cut,
+                "before": before,
+                "after": len(memory.messages),
+                "message": f"已压缩 {cut} 条历史消息，保留最近 {len(memory.messages)} 条原文",
+            }
+        except Exception as e:
+            logger.error("[MemoryTool] compact 失败 | error=%s", e)
+            return {"success": False, "error": f"压缩失败: {e}"}
 
     # ================================================================
     # Profile 管理（助手名字 / 用户称呼）
