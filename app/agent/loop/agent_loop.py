@@ -10,7 +10,7 @@ import re
 import time
 import threading
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from app.core.bus.event_bus import event_bus
 from app.agent.loop.memory import MemoryManager
@@ -205,6 +205,7 @@ class AgentLoop:
         self._turn_images: List[str] = []
         self._pending_images: List[str] = []
         self._retained_images: List[str] = []
+        self._image_anchors: List[Tuple[str, str]] = []
         self._retained_session: Optional[str] = None
         self._status_enabled = bool(publish_runtime_status)
         self._checkpoint_state: Dict[str, Dict[str, float]] = {}
@@ -1315,6 +1316,7 @@ class AgentLoop:
         self._pending_images = []
         if effective_session != self._retained_session:
             self._retained_images = []
+            self._image_anchors = []
             self._retained_session = effective_session
 
         from app.core.security.run_mode import (
@@ -1375,6 +1377,9 @@ class AgentLoop:
                 "source_session_title": source_session_title,
             }
             user_msg_id = effective_memory.add_user_message(user_input)
+            if self._turn_images and user_msg_id:
+                for _img_path in self._turn_images:
+                    self._image_anchors.append((user_msg_id, _img_path))
             self._checkpoint_turn(effective_memory, effective_session, user_input, force=True)
             if self._undo_context:
                 self._tool_executor.set_turn_context(*self._undo_context)
@@ -1913,6 +1918,7 @@ class AgentLoop:
                             mark_unsupported(getattr(self.llm, "model", ""))
                             self._turn_images = []
                             self._retained_images = []
+                            self._image_anchors = []
                             logger.warning("[AgentLoop] 模型不支持图片输入，回退为纯文本重试 | error=%s", e)
                             try:
                                 async for chunk in self._prompt_diff_tracker.chat_stream(
@@ -2828,38 +2834,60 @@ class AgentLoop:
         keep = self._keep_last_images()
         if not self._vision_can_send():
             self._retained_images = []
+            self._image_anchors = []
             return messages
 
-        # 历史图片 + 本轮图片合并到当前 user 消息，保持尾部之前的前缀稳定
-        history = self._retained_images[-keep:] if keep else []
-        base = [p for p in dict.fromkeys(list(history) + list(self._turn_images)) if p]
-        base_parts = self._image_content_parts(base)
-        if base_parts:
-            parts = [{k: v for k, v in p.items() if k != "_filename"} for p in base_parts]
-            for i in range(len(messages) - 1, -1, -1):
-                msg = messages[i]
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                    messages[i] = {**msg, "content": parts + [{"type": "text", "text": msg["content"]}]}
-                    break
+        if keep:
+            self._image_anchors = self._image_anchors[-keep:]
+            self._retained_images = [p for _, p in self._image_anchors][-keep:]
+        else:
+            self._image_anchors = []
+            self._retained_images = []
+
+        by_msg: Dict[str, List[str]] = {}
+        for msg_id, path in self._image_anchors:
+            if msg_id and path:
+                by_msg.setdefault(msg_id, []).append(path)
+
+        anchored = False
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            msg_id = msg.get("id")
+            paths = by_msg.get(msg_id) if msg_id else None
+            if not paths or not isinstance(msg.get("content"), str):
+                continue
+            parts = self._image_content_parts(list(dict.fromkeys(paths)))
+            if not parts:
+                continue
+            clean = [{k: v for k, v in p.items() if k != "_filename"} for p in parts]
+            msg["content"] = clean + [{"type": "text", "text": msg["content"]}]
+            anchored = True
+
+        if not anchored:
+            base_parts = self._image_content_parts(list(dict.fromkeys(self._turn_images)))
+            if base_parts:
+                parts = [{k: v for k, v in p.items() if k != "_filename"} for p in base_parts]
+                for msg in reversed(messages):
+                    if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                        msg["content"] = parts + [{"type": "text", "text": msg["content"]}]
+                        break
 
         pending_parts = self._image_content_parts(pending)
         if pending_parts:
-            content = [{k: v for k, v in p.items() if k != "_filename"} for p in pending_parts]
+            names = "、".join(p.get("_filename", "图片") for p in pending_parts)
+            content = [{"type": "text", "text": f"[图片：{names}]"}]
+            content += [{k: v for k, v in p.items() if k != "_filename"} for p in pending_parts]
             messages.append({"role": "user", "content": content})
 
-        if keep:
-            merged = list(dict.fromkeys(
-                list(self._retained_images) + list(self._turn_images) + pending
-            ))
-            self._retained_images = merged[-keep:]
-        else:
-            self._retained_images = []
         return messages
 
     @staticmethod
     def _strip_vision_parts(messages: List[Dict]) -> List[Dict]:
         stripped = []
         for msg in messages:
+            if not isinstance(msg, dict):
+                continue
             content = msg.get("content")
             if isinstance(content, list):
                 text = "\n".join(
@@ -2912,6 +2940,8 @@ class AgentLoop:
         tool_call_ids = set()
         tool_result_ids = set()
         for msg in messages:
+            if not isinstance(msg, dict):
+                continue
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls", []):
                     tool_call_ids.add(tc.get("id"))
@@ -2923,6 +2953,9 @@ class AgentLoop:
         logger.info("[AgentLoop] 清理 %d 个不完整 tool_call", len(incomplete_ids))
         cleaned = []
         for msg in messages:
+            if not isinstance(msg, dict):
+                cleaned.append(msg)
+                continue
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 remaining_tcs = [tc for tc in msg.get("tool_calls", []) if tc.get("id") not in incomplete_ids]
                 if remaining_tcs:

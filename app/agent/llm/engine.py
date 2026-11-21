@@ -174,6 +174,8 @@ def _estimate_messages_tokens(messages: List[Dict]) -> int:
     """估算消息列表总 token 数（单条结果带缓存，重复估算只算新增消息）"""
     total = 0
     for msg in messages:
+        if not isinstance(msg, dict):
+            continue
         total += _estimate_one_message_tokens(msg)
     total = int(total * 1.1)
     return max(total, 10)

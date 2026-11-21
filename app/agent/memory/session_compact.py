@@ -496,6 +496,7 @@ class SessionCompactor:
 
         total_budget = self._summary_budget() if budget_tokens is None else max(1000, int(budget_tokens))
         budget = int(total_budget * 0.95)
+        messages = [m for m in messages if isinstance(m, dict)]
 
         call_id_to_name = {}
         for msg in messages:

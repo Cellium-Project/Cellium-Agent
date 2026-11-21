@@ -28,6 +28,7 @@ def _loop(tmp_path, mode="on", keep=3):
     loop._turn_images = [path]
     loop._pending_images = []
     loop._retained_images = []
+    loop._image_anchors = []
     return loop, path
 
 
@@ -126,43 +127,94 @@ def test_estimate_tokens_handles_content_list():
     assert _estimate_messages_tokens(messages) > 1000
 
 
-def test_retained_images_reused_next_turn(tmp_path):
-    loop, _ = _loop(tmp_path, "on")
-    AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "图一"}])
-    assert loop._retained_images
-
+def test_anchored_images_reused_next_turn(tmp_path):
+    loop, path = _loop(tmp_path, "on")
     loop._turn_images = []
-    out = AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "刚才图里是什么"}])
-    content = out[-1]["content"]
-    assert isinstance(content, list)
-    assert sum(1 for p in content if p.get("type") == "image_url") == 1
-    assert content[-1] == {"type": "text", "text": "刚才图里是什么"}
+    loop._image_anchors = [("m1", path)]
+    AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": "m1", "content": "图一"}])
+    assert [p for _, p in loop._image_anchors] == [path]
+
+    out = AgentLoop._apply_vision_parts(loop, [
+        {"role": "user", "id": "m1", "content": "图一"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "id": "m2", "content": "刚才图里是什么"},
+    ])
+    assert isinstance(out[0]["content"], list)
+    assert out[0]["content"][-1] == {"type": "text", "text": "图一"}
+    assert out[2]["content"] == "刚才图里是什么"
 
 
-def test_retained_images_capped(tmp_path):
+def test_anchored_image_stays_on_original_message(tmp_path):
+    loop, path = _loop(tmp_path, "on")
+    loop._turn_images = []
+    loop._image_anchors = [("m1", path)]
+
+    first = AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": "m1", "content": "看图"}])
+    second = AgentLoop._apply_vision_parts(loop, [
+        {"role": "user", "id": "m1", "content": "看图"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "id": "m2", "content": "继续"},
+    ])
+    assert first[0]["content"] == second[0]["content"]
+
+
+def test_anchors_capped(tmp_path):
     loop, _ = _loop(tmp_path, "on", keep=2)
     paths = [_png(tmp_path / f"p{i}.png") for i in range(3)]
-    for p in paths:
-        loop._turn_images = [p]
-        AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "hi"}])
+    loop._turn_images = []
+    for i, p in enumerate(paths):
+        loop._image_anchors.append((f"m{i}", p))
+        AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": f"m{i}", "content": "hi"}])
 
-    assert loop._retained_images == paths[-2:]
+    assert [p for _, p in loop._image_anchors] == paths[-2:]
 
 
 def test_keep_zero_disables_retention(tmp_path):
-    loop, _ = _loop(tmp_path, "on", keep=0)
-    AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "图一"}])
-    assert loop._retained_images == []
-
+    loop, path = _loop(tmp_path, "on", keep=0)
     loop._turn_images = []
-    out = AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "再问"}])
+    loop._image_anchors = [("m1", path)]
+    AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": "m1", "content": "图一"}])
+    assert loop._retained_images == []
+    assert loop._image_anchors == []
+
+    out = AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": "m2", "content": "再问"}])
     assert out[-1]["content"] == "再问"
 
 
 def test_vision_off_clears_retained(tmp_path):
-    loop, _ = _loop(tmp_path, "on")
-    AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "图一"}])
-    loop.llm.vision_mode = "off"
+    loop, path = _loop(tmp_path, "on")
     loop._turn_images = []
-    AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "再问"}])
+    loop._image_anchors = [("m1", path)]
+    AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": "m1", "content": "图一"}])
+    loop.llm.vision_mode = "off"
+    AgentLoop._apply_vision_parts(loop, [{"role": "user", "id": "m2", "content": "再问"}])
     assert loop._retained_images == []
+    assert loop._image_anchors == []
+
+
+def test_pending_images_carry_source_label(tmp_path):
+    loop, path = _loop(tmp_path, "on")
+    loop._turn_images = []
+    loop._pending_images = [path]
+    out = AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "hi"}])
+    content = out[-1]["content"]
+    assert content[0] == {"type": "text", "text": "[图片：pic.png]"}
+    assert any(p.get("type") == "image_url" for p in content)
+
+
+def test_pending_images_released_once(tmp_path):
+    loop, path = _loop(tmp_path, "on")
+    loop._turn_images = []
+    loop._pending_images = [path]
+    AgentLoop._apply_vision_parts(loop, [{"role": "user", "content": "hi"}])
+    assert loop._retained_images == []
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "tool", "content": "{}", "tool_call_id": "c1"},
+        {"role": "user", "content": "继续"},
+    ]
+    out = AgentLoop._apply_vision_parts(loop, messages)
+    assert out[-1]["content"] == "继续"
+    assert not any(isinstance(m.get("content"), list) for m in out)

@@ -369,6 +369,8 @@ class SessionManager:
                 restored_count = 0
 
             for msg in msgs:
+                if not isinstance(msg, dict):
+                    continue
                 try:
                     if self._restore_archive_message(memory, msg, seen_keys):
                         restored_count += 1
@@ -485,6 +487,8 @@ class SessionManager:
         tool_result_ids = set()
 
         for msg in messages:
+            if not isinstance(msg, dict):
+                continue
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls", []):
                     tool_call_ids.add(tc.get("id"))
@@ -498,6 +502,9 @@ class SessionManager:
         logger.info("[SessionManager] 清理 %d 个不完整 tool_call", len(incomplete_ids))
         cleaned = []
         for msg in messages:
+            if not isinstance(msg, dict):
+                cleaned.append(msg)
+                continue
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 remaining_tcs = [tc for tc in msg.get("tool_calls", []) if tc.get("id") not in incomplete_ids]
                 if remaining_tcs:

@@ -599,9 +599,11 @@ class SqliteArchiveStore:
         messages = []
         for row in rows:
             try:
-                messages.append(json.loads(row["payload"]))
+                msg = json.loads(row["payload"])
             except (json.JSONDecodeError, TypeError):
                 continue
+            if isinstance(msg, dict):
+                messages.append(msg)
         return messages
 
     def get_recent_messages(self, session_id: str, limit: int = 2000, offset: int = 0) -> List:
@@ -705,9 +707,11 @@ class SqliteArchiveStore:
         messages = []
         for row in rows:
             try:
-                messages.append(json.loads(row["payload"]))
+                msg = json.loads(row["payload"])
             except (json.JSONDecodeError, TypeError):
                 continue
+            if isinstance(msg, dict):
+                messages.append(msg)
         return messages
 
     @staticmethod
@@ -753,9 +757,11 @@ class SqliteArchiveStore:
         messages = []
         for row in reversed(rows):
             try:
-                messages.append(json.loads(row["payload"]))
+                msg = json.loads(row["payload"])
             except (json.JSONDecodeError, TypeError):
                 continue
+            if isinstance(msg, dict):
+                messages.append(msg)
         return messages
 
     @staticmethod
@@ -772,6 +778,8 @@ class SqliteArchiveStore:
             if not isinstance(msgs, list):
                 continue
             for msg in reversed(msgs):
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("role") == "user" and msg.get("_is_compacted_notes"):
                     continue
                 key = json.dumps(msg, ensure_ascii=False, sort_keys=True)

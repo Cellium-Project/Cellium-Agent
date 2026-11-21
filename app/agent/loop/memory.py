@@ -242,6 +242,10 @@ class MemoryManager:
         if not messages:
             return messages
 
+        messages = [m for m in messages if isinstance(m, dict)]
+        if not messages:
+            return messages
+
         has_reasoning_content = any(
             msg.get("role") == "assistant" and msg.get("reasoning_content")
             for msg in messages
