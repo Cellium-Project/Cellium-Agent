@@ -173,7 +173,7 @@ class SessionCompactor:
         token_threshold: int = None,
         keep_recent_messages: int = 20,
         keep_recent_tokens: int = 0,
-        max_notes_length: int = 2000,
+        max_notes_length: int = 0,
         repository: "MemoryRepository" = None,
         archive=None,
         compact_ratio: float = 0.8,
@@ -187,7 +187,7 @@ class SessionCompactor:
         self.token_threshold = self._explicit_threshold or 100000
         self.keep_recent_messages = keep_recent_messages
         self.keep_recent_tokens = max(0, int(keep_recent_tokens or 0))
-        self.max_notes_length = max_notes_length
+        self.max_notes_length = max(0, int(max_notes_length or 0))
         self._pending_compact = False
         self._pending_fallback = False
         self._compact_fail_count = 0
@@ -461,6 +461,18 @@ class SessionCompactor:
     SUMMARY_BUDGET_CEIL = 800000
     SUMMARY_MIN_MSG_TOKENS = 60
     SUMMARY_OUTPUT_RESERVE = 8000
+
+    def _notes_max_length(self) -> int:
+        if self.max_notes_length > 0:
+            return self.max_notes_length
+        cw = (
+            getattr(self.llm, "context_window", 0)
+            or getattr(self.llm, "effective_context_window", 0)
+            or 0
+        )
+        if cw > 0:
+            return max(4000, min(int(cw * 0.02), 40000))
+        return 8000
 
     def _summary_budget(self) -> int:
         cw = getattr(self.llm, "context_window", 0) or 0
@@ -858,7 +870,7 @@ class SessionCompactor:
         return result
 
     def _replace_old_messages(self, memory: "MemoryManager", notes: "SessionNotes", summary: str = "", cut: int = None, keep_tokens: int = None):
-        notes_content = notes.render_for_prompt(max_length=self.max_notes_length)
+        notes_content = notes.render_for_prompt(max_length=self._notes_max_length())
         if summary:
             notes_content = f"**摘要**: {summary}\n\n{notes_content}"
         parts = [f"[系统压缩] 之前的对话已压缩为以下摘要：\n\n{notes_content}"]

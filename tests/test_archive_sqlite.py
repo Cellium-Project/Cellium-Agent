@@ -160,7 +160,7 @@ def test_latest_and_get_by_id_structure(store):
 
     latest = store.get_latest_by_session("s1")
     assert latest["id"] == record_id
-    assert set(latest.keys()) == {"id", "time", "session_id", "snapshot_hash", "messages"}
+    assert set(latest.keys()) == {"id", "seq", "time", "session_id", "snapshot_hash", "messages"}
     assert latest["session_id"] == "s1"
     assert [m["content"] for m in latest["messages"]] == ["u1", "a1"]
 

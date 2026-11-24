@@ -315,8 +315,12 @@ class SessionManager:
                 records = archive.get_by_session(session_id, limit=100000, min_seq=snap_seq)
             else:
                 records = self._load_records_by_budget(session_id, self._restore_token_budget())
-                if records is None:
+                if not records:
                     records = archive.get_by_session(session_id, limit=100000)
+                    if not records and hasattr(archive, "get_recent_messages"):
+                        legacy_msgs = archive.get_recent_messages(session_id, limit=2000)
+                        if legacy_msgs:
+                            records = [{"messages": legacy_msgs}]
                     records = self._trim_records_to_budget(records)
         except Exception as e:
             logger.warning("[SessionManager] 获取归档记录失败: %s", e)

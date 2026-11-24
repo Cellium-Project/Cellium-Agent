@@ -673,7 +673,7 @@ class MemoryTool(BaseTool):
             compactor = SessionCompactor(
                 llm_engine=None,
                 keep_recent_tokens=keep_tokens,
-                max_notes_length=session_cfg.get("max_notes_length", 2000),
+                max_notes_length=session_cfg.get("max_notes_length", 0),
             )
             cut = compactor._tail_cut_index(memory.messages, keep_tokens)
             if cut <= 0:

@@ -2028,8 +2028,9 @@ const MemorySettings: React.FC = () => {
           </div>
           <div className="form-group">
             <FieldLabel label={t('settings.memory.notesMaxLength')} desc={t('settings.memory.notesMaxLengthDesc')} />
-            <input type="number" value={Number(sessionCompact.max_notes_length) || 2000} min={500} max={10000}
-              onChange={e => updateField('session_compact.max_notes_length', parseInt(e.target.value))} />
+            <input type="number" value={Number(sessionCompact.max_notes_length) || 0} min={0} max={40000} step={1000}
+              placeholder="0"
+              onChange={e => updateField('session_compact.max_notes_length', parseInt(e.target.value) || 0)} />
           </div>
         </div>
       </div>

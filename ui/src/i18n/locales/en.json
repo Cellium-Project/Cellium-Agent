@@ -290,7 +290,7 @@
       "compactRatio": "Compact Ratio",
       "compactRatioDesc": "Used when threshold is 0: trigger at this fraction of the model context window (default 0.8)",
       "notesMaxLength": "Notes Max Length",
-      "notesMaxLengthDesc": "Maximum character length for generated notes",
+      "notesMaxLengthDesc": "Maximum character length for generated notes; 0 = auto-adapt to context window (2%, 4000-40000)",
       "longTermMemory": "Long-term Memory (Hybrid Recall)",
       "indexDbPath": "Index Database Path",
       "memoryStorageDir": "Memory Storage Directory",

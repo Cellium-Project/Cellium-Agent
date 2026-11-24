@@ -283,7 +283,7 @@
       "compactRatio": "壓縮觸發比例",
       "compactRatioDesc": "Token 閾值為 0 時生效，按模型視窗的該比例觸發壓縮（預設 0.8）",
       "notesMaxLength": "筆記最大長度",
-      "notesMaxLengthDesc": "生成筆記的最大字元長度",
+      "notesMaxLengthDesc": "產生筆記的最大字元長度；0 = 依上下文視窗自動調整（視窗 2%，4000~40000）",
       "longTermMemory": "長期記憶（混合召回）",
       "indexDbPath": "索引資料庫路徑",
       "memoryStorageDir": "記憶儲存目錄",

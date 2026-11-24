@@ -9,7 +9,7 @@ memory:
     enabled: true
     token_threshold: 0          # 触发压缩的 token 阈值；0 = 按模型上下文窗口自动算（见 compact_ratio）
     compact_ratio: 0.8          # 自动模式的触发比例：窗口 80% 时压缩（200k→160k，1M→800k）
-    max_notes_length: 2000
+    max_notes_length: 0         # 笔记渲染最大字符数；0 = 按上下文窗口自适应（窗口 2%，4000~40000）
     notes_dir: memory/notes
   long_term:
     db_file: memory/memory_index.db

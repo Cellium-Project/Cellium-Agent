@@ -305,7 +305,7 @@ class AgentLoop:
             token_threshold=session_config.get("token_threshold") or None,
             compact_ratio=session_config.get("compact_ratio", 0.8),
             keep_recent_tokens=session_config.get("keep_recent_tokens", 15000),
-            max_notes_length=session_config.get("max_notes_length", 2000),
+            max_notes_length=session_config.get("max_notes_length", 0),
             repository=three_layer_memory.repository if three_layer_memory else None,
             archive=three_layer_memory.archive if three_layer_memory else None,
             session_id=self.session_id,
@@ -385,7 +385,7 @@ class AgentLoop:
                 "token_threshold": 0,
                 "compact_ratio": 0.8,
                 "keep_recent_tokens": 15000,
-                "max_notes_length": 2000,
+                "max_notes_length": 0,
                 "notes_dir": f"{memory_dir}/notes",
             },
         }

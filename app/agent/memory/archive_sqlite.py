@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_records_session_seq ON records(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_record_messages_record ON record_messages(record_id, ordinal);
 """
 
-_RECORD_COLUMNS = "id, session_id, time, snapshot_hash, raw"
+_RECORD_COLUMNS = "id, session_id, seq, time, snapshot_hash, raw"
 _SEQ_LIVE_BASE = 1_000_000_000_000_000
 _WRITE_RETRY_DELAYS = (0.05, 0.15, 0.4)
 _SNAPSHOT_FLAG = '"_is_compacted_notes"'
@@ -514,6 +514,7 @@ class SqliteArchiveStore:
                 data = {}
         data.update({
             "id": row["id"],
+            "seq": row["seq"] if "seq" in row.keys() else None,
             "time": row["time"],
             "session_id": row["session_id"],
             "snapshot_hash": row["snapshot_hash"],

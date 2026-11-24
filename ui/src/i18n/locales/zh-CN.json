@@ -284,7 +284,7 @@
       "compactRatio": "压缩触发比例",
       "compactRatioDesc": "Token 阈值为 0 时生效，按模型窗口的该比例触发压缩（默认 0.8）",
       "notesMaxLength": "笔记最大长度",
-      "notesMaxLengthDesc": "生成笔记的最大字符长度",
+      "notesMaxLengthDesc": "生成笔记的最大字符长度；0 = 按上下文窗口自适应（窗口 2%，4000~40000）",
       "longTermMemory": "长期记忆（混合召回）",
       "indexDbPath": "索引数据库路径",
       "memoryStorageDir": "记忆存储目录",

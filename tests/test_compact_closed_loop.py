@@ -435,5 +435,59 @@ class TestTokenCacheAndWindow(unittest.TestCase):
         self.assertEqual(e.effective_context_window, 1000000)
 
 
+class TestNotesMaxLength(unittest.TestCase):
+    def test_adaptive_by_context_window(self):
+        big = SessionCompactor(llm_engine=SimpleNamespace(context_window=1_000_000))
+        self.assertEqual(big._notes_max_length(), 20000)
+
+        mid = SessionCompactor(llm_engine=SimpleNamespace(context_window=200_000))
+        self.assertEqual(mid._notes_max_length(), 4000)
+
+        none = SessionCompactor(llm_engine=None)
+        self.assertEqual(none._notes_max_length(), 8000)
+
+    def test_explicit_value_wins(self):
+        comp = SessionCompactor(
+            llm_engine=SimpleNamespace(context_window=1_000_000),
+            max_notes_length=2000,
+        )
+        self.assertEqual(comp._notes_max_length(), 2000)
+
+    def test_long_notes_survive_adaptive_limit(self):
+        notes = SessionNotes("long-notes", notes_dir=tempfile.mkdtemp())
+        notes.set_completed([f"完成项 {i} " + "x" * 700 for i in range(10)])
+        notes.save()
+
+        mem = MemoryManager()
+        for i in range(20):
+            mem.add_user_message(f"Q{i}")
+            mem.add_assistant_message(f"A{i}")
+
+        comp = SessionCompactor(llm_engine=SimpleNamespace(context_window=1_000_000))
+        comp._replace_old_messages(mem, notes, summary="摘要")
+
+        head = mem.messages[0]["content"]
+        self.assertNotIn("[笔记已截断]", head)
+        self.assertGreater(len(head), 2000)
+
+    def test_long_notes_truncated_when_explicit_small(self):
+        notes = SessionNotes("small-notes", notes_dir=tempfile.mkdtemp())
+        notes.set_completed([f"完成项 {i} " + "x" * 700 for i in range(10)])
+        notes.save()
+
+        mem = MemoryManager()
+        for i in range(20):
+            mem.add_user_message(f"Q{i}")
+            mem.add_assistant_message(f"A{i}")
+
+        comp = SessionCompactor(
+            llm_engine=SimpleNamespace(context_window=1_000_000),
+            max_notes_length=2000,
+        )
+        comp._replace_old_messages(mem, notes, summary="摘要")
+
+        self.assertIn("[笔记已截断]", mem.messages[0]["content"])
+
+
 if __name__ == "__main__":
     unittest.main()
